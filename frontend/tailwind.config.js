@@ -1,0 +1,121 @@
+/** @type {import('tailwindcss').Config} */
+
+// Helper: create a Tailwind color value from a CSS variable with alpha support.
+// CSS var holds RGB triplet like "10 10 10", enabling bg-color/50 opacity syntax.
+const tc = (name) => `rgb(var(--guide-${name}) / <alpha-value>)`;
+
+export default {
+  content: [
+    './index.html',
+    './src/**/*.{js,ts,jsx,tsx}',
+  ],
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        // Theme-aware colors — all resolve to CSS custom properties set by ThemeProvider
+        'vsc-bg': tc('bg'),
+        'vsc-sidebar': tc('sidebar'),
+        'vsc-activitybar': tc('activitybar'),
+        'vsc-titlebar': tc('titlebar'),
+        'vsc-tab-active': tc('tab-active'),
+        'vsc-tab-inactive': tc('tab-inactive'),
+        'vsc-tab-border': tc('tab-border'),
+        'vsc-panel': tc('panel'),
+        'vsc-panel-border': tc('panel-border'),
+        'vsc-statusbar': tc('statusbar'),
+        'vsc-statusbar-debug': tc('statusbar-debug'),
+        'vsc-input': tc('input'),
+        'vsc-input-border': tc('input-border'),
+        'vsc-input-focus': tc('input-focus'),
+        'vsc-list-hover': tc('list-hover'),
+        'vsc-list-active': tc('list-active'),
+        'vsc-list-focus': tc('list-focus'),
+        'vsc-text': tc('text'),
+        'vsc-text-dim': tc('text-dim'),
+        'vsc-text-bright': tc('text-bright'),
+        'vsc-accent': tc('accent'),
+        'vsc-accent-hover': tc('accent-hover'),
+        'vsc-error': tc('error'),
+        'vsc-warning': tc('warning'),
+        'vsc-success': tc('success'),
+        'vsc-info': tc('info'),
+        'vsc-scrollbar': tc('scrollbar'),
+        'vsc-scrollbar-hover': tc('scrollbar-hover'),
+        'vsc-minimap': tc('minimap'),
+        'vsc-breadcrumb': tc('breadcrumb'),
+        'vsc-badge': tc('badge'),
+        'vsc-badge-fg': tc('badge-fg'),
+        'vsc-button': tc('button'),
+        'vsc-button-hover': tc('button-hover'),
+        'vsc-button-secondary': tc('button-secondary'),
+        'vsc-button-secondary-hover': tc('button-secondary-hover'),
+        'vsc-dropdown': tc('dropdown'),
+        'vsc-dropdown-border': tc('dropdown-border'),
+        'vsc-selection': tc('selection'),
+        'vsc-find-match': tc('find-match'),
+        'vsc-line-highlight': tc('line-highlight'),
+        'vsc-indent-guide': tc('indent-guide'),
+        'vsc-ruler': tc('ruler'),
+        'vsc-terminal-bg': tc('terminal-bg'),
+        'vsc-terminal-fg': tc('terminal-fg'),
+        'vsc-terminal-cursor': tc('terminal-cursor'),
+        'vsc-peek-bg': tc('peek-bg'),
+        'vsc-peek-border': tc('peek-border'),
+      },
+      fontFamily: {
+        'vsc-ui': ['Inter', '"Segoe UI"', 'system-ui', 'sans-serif'],
+        'vsc-code': ['Consolas', '"Courier New"', 'monospace'],
+        'brand': ['"Audiowide"', 'sans-serif'],
+      },
+      fontSize: {
+        'vsc-xs': '11px',
+        'vsc-sm': '12px',
+        'vsc-base': '13px',
+        'vsc-lg': '14px',
+        'vsc-xl': '16px',
+        'vsc-2xl': '20px',
+      },
+      spacing: {
+        'activitybar': '48px',
+        'sidebar': '260px',
+        'panel': '200px',
+        'statusbar': '22px',
+        'titlebar': '30px',
+        'tabbar': '35px',
+        'breadcrumb': '22px',
+      },
+      animation: {
+        'pulse-fast': 'pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+        'fade-in': 'fadeIn 0.15s ease-out',
+        'slide-up': 'slideUp 0.2s ease-out',
+        'slide-down': 'slideDown 0.2s ease-out',
+        'slide-right': 'slideRight 0.2s ease-out',
+        'scale-in': 'scaleIn 0.15s ease-out',
+      },
+      keyframes: {
+        fadeIn: {
+          '0%': { opacity: '0' },
+          '100%': { opacity: '1' },
+        },
+        slideUp: {
+          '0%': { transform: 'translateY(10px)', opacity: '0' },
+          '100%': { transform: 'translateY(0)', opacity: '1' },
+        },
+        slideDown: {
+          '0%': { transform: 'translateY(-10px)', opacity: '0' },
+          '100%': { transform: 'translateY(0)', opacity: '1' },
+        },
+        slideRight: {
+          '0%': { transform: 'translateX(-10px)', opacity: '0' },
+          '100%': { transform: 'translateX(0)', opacity: '1' },
+        },
+        scaleIn: {
+          '0%': { transform: 'scale(0.95)', opacity: '0' },
+          '100%': { transform: 'scale(1)', opacity: '1' },
+        },
+      },
+    },
+  },
+  plugins: [],
+};

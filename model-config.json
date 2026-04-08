@@ -1,0 +1,7 @@
+{
+  "customModelPaths": [
+    "D:\\models\\qwen3.5\\Qwen3.5-2B-GGUF\\Qwen3.5-2B-Q8_0.gguf",
+    "D:\\models\\StaffPix\\Qwen3-0.6B-Q8_0.gguf",
+    "D:\\models\\StaffPix\\Qwen3-4B-Thinking-2507-Q4_K_M.gguf"
+  ]
+}

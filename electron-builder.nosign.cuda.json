@@ -1,0 +1,73 @@
+{
+  "appId": "com.guide-ide.desktop",
+  "productName": "guIDE",
+  "copyright": "Copyright © 2026 GraySoft LLC",
+  "directories": {
+    "output": "dist-electron"
+  },
+  "files": [
+    "*.js",
+    "*.json",
+    "server/**/*",
+    "pipeline/**/*",
+    "tools/**/*",
+    "frontend/dist/**/*",
+    "node_modules/**/*",
+    "build/**/*",
+    "!node_modules/.cache/**",
+    "!node_modules/@node-llama-cpp/win-arm64/**",
+    "!node_modules/@node-llama-cpp/linux-*/**",
+    "!node_modules/@node-llama-cpp/mac-*/**",
+    "!frontend/node_modules/**",
+    "!**/*.map",
+    "!**/*.ts",
+    "!**/test/**",
+    "!**/tests/**",
+    "!**/spec/**",
+    "!**/.git/**"
+  ],
+  "win": {
+    "icon": "build/icon.ico",
+    "publisherName": "GraySoft LLC",
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "guIDE",
+    "installerIcon": "build/icon.ico",
+    "uninstallerIcon": "build/icon.ico",
+    "include": "build/installer.nsh",
+    "installerSidebar": "build/installerSidebar.bmp",
+    "installerHeader": "build/installerHeader.bmp",
+    "uninstallerSidebar": "build/installerSidebar.bmp",
+    "license": "LICENSE",
+    "displayLanguageSelector": false,
+    "runAfterFinish": true,
+    "artifactName": "guIDE-${version}-cuda-x64-setup.${ext}"
+  },
+  "asar": false,
+  "mac": {
+    "icon": "build/icon.icns",
+    "target": [
+      { "target": "dmg", "arch": ["x64", "arm64"] }
+    ],
+    "artifactName": "guIDE-${version}-cuda-mac-${arch}.${ext}"
+  },
+  "linux": {
+    "icon": "build/icon.png",
+    "target": [
+      { "target": "AppImage", "arch": ["x64"] }
+    ],
+    "artifactName": "guIDE-${version}-cuda-linux-x64.${ext}",
+    "category": "Development"
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "name": "guide-ide",
+  "version": "2.3.14",
+  "description": "guIDE — Local-first AI IDE. VS Code + Copilot quality, running entirely locally with zero cloud dependency.",
+  "main": "electron-main.js",
+  "scripts": {
+    "start": "node server/main.js",
+    "dev": "node server/main.js --dev",
+    "electron": "electron .",
+    "frontend:dev": "cd frontend && npm run dev",
+    "frontend:build": "cd frontend && npm run build",
+    "build:renderer": "cd frontend && npm run build",
+    "build:installers": "node scripts/build-installers.js",
+    "build:cuda": "node scripts/build-installers.js --cuda",
+    "build:cpu": "node scripts/build-installers.js --cpu",
+    "release:patch": "npm version patch && git push && git push --tags",
+    "release:minor": "npm version minor && git push && git push --tags",
+    "release:major": "npm version major && git push && git push --tags",
+    "postinstall": "cd frontend && npm install"
+  },
+  "keywords": [
+    "ide",
+    "ai",
+    "local",
+    "llm",
+    "gguf",
+    "coding-assistant"
+  ],
+  "author": "Brendan Gray (GitHub: FileShot)",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "mime-types": "^2.1.35",
+    "node-llama-cpp": "^3.5.0",
+    "node-pty": "^1.0.0",
+    "prettier": "^3.5.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^34.5.8",
+    "electron-builder": "^25.1.8"
+  }
+}

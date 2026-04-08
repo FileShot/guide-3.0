@@ -1,0 +1,670 @@
+@import url('https://fonts.googleapis.com/css2?family=Audiowide&family=Inter:wght@300;400;500;600;700&display=swap');
+@import '@xterm/xterm/css/xterm.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Default Theme Variables (Monolith) ───────────────── */
+/* ThemeProvider.jsx writes these to :root at runtime.      */
+/* These defaults ensure the app renders before JS loads.   */
+
+:root {
+  --guide-bg: 10 10 10;
+  --guide-sidebar: 14 14 14;
+  --guide-activitybar: 10 10 10;
+  --guide-titlebar: 18 18 18;
+  --guide-tab-active: 10 10 10;
+  --guide-tab-inactive: 14 14 14;
+  --guide-tab-border: 18 18 18;
+  --guide-panel: 10 10 10;
+  --guide-panel-border: 40 40 40;
+  --guide-statusbar: 20 20 20;
+  --guide-statusbar-debug: 204 102 51;
+  --guide-input: 22 22 22;
+  --guide-input-border: 40 40 40;
+  --guide-input-focus: 255 107 0;
+  --guide-list-hover: 25 25 25;
+  --guide-list-active: 40 30 10;
+  --guide-list-focus: 30 25 10;
+  --guide-text: 180 180 180;
+  --guide-text-dim: 100 100 100;
+  --guide-text-bright: 230 230 230;
+  --guide-accent: 255 107 0;
+  --guide-accent-hover: 255 130 30;
+  --guide-error: 244 135 113;
+  --guide-warning: 204 167 0;
+  --guide-success: 137 209 133;
+  --guide-info: 117 190 255;
+  --guide-button: 180 80 0;
+  --guide-button-hover: 210 100 0;
+  --guide-button-secondary: 30 30 30;
+  --guide-button-secondary-hover: 40 40 40;
+  --guide-scrollbar: 40 40 40;
+  --guide-scrollbar-hover: 60 60 60;
+  --guide-selection: 60 40 10;
+  --guide-badge: 50 50 50;
+  --guide-badge-fg: 180 180 180;
+  --guide-minimap: 14 14 14;
+  --guide-breadcrumb: 120 120 120;
+  --guide-dropdown: 22 22 22;
+  --guide-dropdown-border: 40 40 40;
+  --guide-find-match: 60 40 10;
+  --guide-line-highlight: 255 255 255;
+  --guide-indent-guide: 35 35 35;
+  --guide-ruler: 40 40 40;
+  --guide-terminal-bg: 10 10 10;
+  --guide-terminal-fg: 180 180 180;
+  --guide-terminal-cursor: 255 107 0;
+  --guide-peek-bg: 14 14 14;
+  --guide-peek-border: 255 107 0;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+  .theme-light {
+    color-scheme: light;
+  }
+
+  body {
+    @apply bg-vsc-bg text-vsc-text font-vsc-ui text-vsc-base;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Selection */
+  ::selection {
+    background: rgb(var(--guide-selection) / 0.5);
+  }
+
+  /* Focus rings */
+  :focus-visible {
+    outline: 1px solid rgb(var(--guide-accent));
+    outline-offset: -1px;
+  }
+
+  /* Input fields */
+  input, textarea, select {
+    @apply bg-vsc-input border border-vsc-input-border text-vsc-text text-vsc-base;
+    @apply focus:border-vsc-input-focus focus:outline-none;
+    @apply placeholder:text-vsc-text-dim;
+  }
+
+  /* Buttons */
+  button {
+    @apply cursor-pointer text-vsc-base;
+  }
+
+  /* Links */
+  a {
+    @apply text-vsc-accent hover:text-vsc-accent-hover no-underline;
+  }
+
+  /* Code elements */
+  code, pre {
+    @apply font-vsc-code;
+  }
+
+  /* Scrollbar — themed, thin */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--guide-scrollbar));
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--guide-scrollbar-hover));
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* ─── Dirty Diff Gutter Decorations ─────────────────── */
+  .dirty-diff-added {
+    width: 3px !important;
+    margin-left: 3px;
+    background: rgb(var(--guide-success));
+  }
+  .dirty-diff-modified {
+    width: 3px !important;
+    margin-left: 3px;
+    background: rgb(var(--guide-info));
+  }
+  .dirty-diff-deleted {
+    width: 3px !important;
+    margin-left: 3px;
+    background: rgb(var(--guide-error));
+    border-bottom: 3px solid rgb(var(--guide-error));
+  }
+
+  /* ─── Glass Card ────────────────────────────────────── */
+  .glass-card {
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+  }
+  .glass-card:hover {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25), 0 1px 0 rgba(255, 255, 255, 0.05) inset;
+  }
+
+  /* ─── Activity Bar ──────────────────────────────────── */
+  .activity-bar-icon {
+    @apply w-12 h-12 flex items-center justify-center text-vsc-text-dim;
+    @apply cursor-pointer transition-all duration-150;
+  }
+  .activity-bar-icon:hover {
+    @apply text-vsc-text-bright;
+    background: rgb(var(--guide-list-hover) / 0.6);
+  }
+  .activity-bar-icon.active {
+    @apply text-vsc-text-bright relative;
+  }
+  .activity-bar-icon.active::before {
+    content: '';
+    @apply absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r;
+    background: rgb(var(--guide-accent));
+    box-shadow: 0 0 8px rgb(var(--guide-accent) / 0.4);
+  }
+
+  /* ─── Sidebar ───────────────────────────────────────── */
+  .sidebar-header {
+    @apply h-[35px] flex items-center px-5 text-[11px] uppercase tracking-wider font-semibold text-vsc-text-dim;
+    @apply select-none;
+  }
+
+  .sidebar-section-header {
+    @apply h-[22px] flex items-center px-2 text-[11px] uppercase tracking-wider font-bold;
+    @apply bg-vsc-sidebar text-vsc-text cursor-pointer select-none;
+    @apply hover:bg-vsc-list-hover transition-colors duration-150;
+    border-bottom: 1px solid rgb(var(--guide-panel-border) / 0.12);
+  }
+
+  /* ─── File Tree ─────────────────────────────────────── */
+  .file-tree-item {
+    @apply h-[22px] flex items-center gap-1 px-2 text-vsc-sm cursor-pointer select-none;
+    @apply hover:bg-vsc-list-hover transition-all duration-100;
+    border-left: 2px solid transparent;
+    border-radius: 3px;
+    margin: 0 2px;
+  }
+  .file-tree-item:hover {
+    border-left-color: rgb(var(--guide-accent) / 0.3);
+  }
+  .file-tree-item.active {
+    @apply bg-vsc-list-active text-vsc-text-bright;
+    border-left-color: rgb(var(--guide-accent));
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) inset, 0 0 6px rgb(var(--guide-accent) / 0.08);
+  }
+  .file-tree-item.focused {
+    @apply bg-vsc-list-focus;
+  }
+
+  /* ─── Tabs ──────────────────────────────────────────── */
+  .editor-tab {
+    @apply h-[35px] flex items-center gap-1.5 px-3 text-vsc-sm cursor-pointer select-none;
+    @apply bg-vsc-tab-inactive text-vsc-text-dim border-r border-vsc-tab-border;
+    @apply hover:bg-vsc-tab-active transition-all duration-150;
+    min-width: 120px;
+    max-width: 200px;
+  }
+  .editor-tab.active {
+    @apply bg-vsc-tab-active text-vsc-text-bright;
+    border-top: 1px solid rgb(var(--guide-accent));
+    box-shadow: 0 1px 0 rgb(var(--guide-tab-active)) inset;
+  }
+  .editor-tab .close-btn {
+    @apply ml-auto p-0.5 rounded-sm opacity-0 hover:bg-vsc-list-hover;
+  }
+  .editor-tab:hover .close-btn,
+  .editor-tab.active .close-btn {
+    @apply opacity-100;
+  }
+
+  /* ─── Status Bar ────────────────────────────────────── */
+  .statusbar-item {
+    @apply h-full flex items-center px-2 text-[12px] cursor-pointer select-none;
+    @apply hover:bg-vsc-text-bright/10 transition-colors duration-100;
+    border-right: 1px solid rgb(var(--guide-panel-border) / 0.3);
+  }
+  .statusbar-item:last-child {
+    border-right: none;
+  }
+
+  /* ─── Panel ─────────────────────────────────────────── */
+  .panel-tab {
+    @apply h-[35px] flex items-center px-3 text-vsc-sm cursor-pointer select-none uppercase tracking-wider;
+    @apply text-vsc-text-dim hover:text-vsc-text transition-colors duration-150;
+    border-bottom: 2px solid transparent;
+  }
+  .panel-tab.active {
+    @apply text-vsc-text-bright;
+    border-image: linear-gradient(90deg, rgb(var(--guide-accent)), rgb(var(--guide-accent-hover))) 1;
+    border-bottom-width: 2px;
+  }
+
+  /* ─── Chat ──────────────────────────────────────────── */
+  .chat-message {
+    @apply px-4 py-3 text-vsc-base leading-relaxed;
+  }
+  .chat-message.user {
+    @apply bg-vsc-list-hover/60;
+    border-bottom: 1px solid rgb(var(--guide-panel-border) / 0.15);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  }
+  .chat-message.assistant {
+    @apply bg-transparent;
+    border-bottom: 1px solid rgb(var(--guide-panel-border) / 0.08);
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+  }
+
+  .chat-message pre {
+    @apply bg-vsc-bg rounded-lg p-3 my-2 overflow-x-auto text-vsc-sm;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 0 rgba(255, 255, 255, 0.03);
+    border: 1px solid rgb(var(--guide-panel-border) / 0.3);
+  }
+  .chat-message code:not(pre code) {
+    @apply bg-vsc-input px-1 py-0.5 rounded text-vsc-sm;
+  }
+  .chat-message p {
+    @apply my-1.5;
+  }
+  .chat-message ul, .chat-message ol {
+    @apply ml-5 my-1.5;
+  }
+  .chat-message li {
+    @apply my-0.5;
+  }
+  .chat-message h1, .chat-message h2, .chat-message h3 {
+    @apply font-semibold mt-3 mb-1;
+  }
+  .chat-message h1 { @apply text-vsc-xl; }
+  .chat-message h2 { @apply text-vsc-lg; }
+  .chat-message h3 { @apply text-vsc-base; }
+  .chat-message a {
+    @apply text-vsc-accent hover:underline;
+  }
+  .chat-message blockquote {
+    @apply border-l-2 border-vsc-accent pl-3 ml-0 my-2 text-vsc-text-dim italic;
+  }
+  .chat-message table {
+    @apply border-collapse my-2 w-full;
+  }
+  .chat-message th, .chat-message td {
+    @apply border border-vsc-panel-border px-2 py-1 text-vsc-sm;
+  }
+  .chat-message th {
+    @apply bg-vsc-sidebar font-semibold;
+  }
+
+  /* ─── Resizer ───────────────────────────────────────── */
+  .resize-handle-v {
+    @apply w-1 cursor-col-resize hover:bg-vsc-accent transition-colors duration-150;
+  }
+  .resize-handle-h {
+    @apply h-1 cursor-row-resize hover:bg-vsc-accent transition-colors duration-150;
+  }
+
+  /* ─── Command Palette ───────────────────────────────── */
+  .command-palette-overlay {
+    @apply fixed inset-0 z-50 flex justify-center pt-[15vh];
+    background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+  .command-palette {
+    @apply w-[600px] max-h-[400px] border border-vsc-panel-border rounded-xl overflow-hidden;
+    @apply flex flex-col;
+    background: rgb(var(--guide-sidebar));
+    box-shadow: 0 25px 60px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.05), 0 0 40px rgba(0, 0, 0, 0.3);
+  }
+  .command-palette-input {
+    @apply w-full h-[36px] px-3 bg-vsc-input border-b border-vsc-panel-border;
+    @apply text-vsc-base text-vsc-text focus:outline-none;
+  }
+  .command-palette-item {
+    @apply h-[32px] flex items-center px-3 text-vsc-sm cursor-pointer;
+    @apply hover:bg-vsc-list-hover;
+  }
+  .command-palette-item.active {
+    @apply bg-vsc-list-active text-vsc-text-bright;
+  }
+
+  /* ─── Notification Toast ────────────────────────────── */
+  .notification-toast {
+    @apply fixed bottom-8 right-4 z-50 max-w-[450px] border border-vsc-panel-border;
+    @apply rounded-xl p-3 animate-slide-up;
+    background: rgb(var(--guide-sidebar));
+    backdrop-filter: blur(20px) saturate(150%);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    box-shadow: 0 20px 50px -12px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05), 0 0 30px rgba(0, 0, 0, 0.2);
+  }
+
+  /* ─── Context Menu ──────────────────────────────────── */
+  .context-menu {
+    @apply fixed z-50 bg-vsc-sidebar border border-vsc-panel-border rounded-sm shadow-2xl py-1;
+    min-width: 180px;
+  }
+  .context-menu-item {
+    @apply h-[28px] flex items-center px-4 text-vsc-sm cursor-pointer select-none;
+    @apply hover:bg-vsc-list-active;
+  }
+  .context-menu-separator {
+    @apply h-px bg-vsc-panel-border my-1;
+  }
+
+  /* ─── Tooltip ───────────────────────────────────────── */
+  .tooltip {
+    @apply absolute z-50 px-2 py-1 bg-vsc-sidebar border border-vsc-panel-border rounded-sm;
+    @apply text-vsc-sm text-vsc-text shadow-lg animate-fade-in pointer-events-none;
+  }
+
+  /* ─── Welcome Tab ───────────────────────────────────── */
+  .welcome-tab {
+    @apply flex-1 flex flex-col items-center justify-center text-center p-4 sm:p-8;
+  }
+  .welcome-tab h1 {
+    @apply text-[28px] font-light text-vsc-text-bright mb-4;
+  }
+  .welcome-tab p {
+    @apply text-vsc-text-dim text-vsc-lg mb-6 max-w-[500px];
+  }
+  .welcome-action {
+    @apply flex items-center gap-2 px-4 py-2 text-vsc-base cursor-pointer rounded;
+    @apply hover:bg-vsc-list-hover text-vsc-accent;
+  }
+
+  /* Keyboard key style */
+  .kbd {
+    @apply inline-block px-1.5 py-0.5 rounded bg-vsc-panel-border/30 text-vsc-text-dim font-mono text-[10px] text-right;
+  }
+
+  /* ─── Loading Spinner ───────────────────────────────── */
+  .spinner {
+    @apply w-4 h-4 border-2 border-vsc-text-dim border-t-vsc-accent rounded-full animate-spin;
+  }
+
+  /* ─── Badge ─────────────────────────────────────────── */
+  .badge {
+    @apply inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full;
+    @apply bg-vsc-accent text-white text-[10px] font-bold;
+  }
+
+  /* ─── Progress Bar ──────────────────────────────────── */
+  .progress-bar {
+    @apply h-[2px] bg-vsc-accent;
+    transition: width 0.3s ease;
+  }
+
+  /* ─── Splitter ──────────────────────────────────────── */
+  .splitter-v {
+    @apply w-[3px] cursor-col-resize flex-shrink-0;
+    @apply transition-all duration-150;
+    background: transparent;
+  }
+  .splitter-v:hover {
+    background: linear-gradient(180deg, transparent, rgb(var(--guide-accent) / 0.5), transparent);
+  }
+  .splitter-v:active {
+    background: rgb(var(--guide-accent));
+  }
+  .splitter-h {
+    @apply h-[3px] cursor-row-resize flex-shrink-0;
+    @apply transition-all duration-150;
+    background: transparent;
+  }
+  .splitter-h:hover {
+    background: linear-gradient(90deg, transparent, rgb(var(--guide-accent) / 0.5), transparent);
+  }
+  .splitter-h:active {
+    background: rgb(var(--guide-accent));
+  }
+}
+
+@layer utilities {
+  /* ─── Glassmorphism ─────────────────────────────────── */
+  .glass {
+    backdrop-filter: blur(12px) saturate(150%);
+    -webkit-backdrop-filter: blur(12px) saturate(150%);
+    background: rgb(var(--guide-bg) / 0.75);
+    border: 1px solid rgb(var(--guide-panel-border) / 0.3);
+  }
+  .glass-subtle {
+    backdrop-filter: blur(8px) saturate(120%);
+    -webkit-backdrop-filter: blur(8px) saturate(120%);
+    background: rgb(var(--guide-sidebar) / 0.6);
+    border: 1px solid rgb(var(--guide-panel-border) / 0.2);
+  }
+  .glass-strong {
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    background: rgb(var(--guide-bg) / 0.85);
+    border: 1px solid rgb(var(--guide-panel-border) / 0.4);
+  }
+
+  /* ─── Scrollbar overrides ───────────────────────────── */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* ─── Text utilities ────────────────────────────────── */
+  .truncate-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* ─── No select ─────────────────────────────────────── */
+  .no-select {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* ─── Brand font ────────────────────────────────────── */
+  .font-brand {
+    font-family: 'Audiowide', sans-serif;
+  }
+
+  /* ─── Glow effect ───────────────────────────────────── */
+  .glow-accent {
+    box-shadow: 0 0 12px rgb(var(--guide-accent) / 0.3),
+                0 0 4px rgb(var(--guide-accent) / 0.15);
+  }
+
+  /* ─── Code wrap toggle ──────────────────────────────── */
+  .code-wrap pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /* ─── Streaming cursor ──────────────────────────────── */
+  .streaming-cursor {
+    display: inline-block;
+    width: 2px;
+    height: 1.1em;
+    background: rgb(var(--guide-accent));
+    margin-left: 1px;
+    vertical-align: text-bottom;
+    animation: blink-cursor 0.8s step-end infinite;
+  }
+
+  @keyframes blink-cursor {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+}
+
+/* ─── Highlight.js Token Colors (theme-aware) ───────── */
+/* These use CSS variables so they adapt to every theme.  */
+
+.hljs {
+  color: rgb(var(--guide-text));
+  background: transparent;
+}
+
+/* Keywords: if, else, return, const, let, function, class, import, export */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in,
+.hljs-name {
+  color: rgb(var(--guide-accent));
+}
+
+/* Strings */
+.hljs-string,
+.hljs-attr,
+.hljs-symbol,
+.hljs-bullet {
+  color: rgb(var(--guide-success));
+}
+
+/* Numbers */
+.hljs-number,
+.hljs-literal {
+  color: rgb(var(--guide-info));
+}
+
+/* Comments */
+.hljs-comment,
+.hljs-quote {
+  color: rgb(var(--guide-text-dim));
+  font-style: italic;
+}
+
+/* Function names, titles */
+.hljs-title,
+.hljs-section {
+  color: rgb(var(--guide-warning));
+}
+
+/* Types, classes */
+.hljs-type,
+.hljs-class .hljs-title {
+  color: rgb(var(--guide-accent-hover));
+}
+
+/* Variables, template variables */
+.hljs-variable,
+.hljs-template-variable {
+  color: rgb(var(--guide-text-bright));
+}
+
+/* HTML/XML tags */
+.hljs-tag {
+  color: rgb(var(--guide-text-dim));
+}
+
+.hljs-tag .hljs-name {
+  color: rgb(var(--guide-error));
+}
+
+.hljs-tag .hljs-attr {
+  color: rgb(var(--guide-accent));
+}
+
+/* Properties, attributes */
+.hljs-attribute,
+.hljs-property {
+  color: rgb(var(--guide-info));
+}
+
+/* Meta, preprocessor */
+.hljs-meta,
+.hljs-meta .hljs-keyword {
+  color: rgb(var(--guide-text-dim));
+}
+
+/* Regexp */
+.hljs-regexp {
+  color: rgb(var(--guide-error));
+}
+
+/* Additions/deletions (diffs) */
+.hljs-addition {
+  color: rgb(var(--guide-success));
+  background: rgb(var(--guide-success) / 0.1);
+}
+.hljs-deletion {
+  color: rgb(var(--guide-error));
+  background: rgb(var(--guide-error) / 0.1);
+}
+
+/* Emphasis */
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: bold;
+}
+
+/* ─── Splitter positioning ───────────────────────────── */
+.splitter-v { position: relative; }
+.splitter-h { position: relative; }
+
+/* ─── Range input (settings sliders) ─────────────────── */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: rgb(var(--guide-input-bg));
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgb(var(--guide-accent));
+  cursor: pointer;
+  border: 2px solid rgb(var(--guide-bg));
+}
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgb(var(--guide-accent));
+  cursor: pointer;
+  border: 2px solid rgb(var(--guide-bg));
+}
+
+/* ─── Agent shimmer — VS Code Copilot "processing" wave ─ */
+@keyframes agent-shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+.agent-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgb(var(--guide-text-dim)) 30%,
+    rgb(var(--guide-text))     50%,
+    rgb(var(--guide-text-dim)) 70%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: agent-shimmer 1.8s linear infinite;
+}
