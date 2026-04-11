@@ -219,6 +219,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     // Build tool functions from enabled tool definitions
     const toolDefs = mcpToolServer.getToolDefinitions();
     const functions = ChatEngine.convertToolDefs(toolDefs);
+    const toolPrompt = mcpToolServer.getToolPrompt();
 
     const result = await llmEngine.chat(userMessage, {
       onToken: (token) => {
@@ -230,7 +231,11 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       onToolCall: (data) => {
         mainWindow.webContents.send('tool-call', data);
       },
+      onStreamEvent: (eventName, data) => {
+        mainWindow.webContents.send(eventName, data);
+      },
       functions,
+      toolPrompt,
       executeToolFn: async (toolName, params) => {
         return await mcpToolServer.executeTool(toolName, params);
       },

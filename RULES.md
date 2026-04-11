@@ -359,7 +359,9 @@ Tests exist to find bugs. ONLY bugs. Every test report is a hostile quality audi
 - NEVER copy prompts from this document — invent fresh every session
 - NEVER tell the model how long output should be in the prompt
 - NEVER instruct the model on which tools to use
-- NEVER name specific file types in the prompt
+- You CAN specify file type (e.g. HTML) and CAN say to embed everything in one file
+- Prompts must have at least 12 specific feature requirements — enough to force context rotation
+- Send test prompts as ONE giant paragraph, not multiple lines (multiple lines = queued messages in guIDE)
 - Be a normal user — typos, ambiguity, multi-part requests
 - Score ALL 3 dimensions: coherence (50%), tool correctness (25%), response quality (25%)
 - New blank project for every test — never reuse old projects

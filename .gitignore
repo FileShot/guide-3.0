@@ -4,3 +4,30 @@ dist-electron/
 build/
 *.exe
 *.blockmap
+
+# Models (large binary files)
+models/
+*.gguf
+
+# Test project directories
+test-projects/
+test-project/
+test-tool-5/
+test-tool-7/
+test-tool-diag/
+test-kobold2/
+test-kobold3/
+test-kobold4/
+test-kobold5/
+test-1-project/
+test-1b-project/
+
+# Playwright snapshots
+.playwright-mcp/
+
+# Logs
+*.log
+
+# User data
+.guide-ide/
+

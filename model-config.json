@@ -2,6 +2,11 @@
   "customModelPaths": [
     "D:\\models\\qwen3.5\\Qwen3.5-2B-GGUF\\Qwen3.5-2B-Q8_0.gguf",
     "D:\\models\\StaffPix\\Qwen3-0.6B-Q8_0.gguf",
-    "D:\\models\\StaffPix\\Qwen3-4B-Thinking-2507-Q4_K_M.gguf"
+    "D:\\models\\StaffPix\\Qwen3-4B-Thinking-2507-Q4_K_M.gguf",
+    "D:\\models\\tiny\\SmolLM2-360M-Instruct-Q8_0.gguf",
+    "D:\\models\\tiny\\gemma-3-1b-it-Q8_0.gguf",
+    "D:\\models\\StaffPix\\llama-3.2-1b-instruct-q8_0.gguf",
+    "D:\\models\\tiny\\EXAONE-4.0-1.2B-Q8_0.gguf",
+    "D:\\models\\tiny\\LFM2.5-1.2B-Instruct-Q6_K.gguf"
   ]
 }

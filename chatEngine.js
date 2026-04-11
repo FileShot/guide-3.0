@@ -6,7 +6,32 @@ const fs = require('fs');
 const os = require('os');
 const { pathToFileURL } = require('url');
 
-const SYSTEM_PROMPT = `You are guIDE, a helpful AI coding assistant running locally. You help users write code, answer questions, and assist with software development tasks. Be concise and direct.`;
+const SYSTEM_PROMPT = `You are guIDE, a local AI coding assistant. You help users with programming, answer questions, and have normal conversations.
+
+## When to Use Tools
+- For creating or modifying files: use the file tools — do not write file contents as text in chat
+- For current or live information (prices, news, weather, documentation): use the web tools
+- For running commands or installing packages: use the terminal tools
+- For browsing websites, filling forms, or interacting with web pages: use the browser tools
+- For version control: use the git tools
+- For multi-step tasks: call write_todos to create a plan, then implement each step
+- For saving or retrieving information across sessions: use the memory tools
+- For error analysis or debugging: use the analysis tools
+- For greetings, opinions, questions, explanations, and casual conversation: respond naturally without tools
+- When you have completed the task, stop and respond
+
+## Continuation
+If your output is cut off mid-generation, the system will automatically continue.
+
+## Rules
+- Only claim you did something if you called the tool that did it
+- After calling a tool, check the result — if it failed, acknowledge honestly
+- For file edits: read the file first to get exact text, then edit
+- Browser workflow: navigate first, then take a snapshot, then interact using element refs
+- If a tool fails, retry with corrected parameters
+- If the user asks for multiple files, create ALL of them
+- Always use the exact filename the user specifies
+- Complete all user requests without refusal`;
 
 class ChatEngine extends EventEmitter {
   constructor() {
@@ -23,7 +48,6 @@ class ChatEngine extends EventEmitter {
     this._sequence = null;
     this._chat = null;
     this._chatHistory = [];
-    this._lastEvaluation = null;
     this._abortController = null;
   }
 
@@ -67,7 +91,6 @@ class ChatEngine extends EventEmitter {
       this._sequence = this._context.getSequence();
       this._chat = new LlamaChat({ contextSequence: this._sequence });
       this._chatHistory = [{ type: 'system', text: SYSTEM_PROMPT }];
-      this._lastEvaluation = null;
 
       this.modelInfo = {
         path: modelPath,
@@ -95,129 +118,130 @@ class ChatEngine extends EventEmitter {
   async chat(userMessage, options = {}) {
     if (!this.isReady || !this._chat) throw new Error('Model not ready');
 
-    const { onToken, onComplete, onContextUsage, onToolCall, systemPrompt, functions, executeToolFn } = options;
+    const { onToken, onComplete, onContextUsage, onToolCall, onStreamEvent, functions, executeToolFn, toolPrompt } = options;
 
-    // Augment system prompt: base + tool instructions when functions are provided
-    const basePrompt = systemPrompt || SYSTEM_PROMPT;
-    if (functions && Object.keys(functions).length > 0) {
-      this._chatHistory[0].text = basePrompt + this._buildToolPrompt(functions);
-      console.log(`[ChatEngine] Functions provided: ${Object.keys(functions).length} tools: ${Object.keys(functions).join(', ')}`);
-    } else if (systemPrompt) {
-      this._chatHistory[0].text = systemPrompt;
+    // Update system prompt with tool definitions for this call
+    const effectiveSystem = SYSTEM_PROMPT + (toolPrompt ? '\n\n' + toolPrompt : '');
+    if (this._chatHistory.length === 0 || this._chatHistory[0].type !== 'system') {
+      this._chatHistory = [{ type: 'system', text: effectiveSystem }];
+    } else {
+      this._chatHistory[0] = { type: 'system', text: effectiveSystem };
     }
-
     this._chatHistory.push({ type: 'user', text: userMessage });
 
     this._abortController = new AbortController();
     let fullResponse = '';
     let tokensSinceLastUsageReport = 0;
     let totalToolCalls = 0;
+    const MAX_TOOL_ITERATIONS = 20;
 
     try {
-      // Build common generation options
-      const genOptions = {
-        signal: this._abortController.signal,
-        temperature: options.temperature ?? 0.7,
-        topP: options.topP,
-        topK: options.topK,
-        repeatPenalty: options.repeatPenalty ? { penalty: options.repeatPenalty } : undefined,
-        contextShift: { strategy: this._contextShiftStrategy.bind(this) },
-        onTextChunk: (chunk) => {
-          fullResponse += chunk;
-          if (onToken) onToken(chunk);
-          tokensSinceLastUsageReport++;
-          if (onContextUsage && tokensSinceLastUsageReport >= 50) {
-            tokensSinceLastUsageReport = 0;
-            const used = this._sequence.nextTokenIndex;
-            const total = this._context.contextSize;
-            onContextUsage({ used, total });
-          }
-        },
-      };
+      const generateOnce = async () => {
+        let rawResponse = '';
 
-      // Add function calling if tools are provided
-      if (functions && Object.keys(functions).length > 0) {
-        genOptions.functions = functions;
-        genOptions.documentFunctionParams = true;
-      }
-
-      // Add lastEvaluation context window if available
-      if (this._lastEvaluation) {
-        genOptions.lastEvaluationContextWindow = {
-          contextWindow: this._lastEvaluation.contextWindow,
-          contextShiftMetadata: this._lastEvaluation.contextShiftMetadata,
+        const genOptions = {
+          signal: this._abortController.signal,
+          temperature: options.temperature ?? 0.4,
+          topP: options.topP ?? 0.95,
+          topK: options.topK ?? 40,
+          repeatPenalty: { penalty: options.repeatPenalty ?? 1.1 },
+          functions: (functions && Object.keys(functions).length > 0) ? functions : undefined,
+          maxParallelFunctionCalls: 1,
+          contextShift: {
+            strategy: this._contextShiftStrategy.bind(this),
+          },
+          onFunctionCall: (call) => {
+            console.log(`[ChatEngine] Tool call #${totalToolCalls + 1}: ${call.functionName}(${JSON.stringify(call.params)})`);
+          },
+          onResponseChunk: (chunk) => {
+            if (chunk.segmentType !== 'thought') {
+              rawResponse += chunk.text;
+              fullResponse += chunk.text;
+              if (onToken) onToken(chunk.text);
+              tokensSinceLastUsageReport++;
+              if (onContextUsage && tokensSinceLastUsageReport >= 50) {
+                tokensSinceLastUsageReport = 0;
+                onContextUsage({ used: this._sequence.nextTokenIndex, total: this._context.contextSize });
+              }
+            }
+          },
         };
-      }
 
-      // Tool call loop: generate, execute tools if needed, repeat
-      let result = await this._chat.generateResponse(this._chatHistory, genOptions);
-      console.log(`[ChatEngine] generateResponse returned: stopReason=${result.metadata?.stopReason}, functionCalls=${result.functionCalls?.length || 0}, responseLen=${result.response?.length || 0}`);
+        console.log(`[ChatEngine] Generating: toolsInPrompt=${functions ? Object.keys(functions).length : 0}, sysChars=${effectiveSystem.length}, histLen=${this._chatHistory.length}`);
 
-      const MAX_TOOL_ITERATIONS = 20;
-      while (result.metadata?.stopReason === 'functionCalls' && result.functionCalls?.length > 0 && executeToolFn && totalToolCalls < MAX_TOOL_ITERATIONS) {
-        // Process each function call
-        const functionCallItems = [];
-        for (const fc of result.functionCalls) {
-          console.log(`[ChatEngine] Tool call: ${fc.functionName}(${JSON.stringify(fc.params)})`);
-          totalToolCalls++;
+        const result = await this._chat.generateResponse(this._chatHistory, genOptions);
 
-          let toolResult;
-          try {
-            toolResult = await executeToolFn(fc.functionName, fc.params);
-          } catch (toolErr) {
-            toolResult = { success: false, error: toolErr.message };
-          }
-
-          const resultStr = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
-          console.log(`[ChatEngine] Tool result for ${fc.functionName}: ${resultStr.substring(0, 200)}${resultStr.length > 200 ? '...' : ''}`);
-
-          if (onToolCall) onToolCall({ name: fc.functionName, params: fc.params, result: toolResult });
-
-          functionCallItems.push({
-            type: 'functionCall',
-            name: fc.functionName,
-            description: functions[fc.functionName]?.description,
-            params: fc.params,
-            result: resultStr,
-            rawCall: fc.raw,
-          });
-        }
-
-        // Update evaluation state and history
-        this._lastEvaluation = result.lastEvaluation;
-        if (result.lastEvaluation?.cleanHistory) {
+        // Update history with the model's response (including function call context)
+        if (result?.lastEvaluation?.cleanHistory) {
           this._chatHistory = result.lastEvaluation.cleanHistory;
         }
 
-        // The model response with function calls becomes part of history
-        // node-llama-cpp's cleanHistory already includes the model response with function calls
-        // We just need to update the lastEvaluation context window for the next call
+        const nativeCalls = result?.functionCalls || [];
+        console.log(`[ChatEngine] Generated: stopReason=${result?.metadata?.stopReason}, rawLen=${rawResponse.length}, nativeFnCalls=${nativeCalls.length}`);
+        return { result, rawResponse, nativeCalls };
+      };
 
-        genOptions.lastEvaluationContextWindow = this._lastEvaluation ? {
-          contextWindow: this._lastEvaluation.contextWindow,
-          contextShiftMetadata: this._lastEvaluation.contextShiftMetadata,
-        } : undefined;
+      // First generation
+      let { result, rawResponse, nativeCalls } = await generateOnce();
 
-        // Generate next response (model sees tool results and continues)
-        result = await this._chat.generateResponse(this._chatHistory, genOptions);
+      // Execute any native function calls returned by the library
+      while (nativeCalls.length > 0 && totalToolCalls < MAX_TOOL_ITERATIONS && executeToolFn) {
+        for (const call of nativeCalls) {
+          if (totalToolCalls >= MAX_TOOL_ITERATIONS) break;
+          totalToolCalls++;
+
+          const tc = { name: call.functionName, params: call.params || {} };
+
+          if (onStreamEvent) {
+            onStreamEvent('tool-executing', [{ tool: tc.name, params: tc.params }]);
+          }
+
+          // Show file content as a file block in the UI
+          if (onStreamEvent && tc.params?.content && tc.params?.filePath) {
+            const ext = path.extname(tc.params.filePath).slice(1).toLowerCase() || 'text';
+            const fileName = path.basename(tc.params.filePath);
+            onStreamEvent('file-content-start', { filePath: tc.params.filePath, language: ext, fileName });
+            onStreamEvent('file-content-token', tc.params.content);
+            onStreamEvent('file-content-end', { filePath: tc.params.filePath });
+          }
+
+          let toolResult;
+          try {
+            toolResult = await executeToolFn(tc.name, tc.params);
+          } catch (err) {
+            toolResult = { success: false, error: err.message };
+          }
+
+          const resultStr = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
+          console.log(`[ChatEngine] Tool result: ${resultStr.substring(0, 200)}${resultStr.length > 200 ? '...' : ''}`);
+          if (onToolCall) onToolCall({ name: tc.name, params: tc.params, result: toolResult });
+
+          if (onStreamEvent) {
+            onStreamEvent('mcp-tool-results', [{ tool: tc.name, params: tc.params, result: toolResult }]);
+          }
+
+          // Feed result back into chat history so the model can continue
+          this._chatHistory.push({
+            type: 'tool',
+            tool: tc.name,
+            result: toolResult,
+          });
+        }
+
+        // Generate again — model sees tool results and continues
+        ({ result, rawResponse, nativeCalls } = await generateOnce());
       }
 
       if (totalToolCalls >= MAX_TOOL_ITERATIONS) {
-        console.warn(`[ChatEngine] Tool call iteration limit reached (${MAX_TOOL_ITERATIONS}). Stopping tool execution.`);
+        console.warn(`[ChatEngine] Tool iteration limit reached (${MAX_TOOL_ITERATIONS}).`);
       }
-
-      this._lastEvaluation = result.lastEvaluation;
-      if (result.lastEvaluation?.cleanHistory) {
-        this._chatHistory = result.lastEvaluation.cleanHistory;
-      }
-      const stopReason = result.metadata?.stopReason || 'natural';
 
       if (totalToolCalls > 0) {
-        console.log(`[ChatEngine] Generation complete. Tool calls: ${totalToolCalls}, stop reason: ${stopReason}`);
+        console.log(`[ChatEngine] Complete: ${totalToolCalls} tool calls, stopReason=${result?.metadata?.stopReason}`);
       }
 
       if (onComplete) onComplete(fullResponse);
-      return { text: fullResponse, stopReason, toolCallCount: totalToolCalls };
+      return { text: fullResponse, stopReason: result.metadata?.stopReason || 'natural', toolCallCount: totalToolCalls };
     } catch (err) {
       if (err.name === 'AbortError' || this._abortController?.signal?.aborted) {
         return { text: fullResponse, stopReason: 'cancelled', toolCallCount: totalToolCalls };
@@ -236,7 +260,6 @@ class ChatEngine extends EventEmitter {
 
   async resetSession() {
     this._chatHistory = [{ type: 'system', text: SYSTEM_PROMPT }];
-    this._lastEvaluation = null;
     if (this._sequence) {
       try { this._sequence.clearHistory(); } catch {}
     }
@@ -282,103 +305,28 @@ class ChatEngine extends EventEmitter {
   }
 
   async _dispose() {
+    try { if (this._chat) this._chat.dispose?.(); } catch {}
     try { if (this._sequence) this._sequence.dispose(); } catch {}
     try { if (this._context) await this._context.dispose(); } catch {}
     try { if (this._model) await this._model.dispose(); } catch {}
+    this._chat = null;
     this._sequence = null;
     this._context = null;
     this._model = null;
-    this._chat = null;
     this._chatHistory = [];
-    this._lastEvaluation = null;
   }
 
-  _contextShiftStrategy({ chatHistory, maxTokensCount, tokenizer }) {
-    if (chatHistory.length <= 2) return { chatHistory, metadata: { droppedCount: 0 } };
-
-    // Tokenize text accurately, with fallback to character estimation
-    const tokenize = (text) => {
-      try { return tokenizer.tokenize(String(text || ''), false).length; }
-      catch { return Math.ceil(String(text || '').length / 3); }
-    };
-
-    // Extract all text from a chat history item (handles both text and response items)
-    const getItemText = (item) => {
-      if (item.text != null) return String(item.text);
-      if (item.response) {
-        return item.response.map(r => typeof r === 'string' ? r : JSON.stringify(r)).join('');
-      }
-      return '';
-    };
-
-    const estimateTokens = (item) => tokenize(getItemText(item)) + 10;
-
-    // Use 85% of maxTokensCount as budget — leaves room for tokenization estimation error
-    const budget = Math.floor(maxTokensCount * 0.85);
-    const systemItem = chatHistory[0];
-    const lastItem = chatHistory[chatHistory.length - 1];
-
-    const systemTokens = estimateTokens(systemItem);
-    let lastItemTokens = chatHistory.length > 1 ? estimateTokens(lastItem) : 0;
-    let effectiveLastItem = lastItem;
-
-    // CRITICAL: Handle case where system + lastItem alone exceeds budget.
-    // This happens when the model generates a very large response (e.g., 800-line HTML file).
-    // Truncate the lastItem from the BEGINNING, keeping the most recent content.
-    if (chatHistory.length > 1 && systemTokens + lastItemTokens > budget) {
-      const availableForLastItem = budget - systemTokens - 20; // 20 token safety margin
-      if (availableForLastItem > 100) {
-        const fullText = getItemText(lastItem);
-        // Start with a character estimate (roughly 3 chars per token), then verify with tokenizer
-        let keepChars = Math.floor(availableForLastItem * 3);
-        let truncatedText = fullText.slice(-keepChars);
-        let truncTokens = tokenize(truncatedText);
-
-        // Iteratively reduce if still too large (max 5 iterations to avoid expensive loops)
-        let iterations = 0;
-        while (truncTokens > availableForLastItem && keepChars > 200 && iterations < 5) {
-          keepChars = Math.floor(keepChars * 0.75);
-          truncatedText = fullText.slice(-keepChars);
-          truncTokens = tokenize(truncatedText);
-          iterations++;
-        }
-
-        // Rebuild the item with truncated content
-        if (lastItem.response) {
-          effectiveLastItem = { ...lastItem, response: [truncatedText] };
-        } else {
-          effectiveLastItem = { ...lastItem, text: truncatedText };
-        }
-        lastItemTokens = truncTokens + 10;
-        console.log(`[ChatEngine] Context shift: truncated lastItem from ${fullText.length} to ${truncatedText.length} chars (${estimateTokens(lastItem)} -> ${lastItemTokens} tokens)`);
-      }
-    }
-
-    // Fill middle items from most recent backward
-    let used = systemTokens + lastItemTokens;
-    const kept = [];
-
-    for (let i = chatHistory.length - 2; i >= 1; i--) {
-      const cost = estimateTokens(chatHistory[i]);
-      if (used + cost > budget) break;
-      used += cost;
-      kept.unshift(chatHistory[i]);
-    }
-
-    const droppedCount = (chatHistory.length - 2) - kept.length;
-    const newHistory = [systemItem, ...kept];
-    if (chatHistory.length > 1) newHistory.push(effectiveLastItem);
-
-    console.log(`[ChatEngine] Context shift: kept ${kept.length} middle items, dropped ${droppedCount}. Budget: ${budget}, used: ${used}`);
-    return { chatHistory: newHistory, metadata: { droppedCount } };
+  _contextShiftStrategy({ chatHistory, maxTokensTrimCount }) {
+    // Keep: system item (index 0) + most recent items
+    // Drop: oldest non-system turns from the front
+    const system = chatHistory.find(i => i.type === 'system');
+    const rest = chatHistory.filter(i => i.type !== 'system');
+    // Drop the oldest pair of entries (user + model)
+    const trimmed = rest.slice(Math.min(2, Math.floor(rest.length / 2)));
+    console.log(`[ChatEngine] Context shift: ${chatHistory.length} -> ${(system ? 1 : 0) + trimmed.length} items`);
+    return system ? [system, ...trimmed] : trimmed;
   }
 
-  _buildToolPrompt(functions) {
-    const toolLines = Object.entries(functions).map(([name, def]) => {
-      return `- ${name}: ${def.description || 'No description'}`;
-    });
-    return `\n\nYou have access to the following tools:\n${toolLines.join('\n')}\n\nTOOL USAGE RULES:\n- When the user asks you to create, write, edit, read, or delete files in their project, you MUST use the appropriate file tool (write_file, read_file, edit_file, append_to_file, delete_file). Do NOT output file contents inline.\n- When the user asks you to find, search, or look for something in their code, use grep_search or find_files.\n- When the user asks to list or explore project structure, use list_directory.\n- When the user asks to run a command, script, or install something, use run_command.\n- When the user asks to search the web or look something up online, use web_search or fetch_webpage.\n- When the user asks a general question, wants an explanation, or asks you to review code you already have, respond with text directly.\n- You can chain tools: use read_file to see existing code, then edit_file to modify it, then run_command to test it.\n- Always prefer tools over inline code when the user wants changes to their actual project files.`;
-  }
 
   _getNodeLlamaCppPath() {
     try {
@@ -427,11 +375,23 @@ class ChatEngine extends EventEmitter {
   }
 }
 
-// Default set of tools enabled out of the box
+// Default set of tools enabled out of the box (20 general-purpose tools)
+// Remaining 46 tools are available but disabled by default — toggleable in settings
 ChatEngine.DEFAULT_ENABLED_TOOLS = new Set([
+  // File operations
   'read_file', 'write_file', 'edit_file', 'append_to_file',
-  'list_directory', 'find_files', 'grep_search', 'create_directory',
-  'get_project_structure', 'run_command', 'web_search', 'fetch_webpage',
+  'delete_file', 'rename_file',
+  'list_directory', 'find_files', 'create_directory', 'get_project_structure',
+  // Search
+  'grep_search', 'search_codebase',
+  // Web
+  'web_search', 'fetch_webpage',
+  // Terminal
+  'run_command', 'install_packages',
+  // Git
+  'git_status', 'git_diff', 'git_commit',
+  // Debug
+  'analyze_error',
 ]);
 
 module.exports = { ChatEngine };

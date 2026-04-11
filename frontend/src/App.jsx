@@ -59,6 +59,7 @@ export default function App() {
       case 'llm-iteration-begin':
         break;
       case 'llm-replace-last':
+        s.replaceLastStreamingChunk(data.originalLength, data.replacement);
         break;
 
       // Context & progress

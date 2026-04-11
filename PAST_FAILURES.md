@@ -195,6 +195,43 @@ Despite all the failures, some approaches DID work and should be carried forward
 
 ---
 
+## CATEGORY 6: GBNF STRUCTURED FUNCTION CALLING (guide-3.0, 2026-04-10)
+
+### What Was Tried
+node-llama-cpp v3.18.1's built-in GBNF structured function calling (`genOptions.functions` + `documentFunctionParams: true`). This constrains model output via a GBNF grammar that gives the model a choice between generating text or calling a function with structured JSON parameters.
+
+### How It Was Tested
+7 models across 6 families, all given the same simple prompt ("create a file called hello.txt with the text 'Hello from X' in it") with 20 tool definitions enabled.
+
+| Model | Family | Size | GBNF Calls | Result |
+|-------|--------|------|-----------|--------|
+| SmolLM2-360M-Instruct | SmolLM | 369MB | 0 | Wrote tool syntax as plain text |
+| Qwen3-0.6B | Qwen 3 | 610MB | 20 (loop) | GBNF tool calls fired but repeated same call 20 times |
+| gemma-3-1b-it | Gemma | 1020MB | 0 | Wrote tool syntax as plain text in TOOL_CODE block |
+| llama-3.2-1b-instruct | Llama 3 | 1260MB | 20 (loop) | GBNF calls fired but looped with variations |
+| EXAONE-4.0-1.2B | EXAONE | 1301MB | 20 (loop) | GBNF calls fired but 20 identical calls |
+| LFM2.5-1.2B-Instruct | Liquid | 918MB | 0 | Conversational text with bash command |
+| Qwen3.5-2B | Qwen 3.5 | 1.9GB | 0 | 973-line HTML code block as text |
+
+**0 of 7 models worked correctly.**
+
+### Two Failure Modes
+- **Category A (text fallback — 4 of 7 models):** SmolLM2, Gemma, LFM, Qwen3.5. Model picks text mode over function call in the GBNF grammar. Some output tool-like syntax as text but never trigger actual function execution.
+- **Category B (infinite loop — 3 of 7 models):** Qwen3, Llama, EXAONE. GBNF function calls fire correctly, but model repeats the same call until MAX_TOOL_ITERATIONS (20) hit. responseLen=0 in most cases → UI shows nothing ("three dots" bug).
+
+### Why It Failed
+The GBNF grammar gives small models a binary choice: generate text OR call a function. Small models (under ~4B parameters) either:
+1. Always pick text mode (they're trained primarily on text completion, not structured function calling)
+2. Get stuck in function-call mode and repeat the same call because the grammar constrains them to produce another function call rather than switching to text
+
+### LESSON
+GBNF structured function calling via node-llama-cpp does NOT work reliably with small local models. It may work for larger models (7B+) but was not tested. The correct approach is raw text parsing: instruct the model via the system prompt to output tool calls in a parseable text format, then extract and execute them.
+
+### NEVER RE-IMPLEMENT
+Do NOT re-add `genOptions.functions`, `genOptions.documentFunctionParams`, or any GBNF-based function calling to chatEngine.js. This approach was comprehensively tested and failed across every model family.
+
+---
+
 ## THE TAKEAWAY
 
 The pipeline failed because it was **over-engineered from the start** and then **patched repeatedly instead of redesigned.** The problem (context fills up -> compress history -> model continues) is fundamentally simple. The solution should be simple too.

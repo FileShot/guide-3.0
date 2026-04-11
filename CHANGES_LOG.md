@@ -4,6 +4,333 @@
 
 ---
 
+## 2026-04-10 — Change AB: Pre-seeded conversation history with native chat tokens
+
+### Problem
+Change AA (behavioral examples in SYSTEM_PROMPT) failed. sysChars confirmed at 8497 — model received the examples. But they appeared as plain text inside the system message using `User:`/`Assistant:` labels, NOT the model's native `<|im_start|>user` / `<|im_end|>` / `<|im_start|>assistant` tokenizer format. The model cannot treat plain-text examples in the system prompt as "prior successful interactions" — they're just instructions. Training prior (output code blocks for coding requests) dominated.
+
+### Root cause refinement
+Behavioral examples MUST use the model's native chat format to be effective. When examples are real entries in `_chatHistory`, `LlamaChatSession` formats them with the correct Jinja template tokens. The model sees them as prior context in its exact training format, and in-context learning activates.
+
+### Change AB — chatEngine.js: Pre-seeded initial conversation history
+
+**File:** `chatEngine.js`
+**Changes:**
+- Reverted SYSTEM_PROMPT `## Examples` section (Change AA removed — no effect, ~400 tokens overhead recovered)
+- Added `_buildInitialHistory()` private method returning 7-item array: system message + 3 example exchange pairs (write_file, append_to_file, plain text question)
+- Replaced both `this._chatHistory = [{ type: 'system', text: SYSTEM_PROMPT }]` initializations (in `initialize()` and `resetSession()`) with `this._chatHistory = this._buildInitialHistory()`
+
+**Examples seeded:**
+1. User: "create an entry point for the project" → Model: `{"tool":"write_file",...}`  
+2. User: "the file is getting long, keep adding the remaining code" → Model: `{"tool":"append_to_file",...}`
+3. User: "what does a closure do in JavaScript" → Model: plain text (no tool)
+
+**What stays unchanged:** Generation parameters (Change Z), toolPrompt from mcpToolServer, context shift strategy, all parsing logic.
+
+**Test result:** FAILED — same failure as all previous changes. rawLen=22,616, stopReason=eogToken, 0 tool calls. Model wrote full HTML as chat text.
+
+**Revert path:** Superseded by Change AC.
+
+---
+
+## 2026-04-10 — Change AC: LlamaCompletion (raw text) instead of LlamaChat (chat template)
+
+### Root cause (confirmed)
+`LlamaChatSession` → `QwenChatWrapper` applies `<|im_start|>user<|im_end|><|im_start|>assistant` tokens → activates RLHF-trained "helpful assistant" mode. In this mode the model outputs markdown code blocks for every file request. This overrides ALL prompt-level instructions — proven across 11 changes (S through AB).
+
+Evidence: guide-2.0 R20-R21 used the same model (Qwen3.5-2B-Q8_0), same library (node-llama-cpp 3.18.1), with raw text completion → write_file calls worked.
+
+### Solution
+Switch from `LlamaChat`/`generateResponse` to `LlamaCompletion`/`generateCompletionWithMeta`. No chat template = no RLHF mode activation. Model receives raw text prompt and must produce raw text output. Tool call examples in the prompt are plain JSON, not fenced code blocks.
+
+### Change AC — chatEngine.js: Full API switch
+
+**File:** `chatEngine.js`
+**Changes:**
+
+1. **Constructor**: `_chat → _completion`, `_chatHistory → _conversationLog []`, removed `_lastEvaluation`
+2. **initialize()**: Import `LlamaCompletion` instead of `LlamaChat`; instantiate `this._completion = new LlamaCompletion({ contextSequence })`; init `_conversationLog = []`
+3. **chat()**: Removed system-prompt mutation logic; `effectiveToolPrompt` computed once; `_conversationLog.push({ role: 'user', text: userMessage })`
+4. **generateOnce()**: Calls `this._completion.generateCompletionWithMeta(prompt, genOptions)` with `disableContextShift: true` and `customStopTriggers: ['\nUser:', '\n\nUser:', '<|im_end|>']`; removed `contextShift.strategy` and `lastEvaluationContextWindow`
+5. **Tool loop**: History tracked via `_conversationLog` (push assistant + tool results); removed `_lastEvaluation` / `cleanHistory` updates
+6. **Final state**: `_conversationLog.push({ role: 'assistant', text: rawResponse })` instead of lastEvaluation update
+7. **resetSession()**: `_conversationLog = []` + `sequence.clearHistory()`
+8. **_dispose()**: `_completion = null; _conversationLog = []`
+9. **REMOVED**: `_buildInitialHistory()` (Change AB artifact), `_contextShiftStrategy()` (80 lines — no longer needed)
+10. **ADDED**: `_buildPrompt(toolPrompt)` — builds raw text prompt: SYSTEM_PROMPT + toolPrompt + 3 examples + `_conversationLog` serialized as `User:`/`Assistant:` lines
+11. **ADDED**: `_trimHistoryToFit(toolPrompt)` — pre-generation context trim: while tokenCount > 0.75*contextSize, drops oldest 2 entries from `_conversationLog` (keeps current user message)
+
+**Test project:** test-changeac-1
+**Test result:** PENDING
+
+**Revert path:** `git restore chatEngine.js`
+
+---
+
+## 2026-04-10 — Change AA: Behavioral few-shot examples in SYSTEM_PROMPT (REVERTED)
+
+### Problem
+Model never calls tools. Changes S-Z all failed. Root cause analysis determined:
+1. `LlamaChatSession` puts the model in "assistant response" mode — fine-tuning strongly biases toward outputting code blocks in chat rather than tool call JSON.
+2. The system prompt had rules ("for file operations use the file tools") but NO worked examples showing the model what a correct response looks like. Rules are weaker than training priors for a 2B model in chat mode.
+3. Switching to raw completion was considered but rejected because the `_contextShiftStrategy` is tied to `LlamaChatSession`'s `chatHistory` structure — the working context rotation would break.
+
+### Hypothesis
+In-context learning (behavioral few-shot examples) can override training priors by showing the model the exact expected output pattern, not just instructions. The model learns from examples in the system prompt: "when user asks to create a file → call write_file, not code block in chat."
+
+### Change AA — chatEngine.js: SYSTEM_PROMPT behavioral examples
+
+**File:** `chatEngine.js`
+**Constant:** `SYSTEM_PROMPT`
+**Change:** Added `## Examples` section after the `## Rules` section with 12 behavioral examples covering: write_file (new file), append_to_file (continue writing), write_file×2 (multiple files), read_file, edit_file, run_command, list_directory, grep_search, web_search, browser_navigate, and 2 plain text responses (no tool needed).
+
+**What stays unchanged:** Generation parameters (Change Z), all parsing logic, toolPrompt from mcpToolServer, context shift strategy.
+
+**Test result:** PENDING
+
+**Revert path:** `git restore chatEngine.js`
+
+---
+
+## 2026-04-10 — Change Z: Sampling parameters — match guide-2.0 working defaults
+
+### Problem
+Model never calls tools. Changes S-Y all modified system prompt text and parser routing. All failed. Root cause investigation compared the actual `generateResponse()` call parameters between guide-2.0 (known to call write_file for simple tasks) and guide-3.0.
+
+Found: guide-2.0 uses temperature=0.4, topP=0.95, topK=40, repeatPenalty=1.1. Guide-3.0 defaulted to temperature=0.7, no topP/topK/repeatPenalty constraints. At temperature 0.7 without sampling constraints, the model's probability distribution is flatter — the training distribution attractor (write code in chat) competes more evenly with the instruction-following signal (call write_file). For complex tasks with strong training distribution pull, the training distribution wins.
+
+### Change Z — chatEngine.js: Match sampling parameters to guide-2.0 defaults
+
+**File:** `chatEngine.js`
+**Function:** `chat()`, `generateOnce()`, `genOptions` block
+**Changes:**
+- `temperature: options.temperature ?? 0.7` → `options.temperature ?? 0.4`
+- `topP: options.topP` → `options.topP ?? 0.95`
+- `topK: options.topK` → `options.topK ?? 40`
+- `repeatPenalty: options.repeatPenalty ? { penalty: options.repeatPenalty } : undefined` → `{ penalty: options.repeatPenalty ?? 1.1 }`
+
+**What stays unchanged:** All prompt text (SYSTEM_PROMPT, toolPrompt), all parsing logic, all event wiring, all context shift logic.
+
+**Revert path:** `git restore chatEngine.js`
+
+---
+
+## 2026-04-10 — Structured system prompt + concrete tool format example
+
+### Problem: Model writes code as text instead of calling tools despite full tool prompt being active
+Change X confirmed the full tool prompt (4566 chars, 20 tools) reaches the model. Parser works (found run_command call). But model still wrote 25,483 chars of HTML as text, 0 proper tool calls. Investigation found:
+1. guide-3.0's SYSTEM_PROMPT was abstract paragraphs ("use the appropriate tool") — guide-2.0/original IDE had structured "## When to Use Tools" categories that worked
+2. guide-3.0's format instruction had abstract placeholder `{"tool":"name","params":{...}}` — guide-2.0 had a concrete example with real tool name and params
+3. guide-3.0's tool categories were bare labels — no usage context for when to use each category
+
+### Change Y — chatEngine.js + mcpToolServer.js: Structured prompt + format example
+
+**chatEngine.js — SYSTEM_PROMPT (lines 10-30):**
+- Replaced abstract paragraph-form prompt with structured sections
+- Added "## When to Use Tools" with one entry per tool category (file, web, terminal, browser, git, memory, analysis, planning) — all categories treated equally
+- Added "## Continuation" section for seamless continuation
+- Added "## Rules" section with behavioral expectations (verify tool results, retry failures, create all requested files, use exact filenames)
+- Category entries describe WHEN to use each category, not which specific tool to pick
+- Conversation/text response listed LAST, not first
+
+**mcpToolServer.js — _buildToolPrompt() (line 2853):**
+- Format instruction changed from abstract `{"tool":"name","params":{...}}` to more concrete `{"tool":"tool_name","params":{"param":"value"}}`
+- Added concrete `Example:` block with real tool call: `{"tool":"list_directory","params":{"dirPath":"."}}`
+- Category headers changed from bare labels to descriptive labels with usage context (e.g. "File Operations — for creating, reading, modifying, or deleting files and directories")
+- All 6 categories have equal usage descriptions — no tool prioritized over another
+
+**Revert path:** `git restore chatEngine.js mcpToolServer.js`
+
+---
+
+## 2026-04-10 — Wire chatEngine to existing tool infrastructure
+
+### Problem: Model writes code as text instead of calling tools (882 lines of HTML as text, 0 tool calls)
+chatEngine.js had its own SIMPLIFIED _buildToolPrompt() (flat list, no categories, no rules) and SIMPLIFIED _parseToolCalls() (only 2 detection methods). The same codebase already had battle-tested versions in mcpToolServer.js (full prompt with categories, patterns, "NEVER output full file content as code blocks") and tools/toolParser.js (7+ detection methods, 50+ tool name aliases, truncated recovery, XML/JSON/function-call syntax). chatEngine wasn't using them.
+
+Guide-2.0 live test confirmed: same model (Qwen3.5-2B) with the full tool prompt + full parser successfully called write_file to create hello.txt.
+
+### Change X — chatEngine.js + server/main.js: Use existing tool infrastructure
+
+**chatEngine.js:**
+- Added `const { parseToolCalls } = require('./tools/toolParser');` import
+- `chat()` now destructures `toolPrompt` from options
+- When `toolPrompt` is provided (full prompt from mcpToolServer), uses it instead of calling `this._buildToolPrompt(functions)` — log message: "Using full tool prompt (N chars)"
+- `_parseToolCalls()` body replaced: delegates to `parseToolCalls()` from toolParser, maps `{tool, params}` → `{name, params}` format, computes cleanText by stripping fenced/XML/raw tool blocks
+
+**server/main.js:**
+- Added `const toolPrompt = mcpToolServer.getToolPrompt();` after building tool definitions
+- Passes `toolPrompt` in llmEngine.chat() options
+
+**What stays unchanged:**
+- `_buildToolPrompt()` method remains as fallback (used when no toolPrompt passed)
+- `convertToolDefs()` unchanged
+- Tool loop, event wiring (Change V), streaming logic unchanged
+- No new files, no new abstractions
+
+**Revert path:** `git restore chatEngine.js server/main.js`
+
+---
+
+## 2026-04-10 — Tool call format change + output suppression removed
+
+### Problem: <tool_call> XML format recognized by 3/7 models (all Qwen). Output suppression hides tool call content from UI.
+7-model test results: Qwen3 0.6B, Qwen2.5 0.5B, Qwen3 4B followed `<tool_call>` XML tags. Llama 3.2, EXAONE 4.0, Qwen2.5 1.5B, Qwen3.5 2B did not. EXAONE produced correct JSON without wrapper tags. The streaming buffer `flushSafeText()` mechanism suppressed tool call content from the UI, violating guide-master.md line 101.
+
+### Change S — chatEngine.js: Remove output suppression from streaming buffer
+
+**Removed:**
+- `TOOL_START`/`TOOL_END` constants from `generateOnce()`
+- `streamBuffer`, `inToolCall`, `toolCallBuffer` state variables
+- `flushSafeText()` function — the entire streaming buffer state machine
+- Post-generation buffer flush logic (orphan tag handling, remaining buffer flush)
+
+**Replaced with:** Direct passthrough — every chunk from `onTextChunk` goes to `fullResponse` and `onToken` immediately. All model output is visible in the UI.
+
+### Change T — chatEngine.js: Switch tool call format from `<tool_call>` XML to ` ```json ` markdown fences
+
+**_buildToolPrompt():**
+- OLD format instruction: `<tool_call>\n{"name":"tool_name","params":{...}}\n</tool_call>`
+- NEW format instruction: ` ```json\n{"tool":"write_file","params":{"filePath":"index.html","content":"hello"}}\n``` `
+- JSON key changed: `"name"` → `"tool"` (less ambiguous — "name" conflicts with parameter names)
+- Concrete example with real tool values instead of placeholder `tool_name`
+- Explicit rules: one tool per block, always use fences, wait for result
+
+**_parseToolCalls():**
+- OLD: Single method scanning for `<tool_call>JSON</tool_call>` blocks
+- NEW: Two-method parser:
+  1. ` ```json ` fenced code blocks — regex extracts JSON from markdown fences, checks for `"tool"` key
+  2. Raw JSON fallback — regex matches `{"tool":"...","params":{...}}` without fences (handles EXAONE-like models)
+- Return interface unchanged: `{ toolCalls: [{name, params}], cleanText }`
+- Non-tool ` ```json ` blocks (e.g. code examples) pass through — only blocks with a `"tool"` key are treated as tool calls
+
+**Rationale:** Markdown code fences (` ```json `) appear in every LLM training corpus (GitHub code, Stack Overflow, documentation). `<tool_call>` XML tags appear in none. Choosing a format models already know reduces the need for complex multi-fallback parsers.
+
+**Revert path:** `git restore chatEngine.js`
+
+---
+
+## 2026-04-10 — Truncated JSON brace recovery in _parseToolCalls
+
+### Problem: Model hits eogToken before writing final closing brace(s) in tool call JSON
+Qwen3-0.6B emitted a ```json fenced write_file call with 5495 chars of properly escaped HTML content. JSON was structurally complete except for missing final `}` to close the outer object. JSON.parse failed at position 5494. Tool call was detected but never executed — no file created.
+
+### Change U — chatEngine.js: Add brace recovery to _parseToolCalls
+
+**Where:** `_parseToolCalls()`, Method 1 catch block (fence detection)
+
+**What:** When JSON.parse fails on a fenced code block, try appending up to 3 closing `}` characters. After each append, retry JSON.parse. If it succeeds and has a `"tool"` key, accept the recovered tool call.
+
+**Why not a band-aid:** The model generated structurally valid JSON with properly escaped content (162 `\n` sequences). The only defect was a missing trailing brace — the model's eogToken fired before completing the structure. This recovers clearly-intended structure, not patching bad output.
+
+**Revert path (all changes S+T+U):** `git restore chatEngine.js`
+
+---
+
+## 2026-04-10 — Wire backend tool events to frontend display system
+
+### Problem: Raw tool call JSON visible in chat UI as code block
+After Changes S+T+U, the model correctly generates ```json fenced tool calls, the parser extracts them, and tools execute. But the raw JSON `{"tool":"write_file","params":{...}}` was streamed as `llm-token` events during generation and rendered in the chat UI as a visible code block. The backend computed `cleanText` (response minus JSON) but never sent it to the frontend. The backend never emitted `file-content-start/token/end` events that the frontend's `FileContentBlock` component expects.
+
+### Change V — chatEngine.js + server/main.js + App.jsx + appStore.js: Event wiring
+
+**chatEngine.js:**
+- Added `onStreamEvent` to destructured options
+- After `_parseToolCalls()` finds tool calls:
+  - Emits `llm-replace-last` with `{ originalLength: rawResponse.length, replacement: parsed.cleanText }` — tells frontend to strip the raw JSON from display and replace with clean text
+  - Cleans `fullResponse` to match
+- Before each tool execution:
+  - Emits `tool-executing` — triggers tool card display (file ops skipped per R42-Fix-4)
+  - For tools with `params.content` + `params.filePath`: emits `file-content-start` (with language from file extension), `file-content-token` (full content), `file-content-end` — triggers FileContentBlock display
+- After each tool execution:
+  - Emits `mcp-tool-results` — triggers tool completion card (file ops skipped per R42-Fix-4)
+
+**server/main.js:**
+- Added `onStreamEvent: (eventName, data) => mainWindow.webContents.send(eventName, data)` to ai-chat handler options
+
+**App.jsx:**
+- `llm-replace-last` handler now calls `s.replaceLastStreamingChunk(data.originalLength, data.replacement)`
+
+**appStore.js:**
+- Added `replaceLastStreamingChunk(originalLength, replacement)` method:
+  - Flushes pending 80ms token buffer
+  - Trims last `originalLength` characters from `chatStreamingText`
+  - Appends `replacement` text
+  - Updates last text segment in `streamingSegments` to match
+  - Preserves previous segments (file blocks, tool cards from earlier iterations)
+
+**Expected result:** User sees actual file content in a FileContentBlock (filename header + syntax-highlighted code), not raw JSON wrapper. Clean text (if any) before/after the tool call remains visible.
+
+**Revert path (Change V only):** `git restore chatEngine.js server/main.js frontend/src/App.jsx frontend/src/stores/appStore.js`
+
+---
+
+## 2026-04-10 — Raw text parsing replaces GBNF function calling
+
+### Problem: GBNF structured function calling fails across all model families
+Tested 7 models / 6 families with node-llama-cpp's `genOptions.functions` + `documentFunctionParams: true`. 0 of 7 worked correctly. Category A (4 models) always pick text mode. Category B (3 models) loop the same function call 20 times. See PAST_FAILURES.md Category 6 for full test results.
+
+### Change R — chatEngine.js: Raw text parsing (replaces GBNF function calling)
+
+**Removed:**
+- `genOptions.functions = functions` — no longer passing GBNF function definitions to generateResponse
+- `genOptions.documentFunctionParams = true` — no longer using GBNF parameter documentation
+- Entire GBNF-based tool call loop (`while (stopReason === 'functionCalls')` block)
+- GBNF diagnostic log (replaced with new logging)
+
+**Added:**
+- `_parseToolCalls(text)` method — extracts `<tool_call>{"name":"...","params":{...}}</tool_call>` blocks from model text output. Returns `{ toolCalls: [{name, params}], cleanText }`.
+- Streaming buffer in `generateOnce()` — holds back last 11 chars (length of `<tool_call>`) to prevent tool call content from reaching the UI. Text before `<tool_call>` is streamed normally. Text inside `<tool_call>...</tool_call>` is suppressed.
+- Text-based tool call loop — after generation: parse raw response → execute tool calls → add `[Tool Result: toolName]\nresult` to chatHistory as user message → generate again → repeat.
+- Fallback: if `fullResponse` is empty and no tools ran, shows `rawResponse` so user always sees something.
+
+**Modified:**
+- `_buildToolPrompt()` — added TOOL CALL FORMAT section telling the model the exact `<tool_call>` JSON format. Removed "chain tools in sequence" instruction (now: "call one tool at a time and wait for its result").
+
+**Not changed:** server/main.js, mcpToolServer.js, convertToolDefs(), context shift strategy, frontend. The `functions` object is still created and passed to `chat()` but used only for building the system prompt — not for GBNF.
+
+**Revert path:** `git restore chatEngine.js` reverts to the GBNF baseline state. Or for full revert of all uncommitted changes: `git restore chatEngine.js mcpToolServer.js frontend/src/components/ChatPanel.jsx CHANGES_LOG.md model-config.json PAST_FAILURES.md`
+
+---
+
+## 2026-04-09 (session 3, continued) — Tool calling improvements + UI fixes
+
+### Problem: 0 tool calls at baseline. Model generates code as text instead of calling tools.
+FileShot test: 781 lines HTML as text, stopReason=eogToken, functionCalls=0. System prompt had weak tool guidance, tool prompt was file-biased, only 12 tools enabled, tool descriptions contained legacy Format: hints and behavioral instructions.
+
+### Change L — chatEngine.js: Production system prompt (SYSTEM_PROMPT constant)
+- **OLD**: "You are guIDE, a helpful AI coding assistant running locally. You help users write code, answer questions, and assist with software development tasks. Be concise and direct."
+- **NEW**: 4-paragraph prompt covering: (1) identity as local AI with tool access, (2) when to use tools — any action including files, commands, search, browse, analyze, (3) when to use text — questions, explanations, discussions, (4) code quality + follow existing conventions
+- **Rationale**: Model needs explicit instruction that it has tools and should use them for actions.
+
+### Change M — chatEngine.js: General _buildToolPrompt (replaces file-biased version)
+- **OLD**: TOOL USAGE RULES listing specific file/grep/web tool categories with "you MUST use" imperatives
+- **NEW**: AVAILABLE TOOLS section with parameter signatures (e.g. `- write_file (filePath: string, content: string): description`) followed by 4 general TOOL USAGE rules: use tools for actions, chain tools for multistep, prefer tools over text output, use text for questions/explanations
+- **Rationale**: Previous version only instructed model about file tools. Browser, git, search, and system tools were not mentioned.
+
+### Change N — chatEngine.js: DEFAULT_ENABLED_TOOLS expanded from 12 to 20
+- **Added 8 tools**: search_codebase, delete_file, rename_file, git_status, git_diff, git_commit, install_packages, analyze_error
+- **Categories covered**: File ops (10), Search (2), Web (2), Terminal (2), Git (3), Debug (1)
+- **Remaining 46 tools**: Available but disabled by default, toggleable in settings
+
+### Change O — mcpToolServer.js: Cleaned all 66 tool descriptions
+- Removed `Format: {"tool":"name",...}` hints from all descriptions (legacy text-parsing hints, already stripped by convertToolDefs)
+- Removed behavioral imperatives from descriptions (e.g. "ALWAYS use this tool", "NEVER output file contents", "Call this before naming or assuming any files exist")
+- Kept descriptions factual: what the tool does, not how the model should behave
+- Behavioral instructions belong in the system prompt, not individual tool descriptions
+
+### Change P — chatEngine.js: GBNF diagnostic log
+- Added generation config log before first generateResponse call
+- Logs: function count, documentFunctionParams state, system prompt character length, lastEvaluation presence
+- Purpose: Diagnostic — confirms GBNF function calling grammar is active during generation
+
+### Change Q — ChatPanel.jsx: Directory-specific recent chats
+- Session save now includes `projectPath` in the saved session object
+- Session display filters by current `projectPath` — only shows sessions from the same project
+- If no project is open, shows all sessions (fallback)
+
+---
+
 ## 2026-04-08 — Context Management System (3 changes to chatEngine.js)
 
 ### Problem: No context management existed in guide-3.0

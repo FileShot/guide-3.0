@@ -207,6 +207,37 @@ const useAppStore = create((set, get) => ({
     set({ chatStreaming: val, chatStreamingText: '', chatThinkingText: '', chatGeneratingTool: null, streamingSegments: [], streamingToolCalls: [], _textTokenBuffer: null, _textTokenTimer: null });
   },
 
+  replaceLastStreamingChunk: (originalLength, replacement) => {
+    const store = get();
+    if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
+    let currentText = store.chatStreamingText;
+    if (store._textTokenBuffer) {
+      currentText += store._textTokenBuffer;
+    }
+    const keepLen = Math.max(0, currentText.length - originalLength);
+    const newText = currentText.slice(0, keepLen) + (replacement || '');
+    const segs = [...store.streamingSegments];
+    for (let i = segs.length - 1; i >= 0; i--) {
+      if (segs[i].type === 'text') {
+        const segContent = segs[i].content;
+        const segKeepLen = Math.max(0, segContent.length - originalLength);
+        const newSegContent = segContent.slice(0, segKeepLen) + (replacement || '');
+        if (newSegContent) {
+          segs[i] = { ...segs[i], content: newSegContent };
+        } else {
+          segs.splice(i, 1);
+        }
+        break;
+      }
+    }
+    set({
+      chatStreamingText: newText,
+      streamingSegments: segs,
+      _textTokenBuffer: null,
+      _textTokenTimer: null,
+    });
+  },
+
   appendStreamToken: (token) => {
     // R34: Batch text token appends — accumulate in buffer, flush every 80ms
     // This prevents 100+/sec set() calls that cause the Footer (and all children) to re-render.

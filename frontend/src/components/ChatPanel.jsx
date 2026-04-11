@@ -377,7 +377,7 @@ export default function ChatPanel() {
         const existing = raw ? JSON.parse(raw) : [];
         // Replace existing session with same first message id, or prepend
         const filtered = existing.filter(s => s.id !== sessionId);
-        const updated = [{ id: sessionId, title, messages: chatMessages, timestamp: Date.now() }, ...filtered].slice(0, 10);
+        const updated = [{ id: sessionId, title, messages: chatMessages, timestamp: Date.now(), projectPath: projectPath || null }, ...filtered].slice(0, 10);
         localStorage.setItem('guide-chat-sessions', JSON.stringify(updated));
         setSavedSessions(updated);
       } catch (_) {}
@@ -789,12 +789,17 @@ export default function ChatPanel() {
 
       {/* Messages area (virtualized) */}
       <div className="flex-1 min-h-0">
-        {/* Session history shown when chat is empty */}
-        {chatMessages.length === 0 && savedSessions.length > 0 && (
+        {/* Session history shown when chat is empty — filtered to current project */}
+        {chatMessages.length === 0 && savedSessions.length > 0 && (() => {
+          const filtered = projectPath
+            ? savedSessions.filter(s => s.projectPath === projectPath)
+            : savedSessions;
+          if (filtered.length === 0) return null;
+          return (
           <div className="px-3 py-3">
             <div className="text-[10px] font-medium text-vsc-text-dim uppercase tracking-wider mb-2">Recent Chats</div>
             <div className="flex flex-col gap-0.5">
-              {savedSessions.map(session => (
+              {filtered.map(session => (
                 <div
                   key={session.id}
                   className="flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-vsc-list-hover/50 transition-colors group cursor-pointer"
@@ -821,7 +826,8 @@ export default function ChatPanel() {
               ))}
             </div>
           </div>
-        )}
+          );
+        })()}
         <Virtuoso
           ref={virtuosoRef}
           data={chatMessages}

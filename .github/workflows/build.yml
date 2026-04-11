@@ -1,0 +1,264 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version override (e.g. 3.0.0) — leave blank to use package.json'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  # ─── Windows CPU ────────────────────────────────────────────
+  build-windows-cpu:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install setuptools (provides distutils for node-gyp)
+        run: pip install setuptools
+
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Build Windows CPU installer
+        run: npx electron-builder --win --x64 --config electron-builder.nosign.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cpu
+          path: dist-electron/guIDE-*-cpu-x64-setup.exe
+          retention-days: 30
+
+  # ─── Windows CUDA ───────────────────────────────────────────
+  build-windows-cuda:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install setuptools (provides distutils for node-gyp)
+        run: pip install setuptools
+
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Build Windows CUDA installer
+        run: npx electron-builder --win --x64 --config electron-builder.nosign.cuda.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cuda
+          path: dist-electron/guIDE-*-cuda-x64-setup.exe
+          retention-days: 30
+
+  # ─── Linux CPU ──────────────────────────────────────────────
+  build-linux-cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Convert icon to PNG
+        run: |
+          mkdir -p build
+          if command -v convert &> /dev/null; then
+            convert build/icon.ico[0] build/icon.png
+          else
+            sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
+          fi
+
+      - name: Build Linux CPU AppImage
+        run: npx electron-builder --linux --x64 --config electron-builder.nosign.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-cpu
+          path: dist-electron/guIDE-*-cpu-linux-x64.AppImage
+          retention-days: 30
+
+  # ─── Linux CUDA ─────────────────────────────────────────────
+  build-linux-cuda:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Convert icon to PNG
+        run: |
+          mkdir -p build
+          if command -v convert &> /dev/null; then
+            convert build/icon.ico[0] build/icon.png
+          else
+            sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
+          fi
+
+      - name: Build Linux CUDA AppImage
+        run: npx electron-builder --linux --x64 --config electron-builder.nosign.cuda.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-cuda
+          path: dist-electron/guIDE-*-cuda-linux-x64.AppImage
+          retention-days: 30
+
+  # ─── macOS ──────────────────────────────────────────────────
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install setuptools (provides distutils for node-gyp)
+        run: pip install setuptools
+
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Convert icon for macOS
+        run: |
+          mkdir -p build
+          sips -s format png build/icon.ico --out build/icon_src.png 2>/dev/null || cp build/icon.ico build/icon_src.png
+          sips -z 512 512 build/icon_src.png --out build/icon_512.png
+          mkdir -p build/icon.iconset
+          sips -z 16 16     build/icon_512.png --out build/icon.iconset/icon_16x16.png
+          sips -z 32 32     build/icon_512.png --out build/icon.iconset/icon_16x16@2x.png
+          sips -z 32 32     build/icon_512.png --out build/icon.iconset/icon_32x32.png
+          sips -z 64 64     build/icon_512.png --out build/icon.iconset/icon_32x32@2x.png
+          sips -z 128 128   build/icon_512.png --out build/icon.iconset/icon_128x128.png
+          sips -z 256 256   build/icon_512.png --out build/icon.iconset/icon_128x128@2x.png
+          sips -z 256 256   build/icon_512.png --out build/icon.iconset/icon_256x256.png
+          sips -z 512 512   build/icon_512.png --out build/icon.iconset/icon_256x256@2x.png
+          cp build/icon_512.png build/icon.iconset/icon_512x512.png
+          iconutil -c icns build/icon.iconset -o build/icon.icns
+
+      - name: Build macOS DMG (CPU, x64 + arm64)
+        run: npx electron-builder --mac --x64 --arm64 --config electron-builder.nosign.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-cpu
+          path: dist-electron/guIDE-*-cpu-mac-*.dmg
+          retention-days: 30
+
+  # ─── GitHub Release ─────────────────────────────────────────
+  release:
+    needs: [build-windows-cpu, build-windows-cuda, build-linux-cpu, build-linux-cuda, build-mac]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/windows-cpu/*
+            artifacts/windows-cuda/*
+            artifacts/linux-cpu/*
+            artifacts/linux-cuda/*
+            artifacts/mac-cpu/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          name: "guIDE ${{ github.ref_name }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
