@@ -1,7 +1,7 @@
 ﻿node_modules/
 dist/
 dist-electron/
-build/
+# build/ assets (icon.ico, installer.nsh, BMPs) must be committed for GitHub Actions
 *.exe
 *.blockmap
 

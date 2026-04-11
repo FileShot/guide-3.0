@@ -523,7 +523,7 @@ function executeMenuAction(action) {
     case 'showWelcome': store.openFile({ path: 'welcome', name: 'Welcome', extension: 'welcome', content: '' }); return;
     case 'showShortcuts': store.setActiveActivity('settings'); return;
     case 'about':
-      store.addNotification({ type: 'info', message: 'guIDE 2.0 — Local-first AI IDE. Built for offline inference.', duration: 8000 });
+      store.addNotification({ type: 'info', message: 'guIDE 2.3.15 — Local-first AI IDE. Built for offline inference.', duration: 8000 });
       return;
 
     default: return;
