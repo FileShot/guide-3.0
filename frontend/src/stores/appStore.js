@@ -699,13 +699,13 @@ const useAppStore = create((set, get) => ({
       repeatPenalty: 1.1,
       seed: -1,
       // Thinking & Reasoning
-      thinkingBudget: 0,        // 0 = auto, -1 = unlimited, >0 = exact cap
+      thinkingBudget: 2048,     // 0 = auto (node-llama-cpp default), -1 = unlimited, >0 = exact cap
       reasoningEffort: 'medium', // 'low' | 'medium' | 'high'
       // Agentic Behavior
       maxIterations: 25,
-      generationTimeoutSec: 0,
+      generationTimeoutSec: 180,
       snapshotMaxChars: 8000,
-      enableThinkingFilter: true,
+      enableThinkingFilter: false,
       enableGrammar: false,
       // System Prompt
       systemPrompt: '',
@@ -743,9 +743,9 @@ const useAppStore = create((set, get) => ({
     const DEFAULTS = {
       temperature: 0.4, maxResponseTokens: 2048, contextSize: 16384,
       topP: 0.95, topK: 40, repeatPenalty: 1.1, seed: -1,
-      thinkingBudget: 0, reasoningEffort: 'medium',
-      maxIterations: 25, generationTimeoutSec: 0, snapshotMaxChars: 8000,
-      enableThinkingFilter: true, enableGrammar: false,
+      thinkingBudget: 2048, reasoningEffort: 'medium',
+      maxIterations: 25, generationTimeoutSec: 180, snapshotMaxChars: 8000,
+      enableThinkingFilter: false, enableGrammar: false,
       systemPrompt: '', customInstructions: '',
       gpuPreference: 'auto', gpuLayers: -1, requireMinContextForGpu: false,
       fontSize: 14, fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",

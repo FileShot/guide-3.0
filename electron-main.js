@@ -317,6 +317,8 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     const toolDefs = mcpToolServer.getToolDefinitions();
     const functions = ChatEngine.convertToolDefs(toolDefs);
     const toolPrompt = mcpToolServer.getToolPrompt();
+    const compactHints = mcpToolServer.getCompactToolHint('full', { minimal: true });
+    const compactToolPrompt = Array.isArray(compactHints) ? compactHints.join('\n') : (compactHints || '');
 
     const result = await llmEngine.chat(userMessage, {
       onToken: (token) => _send('llm-token', token),
@@ -325,6 +327,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       onStreamEvent: (eventName, data) => _send(eventName, data),
       functions,
       toolPrompt,
+      compactToolPrompt,
       executeToolFn: async (toolName, params) => {
         return await mcpToolServer.executeTool(toolName, params);
       },
@@ -334,6 +337,8 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       topP: settings.topP,
       topK: settings.topK,
       repeatPenalty: settings.repeatPenalty,
+      thinkingBudget: settings.thinkingBudget ?? 2048,
+      generationTimeoutSec: settings.generationTimeoutSec || 180,
     });
     return { text: result.text, toolCallCount: result.toolCallCount };
   } catch (err) {

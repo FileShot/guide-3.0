@@ -27,13 +27,13 @@ const SETTINGS_DEFAULTS = {
   repeatPenalty: 1.1,
   seed: -1,
   // Thinking & Reasoning
-  thinkingBudget: 0,
+  thinkingBudget: 2048,
   reasoningEffort: 'medium',
   // Agentic Behavior
   maxIterations: 25,
-  generationTimeoutSec: 0,
+  generationTimeoutSec: 180,
   snapshotMaxChars: 8000,
-  enableThinkingFilter: true,
+  enableThinkingFilter: false,
   enableGrammar: false,
   // System Prompt
   systemPrompt: '',

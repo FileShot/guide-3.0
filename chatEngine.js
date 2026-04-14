@@ -149,13 +149,17 @@ class ChatEngine extends EventEmitter {
   async chat(userMessage, options = {}) {
     if (!this.isReady || !this._chat) throw new Error('Model not ready');
 
-    const { onToken, onComplete, onContextUsage, onToolCall, onStreamEvent, systemPrompt, functions, toolPrompt, executeToolFn } = options;
+    const { onToken, onComplete, onContextUsage, onToolCall, onStreamEvent, systemPrompt, functions, toolPrompt, compactToolPrompt, executeToolFn } = options;
 
-    // Augment system prompt: base + tool prompt when tools are available
+    // Augment system prompt: base + tool prompt when tools are available.
+    // Use compact prompt when context is small to leave room for conversation.
+    const contextTokens = this._context?.contextSize || 8192;
     const basePrompt = systemPrompt || SYSTEM_PROMPT;
     if (toolPrompt) {
-      this._chatHistory[0].text = basePrompt + '\n\n' + toolPrompt;
-      console.log(`[ChatEngine] Tool prompt injected (${toolPrompt.length} chars)`);
+      const useCompact = compactToolPrompt && contextTokens < 8192;
+      const effectiveToolPrompt = useCompact ? compactToolPrompt : toolPrompt;
+      this._chatHistory[0].text = basePrompt + '\n\n' + effectiveToolPrompt;
+      console.log(`[ChatEngine] Tool prompt injected (${effectiveToolPrompt.length} chars${useCompact ? ', compact' : ''}, ctx=${contextTokens})`);
     } else if (functions && Object.keys(functions).length > 0) {
       this._chatHistory[0].text = basePrompt + this._buildToolPrompt(functions);
       console.log(`[ChatEngine] Functions provided (fallback): ${Object.keys(functions).length} tools`);
@@ -169,6 +173,16 @@ class ChatEngine extends EventEmitter {
     let fullResponse = '';
     let tokensSinceLastUsageReport = 0;
     let totalToolCalls = 0;
+
+    // Generation timeout — prevent infinite hangs
+    const timeoutSec = options.generationTimeoutSec || 180;
+    let generationTimer = null;
+    if (timeoutSec > 0) {
+      generationTimer = setTimeout(() => {
+        console.warn(`[ChatEngine] Generation timeout after ${timeoutSec}s — aborting`);
+        this._abortController?.abort('generation_timeout');
+      }, timeoutSec * 1000);
+    }
 
     try {
       // ── Streaming tool call filter ──
@@ -516,8 +530,10 @@ class ChatEngine extends EventEmitter {
       };
 
       // Build common generation options
+      const thinkBudget = options.thinkingBudget;
       const genOptions = {
         signal: this._abortController.signal,
+        stopOnAbortSignal: true,
         temperature: options.temperature ?? 0.7,
         topP: options.topP,
         topK: options.topK,
@@ -534,7 +550,19 @@ class ChatEngine extends EventEmitter {
             onContextUsage({ used, total });
           }
         },
+        onResponseChunk: (chunk) => {
+          if (chunk.type === 'segment' && chunk.text && onStreamEvent) {
+            onStreamEvent('llm-thinking-token', chunk.text);
+          }
+        },
       };
+
+      // Thinking budget: -1 = unlimited, 0 = auto (node-llama-cpp default), >0 = exact cap
+      if (thinkBudget != null && thinkBudget !== 0) {
+        genOptions.budgets = {
+          thoughtTokens: thinkBudget === -1 ? Infinity : thinkBudget,
+        };
+      }
 
       // GBNF grammar-based function calling removed — small models (under ~4B)
       // either ignore the grammar or loop indefinitely (see PAST_FAILURES.md Category 6).
@@ -705,6 +733,7 @@ class ChatEngine extends EventEmitter {
       }
       throw err;
     } finally {
+      if (generationTimer) clearTimeout(generationTimer);
       this._abortController = null;
     }
   }
@@ -777,13 +806,11 @@ class ChatEngine extends EventEmitter {
   _contextShiftStrategy({ chatHistory, maxTokensCount, tokenizer }) {
     if (chatHistory.length <= 2) return { chatHistory, metadata: { droppedCount: 0 } };
 
-    // Tokenize text accurately, with fallback to character estimation
     const tokenize = (text) => {
       try { return tokenizer.tokenize(String(text || ''), false).length; }
       catch { return Math.ceil(String(text || '').length / 3); }
     };
 
-    // Extract all text from a chat history item (handles both text and response items)
     const getItemText = (item) => {
       if (item.text != null) return String(item.text);
       if (item.response) {
@@ -794,7 +821,6 @@ class ChatEngine extends EventEmitter {
 
     const estimateTokens = (item) => tokenize(getItemText(item)) + 10;
 
-    // Use 85% of maxTokensCount as budget — leaves room for tokenization estimation error
     const budget = Math.floor(maxTokensCount * 0.85);
     const systemItem = chatHistory[0];
     const lastItem = chatHistory[chatHistory.length - 1];
@@ -803,32 +829,15 @@ class ChatEngine extends EventEmitter {
     let lastItemTokens = chatHistory.length > 1 ? estimateTokens(lastItem) : 0;
     let effectiveLastItem = lastItem;
 
-    // Pin the most recent user message — it must survive all rotations.
-    // Without it, the model loses knowledge of the current task after rotation.
-    let pinnedUserIndex = -1;
-    let pinnedUserTokens = 0;
-    for (let i = chatHistory.length - 2; i >= 1; i--) {
-      if (chatHistory[i].type === 'user') {
-        pinnedUserIndex = i;
-        pinnedUserTokens = estimateTokens(chatHistory[i]);
-        break;
-      }
-    }
-
-    // CRITICAL: Handle case where system + lastItem alone exceeds budget.
-    // This happens when the model generates a very large response (e.g., 800-line HTML file).
-    // Truncate the lastItem from the BEGINNING, keeping the most recent content.
-    // Reserve space for the pinned user message in the budget.
-    if (chatHistory.length > 1 && systemTokens + pinnedUserTokens + lastItemTokens > budget) {
-      const availableForLastItem = budget - systemTokens - pinnedUserTokens - 20; // 20 token safety margin
+    // If system + lastItem exceeds budget, truncate lastItem (keeps end)
+    if (chatHistory.length > 1 && systemTokens + lastItemTokens > budget) {
+      const availableForLastItem = budget - systemTokens - 20;
       if (availableForLastItem > 100) {
         const fullText = getItemText(lastItem);
-        // Start with a character estimate (roughly 3 chars per token), then verify with tokenizer
         let keepChars = Math.floor(availableForLastItem * 3);
         let truncatedText = fullText.slice(-keepChars);
         let truncTokens = tokenize(truncatedText);
 
-        // Iteratively reduce if still too large (max 5 iterations to avoid expensive loops)
         let iterations = 0;
         while (truncTokens > availableForLastItem && keepChars > 200 && iterations < 5) {
           keepChars = Math.floor(keepChars * 0.75);
@@ -837,31 +846,27 @@ class ChatEngine extends EventEmitter {
           iterations++;
         }
 
-        // Rebuild the item with truncated content
         if (lastItem.response) {
           effectiveLastItem = { ...lastItem, response: [truncatedText] };
         } else {
           effectiveLastItem = { ...lastItem, text: truncatedText };
         }
         lastItemTokens = truncTokens + 10;
-        console.log(`[ChatEngine] Context shift: truncated lastItem from ${fullText.length} to ${truncatedText.length} chars (${estimateTokens(lastItem)} -> ${lastItemTokens} tokens)`);
+        console.log(`[ChatEngine] Context shift: truncated lastItem from ${fullText.length} to ${truncatedText.length} chars`);
       }
     }
 
-    // Fill middle items from most recent backward, skipping pinned user (already reserved)
-    let used = systemTokens + lastItemTokens + pinnedUserTokens;
+    // Pure sliding window: keep most recent messages that fit, no pinning
+    let used = systemTokens + lastItemTokens;
     const keptIndices = new Set();
-    if (pinnedUserIndex >= 0) keptIndices.add(pinnedUserIndex);
 
     for (let i = chatHistory.length - 2; i >= 1; i--) {
-      if (keptIndices.has(i)) continue;
       const cost = estimateTokens(chatHistory[i]);
       if (used + cost > budget) break;
       used += cost;
       keptIndices.add(i);
     }
 
-    // Build output in chronological order using original indices
     const droppedCount = (chatHistory.length - 2) - keptIndices.size;
     const newHistory = [systemItem];
     for (let i = 1; i <= chatHistory.length - 2; i++) {
@@ -869,7 +874,7 @@ class ChatEngine extends EventEmitter {
     }
     if (chatHistory.length > 1) newHistory.push(effectiveLastItem);
 
-    console.log(`[ChatEngine] Context shift: kept ${keptIndices.size} items (pinned user: ${pinnedUserIndex >= 0}), dropped ${droppedCount}. Budget: ${budget}, used: ${used}`);
+    console.log(`[ChatEngine] Context shift: kept ${keptIndices.size} items, dropped ${droppedCount}. Budget: ${budget}, used: ${used}`);
     return { chatHistory: newHistory, metadata: { droppedCount } };
   }
 

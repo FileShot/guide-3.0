@@ -75,20 +75,20 @@ const FAMILY_PROFILES = {
   qwen: {
     base: {
       sampling: { temperature: 0.5, topP: 0.90, topK: 30, repeatPenalty: 1.08 },
-      thinkTokens: { mode: 'none', budget: 0 },
+      thinkTokens: { mode: 'budget', budget: 2048 },
       quirks: { emitsSpecialTokens: true },
     },
     tiny: {
       sampling: { temperature: 0.45, topP: 0.85, topK: 20, repeatPenalty: 1.10, lastTokensPenaltyCount: 512 },
       prompt: { style: 'compact', fewShotExamples: 1 },
-      thinkTokens: { mode: 'none', budget: 0, _thinkBudgetWhenActive: 2048 },
+      thinkTokens: { mode: 'budget', budget: 1024 },
       generation: { maxToolsPerTurn: 10 },
       quirks: { truncatesMidTool: true, poorMultiTool: true },
     },
     small: {
       sampling: { temperature: 0.35, topP: 0.88, topK: 25, repeatPenalty: 1.12, lastTokensPenaltyCount: 512 },
       prompt: { style: 'compact', fewShotExamples: 1 },
-      thinkTokens: { mode: 'none', budget: 0, _thinkBudgetWhenActive: 2048 },
+      thinkTokens: { mode: 'budget', budget: 2048 },
       generation: { maxToolsPerTurn: 14 },
       quirks: { poorMultiTool: true },
     },
@@ -97,11 +97,7 @@ const FAMILY_PROFILES = {
       context: { effectiveContextSize: 16384 },
       prompt: { style: 'full' },
       generation: { maxToolsPerTurn: 15 },
-      // FIX: qwen.base sets thinkTokens.mode='none' with no _thinkBudgetWhenActive.
-      // Without this field the /qwen3/ filename override in _getModelSpecificParams
-      // has nothing to set, so thoughtTokenBudget stays 0 and node-llama-cpp
-      // disables thinking entirely — the thinking dropdown never appears in the UI.
-      thinkTokens: { mode: 'none', budget: 0, _thinkBudgetWhenActive: 2048 },
+      thinkTokens: { mode: 'budget', budget: 2048 },
     },
     large: {
       context: { effectiveContextSize: 32768, maxResponseTokens: 8192 },
