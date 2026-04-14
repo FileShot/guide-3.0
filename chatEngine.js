@@ -27,7 +27,8 @@ If your output is cut off mid-generation, the system will automatically continue
 
 ## Rules
 - Only claim you did something if you called the tool that did it
-- After calling a tool, check the result — if it failed, acknowledge honestly
+- After calling a tool, use the results immediately — never call the same tool twice with the same arguments
+- Never say "I can't", "I'm unable to", or "I don't have access" when you have a tool available
 - For file edits: read the file first to get exact text, then edit
 - Browser workflow: navigate first, then take a snapshot, then interact using element refs
 - If a tool fails, retry with corrected parameters
@@ -51,13 +52,16 @@ YOU ARE AN AI THAT CALLS TOOLS. EVERY FILE OPERATION IS A TOOL CALL.
 NEVER output file contents as code blocks in chat.
 NEVER say "here is the code" and then show it.
 NEVER write HTML, CSS, JavaScript, Python, or any other code as a chat response.
+NEVER say "I can't", "I don't have access", "I'm unable to", or "I cannot" when you have a tool that can do it.
+NEVER call the same tool twice with the same arguments in one conversation turn.
 
 ## ALWAYS DO THIS
 ALWAYS call write_file when creating a file.
 ALWAYS call edit_file when modifying a file.
 ALWAYS call run_command to run commands.
-ALWAYS use browser tools when warrented.
+ALWAYS use browser tools when warranted.
 ALWAYS use the tool. Every time.
+When you receive tool results, IMMEDIATELY use those results to answer the user. Do not call the tool again.
 
 ## Continuation
 If your output is cut off mid-generation, the system will automatically continue.`;
@@ -581,7 +585,10 @@ class ChatEngine extends EventEmitter {
       console.log(`[ChatEngine] generateResponse returned: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}`);
 
       // Raw-text tool call loop: parse tool calls from model output, execute, continue
-      const MAX_TOOL_ITERATIONS = 20;
+      const MAX_TOOL_ITERATIONS = 15;
+      // Idempotency ledger: tool+params → previous result. Prevents infinite loops
+      // when the model repeatedly emits the same tool call across continuation rounds.
+      const toolCallLedger = new Map();
       if (executeToolFn) {
         // Flush any buffered content from the streaming filter before parsing
         _sfFlush();
@@ -610,11 +617,35 @@ class ChatEngine extends EventEmitter {
           }
 
           const toolResultLines = [];
+          let allCallsWereDuplicates = true;
 
           for (const call of parsedCalls) {
             if (totalToolCalls >= MAX_TOOL_ITERATIONS) break;
-            console.log(`[ChatEngine] Tool call: ${call.tool}(${JSON.stringify(call.params).substring(0, 200)})`);
             totalToolCalls++;
+
+            // Build idempotency key from tool name + serialized params (excluding content for file writes)
+            const ledgerParams = { ...call.params };
+            if (ledgerParams.content && ledgerParams.content.length > 200) {
+              ledgerParams.content = ledgerParams.content.substring(0, 200);
+            }
+            const ledgerKey = `${call.tool}:${JSON.stringify(ledgerParams)}`;
+
+            if (toolCallLedger.has(ledgerKey)) {
+              const prevResult = toolCallLedger.get(ledgerKey);
+              console.log(`[ChatEngine] Idempotent skip: ${call.tool} already executed with same params`);
+              const prevStr = typeof prevResult === 'string' ? prevResult : JSON.stringify(prevResult);
+              const truncPrev = prevStr.length > 300 ? prevStr.substring(0, 300) + '...' : prevStr;
+              toolResultLines.push(`${call.tool}: ALREADY EXECUTED — previous result: ${truncPrev}`);
+
+              if (onStreamEvent) {
+                onStreamEvent('mcp-tool-results', [{ tool: call.tool, result: prevResult }]);
+              }
+              if (onToolCall) onToolCall({ name: call.tool, params: call.params, result: prevResult });
+              continue;
+            }
+            allCallsWereDuplicates = false;
+
+            console.log(`[ChatEngine] Tool call: ${call.tool}(${JSON.stringify(call.params).substring(0, 200)})`);
 
             // Emit file-content events for file write operations so the UI
             // can show a FileContentBlock with syntax highlighting
@@ -637,6 +668,8 @@ class ChatEngine extends EventEmitter {
               toolResult = { success: false, error: toolErr.message };
             }
 
+            toolCallLedger.set(ledgerKey, toolResult);
+
             const resultStr = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
             console.log(`[ChatEngine] Tool result for ${call.tool}: ${resultStr.substring(0, 200)}${resultStr.length > 200 ? '...' : ''}`);
             if (onToolCall) onToolCall({ name: call.tool, params: call.params, result: toolResult });
@@ -650,6 +683,34 @@ class ChatEngine extends EventEmitter {
             toolResultLines.push(`${call.tool}: ${truncResult}`);
           }
 
+          // If every call in this round was a duplicate, the model is looping — stop immediately
+          if (allCallsWereDuplicates) {
+            console.warn(`[ChatEngine] All tool calls in this round were duplicates — breaking loop`);
+            // Inject a directive so the model uses the results instead of re-calling
+            this._lastEvaluation = result.lastEvaluation;
+            if (result.lastEvaluation?.cleanHistory) {
+              this._chatHistory = result.lastEvaluation.cleanHistory;
+            }
+            this._chatHistory.push({ type: 'user', text: `[System] The tool results are already available above. Do NOT call any more tools. Respond to the user directly using the information you have.` });
+            genOptions.lastEvaluationContextWindow = this._lastEvaluation ? {
+              contextWindow: this._lastEvaluation.contextWindow,
+              contextShiftMetadata: this._lastEvaluation.contextShiftMetadata,
+            } : undefined;
+
+            // Reset streaming filter state
+            _sfBuf = ''; _sfDepth = 0; _sfActive = false; _sfConfirmed = false;
+            _sfInStr = false; _sfEscaped = false; _sfLastCharWasNewlineOrStart = true;
+            _sfInFence = false; _sfFenceBuf = ''; _sfFenceTickCount = 0;
+            _sfFileWriteDetected = false; _sfContentStreamActive = false;
+            _sfContentDone = false; _sfContentEsc = false; _sfContentBuf = '';
+            _sfContentFilePath = ''; _sfUnicodeCount = 0; _sfUnicodeChars = '';
+
+            roundStart = fullResponse.length;
+            result = await this._chat.generateResponse(this._chatHistory, genOptions);
+            console.log(`[ChatEngine] Final continuation (post-dedup): stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}`);
+            break;
+          }
+
           // Update evaluation state and chat history from last generation
           this._lastEvaluation = result.lastEvaluation;
           if (result.lastEvaluation?.cleanHistory) {
@@ -657,7 +718,7 @@ class ChatEngine extends EventEmitter {
           }
 
           // Feed tool results back to the model so it knows what happened
-          this._chatHistory.push({ type: 'user', text: `[Tool Results]\n${toolResultLines.join('\n')}` });
+          this._chatHistory.push({ type: 'user', text: `[Tool Results]\n${toolResultLines.join('\n')}\n\nNow respond to the user using the results above.` });
 
           genOptions.lastEvaluationContextWindow = this._lastEvaluation ? {
             contextWindow: this._lastEvaluation.contextWindow,

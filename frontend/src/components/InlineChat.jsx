@@ -48,7 +48,7 @@ export default function InlineChat({ position, onSubmit, onClose }) {
         <input
           ref={inputRef}
           className="flex-1 bg-transparent border-none outline-none text-vsc-sm text-vsc-text placeholder:text-vsc-text-dim"
-          placeholder="Ask guIDE to edit..."
+          placeholder="Describe your edit..."
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}

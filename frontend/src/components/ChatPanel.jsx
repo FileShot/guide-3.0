@@ -442,14 +442,30 @@ export default function ChatPanel() {
   // Reset file context dismissal when active tab changes
   useEffect(() => { setFileContextDismissed(false); }, [activeTabId]);
 
-  // R39-A2 + R48-Fix-G: Auto-scroll during streaming.
-  // scrollToIndex({ index: 'LAST' }) only scrolls to the last DATA item, but streaming
-  // content renders in the Virtuoso Footer (below data). Use scrollTo with max top value
-  // to scroll to the absolute bottom of the scroll container including Footer.
+  // Track whether the user manually scrolled away during streaming.
+  // A wheel-up or pointer-driven scroll sets this flag; reaching the bottom clears it.
+  const userScrolledAwayRef = useRef(false);
   useEffect(() => {
-    if (chatStreaming && atBottomRef.current && virtuosoRef.current) {
-      virtuosoRef.current.scrollTo({ top: Number.MAX_SAFE_INTEGER });
+    if (!chatStreaming) userScrolledAwayRef.current = false;
+  }, [chatStreaming]);
+  const handleUserWheel = useCallback((e) => {
+    if (!chatStreaming) return;
+    if (e.deltaY < 0) {
+      userScrolledAwayRef.current = true;
     }
+  }, [chatStreaming]);
+
+  // Auto-scroll during streaming.
+  // Uses rAF to avoid layout thrashing. Does NOT fire if the user deliberately
+  // scrolled up. Clears the flag when the user scrolls back to the bottom.
+  useEffect(() => {
+    if (!chatStreaming) return;
+    if (userScrolledAwayRef.current) return;
+    requestAnimationFrame(() => {
+      if (virtuosoRef.current && !userScrolledAwayRef.current) {
+        virtuosoRef.current.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: 'auto' });
+      }
+    });
   }, [chatStreaming, chatStreamingText, streamingSegments, streamingToolCalls]);
 
   // Core send logic — takes explicit text param so queue auto-send can use it
@@ -828,14 +844,17 @@ export default function ChatPanel() {
           </div>
           );
         })()}
+        <div onWheel={handleUserWheel} className="flex-1 min-h-0">
         <Virtuoso
           ref={virtuosoRef}
           data={chatMessages}
-          followOutput="smooth"
-          atBottomStateChange={(atBottom) => { atBottomRef.current = atBottom; }}
-          atBottomThreshold={150}
+          atBottomStateChange={(atBottom) => {
+            atBottomRef.current = atBottom;
+            if (atBottom) userScrolledAwayRef.current = false;
+          }}
+          atBottomThreshold={120}
           initialTopMostItemIndex={chatMessages.length > 0 ? chatMessages.length - 1 : 0}
-          className="scrollbar-thin"
+          className="scrollbar-thin h-full"
           components={{
             Header: StreamingHeader,
             Footer: StreamingFooter,
@@ -951,6 +970,7 @@ export default function ChatPanel() {
             </>
           )}
         />
+        </div>
       </div>
 
       {/* ─── Unified Input Container ──────────────────────── */}
@@ -1138,7 +1158,7 @@ export default function ChatPanel() {
             <textarea
               ref={textareaRef}
               className="w-full bg-transparent border-none outline-none text-vsc-base text-vsc-text resize-none placeholder:text-vsc-text-dim"
-              placeholder={chatStreaming ? 'Type to queue a message...' : (modelLoaded ? 'Ask guIDE anything...' : 'Load a model to start...')}
+              placeholder={chatStreaming ? 'Type to queue a message...' : (modelLoaded ? 'Ask anything...' : 'Load a model to start...')}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -1182,15 +1202,15 @@ export default function ChatPanel() {
             {/* Mode selector — Dropdown */}
             {(() => {
               const modes = [
-                { id: 'agent', label: 'Agent', icon: Bot, desc: 'Autonomous with tool calls', color: 'text-vsc-accent', bg: 'bg-vsc-accent/15' },
-                { id: 'plan', label: 'Plan', icon: FileCode, desc: 'Plan before executing', color: 'text-purple-400', bg: 'bg-purple-500/15' },
-                { id: 'ask', label: 'Ask', icon: MessageSquare, desc: 'Question and answer only', color: 'text-blue-400', bg: 'bg-blue-500/15' },
+                { id: 'agent', label: 'Agent', icon: Bot, desc: 'Autonomous with tool calls', color: 'text-vsc-text', bg: 'bg-vsc-list-hover/60' },
+                { id: 'plan', label: 'Plan', icon: FileCode, desc: 'Plan before executing', color: 'text-vsc-text', bg: 'bg-vsc-list-hover/60' },
+                { id: 'ask', label: 'Ask', icon: MessageSquare, desc: 'Question and answer only', color: 'text-vsc-text', bg: 'bg-vsc-list-hover/60' },
               ];
               const current = modes.find(m => m.id === chatMode) || modes[0];
               return (
                 <div className="relative" ref={modeDropdownRef}>
                   <button
-                    className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors ${current.bg} ${current.color}`}
+                    className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium transition-colors ${current.bg} ${current.color} hover:bg-vsc-list-hover`}
                     onClick={() => setModeDropdownOpen(!modeDropdownOpen)}
                   >
                     <current.icon size={11} />
@@ -1207,12 +1227,12 @@ export default function ChatPanel() {
                           }`}
                           onClick={() => { setChatMode(mode.id); setModeDropdownOpen(false); }}
                         >
-                          <mode.icon size={14} className={`mt-0.5 flex-shrink-0 ${chatMode === mode.id ? mode.color : 'text-vsc-text-dim'}`} />
+                          <mode.icon size={14} className={`mt-0.5 flex-shrink-0 ${chatMode === mode.id ? 'text-vsc-accent' : 'text-vsc-text-dim'}`} />
                           <div className="min-w-0">
-                            <div className={`text-[11px] font-semibold ${chatMode === mode.id ? mode.color : 'text-vsc-text'}`}>{mode.label}</div>
+                            <div className={`text-[11px] font-semibold ${chatMode === mode.id ? 'text-vsc-text' : 'text-vsc-text'}`}>{mode.label}</div>
                             <div className="text-[10px] text-vsc-text-dim leading-tight">{mode.desc}</div>
                           </div>
-                          {chatMode === mode.id && <Check size={12} className={`ml-auto mt-0.5 flex-shrink-0 ${mode.color}`} />}
+                          {chatMode === mode.id && <Check size={12} className="ml-auto mt-0.5 flex-shrink-0 text-vsc-accent" />}
                         </button>
                       ))}
                     </div>

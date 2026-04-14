@@ -9,13 +9,16 @@
  *            above the gradient overlay instead of being hidden under it.
  */
 import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
-import { Copy, Check, Download, ChevronDown, ChevronRight, FileCode, Loader } from 'lucide-react';
+import { Copy, Check, Download, ChevronDown, ChevronRight, FileCode, Loader, Play, Code } from 'lucide-react';
 import useAppStore from '../../stores/appStore';
 
 const COLLAPSE_THRESHOLD = 15;
 
+const RENDERABLE_EXTENSIONS = new Set(['html', 'htm', 'svg', 'css', 'js', 'jsx']);
+
 const FileContentBlock = React.memo(function FileContentBlock({ filePath, language, fileName, content, complete }) {
   const [copied, setCopied] = useState(false);
+  const [rendering, setRendering] = useState(false);
   const scrollContainerRef = useRef(null);
   const contentRef = useRef(null);
 
@@ -72,8 +75,18 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
   }, [filePath, setFileBlockExpanded]);
 
   const displayName = fileName || (filePath ? filePath.split(/[/\\]/).pop() : 'file');
+  const ext = (language || '').toLowerCase();
+  const isRenderable = complete && RENDERABLE_EXTENSIONS.has(ext);
   const isCollapsible = lineCount > COLLAPSE_THRESHOLD;
   const isCollapsed = !expanded && isCollapsible;
+
+  const buildSrcdoc = useCallback(() => {
+    if (!content) return '';
+    if (ext === 'html' || ext === 'htm' || ext === 'svg') return content;
+    if (ext === 'css') return `<!DOCTYPE html><html><head><style>${content}</style></head><body><div class="preview">CSS Preview</div></body></html>`;
+    if (ext === 'js' || ext === 'jsx') return `<!DOCTYPE html><html><head></head><body><script>${content}<\/script></body></html>`;
+    return content;
+  }, [content, ext]);
 
   // R36-Phase1: Auto-scroll collapsed view to show trailing content during streaming.
   useEffect(() => {
@@ -105,6 +118,17 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
           {!complete && <Loader size={10} className="animate-spin text-vsc-accent ml-1" />}
         </div>
         <div className="flex items-center gap-0.5">
+          {isRenderable && (
+            <button
+              className={`p-1 rounded-sm transition-colors ${
+                rendering ? 'text-vsc-success bg-vsc-success/10' : 'text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover'
+              }`}
+              onClick={() => setRendering(!rendering)}
+              title={rendering ? 'Show code' : 'Render preview'}
+            >
+              {rendering ? <Code size={13} /> : <Play size={13} />}
+            </button>
+          )}
           <button
             className="p-1 rounded-sm text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover transition-colors"
             onClick={handleDownload}
@@ -124,7 +148,27 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
         </div>
       </div>
 
-      {/* Content */}
+      {/* Content or preview */}
+      {rendering ? (
+        <div className="relative bg-white">
+          <iframe
+            srcDoc={buildSrcdoc()}
+            className="w-full border-0"
+            style={{ minHeight: '200px', maxHeight: '500px' }}
+            sandbox="allow-scripts"
+            title="File preview"
+            onLoad={(e) => {
+              try {
+                const doc = e.target.contentDocument;
+                if (doc?.body) {
+                  const h = Math.min(Math.max(doc.body.scrollHeight + 20, 200), 500);
+                  e.target.style.height = h + 'px';
+                }
+              } catch (_) {}
+            }}
+          />
+        </div>
+      ) : (
       <div className="relative">
         <div ref={scrollContainerRef} style={contentStyle}>
           <pre className="!m-0 !rounded-none !border-0 p-3 text-vsc-sm leading-relaxed bg-vsc-bg" style={preStyle}>
@@ -153,6 +197,7 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
           </button>
         )}
       </div>
+      )}
     </div>
   );
 });

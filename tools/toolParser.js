@@ -228,17 +228,17 @@ function extractJsonObjects(text) {
   // Handle truncated JSON (unclosed braces)
   if (depth > 0 && start >= 0) {
     const partial = text.slice(start);
-    // Try to recover write_file with partial content
     const pathMatch = partial.match(/"(?:filePath|path)"\s*:\s*"([^"]+)"/);
     const contentMatch = partial.match(/"content"\s*:\s*"([\s\S]{20,})$/);
     if (pathMatch && contentMatch) {
       let truncatedContent = contentMatch[1];
-      // Unescape JSON escape sequences — content came from raw regex match, not JSON.parse
       truncatedContent = truncatedContent
         .replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r')
         .replace(/\\'/g, "'").replace(/\\\\/g, '\\');
+      const toolMatch = partial.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
+      const recoveredTool = toolMatch ? (TOOL_NAME_ALIASES[toolMatch[1].toLowerCase()] || toolMatch[1].toLowerCase()) : 'write_file';
       objects.push({
-        tool: 'write_file',
+        tool: VALID_TOOLS.has(recoveredTool) ? recoveredTool : 'write_file',
         params: { filePath: pathMatch[1], content: truncatedContent },
         _truncated: true,
       });
