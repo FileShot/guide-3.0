@@ -75,11 +75,9 @@ export default function App() {
 
       // Tool events — backend sends arrays: [{tool, params}, ...]
       case 'tool-executing': {
-        const FILE_OPS = new Set(['write_file','create_file','append_to_file','edit_file','delete_file','read_file']);
         const items = Array.isArray(data) ? data : [data];
         for (const item of items) {
           const toolName = item.tool || item.functionName || item.name;
-          if (FILE_OPS.has(toolName)) continue; // R42-Fix-4: file-ops display via FileContentBlock, not ToolCallCard
           s.addStreamingToolCall({
             functionName: toolName,
             params: item.params || item.arguments,
@@ -90,11 +88,9 @@ export default function App() {
         break;
       }
       case 'mcp-tool-results': {
-        const FILE_OPS_R = new Set(['write_file','create_file','append_to_file','edit_file','delete_file','read_file']);
         const results = Array.isArray(data) ? data : [data];
         for (const item of results) {
           const name = item.tool || item.functionName || item.name;
-          if (FILE_OPS_R.has(name)) continue; // R42-Fix-4: skip file-op result cards
           s.updateStreamingToolCall(name, {
             status: item.result?.error || item.success === false ? 'error' : 'success',
             result: item.result,

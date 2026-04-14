@@ -777,6 +777,112 @@ function _detectFallbackFileOperations(responseText, userMessage, lastDroppedFil
   return calls;
 }
 
+// ─── Strip Tool Call Text ───
+// Removes tool call JSON blocks from model output text, leaving only prose.
+// Uses the same structural patterns that parseToolCalls detects.
+// Returns the cleaned text (empty string if nothing remains).
+function stripToolCallText(text) {
+  if (!text || typeof text !== 'string') return '';
+
+  // Collect [start, end) ranges to remove
+  const ranges = [];
+
+  // Pattern 1: XML <tool_call>...</tool_call>
+  const xmlRe = /<tool_call>\s*[\s\S]*?\s*<\/tool_call>/g;
+  let m;
+  while ((m = xmlRe.exec(text)) !== null) {
+    ranges.push([m.index, m.index + m[0].length]);
+  }
+
+  // Pattern 2: Fenced code blocks (```json / ```tool_call / ```tool / ```) containing "tool":
+  const fenceRe = /```(?:json|tool_call|tool)?\s*\n([\s\S]*?)```/g;
+  while ((m = fenceRe.exec(text)) !== null) {
+    const inner = m[1];
+    if (/"tool"\s*:/.test(inner) || /"name"\s*:/.test(inner)) {
+      ranges.push([m.index, m.index + m[0].length]);
+    }
+  }
+
+  // Pattern 3: Unclosed fenced blocks at end of text
+  const unclosedFenceRe = /```(?:json|tool_call|tool)\s*\n([\s\S]*)$/g;
+  while ((m = unclosedFenceRe.exec(text)) !== null) {
+    const inner = m[1];
+    if (/"tool"\s*:/.test(inner) || /"name"\s*:/.test(inner)) {
+      ranges.push([m.index, m.index + m[0].length]);
+    }
+  }
+
+  // Pattern 4: Raw JSON objects with "tool" or "name" key, using brace-counting
+  const rawJsonRe = /(?:^|\n)[ \t]*\{/gm;
+  while ((m = rawJsonRe.exec(text)) !== null) {
+    const jsonStart = text.indexOf('{', m.index);
+    if (_isInsideExistingRange(ranges, jsonStart)) continue;
+
+    let depth = 0;
+    let inStr = false;
+    let escaped = false;
+    let jsonEnd = -1;
+
+    for (let i = jsonStart; i < text.length; i++) {
+      const ch = text[i];
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\' && inStr) { escaped = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) { jsonEnd = i + 1; break; }
+      }
+    }
+
+    if (jsonEnd > jsonStart) {
+      const slice = text.slice(jsonStart, jsonEnd);
+      if (/"tool"\s*:/.test(slice) || /"name"\s*:/.test(slice)) {
+        try {
+          const parsed = JSON.parse(slice);
+          if (parsed && typeof parsed === 'object' && (parsed.tool || parsed.name)) {
+            const rangeStart = (text[m.index] === '\n') ? m.index : jsonStart;
+            ranges.push([rangeStart, jsonEnd]);
+          }
+        } catch { /* not valid JSON — skip */ }
+      }
+    }
+  }
+
+  if (ranges.length === 0) return text;
+
+  // Sort and merge overlapping ranges
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged = [ranges[0]];
+  for (let i = 1; i < ranges.length; i++) {
+    const last = merged[merged.length - 1];
+    if (ranges[i][0] <= last[1]) {
+      last[1] = Math.max(last[1], ranges[i][1]);
+    } else {
+      merged.push([...ranges[i]]);
+    }
+  }
+
+  // Build result excluding the removed ranges
+  let result = '';
+  let pos = 0;
+  for (const [start, end] of merged) {
+    result += text.slice(pos, start);
+    pos = end;
+  }
+  result += text.slice(pos);
+
+  return result.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function _isInsideExistingRange(ranges, index) {
+  for (const [start, end] of ranges) {
+    if (index >= start && index < end) return true;
+  }
+  return false;
+}
+
 module.exports = {
   TOOL_NAME_ALIASES,
   VALID_TOOLS,
@@ -788,6 +894,7 @@ module.exports = {
   normalizeToolCall,
   parseToolCalls,
   repairToolCalls,
+  stripToolCallText,
   _recoverWriteFileContent,
   _inferFilePath,
   _detectProseCommands,

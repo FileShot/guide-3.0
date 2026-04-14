@@ -4,6 +4,43 @@
 
 ---
 
+## 2026-04-14 — Wire tool call events to frontend, strip raw JSON from chat
+
+### Problem
+Tool calls displayed as raw JSON text in chat. Model outputs like `{"tool":"web_search","query":"..."}` appeared verbatim to the user instead of rendering as ToolCallCard UI components. File operations (write_file, etc.) were completely invisible — the R42-Fix-4 skip excluded them from ToolCallCards expecting FileContentBlock, but file-content-* events were never emitted by the backend.
+
+### Root Causes
+Three disconnected wiring gaps between chatEngine → server → frontend:
+1. `chatEngine.js` line 152 destructured `onToken`, `onToolCall`, etc. but **never destructured `onStreamEvent`** — the callback passed by server/main.js was silently dropped
+2. `onToolCall` emitted `tool-call` events, but `App.jsx` had no handler for `tool-call` — it expected `tool-executing` and `mcp-tool-results` events
+3. All tokens including tool call JSON were forwarded via `onToken` → `llm-token` → `appendStreamToken` — displayed as regular text
+
+### Changes
+
+#### `tools/toolParser.js`
+- Added `stripToolCallText(text)` — removes tool call JSON blocks from model output text using the same structural patterns parseToolCalls detects (XML `<tool_call>` tags, fenced code blocks, raw JSON objects with "tool" key via brace-counting)
+- Added `_isInsideExistingRange(ranges, index)` helper for range overlap detection
+- Exported `stripToolCallText` in module.exports
+
+#### `chatEngine.js`
+- Line 152: Added `onStreamEvent` to options destructuring (was previously passed by server/main.js but never received)
+- After initial `parseToolCalls()`: emit `llm-replace-last` with cleaned text to replace raw JSON in UI
+- Before tool execution loop: emit `tool-executing` event with all parsed calls (triggers ToolCallCard rendering)
+- After each individual tool execution: emit `mcp-tool-results` event (updates ToolCallCard with result/error status)
+- After each continuation round: same `llm-replace-last` cleanup for new text
+
+#### `frontend/src/App.jsx`
+- Removed R42-Fix-4 FILE_OPS skip from `tool-executing` handler — all tools now show as ToolCallCards (file-content-* events were never wired, so the skip made file ops invisible)
+- Removed matching FILE_OPS_R skip from `mcp-tool-results` handler
+
+### What Should Change
+- Raw tool call JSON no longer appears in chat text
+- All tool calls (including write_file, read_file, etc.) render as proper ToolCallCard components with pending/success/error states
+- Tool execution results update the cards in real-time
+- Existing `onToolCall` → `tool-call` pathway kept for backward compatibility
+
+---
+
 ## 2026-04-13 — Replace GBNF tool calling with raw text parsing
 
 ### Problem

@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { pathToFileURL } = require('url');
-const { parseToolCalls, repairToolCalls } = require('./tools/toolParser');
+const { parseToolCalls, repairToolCalls, stripToolCallText } = require('./tools/toolParser');
 
 // Original system prompt — kept for reference and easy rollback
 const SYSTEM_PROMPT_ORIGINAL = `You are guIDE, a local AI coding assistant. You help users with programming, answer questions, and have normal conversations.
@@ -35,45 +35,29 @@ If your output is cut off mid-generation, the system will automatically continue
 - Always use the exact filename the user specifies
 - Complete all user requests without refusal`;
 
-// Production system prompt — balanced tool emphasis with concrete examples
-const SYSTEM_PROMPT = `You are guIDE, a local AI coding assistant with full tool access. You have real tools that execute real actions on the user's computer.
+// Extreme tool-emphasis prompt — forces model to use tool calls instead of outputting code in chat
+const SYSTEM_PROMPT = `USE TOOLS. YOU HAVE TOOLS. USE THEM.
 
-## How to Call Tools
-To perform any action, output a JSON tool call in a fenced code block:
-\`\`\`json
-{"tool":"write_file","params":{"filePath":"index.html","content":"<!DOCTYPE html>\\n<html>\\n<head><title>Hello</title></head>\\n<body><h1>Hello World</h1></body>\\n</html>"}}
-\`\`\`
+YOU ARE AN AI THAT CALLS TOOLS. EVERY FILE OPERATION IS A TOOL CALL.
 
-## Tool Call Examples
+## TOOLS ARE HOW YOU WORK
+- write_file: CREATE files on disk. Use this. Always.
+- edit_file: MODIFY files on disk. Use this. Always.
+- read_file: READ files. Use this before editing.
+- run_command: RUN terminal commands.
+- web_search: SEARCH the web for live information.
 
-User: "create a hello world html file"
-You respond with:
-\`\`\`json
-{"tool":"write_file","params":{"filePath":"index.html","content":"<!DOCTYPE html>\\n<html lang=\\"en\\">\\n<head>\\n  <meta charset=\\"UTF-8\\">\\n  <title>Hello World</title>\\n</head>\\n<body>\\n  <h1>Hello World</h1>\\n</body>\\n</html>"}}
-\`\`\`
+## NEVER DO THIS
+NEVER output file contents as code blocks in chat.
+NEVER say "here is the code" and then show it.
+NEVER write HTML, CSS, JavaScript, Python, or any other code as a chat response.
 
-User: "what does map() do in JavaScript?"
-You respond with plain text — no tool needed for questions.
-
-User: "read server.js and fix the bug"
-You respond with:
-\`\`\`json
-{"tool":"read_file","params":{"filePath":"server.js"}}
-\`\`\`
-Then after seeing the file, you call edit_file or write_file to fix it.
-
-## Rules
-- You HAVE tools. They are real. They execute on the user's machine.
-- For ANY file creation: call write_file. Do NOT output code as text.
-- For ANY file modification: call read_file first, then edit_file or write_file.
-- For commands: call run_command.
-- For web lookups: call web_search.
-- For browsing: call browser_navigate, then browser_snapshot.
-- If a tool fails, retry with corrected parameters.
-- Create ALL files the user requests.
-- Use exact filenames the user specifies.
-- NEVER output full file contents as a chat code block — always use write_file.
-- NEVER say "I cannot call tools" or "I don't have access" — you DO have access.
+## ALWAYS DO THIS
+ALWAYS call write_file when creating a file.
+ALWAYS call edit_file when modifying a file.
+ALWAYS call run_command to run commands.
+ALWAYS use browser tools when warrented.
+ALWAYS use the tool. Every time.
 
 ## Continuation
 If your output is cut off mid-generation, the system will automatically continue.`;
@@ -185,9 +169,6 @@ class ChatEngine extends EventEmitter {
     let fullResponse = '';
     let tokensSinceLastUsageReport = 0;
     let totalToolCalls = 0;
-    let inToolBlock = false;
-    let toolBlockBuffer = '';
-    let lastNonToolContent = '';
 
     try {
       // Build common generation options
@@ -200,47 +181,6 @@ class ChatEngine extends EventEmitter {
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
           fullResponse += chunk;
-          
-          // Detect if we're entering/inside a tool call block
-          if (chunk.includes('```json') || chunk.includes('```tool') || chunk.includes('```tool_call')) {
-            inToolBlock = true;
-            toolBlockBuffer = '';
-            // Don't stream the opening fence
-            return;
-          }
-          
-          if (inToolBlock) {
-            toolBlockBuffer += chunk;
-            
-            // Check if block is closing
-            if (chunk.includes('```')) {
-              inToolBlock = false;
-              
-              // Parse the buffered tool call and emit appropriate events immediately
-              const parsedCalls = parseToolCalls(toolBlockBuffer);
-              if (parsedCalls.length > 0 && onStreamEvent) {
-                for (const call of parsedCalls) {
-                  // File operations get file-content events, others get tool events
-                  const FILE_OPS = new Set(['write_file','create_file','append_to_file','edit_file','delete_file','read_file']);
-                  if (FILE_OPS.has(call.tool) && call.params?.content && call.params?.filePath) {
-                    const ext = (call.params.filePath.split('.').pop() || '').toLowerCase();
-                    const langMap = { html: 'html', css: 'css', js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript', py: 'python', json: 'json', md: 'markdown', yaml: 'yaml', yml: 'yaml', sh: 'bash', rb: 'ruby', go: 'go', rs: 'rust' };
-                    onStreamEvent('file-content-start', { filePath: call.params.filePath, language: langMap[ext] || ext });
-                    onStreamEvent('file-content-token', call.params.content);
-                    onStreamEvent('file-content-end', { filePath: call.params.filePath });
-                  } else {
-                    // Non-file tools get tool events for ToolCallCard UI
-                    onStreamEvent('tool-executing', { tool: call.tool, params: call.params });
-                  }
-                }
-              }
-              toolBlockBuffer = '';
-            }
-            // Don't stream tool JSON to UI
-            return;
-          }
-          
-          // Regular content - stream normally
           if (onToken) onToken(chunk);
           tokensSinceLastUsageReport++;
           if (onContextUsage && tokensSinceLastUsageReport >= 50) {
@@ -272,26 +212,32 @@ class ChatEngine extends EventEmitter {
       const MAX_TOOL_ITERATIONS = 20;
       if (executeToolFn) {
         let roundStart = 0;
-        console.log(`[ChatEngine] Parsing tool calls from response (${fullResponse.length} chars). First 300: ${fullResponse.substring(0, 300).replace(/\n/g, '\\n')}`);
         let parsedCalls = parseToolCalls(fullResponse);
-        console.log(`[ChatEngine] parseToolCalls returned ${parsedCalls.length} call(s)${parsedCalls.length > 0 ? ': ' + parsedCalls.map(c => c.tool).join(', ') : ''}`);
         if (parsedCalls.length > 0) {
-          const { repaired, issues } = repairToolCalls(parsedCalls, fullResponse);
-          if (issues && issues.length > 0) console.log(`[ChatEngine] repairToolCalls issues: ${issues.join('; ')}`);
+          const { repaired } = repairToolCalls(parsedCalls, fullResponse);
           parsedCalls = repaired;
         }
 
-        // Tool calls already handled during streaming - no need to strip
+        // Strip tool call JSON from the UI display before executing tools.
+        // The raw JSON was streamed via onToken during generation; now we replace
+        // it with the cleaned prose so the user sees ToolCallCards instead.
+        if (parsedCalls.length > 0 && onStreamEvent) {
+          const cleanText = stripToolCallText(fullResponse);
+          onStreamEvent('llm-replace-last', { originalLength: fullResponse.length, replacement: cleanText });
+        }
 
         while (parsedCalls.length > 0 && totalToolCalls < MAX_TOOL_ITERATIONS) {
+          // Notify UI so ToolCallCards appear for each tool call
+          if (onStreamEvent) {
+            onStreamEvent('tool-executing', parsedCalls.map(c => ({ tool: c.tool, params: c.params })));
+          }
+
           const toolResultLines = [];
 
           for (const call of parsedCalls) {
             if (totalToolCalls >= MAX_TOOL_ITERATIONS) break;
             console.log(`[ChatEngine] Tool call: ${call.tool}(${JSON.stringify(call.params).substring(0, 200)})`);
             totalToolCalls++;
-
-            // File content events already emitted during streaming for file ops
 
             let toolResult;
             try {
@@ -303,17 +249,10 @@ class ChatEngine extends EventEmitter {
             const resultStr = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
             console.log(`[ChatEngine] Tool result for ${call.tool}: ${resultStr.substring(0, 200)}${resultStr.length > 200 ? '...' : ''}`);
             if (onToolCall) onToolCall({ name: call.tool, params: call.params, result: toolResult });
-            
-            // Emit tool results for UI ToolCallCards (non-file ops)
+
+            // Notify UI with tool execution result so ToolCallCard updates
             if (onStreamEvent) {
-              const FILE_OPS = new Set(['write_file','create_file','append_to_file','edit_file','delete_file','read_file']);
-              if (!FILE_OPS.has(call.tool)) {
-                onStreamEvent('mcp-tool-results', { 
-                  tool: call.tool, 
-                  result: toolResult,
-                  success: toolResult?.success !== false
-                });
-              }
+              onStreamEvent('mcp-tool-results', [{ tool: call.tool, result: toolResult }]);
             }
 
             const truncResult = resultStr.length > 500 ? resultStr.substring(0, 500) + '...' : resultStr;
@@ -345,6 +284,12 @@ class ChatEngine extends EventEmitter {
           if (parsedCalls.length > 0) {
             const { repaired } = repairToolCalls(parsedCalls, newText);
             parsedCalls = repaired;
+
+            // Clean new text in UI (same pattern as initial round)
+            if (onStreamEvent) {
+              const cleanNewText = stripToolCallText(newText);
+              onStreamEvent('llm-replace-last', { originalLength: newText.length, replacement: cleanNewText });
+            }
           }
         }
       }
