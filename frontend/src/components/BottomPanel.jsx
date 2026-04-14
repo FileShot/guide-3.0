@@ -34,20 +34,24 @@ export default function BottomPanel() {
       <div className="flex items-center h-[35px] border-b border-vsc-panel-border no-select flex-shrink-0">
         {/* Left: panel type tabs */}
         <div className="flex items-center flex-1 min-w-0 overflow-hidden">
-          {panelTabs.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              className={`panel-tab flex-shrink-0 ${activePanelTab === id ? 'active' : ''}`}
-              onClick={() => setActivePanelTab(id)}
-            >
-              <Icon size={14} className="mr-1.5" />
-              {label}
-              {id === 'problems' && problemsCount > 0 && (
-                <span className="ml-1.5 px-1 py-px text-[10px] rounded bg-vsc-error/20 text-vsc-error font-medium leading-none">
-                  {problemsCount}
-                </span>
+          {panelTabs.map(({ id, label, icon: Icon }, idx) => (
+            <div key={id} className="flex items-center flex-shrink-0">
+              {idx > 0 && (
+                <span className="text-vsc-text-dim/25 text-[11px] mx-0.5 select-none">/</span>
               )}
-            </button>
+              <button
+                className={`panel-tab flex-shrink-0 ${activePanelTab === id ? 'active' : ''}`}
+                onClick={() => setActivePanelTab(id)}
+              >
+                <Icon size={14} className="mr-1.5" />
+                {label}
+                {id === 'problems' && problemsCount > 0 && (
+                  <span className="ml-1.5 px-1 py-px text-[10px] rounded bg-vsc-error/20 text-vsc-error font-medium leading-none">
+                    {problemsCount}
+                  </span>
+                )}
+              </button>
+            </div>
           ))}
         </div>
 

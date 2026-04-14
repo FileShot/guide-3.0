@@ -841,6 +841,19 @@ class MCPToolServer {
           name: { type: 'string', description: 'Scratchpad name to read', required: true },
         },
       },
+      {
+        name: 'save_rule',
+        description: 'Save a project rule or skill that persists across sessions. Rules are injected into the system prompt on every future chat. Use this when the user says "remember this", "always do X", "update your rules", or gives you a standing instruction.',
+        parameters: {
+          name: { type: 'string', description: 'Short rule name (e.g. "coding-style", "project-conventions")', required: true },
+          content: { type: 'string', description: 'Rule content in markdown. Be specific and actionable.', required: true },
+        },
+      },
+      {
+        name: 'list_rules',
+        description: 'List all saved project rules and skills.',
+        parameters: {},
+      },
 
     ];
     return this._allToolDefsCache;
@@ -1128,6 +1141,12 @@ class MCPToolServer {
           break;
         case 'read_scratchpad':
           result = this._readScratchpad(params);
+          break;
+        case 'save_rule':
+          result = this._saveRule(params);
+          break;
+        case 'list_rules':
+          result = this._listRules();
           break;
         default:
           result = { success: false, error: `Unknown tool: ${toolName}` };
@@ -2544,6 +2563,19 @@ class MCPToolServer {
     const raw = fsSync.readFileSync(filePath, 'utf8');
     const data = JSON.parse(raw);
     return { success: true, ...data };
+  }
+
+  // ─── Rules/Skills Tools ──────────────────────────────────────────────────
+
+  _saveRule(params) {
+    if (!this.rulesManager) return { success: false, error: 'Rules system not initialized' };
+    return this.rulesManager.saveRule(params.name, params.content);
+  }
+
+  _listRules() {
+    if (!this.rulesManager) return { success: false, error: 'Rules system not initialized' };
+    const rules = this.rulesManager.listRules();
+    return { success: true, rules, count: rules.length };
   }
 
   // ─── Response Processing (parseToolCalls + processResponse) ──────────────

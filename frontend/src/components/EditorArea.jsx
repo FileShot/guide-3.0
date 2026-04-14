@@ -28,16 +28,14 @@ function computeDirtyDiff(original, current) {
   const maxLen = Math.max(origLines.length, currLines.length);
   for (let i = 0; i < currLines.length; i++) {
     if (i >= origLines.length) {
-      // Added line
       decorations.push({
         range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
-        options: { isWholeLine: true, linesDecorationsClassName: 'dirty-diff-added' },
+        options: { isWholeLine: true, linesDecorationsClassName: 'dirty-diff-added', className: 'dirty-diff-added-line' },
       });
     } else if (origLines[i] !== currLines[i]) {
-      // Modified line
       decorations.push({
         range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
-        options: { isWholeLine: true, linesDecorationsClassName: 'dirty-diff-modified' },
+        options: { isWholeLine: true, linesDecorationsClassName: 'dirty-diff-modified', className: 'dirty-diff-modified-line' },
       });
     }
   }
@@ -45,7 +43,7 @@ function computeDirtyDiff(original, current) {
   if (origLines.length > currLines.length && currLines.length > 0) {
     decorations.push({
       range: { startLineNumber: currLines.length, startColumn: 1, endLineNumber: currLines.length, endColumn: 1 },
-      options: { isWholeLine: true, linesDecorationsClassName: 'dirty-diff-deleted' },
+      options: { isWholeLine: true, linesDecorationsClassName: 'dirty-diff-deleted', className: 'dirty-diff-deleted-line' },
     });
   }
   return decorations;
@@ -367,7 +365,10 @@ export default function EditorArea() {
             <button
               className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium text-vsc-success hover:bg-vsc-success/10 transition-colors"
               title="Keep all edits"
-              onClick={() => setChatFilesChanged(chatFilesChanged.filter(f => f.path !== activeTab.path))}
+              onClick={() => {
+                useAppStore.getState().markTabSaved(activeTab.id);
+                setChatFilesChanged(chatFilesChanged.filter(f => f.path !== activeTab.path));
+              }}
             >
               <Check size={11} />
               Keep
@@ -376,9 +377,16 @@ export default function EditorArea() {
               className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium text-vsc-text-dim hover:text-vsc-error hover:bg-vsc-error/10 transition-colors"
               title="Undo all edits to this file"
               onClick={() => {
-                // Restore original content
                 if (activeTab?.originalContent != null) {
                   useAppStore.getState().updateTabContent(activeTab.id, activeTab.originalContent);
+                  const api = window.electronAPI;
+                  if (api?.apiFetch) {
+                    api.apiFetch('/api/files/write', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ path: activeTab.path, content: activeTab.originalContent }),
+                    });
+                  }
                 }
                 setChatFilesChanged(chatFilesChanged.filter(f => f.path !== activeTab.path));
               }}

@@ -45,6 +45,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Replaces HTTP fetch('/api/...') — routes through IPC to main process.
   apiFetch: (url, options) => ipcRenderer.invoke('api-fetch', url, options),
 
+  // ── Rules/Skills ────────────────────────────────────────
+  rules: {
+    list:   () => ipcRenderer.invoke('rules-list'),
+    save:   (name, content) => ipcRenderer.invoke('rules-save', name, content),
+    delete: (name) => ipcRenderer.invoke('rules-delete', name),
+  },
+
   // ── AI Chat (direct IPC — not through fetch bridge) ───
   aiChat: (message, context) => ipcRenderer.invoke('ai-chat', message, context),
   agentPause: () => ipcRenderer.invoke('agent-pause'),

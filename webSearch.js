@@ -1,6 +1,8 @@
 /**
- * webSearch.js — Multi-backend web search (Brave Search + DuckDuckGo fallback).
- * No API key required. Local-first, offline-capable design.
+ * webSearch.js — Multi-backend web search.
+ * Uses Electron's net module (Chromium networking stack) when available,
+ * falls back to Node.js https for non-Electron environments.
+ * No API key required.
  */
 'use strict';
 
@@ -17,8 +19,12 @@ const USER_AGENTS = [
 
 class WebSearch {
   constructor(options = {}) {
-    this.timeout = options.timeout || 12000;
+    this.timeout = options.timeout || 15000;
     this._uaIndex = Math.floor(Math.random() * USER_AGENTS.length);
+    this._electronNet = null;
+    try {
+      this._electronNet = require('electron').net;
+    } catch { /* not in Electron main process */ }
   }
 
   _getUA() {
@@ -26,178 +32,30 @@ class WebSearch {
   }
 
   /**
-   * Search the web. Tries Brave Search first, falls back to DuckDuckGo.
-   * Returns [{title, url, snippet}] or {error: string}
+   * Primary fetch using Electron's net module (Chromium network stack).
+   * Handles TLS, compression, and cookies like a real browser.
    */
-  async search(query, maxResults = 5) {
-    // Backend 1: Brave Search
-    try {
-      const results = await this._searchBrave(query, maxResults);
-      if (Array.isArray(results) && results.length > 0) return results;
-    } catch (e) {
-      console.log(`[WebSearch] Brave failed: ${e.message}`);
-    }
-
-    // Backend 2: DuckDuckGo Lite (POST)
-    try {
-      const results = await this._searchDDGPost(query, maxResults);
-      if (Array.isArray(results) && results.length > 0) return results;
-    } catch (e) {
-      console.log(`[WebSearch] DDG POST failed: ${e.message}`);
-    }
-
-    // Backend 3: DuckDuckGo Lite (GET, with retry)
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const results = await this._searchDDGGet(query, maxResults);
-        if (Array.isArray(results) && results.length > 0) return results;
-        if (attempt < 1) await new Promise(r => setTimeout(r, 1500 + Math.random() * 1000));
-      } catch (e) {
-        console.log(`[WebSearch] DDG GET attempt ${attempt} failed: ${e.message}`);
-        if (attempt < 1) await new Promise(r => setTimeout(r, 2000));
-      }
-    }
-
-    return { error: 'Web search temporarily unavailable. All search backends failed.' };
-  }
-
-  /**
-   * Brave Search — scrapes search.brave.com HTML results.
-   */
-  async _searchBrave(query, maxResults) {
-    const encoded = encodeURIComponent(query);
-    const url = `https://search.brave.com/search?q=${encoded}&source=web`;
-    const html = await this._httpGet(url, {
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept-Encoding': 'identity',
-      'Sec-Fetch-Dest': 'document',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': 'none',
+  async _electronFetch(url, options = {}) {
+    if (!this._electronNet) throw new Error('Electron net not available');
+    const resp = await this._electronNet.fetch(url, {
+      method: options.method || 'GET',
+      headers: {
+        'User-Agent': this._getUA(),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        ...options.headers,
+      },
+      body: options.body,
+      signal: AbortSignal.timeout(this.timeout),
     });
-
-    const results = [];
-    // Brave uses <a class="heading-serpresult" or data attributes for result links
-    // Primary pattern: <a ... class="result-header" href="URL">TITLE</a>
-    const snippetBlocks = html.split(/class="snippet-description[^"]*"/);
-    const headerBlocks = html.split(/class="result-header"/);
-
-    // Try extracting from the structured result blocks
-    const resultRe = /<a[^>]*class="[^"]*heading-serpresult[^"]*"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g;
-    let m;
-    while ((m = resultRe.exec(html)) !== null && results.length < maxResults) {
-      const url = this._decodeHtmlEntities(m[1]);
-      const title = this._stripTags(m[2]).trim();
-      if (url && title && url.startsWith('http')) {
-        results.push({ title, url, snippet: '' });
-      }
-    }
-
-    // Fallback: look for <a ... href="URL" ... >TITLE</a> inside result containers
-    if (results.length === 0) {
-      const altRe = /data-type="web"[\s\S]*?<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-      while ((m = altRe.exec(html)) !== null && results.length < maxResults) {
-        const url = this._decodeHtmlEntities(m[1]);
-        const title = this._stripTags(m[2]).trim();
-        if (url && title) results.push({ title, url, snippet: '' });
-      }
-    }
-
-    // Extract snippets if we got results
-    if (results.length > 0) {
-      const snippetRe = /class="snippet-description[^"]*"[^>]*>([\s\S]*?)<\//g;
-      let si = 0;
-      while ((m = snippetRe.exec(html)) !== null && si < results.length) {
-        results[si].snippet = this._stripTags(m[1]).trim();
-        si++;
-      }
-    }
-
-    return results;
+    const text = await resp.text();
+    return { status: resp.status, body: text };
   }
 
   /**
-   * DuckDuckGo Lite via POST (less likely to be rate-limited than GET).
+   * Fallback fetch using Node.js https module.
    */
-  async _searchDDGPost(query, maxResults) {
-    const body = `q=${encodeURIComponent(query)}`;
-    const html = await this._httpPost('https://lite.duckduckgo.com/lite/', body, {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Accept': 'text/html',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Referer': 'https://lite.duckduckgo.com/',
-      'Origin': 'https://lite.duckduckgo.com',
-    });
-
-    if (html.includes('cc=botnet') || html.includes('anomaly.js')) {
-      throw new Error('DDG bot detection triggered');
-    }
-    return this._parseDDGLite(html, maxResults);
-  }
-
-  /**
-   * DuckDuckGo Lite via GET (original method, fallback).
-   */
-  async _searchDDGGet(query, maxResults) {
-    const encoded = encodeURIComponent(query);
-    const resp = await this._httpGetWithStatus(`https://lite.duckduckgo.com/lite/?q=${encoded}`, {
-      'Accept': 'text/html,application/xhtml+xml',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Referer': 'https://lite.duckduckgo.com/',
-    });
-
-    if (resp.status === 202 || resp.body.includes('cc=botnet') || resp.body.includes('anomaly.js')) {
-      throw new Error('DDG rate limited');
-    }
-    return this._parseDDGLite(resp.body, maxResults);
-  }
-
-  /**
-   * Parse DuckDuckGo Lite HTML results.
-   */
-  _parseDDGLite(html, maxResults) {
-    const results = [];
-    const blocks = html.split(/class=['"]result-link['"]/);
-    for (let i = 1; i < blocks.length && results.length < maxResults; i++) {
-      const block = blocks[i];
-      const prevBlock = blocks[i - 1];
-      const hrefMatch = prevBlock.match(/href="([^"]+)"\s*$/);
-      if (!hrefMatch) continue;
-      let resultUrl = hrefMatch[1];
-      const uddgMatch = resultUrl.match(/[?&]uddg=([^&]+)/);
-      if (uddgMatch) resultUrl = decodeURIComponent(uddgMatch[1]);
-      const titleMatch = block.match(/^[^>]*>([^<]*(?:<[^>]*>[^<]*)*?)<\/a>/);
-      const title = titleMatch ? this._stripTags(titleMatch[1]).trim() : '';
-      const snippetMatch = block.match(/class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/);
-      const snippet = snippetMatch ? this._stripTags(snippetMatch[1]).trim() : '';
-      if (resultUrl && title) results.push({ title, url: resultUrl, snippet });
-    }
-    return results;
-  }
-
-  /**
-   * Fetch a webpage and extract readable text content.
-   */
-  async fetchPage(url) {
-    try {
-      const parsed = new URL(url);
-      if (!['http:', 'https:'].includes(parsed.protocol)) {
-        return { success: false, error: 'Only http and https URLs are supported' };
-      }
-      const html = await this._httpGet(url);
-      const title = this._extractTitle(html);
-      const content = this._extractTextContent(html);
-      const maxLen = 15000;
-      const truncated = content.length > maxLen ? content.slice(0, maxLen) + '\n\n[Content truncated]' : content;
-      return { success: true, title, url, content: truncated };
-    } catch (err) {
-      return { success: false, error: `Fetch failed: ${err.message}` };
-    }
-  }
-
-  // ─── HTTP helpers ────────────────────────────────────────
-
-  _httpGet(url, extraHeaders = {}, maxRedirects = 5) {
+  _nodeFetch(url, extraHeaders = {}, maxRedirects = 5) {
     return new Promise((resolve, reject) => {
       const parsed = new URL(url);
       const transport = parsed.protocol === 'https:' ? https : http;
@@ -211,40 +69,7 @@ class WebSearch {
           let redir = res.headers.location;
           if (redir.startsWith('/')) redir = `${parsed.protocol}//${parsed.host}${redir}`;
           res.resume();
-          this._httpGet(redir, extraHeaders, maxRedirects - 1).then(resolve, reject);
-          return;
-        }
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          res.resume();
-          reject(new Error(`HTTP ${res.statusCode}`));
-          return;
-        }
-        const chunks = [];
-        let total = 0;
-        res.on('data', (c) => { total += c.length; if (total > 2 * 1024 * 1024) { res.destroy(); reject(new Error('Response too large')); return; } chunks.push(c); });
-        res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-        res.on('error', reject);
-      });
-      req.on('error', reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
-    });
-  }
-
-  _httpGetWithStatus(url, extraHeaders = {}, maxRedirects = 5) {
-    return new Promise((resolve, reject) => {
-      const parsed = new URL(url);
-      const transport = parsed.protocol === 'https:' ? https : http;
-      const req = transport.get(url, {
-        headers: { 'User-Agent': this._getUA(), ...extraHeaders },
-        timeout: this.timeout,
-        rejectUnauthorized: false,
-      }, (res) => {
-        if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
-          if (maxRedirects <= 0) { reject(new Error('Too many redirects')); return; }
-          let redir = res.headers.location;
-          if (redir.startsWith('/')) redir = `${parsed.protocol}//${parsed.host}${redir}`;
-          res.resume();
-          this._httpGetWithStatus(redir, extraHeaders, maxRedirects - 1).then(resolve, reject);
+          this._nodeFetch(redir, extraHeaders, maxRedirects - 1).then(resolve, reject);
           return;
         }
         const chunks = [];
@@ -258,39 +83,39 @@ class WebSearch {
     });
   }
 
-  _httpPost(url, body, extraHeaders = {}, maxRedirects = 5) {
+  async _fetch(url, options = {}) {
+    const headers = {
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      ...options.headers,
+    };
+    if (this._electronNet) {
+      return this._electronFetch(url, { ...options, headers });
+    }
+    return this._nodeFetch(url, headers);
+  }
+
+  async _postFetch(url, body, headers = {}) {
+    if (this._electronNet) {
+      return this._electronFetch(url, { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers } });
+    }
+    return this._nodePost(url, body, headers);
+  }
+
+  _nodePost(url, body, extraHeaders = {}) {
     return new Promise((resolve, reject) => {
       const parsed = new URL(url);
       const transport = parsed.protocol === 'https:' ? https : http;
-      const options = {
-        method: 'POST',
-        hostname: parsed.hostname,
-        port: parsed.port,
+      const req = transport.request({
+        method: 'POST', hostname: parsed.hostname, port: parsed.port,
         path: parsed.pathname + parsed.search,
-        headers: {
-          'User-Agent': this._getUA(),
-          'Content-Length': Buffer.byteLength(body),
-          ...extraHeaders,
-        },
-        timeout: this.timeout,
-        rejectUnauthorized: false,
-      };
-      const req = transport.request(options, (res) => {
-        if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
-          if (maxRedirects <= 0) { reject(new Error('Too many redirects')); return; }
-          res.resume();
-          this._httpGet(res.headers.location, extraHeaders, maxRedirects - 1).then(resolve, reject);
-          return;
-        }
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          res.resume();
-          reject(new Error(`HTTP ${res.statusCode}`));
-          return;
-        }
+        headers: { 'User-Agent': this._getUA(), 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body), ...extraHeaders },
+        timeout: this.timeout, rejectUnauthorized: false,
+      }, (res) => {
         const chunks = [];
         let total = 0;
         res.on('data', (c) => { total += c.length; if (total > 2 * 1024 * 1024) { res.destroy(); reject(new Error('Response too large')); return; } chunks.push(c); });
-        res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+        res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf-8') }));
         res.on('error', reject);
       });
       req.on('error', reject);
@@ -300,13 +125,204 @@ class WebSearch {
     });
   }
 
+  /**
+   * Search the web. Tries multiple backends in order.
+   * Returns [{title, url, snippet}] or {error: string}
+   */
+  async search(query, maxResults = 5) {
+    const errors = [];
+
+    // Backend 1: DuckDuckGo Lite via POST (most reliable for automated requests)
+    try {
+      const results = await this._searchDDGPost(query, maxResults);
+      if (Array.isArray(results) && results.length > 0) return results;
+      errors.push('DDG POST: no results');
+    } catch (e) {
+      errors.push(`DDG POST: ${e.message}`);
+      console.log(`[WebSearch] DDG POST failed:`, e.message);
+    }
+
+    // Backend 2: DuckDuckGo Lite via GET
+    try {
+      const results = await this._searchDDGGet(query, maxResults);
+      if (Array.isArray(results) && results.length > 0) return results;
+      errors.push('DDG GET: no results');
+    } catch (e) {
+      errors.push(`DDG GET: ${e.message}`);
+      console.log(`[WebSearch] DDG GET failed:`, e.message);
+    }
+
+    // Backend 3: Brave Search
+    try {
+      const results = await this._searchBrave(query, maxResults);
+      if (Array.isArray(results) && results.length > 0) return results;
+      errors.push('Brave: no results');
+    } catch (e) {
+      errors.push(`Brave: ${e.message}`);
+      console.log(`[WebSearch] Brave failed:`, e.message);
+    }
+
+    // Backend 4: Bing
+    try {
+      const results = await this._searchBing(query, maxResults);
+      if (Array.isArray(results) && results.length > 0) return results;
+      errors.push('Bing: no results');
+    } catch (e) {
+      errors.push(`Bing: ${e.message}`);
+      console.log(`[WebSearch] Bing failed:`, e.message);
+    }
+
+    console.error(`[WebSearch] All backends failed:`, errors.join(' | '));
+    return { error: `Web search failed. Backends: ${errors.join('; ')}` };
+  }
+
+  /**
+   * DuckDuckGo Lite via POST.
+   */
+  async _searchDDGPost(query, maxResults) {
+    const body = `q=${encodeURIComponent(query)}`;
+    const resp = await this._postFetch('https://lite.duckduckgo.com/lite/', body, {
+      'Accept': 'text/html',
+      'Referer': 'https://lite.duckduckgo.com/',
+      'Origin': 'https://lite.duckduckgo.com',
+    });
+    if (resp.status === 202 || resp.body.includes('cc=botnet') || resp.body.includes('anomaly.js')) {
+      throw new Error('Bot detection triggered');
+    }
+    return this._parseDDGLite(resp.body, maxResults);
+  }
+
+  /**
+   * DuckDuckGo Lite via GET.
+   */
+  async _searchDDGGet(query, maxResults) {
+    const resp = await this._fetch(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`, {
+      headers: { 'Referer': 'https://lite.duckduckgo.com/' },
+    });
+    if (resp.status === 202 || resp.body.includes('cc=botnet') || resp.body.includes('anomaly.js')) {
+      throw new Error('Bot detection triggered');
+    }
+    if (resp.status < 200 || resp.status >= 300) throw new Error(`HTTP ${resp.status}`);
+    return this._parseDDGLite(resp.body, maxResults);
+  }
+
+  /**
+   * Brave Search HTML scraping.
+   */
+  async _searchBrave(query, maxResults) {
+    const resp = await this._fetch(`https://search.brave.com/search?q=${encodeURIComponent(query)}&source=web`, {
+      headers: {
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+      },
+    });
+    if (resp.status < 200 || resp.status >= 300) throw new Error(`HTTP ${resp.status}`);
+    return this._parseBrave(resp.body, maxResults);
+  }
+
+  /**
+   * Bing Search HTML scraping.
+   */
+  async _searchBing(query, maxResults) {
+    const resp = await this._fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}&setlang=en`, {
+      headers: { 'Referer': 'https://www.bing.com/' },
+    });
+    if (resp.status < 200 || resp.status >= 300) throw new Error(`HTTP ${resp.status}`);
+    return this._parseBing(resp.body, maxResults);
+  }
+
+  // ─── Parsers ─────────────────────────────────────────────
+
+  _parseDDGLite(html, maxResults) {
+    const results = [];
+    const blocks = html.split(/class=['"]result-link['"]/);
+    for (let i = 1; i < blocks.length && results.length < maxResults; i++) {
+      const prevBlock = blocks[i - 1];
+      const hrefMatch = prevBlock.match(/href="([^"]+)"\s*$/);
+      if (!hrefMatch) continue;
+      let resultUrl = hrefMatch[1];
+      const uddgMatch = resultUrl.match(/[?&]uddg=([^&]+)/);
+      if (uddgMatch) resultUrl = decodeURIComponent(uddgMatch[1]);
+      const titleMatch = blocks[i].match(/^[^>]*>([^<]*(?:<[^>]*>[^<]*)*?)<\/a>/);
+      const title = titleMatch ? this._stripTags(titleMatch[1]).trim() : '';
+      const snippetMatch = blocks[i].match(/class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/);
+      const snippet = snippetMatch ? this._stripTags(snippetMatch[1]).trim() : '';
+      if (resultUrl && title) results.push({ title, url: resultUrl, snippet });
+    }
+    return results;
+  }
+
+  _parseBrave(html, maxResults) {
+    const results = [];
+    const re = /<a[^>]*class="[^"]*heading-serpresult[^"]*"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g;
+    let m;
+    while ((m = re.exec(html)) !== null && results.length < maxResults) {
+      const url = this._decodeEntities(m[1]);
+      const title = this._stripTags(m[2]).trim();
+      if (url && title && url.startsWith('http')) results.push({ title, url, snippet: '' });
+    }
+    if (results.length === 0) {
+      const altRe = /data-type="web"[\s\S]*?<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+      while ((m = altRe.exec(html)) !== null && results.length < maxResults) {
+        const url = this._decodeEntities(m[1]);
+        const title = this._stripTags(m[2]).trim();
+        if (url && title) results.push({ title, url, snippet: '' });
+      }
+    }
+    const snippetRe = /class="snippet-description[^"]*"[^>]*>([\s\S]*?)<\//g;
+    let si = 0;
+    while ((m = snippetRe.exec(html)) !== null && si < results.length) {
+      results[si++].snippet = this._stripTags(m[1]).trim();
+    }
+    return results;
+  }
+
+  _parseBing(html, maxResults) {
+    const results = [];
+    const re = /<li class="b_algo">([\s\S]*?)<\/li>/g;
+    let m;
+    while ((m = re.exec(html)) !== null && results.length < maxResults) {
+      const block = m[1];
+      const linkMatch = block.match(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/);
+      if (!linkMatch) continue;
+      const url = this._decodeEntities(linkMatch[1]);
+      const title = this._stripTags(linkMatch[2]).trim();
+      const snippetMatch = block.match(/<p[^>]*>([\s\S]*?)<\/p>/);
+      const snippet = snippetMatch ? this._stripTags(snippetMatch[1]).trim() : '';
+      if (url && title) results.push({ title, url, snippet });
+    }
+    return results;
+  }
+
+  /**
+   * Fetch a webpage and extract readable text content.
+   */
+  async fetchPage(url) {
+    try {
+      const parsed = new URL(url);
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        return { success: false, error: 'Only http and https URLs are supported' };
+      }
+      const resp = await this._fetch(url);
+      const html = resp.body;
+      const title = this._extractTitle(html);
+      const content = this._extractTextContent(html);
+      const maxLen = 15000;
+      const truncated = content.length > maxLen ? content.slice(0, maxLen) + '\n\n[Content truncated]' : content;
+      return { success: true, title, url, content: truncated };
+    } catch (err) {
+      return { success: false, error: `Fetch failed: ${err.message}` };
+    }
+  }
+
   // ─── HTML helpers ────────────────────────────────────────
 
   _stripTags(html) {
     return html.replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
   }
 
-  _decodeHtmlEntities(str) {
+  _decodeEntities(str) {
     return str.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
   }
 

@@ -132,7 +132,7 @@
 }
 
 @layer components {
-  /* ─── Dirty Diff Gutter Decorations ─────────────────── */
+  /* ─── Dirty Diff Gutter + Line Decorations ─────────── */
   .dirty-diff-added {
     width: 3px !important;
     margin-left: 3px;
@@ -148,6 +148,15 @@
     margin-left: 3px;
     background: rgb(var(--guide-error));
     border-bottom: 3px solid rgb(var(--guide-error));
+  }
+  .dirty-diff-added-line {
+    background: rgba(var(--guide-success), 0.08) !important;
+  }
+  .dirty-diff-modified-line {
+    background: rgba(var(--guide-info), 0.08) !important;
+  }
+  .dirty-diff-deleted-line {
+    background: rgba(var(--guide-error), 0.06) !important;
   }
 
   /* ─── Glass Card ────────────────────────────────────── */

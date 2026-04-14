@@ -1038,15 +1038,33 @@ export default function ChatPanel() {
                       {(f.linesRemoved > 0) && <span className="text-vsc-error">-{f.linesRemoved}</span>}
                       <button
                         className="p-0.5 text-vsc-success hover:bg-vsc-success/10 rounded opacity-0 group-hover:opacity-100 text-[10px] font-medium transition-opacity"
-                        title="Keep"
-                        onClick={() => {/* stub */}}
+                        title="Keep changes"
+                        onClick={() => {
+                          const tab = useAppStore.getState().openTabs.find(t => t.path === f.path);
+                          if (tab) useAppStore.getState().markTabSaved(tab.id);
+                          setChatFilesChanged(chatFilesChanged.filter(cf => cf.path !== f.path));
+                        }}
                       >
                         Keep
                       </button>
                       <button
                         className="p-0.5 text-vsc-text-dim hover:text-vsc-error rounded opacity-0 group-hover:opacity-100"
                         title="Undo"
-                        onClick={() => setChatFilesChanged(chatFilesChanged.filter(cf => cf.path !== f.path))}
+                        onClick={() => {
+                          const tab = useAppStore.getState().openTabs.find(t => t.path === f.path);
+                          if (tab?.originalContent != null) {
+                            useAppStore.getState().updateTabContent(tab.id, tab.originalContent);
+                            const api = window.electronAPI;
+                            if (api?.apiFetch) {
+                              api.apiFetch('/api/files/write', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ path: f.path, content: tab.originalContent }),
+                              });
+                            }
+                          }
+                          setChatFilesChanged(chatFilesChanged.filter(cf => cf.path !== f.path));
+                        }}
                       >
                         <Undo2 size={9} />
                       </button>

@@ -335,8 +335,10 @@ class ChatEngine extends EventEmitter {
               }
             }
 
-            // Detect closing ``` (3+ consecutive backticks)
-            if (ch === '`') {
+            // Detect closing ``` — but NOT while inside the content string
+            if (_sfContentStreamActive || _sfContentEsc || _sfUnicodeCount > 0) {
+              _sfFenceTickCount = 0;
+            } else if (ch === '`') {
               _sfFenceTickCount++;
             } else {
               if (_sfFenceTickCount >= 3) {

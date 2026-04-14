@@ -176,6 +176,7 @@ const { MCPToolServer } = require('./mcpToolServer');
 const { ModelManager } = require('./modelManager');
 const { MemoryStore } = require('./memoryStore');
 const { LongTermMemory } = require('./longTermMemory');
+const { RulesManager } = require('./rulesManager');
 const { SessionStore } = require('./sessionStore');
 const { CloudLLMService } = require('./cloudLLMService');
 const { SettingsManager } = require('./settingsManager');
@@ -199,6 +200,7 @@ const mcpToolServer = new MCPToolServer({ projectPath: null, webSearch });
 const gitManager = new GitManager();
 const memoryStore = new MemoryStore();
 const longTermMemory = new LongTermMemory();
+const rulesManager = new RulesManager();
 const modelManager = new ModelManager(modelsBasePath);
 const sessionStore = new SessionStore(path.join(userDataPath, 'sessions'));
 const cloudLLM = new CloudLLMService();
@@ -220,6 +222,7 @@ const browserManager = new BrowserManager({
 // Wire service cross-references
 mcpToolServer.setBrowserManager({ parentWindow: { webContents: { send: (e, d) => _send(e, d) }, isDestroyed: () => !mainWindow } });
 mcpToolServer.setGitManager(gitManager);
+mcpToolServer.rulesManager = rulesManager;
 mcpToolServer.onTodoUpdate = (todos) => _send('todo-update', todos);
 cloudLLM.setLicenseManager(licenseManager);
 
@@ -255,6 +258,7 @@ async function openProjectPath(projectPath) {
   gitManager.setProjectPath(resolved);
   memoryStore.initialize(resolved);
   longTermMemory.initialize(resolved);
+  rulesManager.initialize(resolved);
   ragEngine.indexProject(resolved).catch(e => console.warn('[Main] RAG indexing failed:', e.message));
   _send('project-opened', { path: resolved });
 
@@ -295,6 +299,11 @@ const ctx = {
   _readConfig: () => currentSettings,
 };
 
+// ─── Rules/Skills API ───────────────────────────────────────────────
+ipcMain.handle('rules-list', () => rulesManager.listRules());
+ipcMain.handle('rules-save', (_e, name, content) => rulesManager.saveRule(name, content));
+ipcMain.handle('rules-delete', (_e, name) => rulesManager.deleteRule(name));
+
 // Register ai-chat handler for basic model chat
 ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
   if (!llmEngine.isReady) {
@@ -319,7 +328,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       executeToolFn: async (toolName, params) => {
         return await mcpToolServer.executeTool(toolName, params);
       },
-      systemPrompt: settings.systemPrompt || undefined,
+      systemPrompt: (settings.systemPrompt || '') + rulesManager.getRulesPrompt() || undefined,
       temperature: settings.temperature,
       maxTokens: settings.maxTokens || -1,
       topP: settings.topP,
