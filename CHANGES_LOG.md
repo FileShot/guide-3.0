@@ -34,10 +34,28 @@ Three disconnected wiring gaps between chatEngine → server → frontend:
 - Removed matching FILE_OPS_R skip from `mcp-tool-results` handler
 
 ### What Should Change
-- Raw tool call JSON no longer appears in chat text
-- All tool calls (including write_file, read_file, etc.) render as proper ToolCallCard components with pending/success/error states
-- Tool execution results update the cards in real-time
-- Existing `onToolCall` → `tool-call` pathway kept for backward compatibility
+- Raw tool call JSON never appears in chat — suppressed during streaming
+- All tool calls render as proper ToolCallCard components with pending/success/error states
+- File write operations (write_file, create_file, append_to_file) display as FileContentBlocks with syntax highlighting
+- Tool execution results update the cards in real-time (spinner → check mark or error)
+- Web search retries automatically on rate limiting (up to 3 attempts with exponential backoff)
+
+### Follow-up (same day) — Real-time streaming filter + file content events + web search retry
+
+#### `chatEngine.js` — Streaming filter
+- Added two-layer tool call suppression:
+  - Layer 1 (real-time): Character-by-character state machine in onTextChunk detects `{` at line boundaries, buffers, checks for `"tool":` within first 80 chars. If confirmed, JSON is silently consumed. Also detects ``` code fences and suppresses fence content containing tool calls.
+  - Layer 2 (post-generation): stripToolCallText() catches anything the streaming filter missed (XML tags, edge cases)
+- Filter state is properly reset between generation rounds
+- File write operations emit file-content-start/token/end events for FileContentBlock rendering
+
+#### `frontend/src/App.jsx`
+- File write ops (write_file, create_file, append_to_file) now skip ToolCallCard but display via FileContentBlock
+- Non-file tools (read_file, edit_file, delete_file, web_search, run_command, etc.) show as ToolCallCards
+
+#### `webSearch.js`
+- Added retry with exponential backoff (up to 3 attempts) when DuckDuckGo returns 202/bot-detection
+- Added random jitter to retry delays to avoid thundering herd
 
 ---
 

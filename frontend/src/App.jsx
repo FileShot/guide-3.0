@@ -75,9 +75,12 @@ export default function App() {
 
       // Tool events — backend sends arrays: [{tool, params}, ...]
       case 'tool-executing': {
+        // File write ops are displayed via FileContentBlock (backend emits file-content-* events)
+        const FILE_WRITE_OPS = new Set(['write_file', 'create_file', 'append_to_file']);
         const items = Array.isArray(data) ? data : [data];
         for (const item of items) {
           const toolName = item.tool || item.functionName || item.name;
+          if (FILE_WRITE_OPS.has(toolName)) continue;
           s.addStreamingToolCall({
             functionName: toolName,
             params: item.params || item.arguments,
@@ -88,9 +91,11 @@ export default function App() {
         break;
       }
       case 'mcp-tool-results': {
+        const FILE_WRITE_OPS_R = new Set(['write_file', 'create_file', 'append_to_file']);
         const results = Array.isArray(data) ? data : [data];
         for (const item of results) {
           const name = item.tool || item.functionName || item.name;
+          if (FILE_WRITE_OPS_R.has(name)) continue;
           s.updateStreamingToolCall(name, {
             status: item.result?.error || item.success === false ? 'error' : 'success',
             result: item.result,

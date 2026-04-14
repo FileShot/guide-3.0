@@ -171,6 +171,160 @@ class ChatEngine extends EventEmitter {
     let totalToolCalls = 0;
 
     try {
+      // ── Streaming tool call filter ──
+      // Two-layer suppression of tool call JSON from the UI:
+      //
+      // Layer 1 (real-time): This filter processes each token character-by-character.
+      //   - When `{` appears at a line boundary, buffer it. If `"tool":` appears
+      //     within the first 80 chars, keep buffering silently until braces close.
+      //   - When ``` appears at a line boundary, enter fence mode. If the fence
+      //     content starts with `{` and contains `"tool":`, suppress the entire fence.
+      //
+      // Layer 2 (post-generation): stripToolCallText() catches anything the
+      //   streaming filter missed (e.g., XML <tool_call> tags).
+      //
+      // Result: tool call JSON never appears in the chat as raw text.
+
+      let _sfBuf = '';           // pending buffer
+      let _sfDepth = 0;         // brace depth
+      let _sfActive = false;    // inside a potential raw JSON tool call
+      let _sfConfirmed = false; // buffer confirmed to contain "tool":
+      let _sfInStr = false;     // inside a JSON string
+      let _sfEscaped = false;   // previous char was backslash inside string
+      let _sfLastCharWasNewlineOrStart = true;
+
+      // Fence tracking: ```json ... ```
+      let _sfInFence = false;    // inside a code fence
+      let _sfFenceBuf = '';      // accumulated fence content (markers + body)
+      let _sfFenceTickCount = 0; // tracks consecutive backticks
+
+      const _sfForward = (text) => {
+        if (onToken) onToken(text);
+      };
+
+      const _sfFlush = () => {
+        if (_sfBuf) {
+          _sfForward(_sfBuf);
+          _sfBuf = '';
+        }
+        _sfDepth = 0;
+        _sfActive = false;
+        _sfConfirmed = false;
+        _sfInStr = false;
+        _sfEscaped = false;
+      };
+
+      const _sfFlushFence = () => {
+        if (_sfFenceBuf) {
+          _sfForward(_sfFenceBuf);
+          _sfFenceBuf = '';
+        }
+        _sfInFence = false;
+        _sfFenceTickCount = 0;
+      };
+
+      const _sfProcessChunk = (chunk) => {
+        for (let i = 0; i < chunk.length; i++) {
+          const ch = chunk[i];
+
+          // ── Fence mode: accumulating content inside ```...``` ──
+          if (_sfInFence) {
+            _sfFenceBuf += ch;
+            // Detect closing ``` (3+ consecutive backticks at line start)
+            if (ch === '`') {
+              _sfFenceTickCount++;
+            } else {
+              if (_sfFenceTickCount >= 3) {
+                // Closing fence found — check if content is a tool call
+                if (/"tool"\s*:/.test(_sfFenceBuf) || /"name"\s*:/.test(_sfFenceBuf)) {
+                  // Suppress entire fence
+                  _sfFenceBuf = '';
+                } else {
+                  _sfFlushFence();
+                }
+                _sfInFence = false;
+                _sfLastCharWasNewlineOrStart = (ch === '\n' || ch === '\r');
+                continue;
+              }
+              _sfFenceTickCount = 0;
+            }
+            continue;
+          }
+
+          // ── Normal mode ──
+          if (!_sfActive) {
+            // Detect opening ``` at line start
+            if (ch === '`' && _sfLastCharWasNewlineOrStart) {
+              _sfFenceTickCount++;
+              if (_sfFenceTickCount >= 3) {
+                _sfInFence = true;
+                _sfFenceBuf = '```';
+                _sfFenceTickCount = 0;
+                _sfLastCharWasNewlineOrStart = false;
+                continue;
+              }
+              continue;
+            }
+            // If we had 1-2 backticks but not 3, flush them
+            if (_sfFenceTickCount > 0 && ch !== '`') {
+              _sfForward('`'.repeat(_sfFenceTickCount));
+              _sfFenceTickCount = 0;
+            }
+
+            // Look for `{` at line start (or after only whitespace on the line)
+            if (ch === '{' && _sfLastCharWasNewlineOrStart) {
+              _sfActive = true;
+              _sfBuf = '{';
+              _sfDepth = 1;
+              _sfConfirmed = false;
+              _sfInStr = false;
+              _sfEscaped = false;
+              _sfLastCharWasNewlineOrStart = false;
+              continue;
+            }
+            _sfLastCharWasNewlineOrStart = (ch === '\n' || ch === '\r');
+            if (ch === ' ' || ch === '\t') { /* keep the flag */ }
+            else if (ch !== '\n' && ch !== '\r') _sfLastCharWasNewlineOrStart = false;
+            _sfForward(ch);
+            continue;
+          }
+
+          // ── Inside a potential raw JSON tool call ──
+          _sfBuf += ch;
+
+          if (_sfEscaped) { _sfEscaped = false; continue; }
+          if (ch === '\\' && _sfInStr) { _sfEscaped = true; continue; }
+          if (ch === '"') { _sfInStr = !_sfInStr; continue; }
+          if (_sfInStr) continue;
+
+          if (ch === '{') _sfDepth++;
+          else if (ch === '}') _sfDepth--;
+
+          if (!_sfConfirmed && _sfBuf.length <= 80) {
+            if (/"tool"\s*:/.test(_sfBuf) || /"name"\s*:\s*"[^"]*"/.test(_sfBuf)) {
+              _sfConfirmed = true;
+            }
+          }
+
+          if (!_sfConfirmed && _sfBuf.length > 80) {
+            _sfFlush();
+            _sfLastCharWasNewlineOrStart = false;
+            continue;
+          }
+
+          if (_sfDepth === 0) {
+            if (_sfConfirmed) {
+              _sfBuf = '';
+            } else {
+              _sfFlush();
+            }
+            _sfActive = false;
+            _sfConfirmed = false;
+            _sfLastCharWasNewlineOrStart = false;
+          }
+        }
+      };
+
       // Build common generation options
       const genOptions = {
         signal: this._abortController.signal,
@@ -181,7 +335,7 @@ class ChatEngine extends EventEmitter {
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
           fullResponse += chunk;
-          if (onToken) onToken(chunk);
+          _sfProcessChunk(chunk);
           tokensSinceLastUsageReport++;
           if (onContextUsage && tokensSinceLastUsageReport >= 50) {
             tokensSinceLastUsageReport = 0;
@@ -211,6 +365,10 @@ class ChatEngine extends EventEmitter {
       // Raw-text tool call loop: parse tool calls from model output, execute, continue
       const MAX_TOOL_ITERATIONS = 20;
       if (executeToolFn) {
+        // Flush any buffered content from the streaming filter before parsing
+        _sfFlush();
+        _sfFlushFence();
+
         let roundStart = 0;
         let parsedCalls = parseToolCalls(fullResponse);
         if (parsedCalls.length > 0) {
@@ -218,16 +376,17 @@ class ChatEngine extends EventEmitter {
           parsedCalls = repaired;
         }
 
-        // Strip tool call JSON from the UI display before executing tools.
-        // The raw JSON was streamed via onToken during generation; now we replace
-        // it with the cleaned prose so the user sees ToolCallCards instead.
+        // Safety net: if the streaming filter missed any tool JSON (e.g., fenced blocks),
+        // strip it from the UI now via llm-replace-last.
         if (parsedCalls.length > 0 && onStreamEvent) {
           const cleanText = stripToolCallText(fullResponse);
-          onStreamEvent('llm-replace-last', { originalLength: fullResponse.length, replacement: cleanText });
+          if (cleanText.length < fullResponse.length) {
+            onStreamEvent('llm-replace-last', { originalLength: fullResponse.length, replacement: cleanText });
+          }
         }
 
         while (parsedCalls.length > 0 && totalToolCalls < MAX_TOOL_ITERATIONS) {
-          // Notify UI so ToolCallCards appear for each tool call
+          // Notify UI so ToolCallCards appear for each tool call (spinner state)
           if (onStreamEvent) {
             onStreamEvent('tool-executing', parsedCalls.map(c => ({ tool: c.tool, params: c.params })));
           }
@@ -238,6 +397,18 @@ class ChatEngine extends EventEmitter {
             if (totalToolCalls >= MAX_TOOL_ITERATIONS) break;
             console.log(`[ChatEngine] Tool call: ${call.tool}(${JSON.stringify(call.params).substring(0, 200)})`);
             totalToolCalls++;
+
+            // Emit file-content events for file write operations so the UI
+            // can show a FileContentBlock with syntax highlighting
+            const FILE_WRITE_OPS = new Set(['write_file', 'create_file', 'append_to_file']);
+            if (FILE_WRITE_OPS.has(call.tool) && call.params?.content && onStreamEvent) {
+              const filePath = call.params.filePath || call.params.path || '';
+              const fileName = filePath.split(/[\\/]/).pop() || filePath;
+              const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+              onStreamEvent('file-content-start', { filePath, fileName, language: ext, fileKey: filePath });
+              onStreamEvent('file-content-token', call.params.content);
+              onStreamEvent('file-content-end', { filePath, fileKey: filePath });
+            }
 
             let toolResult;
             try {
@@ -250,7 +421,7 @@ class ChatEngine extends EventEmitter {
             console.log(`[ChatEngine] Tool result for ${call.tool}: ${resultStr.substring(0, 200)}${resultStr.length > 200 ? '...' : ''}`);
             if (onToolCall) onToolCall({ name: call.tool, params: call.params, result: toolResult });
 
-            // Notify UI with tool execution result so ToolCallCard updates
+            // Update ToolCallCard with result (check mark or error)
             if (onStreamEvent) {
               onStreamEvent('mcp-tool-results', [{ tool: call.tool, result: toolResult }]);
             }
@@ -273,10 +444,26 @@ class ChatEngine extends EventEmitter {
             contextShiftMetadata: this._lastEvaluation.contextShiftMetadata,
           } : undefined;
 
+          // Reset streaming filter state for the next generation round
+          _sfBuf = '';
+          _sfDepth = 0;
+          _sfActive = false;
+          _sfConfirmed = false;
+          _sfInStr = false;
+          _sfEscaped = false;
+          _sfLastCharWasNewlineOrStart = true;
+          _sfInFence = false;
+          _sfFenceBuf = '';
+          _sfFenceTickCount = 0;
+
           // Generate continuation — model sees tool results and can issue more tool calls
           roundStart = fullResponse.length;
           result = await this._chat.generateResponse(this._chatHistory, genOptions);
           console.log(`[ChatEngine] Continuation after tools: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}`);
+
+          // Flush streaming filter buffer before parsing new text
+          _sfFlush();
+          _sfFlushFence();
 
           // Parse only the NEW text from this round (avoid re-executing previous tool calls)
           const newText = fullResponse.substring(roundStart);
@@ -285,10 +472,12 @@ class ChatEngine extends EventEmitter {
             const { repaired } = repairToolCalls(parsedCalls, newText);
             parsedCalls = repaired;
 
-            // Clean new text in UI (same pattern as initial round)
+            // Safety net cleanup for any missed tool JSON in new text
             if (onStreamEvent) {
               const cleanNewText = stripToolCallText(newText);
-              onStreamEvent('llm-replace-last', { originalLength: newText.length, replacement: cleanNewText });
+              if (cleanNewText.length < newText.length) {
+                onStreamEvent('llm-replace-last', { originalLength: newText.length, replacement: cleanNewText });
+              }
             }
           }
         }

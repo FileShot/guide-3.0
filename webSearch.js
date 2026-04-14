@@ -20,20 +20,46 @@ class WebSearch {
    * Returns [{title, url, snippet}] or {error: string}
    * R53-Fix: Switched from html.duckduckgo.com (now bot-blocked with 202 + JS challenge)
    * to lite.duckduckgo.com which still returns HTML results without JS execution.
+   * Retries up to 3 times with exponential backoff on rate limiting.
    */
   async search(query, maxResults = 5) {
-    try {
-      const encoded = encodeURIComponent(query);
-      const searchUrl = `https://lite.duckduckgo.com/lite/?q=${encoded}`;
-      const response = await this._fetchWithStatus(searchUrl);
-      // R53-Fix: Detect bot-detection pages (HTTP 202 + anomaly/botnet challenge)
-      if (response.status === 202 || response.body.includes('cc=botnet') || response.body.includes('anomaly.js')) {
-        return { error: 'Search temporarily unavailable (rate limited). Try again in a few seconds.' };
+    const encoded = encodeURIComponent(query);
+    const maxRetries = 3;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const searchUrl = `https://lite.duckduckgo.com/lite/?q=${encoded}`;
+        const response = await this._fetchWithStatus(searchUrl);
+
+        if (response.status === 202 || response.body.includes('cc=botnet') || response.body.includes('anomaly.js')) {
+          if (attempt < maxRetries - 1) {
+            const delay = 1000 * Math.pow(2, attempt) + Math.random() * 500;
+            await new Promise(r => setTimeout(r, delay));
+            continue;
+          }
+          return { error: 'Search temporarily unavailable (rate limited). Try again in a few seconds.' };
+        }
+
+        const results = this._parseLiteResults(response.body, maxResults);
+        if (Array.isArray(results) && results.length > 0) return results;
+
+        // Empty results — try DuckDuckGo HTML fallback
+        if (attempt < maxRetries - 1) {
+          const delay = 800 * Math.pow(2, attempt);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        return results;
+      } catch (err) {
+        if (attempt < maxRetries - 1) {
+          const delay = 1000 * Math.pow(2, attempt);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        return { error: `Search failed: ${err.message}` };
       }
-      return this._parseLiteResults(response.body, maxResults);
-    } catch (err) {
-      return { error: `Search failed: ${err.message}` };
     }
+    return { error: 'Search failed after retries' };
   }
 
   /**
