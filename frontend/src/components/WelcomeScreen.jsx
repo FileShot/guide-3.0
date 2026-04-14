@@ -209,8 +209,8 @@ export default function WelcomeScreen() {
           <div
             className="w-20 h-20 mb-4 bg-vsc-accent"
             style={{
-              mask: 'url(/icon.png) center/contain no-repeat',
-              WebkitMask: 'url(/icon.png) center/contain no-repeat',
+              mask: 'url(./icon.png) center/contain no-repeat',
+              WebkitMask: 'url(./icon.png) center/contain no-repeat',
               filter: 'drop-shadow(0 0 30px rgb(var(--guide-accent) / 0.5))',
             }}
           />

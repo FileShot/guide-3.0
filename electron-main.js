@@ -297,8 +297,22 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
   try {
     agenticCancelled = false;
     const settings = chatContext?.settings || {};
+
+    // Build tool functions from enabled tool definitions
+    const toolDefs = mcpToolServer.getToolDefinitions();
+    const functions = ChatEngine.convertToolDefs(toolDefs);
+    const toolPrompt = mcpToolServer.getToolPrompt();
+
     const result = await llmEngine.chat(userMessage, {
       onToken: (token) => _send('llm-token', token),
+      onContextUsage: (data) => _send('context-usage', data),
+      onToolCall: (data) => _send('tool-call', data),
+      onStreamEvent: (eventName, data) => _send(eventName, data),
+      functions,
+      toolPrompt,
+      executeToolFn: async (toolName, params) => {
+        return await mcpToolServer.executeTool(toolName, params);
+      },
       systemPrompt: settings.systemPrompt || undefined,
       temperature: settings.temperature,
       maxTokens: settings.maxTokens || -1,
@@ -306,7 +320,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       topK: settings.topK,
       repeatPenalty: settings.repeatPenalty,
     });
-    return { text: result.text };
+    return { text: result.text, toolCallCount: result.toolCallCount };
   } catch (err) {
     return { error: err.message };
   }

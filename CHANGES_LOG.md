@@ -4,6 +4,78 @@
 
 ---
 
+## 2026-04-13 — Replace GBNF tool calling with raw text parsing
+
+### Problem
+Tool calling is 0% functional. `functionCalls=0` across ALL tests (10+ tests, 7+ models). Small models either ignore GBNF grammar constraints (generate text instead of structured calls) or loop indefinitely (repeat same call 20 times). Meanwhile, `tools/toolParser.js` (728-line multi-format parser) and `mcpToolServer.getToolPrompt()` (comprehensive prompt with examples) exist in the codebase but were never wired into chatEngine.js.
+
+### Root Cause
+Three gaps in chatEngine.js:
+1. `toolPrompt` passed by server/main.js but never destructured — comprehensive mcpToolServer prompt discarded
+2. `genOptions.functions` set GBNF grammar — small models can't use it (PAST_FAILURES.md Category 6)
+3. `toolParser.parseToolCalls()` never imported or called — 728 lines of battle-tested parsing unused
+
+### Changes (chatEngine.js ONLY)
+1. **Line 8**: Added `const { parseToolCalls, repairToolCalls } = require('./tools/toolParser');`
+2. **Line 123**: Added `toolPrompt` to options destructuring
+3. **Lines 127-135**: System prompt now prefers `toolPrompt` (from mcpToolServer, with format examples + "use write_file" rule) over `_buildToolPrompt(functions)` (flat list, no examples)
+4. **Lines 164-166**: Removed `genOptions.functions` and `genOptions.documentFunctionParams` (GBNF disabled)
+5. **Lines 180-250**: Replaced dead GBNF loop (`stopReason === 'functionCalls'`, never triggered) with raw text parsing loop: `parseToolCalls(fullResponse)` → `repairToolCalls()` → execute via `executeToolFn` → add results to history → regenerate → repeat until no tool calls or MAX_TOOL_ITERATIONS
+
+### Design Details
+- `roundStart` index tracks where each generation round starts in `fullResponse` — prevents re-executing tool calls from previous rounds
+- Tool results fed back as `{type: 'user', text: '[Tool Results]\n...'}` — gives model natural continuation context
+- `repairToolCalls()` handles edge cases: empty content recovery, filePath inference, dropped call recovery
+- `_buildToolPrompt()` and `convertToolDefs()` kept as fallbacks but not used when `toolPrompt` is available
+- No changes to `_contextShiftStrategy`, SYSTEM_PROMPT, server/main.js, or any other file
+
+### What Should Change
+Model should receive the comprehensive tool prompt with format examples. If it outputs tool call JSON in any of 7+ supported formats (XML `<tool_call>`, ```json fences, raw JSON, function-call syntax, etc.), `parseToolCalls` will detect and execute them. If model still outputs raw text without tool calls, behavior is identical to before (no regression).
+
+---
+
+## 2026-04-13 — Pin user message in context shift strategy
+
+### Problem
+After context rotation, the model lost the user's original request. The `_contextShiftStrategy` allocated ALL remaining budget (after system prompt) to the response tail, leaving 0 tokens for the user message. The user message was dropped as a "middle item" on every rotation. Result: model generated 25,793 lines of repetitive ASCII art across 93 rotations because it had no knowledge of the original task.
+
+### Root Cause
+Line `availableForLastItem = budget - systemTokens - 20` sized the response tail to fill the ENTIRE remaining budget. With budget=6266, systemTokens≈1500, the response consumed ~4746 tokens, leaving only ~10 tokens — far too few for the user message (~500 tokens).
+
+### Fix
+In `_contextShiftStrategy()` (chatEngine.js):
+1. Find the most recent user-type message in the middle items
+2. Reserve its token count in the budget before truncating the response
+3. Skip it during the middle-item fill loop (already accounted for)
+4. Include it in the output history in chronological order using index-based ordering
+5. Changed budget line to: `availableForLastItem = budget - systemTokens - pinnedUserTokens - 20`
+
+### Effect
+After rotation, model sees [system + user message + response tail] instead of [system + response tail]. Response tail is ~500 tokens shorter (~12K chars instead of ~14K), but model retains knowledge of the task.
+
+---
+
+## 2026-04-13 — Restore backup chatEngine.js (context shift fix)
+
+### Problem
+The git HEAD (v2.3.15) had a BROKEN `_contextShiftStrategy` that returned a plain array instead of `{ chatHistory, metadata }`. This caused `TypeError: Cannot read properties of undefined (reading 'slice')` in node-llama-cpp's `addAvailableFunctionsSystemMessageToHistory`. The strategy silently fell back to the default (eraseFirstResponseAndKeepFirstSystem), which cannot trim the current in-progress response. Result: generation stops at 100% context, zero context rotation.
+
+### Root Cause
+The guide-3.0-backup copy at `C:\Users\brend\guide-3.0-backup\chatEngine.js` had the CORRECT version (437 lines) with proper `{ chatHistory, metadata }` return format AND response truncation logic. The git HEAD had a broken version (397 lines) that lost `_lastEvaluation` tracking, `_buildToolPrompt`, and correct context shift return format.
+
+### Change
+- Copied `guide-3.0-backup/chatEngine.js` to `guide-3.0/chatEngine.js`
+- Replaced the backup's one-line SYSTEM_PROMPT with the current detailed version (tool usage instructions, continuation note, rules)
+- Restored: `_contextShiftStrategy` with correct `{ chatHistory, metadata }` return format
+- Restored: Response truncation from beginning when single response exceeds budget
+- Restored: `_lastEvaluation` tracking and `lastEvaluationContextWindow` passing
+- Restored: `_buildToolPrompt` for dynamic tool usage instructions
+
+### Observable Effect
+Context shift should no longer crash. When context fills, the strategy truncates the current response from the beginning (keeping most recent content) and returns proper format. Generation should continue after context shift instead of stopping at 100%.
+
+---
+
 ## 2026-04-10 — Change AB: Pre-seeded conversation history with native chat tokens
 
 ### Problem

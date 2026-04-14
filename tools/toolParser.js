@@ -360,8 +360,75 @@ function parseToolCalls(text) {
   // Method 1: Fenced code blocks — ```tool_call / ```tool / ```json
   const fenceRe = /```(?:tool_call|tool|json)[^\n]*\n([\s\S]*?)```/g;
   while ((m = fenceRe.exec(text)) !== null) {
-    const objects = extractJsonObjects(m[1]);
-    for (const obj of objects) addCall(normalizeToolCall(obj));
+    const fenceContent = m[1];
+    console.log(`[ToolParser] Method 1: Found fenced block (${fenceContent.length} chars). First 200: ${fenceContent.substring(0, 200).replace(/\n/g, '\\n')}`);
+    const objects = extractJsonObjects(fenceContent);
+    console.log(`[ToolParser] Method 1: extractJsonObjects returned ${objects.length} object(s)`);
+    for (const obj of objects) {
+      const normalized = normalizeToolCall(obj);
+      if (!normalized) console.log(`[ToolParser] Method 1: normalizeToolCall returned null for keys: ${Object.keys(obj).join(', ')}`);
+      addCall(normalized);
+    }
+
+    // Method 1.1 (Fix D): Regex fallback when JSON.parse fails on large fenced content
+    // If the fenced block clearly contains a tool call but extractJsonObjects failed,
+    // recover the tool call via regex extraction of tool name, filePath, and content.
+    if (objects.length === 0 && fenceContent.length > 50) {
+      const toolMatch = fenceContent.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
+      if (toolMatch) {
+        console.log(`[ToolParser] Method 1.1: JSON parse failed but found tool name "${toolMatch[1]}" — attempting regex recovery`);
+        const rawToolName = toolMatch[1].toLowerCase().replace(/-/g, '_');
+        const toolName = TOOL_NAME_ALIASES[rawToolName] || rawToolName;
+        if (VALID_TOOLS.has(toolName)) {
+          const call = { tool: toolName, params: {}, _regexRecovered: true };
+          // Extract filePath
+          const pathMatch = fenceContent.match(/"(?:filePath|file_path|path|filename)"\s*:\s*"([^"]+)"/i);
+          if (pathMatch) call.params.filePath = pathMatch[1];
+          // Extract content for write/append tools
+          if (toolName === 'write_file' || toolName === 'append_to_file' || toolName === 'edit_file') {
+            const contentIdx = fenceContent.indexOf('"content"');
+            if (contentIdx >= 0) {
+              const colonIdx = fenceContent.indexOf(':', contentIdx + 9);
+              if (colonIdx >= 0) {
+                const quoteIdx = fenceContent.indexOf('"', colonIdx + 1);
+                if (quoteIdx >= 0) {
+                  let rawContent = fenceContent.slice(quoteIdx + 1);
+                  // Strip trailing JSON closing structure
+                  rawContent = rawContent.replace(/"\s*\}\s*\}\s*\]?\s*$/, '');
+                  rawContent = rawContent.replace(/"\s*\}\s*$/, '');
+                  // Unescape JSON escape sequences
+                  try {
+                    rawContent = rawContent
+                      .replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r')
+                      .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+                  } catch (_) {}
+                  if (rawContent.trim().length > 10) {
+                    call.params.content = rawContent;
+                    console.log(`[ToolParser] Method 1.1: Recovered ${toolName} with content (${rawContent.length} chars)`);
+                  }
+                }
+              }
+            }
+          }
+          // Extract other common params via regex
+          const queryMatch = fenceContent.match(/"query"\s*:\s*"([^"]+)"/);
+          if (queryMatch) call.params.query = queryMatch[1];
+          const cmdMatch = fenceContent.match(/"command"\s*:\s*"([^"]+)"/);
+          if (cmdMatch) call.params.command = cmdMatch[1];
+          const urlMatch = fenceContent.match(/"url"\s*:\s*"([^"]+)"/);
+          if (urlMatch) call.params.url = urlMatch[1];
+          const dirMatch = fenceContent.match(/"dirPath"\s*:\s*"([^"]+)"/);
+          if (dirMatch) call.params.dirPath = dirMatch[1];
+
+          // Infer filePath from content if missing
+          if (!call.params.filePath && call.params.content) {
+            call.params.filePath = _inferFilePath(text, call.params.content);
+            console.log(`[ToolParser] Method 1.1: Inferred filePath: ${call.params.filePath}`);
+          }
+          addCall(call);
+        }
+      }
+    }
   }
 
   // Method 1.5: Unclosed fence at end of response
@@ -474,8 +541,9 @@ function parseToolCalls(text) {
   // Method 2: Raw JSON objects with "tool" or "name" key
   const rawJsonRe = /\{\s*["']?(?:tool|name)["']?\s*:\s*["'][^"']+["']/g;
   while ((m = rawJsonRe.exec(text)) !== null) {
-    // Find the complete JSON object starting at this position
+    console.log(`[ToolParser] Method 2: Found raw JSON at offset ${m.index}. Match: ${m[0]}`);
     const objects = extractJsonObjects(text.slice(m.index));
+    console.log(`[ToolParser] Method 2: extractJsonObjects returned ${objects.length} object(s)`);
     for (const obj of objects) addCall(normalizeToolCall(obj));
   }
   if (calls.length > 0) return _postProcess(calls, text);

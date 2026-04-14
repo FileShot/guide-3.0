@@ -1,0 +1,220 @@
+Total messages: 193 (Errors: 0, Warnings: 0)
+
+[LOG] [App] Event received: 'file-content-token' W @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' </ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' span @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' > @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'     @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  </ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' div @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' >` @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' ; @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'   @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  }); @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'   @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  app @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' .innerHTML @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  += @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  '</ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' div @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' >' @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' ; @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' } @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' function @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  render @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' Skills @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' () @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  { @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'   @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  const @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  skills @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' List @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  = @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  document @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' .querySelectorAll @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' ('. @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' skill @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' -node @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' '); @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'   @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  skills @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' List @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' .forEach @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' (node @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  => @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  node @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' .remove @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' ()); @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  // @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  Remove @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  old @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  nodes @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  to @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  clear @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  structure @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  for @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  redraw @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  if @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  needed @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' , @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  or @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  just @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  update @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  text @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' . @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'   @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'   @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'   @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  gameState @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' .skills @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' .forEach @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' (skill @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' Name @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  => @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  { @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'     @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  app @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' .innerHTML @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  += @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  `<div @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  class @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' =" @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' skill @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' -node @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' "> @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'       @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  <span @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' >${ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' skill @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' Name @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' }</ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' span @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' > @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'       @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  <input @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  type @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' =" @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' checkbox @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' " @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  ${ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' game @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' State @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' .skills @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' .includes @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' (skill @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' Name @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' ) @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  ? @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  ' @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' checked @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' ' @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  : @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  '' @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' } @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  onchange @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' =" @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' toggle @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' Skill @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' ('${ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' skill @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' Name @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' }') @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' "></ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' div @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' >` @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' ; @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'   @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  }); @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' } @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' function @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  render @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' Sp @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' ells @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' () @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  { @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'   @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  const @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  schools @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  = @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  { @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  red @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' : @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  ' @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' Ev @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' ocation @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' ', @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  blue @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' : @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  ' @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' Ab @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' j @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' uration @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' ', @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  green @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' : @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  ' @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' Con @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' j @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' uration @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' ' @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  } @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' ; @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 
+ @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'   @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  app @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' .innerHTML @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  += @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  '<h @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' 3 @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token'  style @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-token' = @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'file-content-end' {filePath: index.html} @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'tool-executing' [Object] @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'files-changed' undefined @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'agent-file-modified' {filePath: C:\Users\brend\guide-3.0\test-projects\test-session-2026-04-12b\index.html, newContent: <!DOCTYPE html>
+<html lang="en">
+<head>
+<meta char…eState.name || document.title;
+
+</script>
+</body>, isNew: true, tool: write_file} @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'tool-call' {name: write_file, params: Object, result: Object} @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [App] Event received: 'mcp-tool-results' [Object] @ http://localhost:3000/assets/index-DAoh3qRi.js:1289
+[LOG] [ChatPanel] Finalization: {segmentsLen: 2, messageContentLen: 12871, hasContent: true, hasToolCalls: false, hasThinking: false} @ http://localhost:3000/assets/index-DAoh3qRi.js:1281
