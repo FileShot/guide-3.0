@@ -804,7 +804,7 @@ export default function ChatPanel() {
       </div>
 
       {/* Messages area (virtualized) */}
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0" onWheel={handleUserWheel}>
         {/* Session history shown when chat is empty — filtered to current project */}
         {chatMessages.length === 0 && savedSessions.length > 0 && (() => {
           const filtered = projectPath
@@ -844,17 +844,17 @@ export default function ChatPanel() {
           </div>
           );
         })()}
-        <div onWheel={handleUserWheel} className="flex-1 min-h-0">
         <Virtuoso
           ref={virtuosoRef}
           data={chatMessages}
+          followOutput="auto"
           atBottomStateChange={(atBottom) => {
             atBottomRef.current = atBottom;
             if (atBottom) userScrolledAwayRef.current = false;
           }}
           atBottomThreshold={120}
           initialTopMostItemIndex={chatMessages.length > 0 ? chatMessages.length - 1 : 0}
-          className="scrollbar-thin h-full"
+          className="scrollbar-thin"
           components={{
             Header: StreamingHeader,
             Footer: StreamingFooter,
@@ -970,7 +970,6 @@ export default function ChatPanel() {
             </>
           )}
         />
-        </div>
       </div>
 
       {/* ─── Unified Input Container ──────────────────────── */}

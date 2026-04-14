@@ -27,7 +27,7 @@ If your output is cut off mid-generation, the system will automatically continue
 
 ## Rules
 - Only claim you did something if you called the tool that did it
-- After calling a tool, use the results immediately — never call the same tool twice with the same arguments
+- After calling a tool, use the results immediately — do not repeat the same call
 - Never say "I can't", "I'm unable to", or "I don't have access" when you have a tool available
 - For file edits: read the file first to get exact text, then edit
 - Browser workflow: navigate first, then take a snapshot, then interact using element refs
@@ -53,7 +53,7 @@ NEVER output file contents as code blocks in chat.
 NEVER say "here is the code" and then show it.
 NEVER write HTML, CSS, JavaScript, Python, or any other code as a chat response.
 NEVER say "I can't", "I don't have access", "I'm unable to", or "I cannot" when you have a tool that can do it.
-NEVER call the same tool twice with the same arguments in one conversation turn.
+NEVER call the same tool with the same arguments repeatedly — call it once and use the results.
 
 ## ALWAYS DO THIS
 ALWAYS call write_file when creating a file.
