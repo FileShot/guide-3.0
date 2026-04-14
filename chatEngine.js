@@ -239,12 +239,25 @@ class ChatEngine extends EventEmitter {
       };
 
       const _sfFlushFence = () => {
+        if (_sfContentStreamActive && onStreamEvent) {
+          if (_sfContentBuf) {
+            onStreamEvent('file-content-token', _sfContentBuf);
+            _sfContentBuf = '';
+          }
+          onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
+          _sfContentStreamActive = false;
+        }
         if (_sfFenceBuf) {
           _sfForward(_sfFenceBuf);
           _sfFenceBuf = '';
         }
         _sfInFence = false;
         _sfFenceTickCount = 0;
+        _sfFileWriteDetected = false;
+        _sfContentDone = false;
+        _sfContentEsc = false;
+        _sfUnicodeCount = 0;
+        _sfUnicodeChars = '';
       };
 
       const _sfProcessChunk = (chunk) => {
@@ -254,19 +267,97 @@ class ChatEngine extends EventEmitter {
           // ── Fence mode: accumulating content inside ```...``` ──
           if (_sfInFence) {
             _sfFenceBuf += ch;
-            // Detect closing ``` (3+ consecutive backticks at line start)
+
+            // Real-time content streaming from WITHIN a fenced tool call.
+            // Uses the same shared state variables as the raw JSON path.
+            if (_sfContentStreamActive) {
+              if (_sfUnicodeCount > 0) {
+                _sfUnicodeChars += ch;
+                _sfUnicodeCount--;
+                if (_sfUnicodeCount === 0) {
+                  try { _sfContentBuf += String.fromCharCode(parseInt(_sfUnicodeChars, 16)); }
+                  catch { _sfContentBuf += '\\u' + _sfUnicodeChars; }
+                }
+              } else if (_sfContentEsc) {
+                let decoded;
+                switch (ch) {
+                  case 'n': decoded = '\n'; break;
+                  case 't': decoded = '\t'; break;
+                  case 'r': decoded = '\r'; break;
+                  case '"': decoded = '"'; break;
+                  case '\\': decoded = '\\'; break;
+                  case '/': decoded = '/'; break;
+                  case 'b': decoded = '\b'; break;
+                  case 'f': decoded = '\f'; break;
+                  case 'u': _sfUnicodeCount = 4; _sfUnicodeChars = ''; decoded = null; break;
+                  default: decoded = ch;
+                }
+                _sfContentEsc = false;
+                if (decoded !== null) _sfContentBuf += decoded;
+              } else if (ch === '\\') {
+                _sfContentEsc = true;
+              } else if (ch === '"') {
+                _sfContentStreamActive = false;
+                _sfContentDone = true;
+                if (_sfContentBuf && onStreamEvent) {
+                  onStreamEvent('file-content-token', _sfContentBuf);
+                  _sfContentBuf = '';
+                }
+                if (onStreamEvent) {
+                  onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
+                }
+              } else {
+                _sfContentBuf += ch;
+              }
+              if (_sfContentStreamActive && _sfContentBuf.length >= 40) {
+                if (onStreamEvent) {
+                  onStreamEvent('file-content-token', _sfContentBuf);
+                  _sfContentBuf = '';
+                }
+              }
+            } else if (_sfFileWriteDetected && !_sfContentDone) {
+              if (ch === '"' && /"content"\s*:\s*"$/.test(_sfFenceBuf)) {
+                _sfContentStreamActive = true;
+                const fpMatch = _sfFenceBuf.match(/"(?:filePath|path)"\s*:\s*"([^"]*)"/);
+                _sfContentFilePath = fpMatch ? fpMatch[1] : '';
+                const fileName = _sfContentFilePath.split(/[\\/]/).pop() || _sfContentFilePath;
+                const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+                if (onStreamEvent) {
+                  onStreamEvent('file-content-start', { filePath: _sfContentFilePath, fileName, language: ext, fileKey: _sfContentFilePath });
+                }
+                _sfStreamedFileWrites.add(_sfContentFilePath);
+              }
+            }
+            if (!_sfFileWriteDetected && _sfFenceBuf.length > 30) {
+              if ((/write_file|create_file|append_to_file/.test(_sfFenceBuf)) &&
+                  (/"tool"\s*:/.test(_sfFenceBuf) || /"name"\s*:/.test(_sfFenceBuf))) {
+                _sfFileWriteDetected = true;
+              }
+            }
+
+            // Detect closing ``` (3+ consecutive backticks)
             if (ch === '`') {
               _sfFenceTickCount++;
             } else {
               if (_sfFenceTickCount >= 3) {
-                // Closing fence found — check if content is a tool call
+                // Closing fence found — flush any pending content
+                if (_sfContentStreamActive && onStreamEvent) {
+                  if (_sfContentBuf) {
+                    onStreamEvent('file-content-token', _sfContentBuf);
+                    _sfContentBuf = '';
+                  }
+                  onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
+                  _sfContentStreamActive = false;
+                }
                 if (/"tool"\s*:/.test(_sfFenceBuf) || /"name"\s*:/.test(_sfFenceBuf)) {
-                  // Suppress entire fence
                   _sfFenceBuf = '';
                 } else {
                   _sfFlushFence();
                 }
                 _sfInFence = false;
+                _sfFileWriteDetected = false;
+                _sfContentDone = false;
+                _sfContentEsc = false;
                 _sfLastCharWasNewlineOrStart = (ch === '\n' || ch === '\r');
                 continue;
               }

@@ -4,6 +4,39 @@
 
 ---
 
+## 2026-04-14 — Fix streaming in fence path, title bar drag, web search multi-backend
+
+### Problems
+1. Code block streaming fix from previous commit only worked for raw JSON tool calls — models that output tool calls inside code fences (` ```json ... ``` `) still showed three dots during generation because the fence path had no content streaming
+2. Title bar not draggable — all child elements had `WebkitAppRegion: 'no-drag'`, including the center `flex-1` div, leaving zero draggable pixels
+3. Web search (DuckDuckGo) consistently rate-limited — "Search temporarily unavailable" on every query
+4. Recommended models showed 3 entries instead of 2
+
+### Changes
+
+#### `chatEngine.js`
+- **Fence path content streaming**: Added the same real-time JSON content extraction state machine to the `_sfInFence` branch of `_sfProcessChunk`. When a fenced code block is detected as containing a file write tool call, the `"content"` field value is streamed character-by-character to `file-content-token` events (with JSON escape decoding), identical to the raw JSON path.
+- **`_sfFlushFence()` updated**: Now gracefully finalizes any in-progress content stream before flushing the fence buffer, and resets all content streaming state variables.
+- **Fence close handling**: When closing ``` is detected and content was being streamed, pending content is flushed and `file-content-end` is emitted before the fence is suppressed.
+- Both fence and raw JSON paths now share the same state variables (`_sfContentStreamActive`, `_sfFileWriteDetected`, etc.) for content streaming.
+
+#### `webSearch.js`
+- Complete rewrite with multi-backend architecture:
+  1. **Primary: Brave Search** — scrapes `search.brave.com` HTML results (more reliable, no rate limiting)
+  2. **Fallback: DuckDuckGo POST** — uses POST to `lite.duckduckgo.com` with proper headers (Referer, Origin) — less likely to trigger bot detection than GET
+  3. **Last resort: DuckDuckGo GET** — original method with retry
+- **User-Agent rotation**: 4 different browser UA strings, randomly selected
+- **Better headers**: Sec-Fetch-*, Accept-Encoding, Referer headers match real browsers
+- Dedicated `_httpPost` helper method for POST-based search
+
+#### `frontend/src/components/TitleBar.jsx`
+- Moved `WebkitAppRegion: 'no-drag'` from the outer `flex-1` center container to the inner `search-bar-container` (max-w-[480px]). The space on either side of the search bar is now draggable.
+
+#### `frontend/src/components/WelcomeScreen.jsx`
+- Reduced `RECOMMENDED_MODELS` from 3 entries to 2 (removed Qwen 3.5 27B "advanced" tier)
+
+---
+
 ## 2026-04-14 — Real-time code block streaming, UI fixes, New Window support
 
 ### Problems

@@ -186,8 +186,8 @@ export default function TitleBar() {
       )}
 
       {/* Center — Search Bar */}
-      <div className="flex-1 flex justify-center px-4" style={{ WebkitAppRegion: 'no-drag' }}>
-        <div className="search-bar-container relative w-full max-w-[480px]">
+      <div className="flex-1 flex justify-center px-4">
+        <div className="search-bar-container relative w-full max-w-[480px]" style={{ WebkitAppRegion: 'no-drag' }}>
           {searchActive ? (
             <>
               <div className="flex items-center bg-vsc-input border border-vsc-input-border rounded-md px-2.5 py-0.5 gap-1.5 shadow-lg">

@@ -30,14 +30,6 @@ const RECOMMENDED_MODELS = [
     hfFile: 'Qwen3.5-9B-Q4_K_M.gguf',
     tier: 'recommended',
   },
-  {
-    name: 'Qwen 3.5 27B',
-    desc: 'Maximum quality. Needs 20GB+ VRAM.',
-    size: '~16.7 GB',
-    hfRepo: 'unsloth/Qwen3.5-27B-GGUF',
-    hfFile: 'Qwen3.5-27B-Q4_K_M.gguf',
-    tier: 'advanced',
-  },
 ];
 
 export default function WelcomeScreen() {
