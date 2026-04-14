@@ -185,6 +185,9 @@ class ChatEngine extends EventEmitter {
     let fullResponse = '';
     let tokensSinceLastUsageReport = 0;
     let totalToolCalls = 0;
+    let inToolBlock = false;
+    let toolBlockBuffer = '';
+    let lastNonToolContent = '';
 
     try {
       // Build common generation options
@@ -197,6 +200,47 @@ class ChatEngine extends EventEmitter {
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
           fullResponse += chunk;
+          
+          // Detect if we're entering/inside a tool call block
+          if (chunk.includes('```json') || chunk.includes('```tool') || chunk.includes('```tool_call')) {
+            inToolBlock = true;
+            toolBlockBuffer = '';
+            // Don't stream the opening fence
+            return;
+          }
+          
+          if (inToolBlock) {
+            toolBlockBuffer += chunk;
+            
+            // Check if block is closing
+            if (chunk.includes('```')) {
+              inToolBlock = false;
+              
+              // Parse the buffered tool call and emit appropriate events immediately
+              const parsedCalls = parseToolCalls(toolBlockBuffer);
+              if (parsedCalls.length > 0 && onStreamEvent) {
+                for (const call of parsedCalls) {
+                  // File operations get file-content events, others get tool events
+                  const FILE_OPS = new Set(['write_file','create_file','append_to_file','edit_file','delete_file','read_file']);
+                  if (FILE_OPS.has(call.tool) && call.params?.content && call.params?.filePath) {
+                    const ext = (call.params.filePath.split('.').pop() || '').toLowerCase();
+                    const langMap = { html: 'html', css: 'css', js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript', py: 'python', json: 'json', md: 'markdown', yaml: 'yaml', yml: 'yaml', sh: 'bash', rb: 'ruby', go: 'go', rs: 'rust' };
+                    onStreamEvent('file-content-start', { filePath: call.params.filePath, language: langMap[ext] || ext });
+                    onStreamEvent('file-content-token', call.params.content);
+                    onStreamEvent('file-content-end', { filePath: call.params.filePath });
+                  } else {
+                    // Non-file tools get tool events for ToolCallCard UI
+                    onStreamEvent('tool-executing', { tool: call.tool, params: call.params });
+                  }
+                }
+              }
+              toolBlockBuffer = '';
+            }
+            // Don't stream tool JSON to UI
+            return;
+          }
+          
+          // Regular content - stream normally
           if (onToken) onToken(chunk);
           tokensSinceLastUsageReport++;
           if (onContextUsage && tokensSinceLastUsageReport >= 50) {
@@ -237,11 +281,7 @@ class ChatEngine extends EventEmitter {
           parsedCalls = repaired;
         }
 
-        // Strip raw tool call JSON from the chat UI and emit file content events
-        if (parsedCalls.length > 0 && onStreamEvent) {
-          // Replace the raw JSON in the chat with clean text (strips the fenced code block)
-          onStreamEvent('llm-replace-last', { originalLength: fullResponse.length, replacement: '' });
-        }
+        // Tool calls already handled during streaming - no need to strip
 
         while (parsedCalls.length > 0 && totalToolCalls < MAX_TOOL_ITERATIONS) {
           const toolResultLines = [];
@@ -251,14 +291,7 @@ class ChatEngine extends EventEmitter {
             console.log(`[ChatEngine] Tool call: ${call.tool}(${JSON.stringify(call.params).substring(0, 200)})`);
             totalToolCalls++;
 
-            // Emit file content events for write_file/append_to_file so frontend shows a proper file block
-            if (onStreamEvent && call.params?.content && call.params?.filePath) {
-              const ext = (call.params.filePath.split('.').pop() || '').toLowerCase();
-              const langMap = { html: 'html', css: 'css', js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript', py: 'python', json: 'json', md: 'markdown', yaml: 'yaml', yml: 'yaml', sh: 'bash', rb: 'ruby', go: 'go', rs: 'rust' };
-              onStreamEvent('file-content-start', { filePath: call.params.filePath, language: langMap[ext] || ext });
-              onStreamEvent('file-content-token', call.params.content);
-              onStreamEvent('file-content-end', { filePath: call.params.filePath });
-            }
+            // File content events already emitted during streaming for file ops
 
             let toolResult;
             try {
@@ -270,6 +303,18 @@ class ChatEngine extends EventEmitter {
             const resultStr = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
             console.log(`[ChatEngine] Tool result for ${call.tool}: ${resultStr.substring(0, 200)}${resultStr.length > 200 ? '...' : ''}`);
             if (onToolCall) onToolCall({ name: call.tool, params: call.params, result: toolResult });
+            
+            // Emit tool results for UI ToolCallCards (non-file ops)
+            if (onStreamEvent) {
+              const FILE_OPS = new Set(['write_file','create_file','append_to_file','edit_file','delete_file','read_file']);
+              if (!FILE_OPS.has(call.tool)) {
+                onStreamEvent('mcp-tool-results', { 
+                  tool: call.tool, 
+                  result: toolResult,
+                  success: toolResult?.success !== false
+                });
+              }
+            }
 
             const truncResult = resultStr.length > 500 ? resultStr.substring(0, 500) + '...' : resultStr;
             toolResultLines.push(`${call.tool}: ${truncResult}`);
