@@ -703,7 +703,7 @@ const useAppStore = create((set, get) => ({
       reasoningEffort: 'medium', // 'low' | 'medium' | 'high'
       // Agentic Behavior
       maxIterations: 25,
-      generationTimeoutSec: 180,
+      generationTimeoutSec: 0,
       snapshotMaxChars: 8000,
       enableThinkingFilter: false,
       enableGrammar: false,
@@ -744,7 +744,7 @@ const useAppStore = create((set, get) => ({
       temperature: 0.4, maxResponseTokens: 2048, contextSize: 16384,
       topP: 0.95, topK: 40, repeatPenalty: 1.1, seed: -1,
       thinkingBudget: 2048, reasoningEffort: 'medium',
-      maxIterations: 25, generationTimeoutSec: 180, snapshotMaxChars: 8000,
+      maxIterations: 25, generationTimeoutSec: 0, snapshotMaxChars: 8000,
       enableThinkingFilter: false, enableGrammar: false,
       systemPrompt: '', customInstructions: '',
       gpuPreference: 'auto', gpuLayers: -1, requireMinContextForGpu: false,

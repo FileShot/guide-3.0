@@ -338,7 +338,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       topK: settings.topK,
       repeatPenalty: settings.repeatPenalty,
       thinkingBudget: settings.thinkingBudget ?? 2048,
-      generationTimeoutSec: settings.generationTimeoutSec || 180,
+      generationTimeoutSec: settings.generationTimeoutSec ?? 0,
     });
     return { text: result.text, toolCallCount: result.toolCallCount };
   } catch (err) {

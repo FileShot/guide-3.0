@@ -31,7 +31,7 @@ const SETTINGS_DEFAULTS = {
   reasoningEffort: 'medium',
   // Agentic Behavior
   maxIterations: 25,
-  generationTimeoutSec: 180,
+  generationTimeoutSec: 0,
   snapshotMaxChars: 8000,
   enableThinkingFilter: false,
   enableGrammar: false,

@@ -182,8 +182,8 @@ class ChatEngine extends EventEmitter {
     let tokensSinceLastUsageReport = 0;
     let totalToolCalls = 0;
 
-    // Generation timeout — prevent infinite hangs
-    const timeoutSec = options.generationTimeoutSec || 180;
+    // Generation timeout — optional only (0 = disabled). No default cap on run length.
+    const timeoutSec = options.generationTimeoutSec ?? 0;
     let generationTimer = null;
     if (timeoutSec > 0) {
       generationTimer = setTimeout(() => {
