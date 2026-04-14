@@ -22,10 +22,6 @@ app.commandLine.appendSwitch('disable-gpu-sandbox');
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
 
-// ─── Single instance lock ────────────────────────────────────────────
-const gotTheLock = app.requestSingleInstanceLock();
-if (!gotTheLock) { app.quit(); }
-
 let mainWindow = null;
 
 // ─── Paths ───────────────────────────────────────────────────────────
@@ -111,6 +107,16 @@ ipcMain.handle('win-maximize', () => {
 });
 ipcMain.handle('win-close', () => { mainWindow?.close(); });
 ipcMain.handle('win-is-maximized', () => mainWindow?.isMaximized() ?? false);
+
+// ─── New window ──────────────────────────────────────────────────────
+ipcMain.handle('new-window', () => {
+  const { spawn } = require('child_process');
+  spawn(process.execPath, process.argv.slice(1), {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env },
+  }).unref();
+});
 
 // ─── Dialog IPC ─────────────────────────────────────────────────────
 ipcMain.handle('dialog-open-folder', async () => {

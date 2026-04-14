@@ -417,7 +417,7 @@ export default function WelcomeScreen() {
                 </button>
               </div>
               <div className="flex flex-col gap-1.5">
-                {llmModels.map(model => {
+                {llmModels.slice(0, 2).map(model => {
                   const label = (model.name || '').replace(/\.gguf$/i, '');
                   const mp = model.path || model.name;
                   const isActive = modelInfo?.path === mp;
@@ -473,6 +473,14 @@ export default function WelcomeScreen() {
                     </div>
                   );
                 })}
+                {llmModels.length > 2 && (
+                  <button
+                    onClick={() => setShowDownloadPanel(true)}
+                    className="text-[11px] text-vsc-text-dim/60 hover:text-vsc-text-dim py-1 text-center transition-colors"
+                  >
+                    +{llmModels.length - 2} more installed
+                  </button>
+                )}
               </div>
             </div>
           )}

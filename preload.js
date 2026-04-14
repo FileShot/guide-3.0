@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   modelsAdd: () => ipcRenderer.invoke('dialog-models-add'),
   openExternal: (url) => ipcRenderer.invoke('shell-open-external', url),
   showOpenDialog: () => ipcRenderer.invoke('dialog-open-folder'),
+  newWindow: () => ipcRenderer.invoke('new-window'),
 
   // ── API Fetch bridge ──────────────────────────────────
   // Replaces HTTP fetch('/api/...') — routes through IPC to main process.

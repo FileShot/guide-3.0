@@ -355,6 +355,7 @@ const MENUS = [
     label: 'File',
     items: [
       { label: 'New File', shortcut: 'Ctrl+N', action: 'newFile' },
+      { label: 'New Window', shortcut: 'Ctrl+Shift+N', action: 'newWindow' },
       { label: 'Open Folder...', shortcut: 'Ctrl+K Ctrl+O', action: 'openFolder' },
       { type: 'separator' },
       { label: 'Save', shortcut: 'Ctrl+S', action: 'save' },
@@ -457,15 +458,31 @@ function executeMenuAction(action) {
       return;
     }
     case 'openFolder': {
-      const path = prompt('Enter folder path to open:');
-      if (path) {
-        fetch(`/api/files/tree?path=${encodeURIComponent(path)}`)
-          .then(r => r.json())
-          .then(d => {
-            if (d.error) store.addNotification({ type: 'error', message: d.error });
-            else { store.setProjectPath(path); store.setFileTree(d.tree || []); }
-          }).catch(() => {});
-      }
+      const openFolderAsync = async () => {
+        let folderPath = null;
+        if (window.electronAPI?.openFolderDialog) {
+          folderPath = await window.electronAPI.openFolderDialog();
+        } else {
+          folderPath = prompt('Enter folder path to open:');
+        }
+        if (!folderPath) return;
+        fetch('/api/project/open', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projectPath: folderPath }),
+        }).then(r => r.json()).then(d => {
+          if (d.success) {
+            store.setProjectPath(d.path);
+            fetch(`/api/files/tree?path=${encodeURIComponent(d.path)}`)
+              .then(r => r.json())
+              .then(t => store.setFileTree(t.items || []))
+              .catch(() => {});
+          } else {
+            store.addNotification({ type: 'error', message: d.error || 'Failed to open folder' });
+          }
+        }).catch(e => store.addNotification({ type: 'error', message: e.message }));
+      };
+      openFolderAsync();
       return;
     }
     case 'save':
@@ -479,6 +496,9 @@ function executeMenuAction(action) {
       return;
     case 'closeAllTabs':
       store.openTabs.forEach(t => store.closeTab(t.id));
+      return;
+    case 'newWindow':
+      if (window.electronAPI?.newWindow) window.electronAPI.newWindow();
       return;
     case 'exit':
       wc()?.close();
@@ -523,7 +543,7 @@ function executeMenuAction(action) {
     case 'showWelcome': store.openFile({ path: 'welcome', name: 'Welcome', extension: 'welcome', content: '' }); return;
     case 'showShortcuts': store.setActiveActivity('settings'); return;
     case 'about':
-      store.addNotification({ type: 'info', message: 'guIDE 2.3.15 — Local-first AI IDE. Built for offline inference.', duration: 8000 });
+      store.addNotification({ type: 'info', message: 'guIDE 3.0.0 — Local-first AI IDE. Built for offline inference.', duration: 8000 });
       return;
 
     default: return;

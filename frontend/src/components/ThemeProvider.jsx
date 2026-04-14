@@ -618,8 +618,8 @@ const themes = {
 
 // ─── Context ─────────────────────────────────────────────────
 const ThemeContext = createContext({
-  themeId: 'monolith',
-  theme: themes.monolith,
+  themeId: 'carbon',
+  theme: themes.carbon,
   setTheme: () => {},
   themeIds: Object.keys(themes),
 });
@@ -643,10 +643,10 @@ export default function ThemeProvider({ children }) {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved && themes[saved]) return saved;
     } catch (_) {}
-    return 'monolith';
+    return 'carbon';
   });
 
-  const theme = themes[themeId] || themes.monolith;
+  const theme = themes[themeId] || themes.carbon;
 
   // Apply CSS custom properties to :root
   useEffect(() => {

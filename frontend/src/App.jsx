@@ -313,6 +313,10 @@ export default function App() {
           }).catch(e => s.addNotification({ type: 'error', message: e.message }));
           return;
         }
+        case 'newWindow': {
+          if (window.electronAPI?.newWindow) window.electronAPI.newWindow();
+          return;
+        }
         case 'openFolder': {
           if (window.electronAPI?.openFolderDialog) {
             window.electronAPI.openFolderDialog().then(folderPath => {

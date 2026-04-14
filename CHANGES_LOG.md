@@ -4,6 +4,57 @@
 
 ---
 
+## 2026-04-14 — Real-time code block streaming, UI fixes, New Window support
+
+### Problems
+1. File content (e.g., 312-line HTML files) only appeared after the entire tool call completed — user saw bouncing dots during generation, then the full code block appeared at once
+2. Welcome screen installed models list showed all models with no limit, causing overhang
+3. Default theme was "Monolith" instead of "Carbon"
+4. TitleBar "Open Folder" used `prompt()` instead of native dialog and referenced wrong API fields (`d.tree` vs `d.items`)
+5. No "New Window" option; single instance lock prevented multiple windows
+
+### Root Cause (Streaming)
+The streaming filter in `chatEngine.js` correctly suppressed tool call JSON from the UI, but the `file-content-*` events were only emitted **after** `generateResponse()` completed (in the tool execution loop). The entire file content was sent as a single `file-content-token` burst. During generation, `streamingSegments.length === 0` triggered the three-dot loading indicator.
+
+### Changes
+
+#### `chatEngine.js`
+- Added real-time file content streaming state machine inside the streaming filter (`_sfProcessChunk`)
+- When a confirmed tool call is detected as a file write (`write_file`/`create_file`/`append_to_file`), the filter watches for the `"content": "` key-value pattern
+- Once found, subsequent characters are decoded from JSON escape sequences (`\n`, `\t`, `\"`, `\\`, `\uXXXX`) and streamed to the UI via `file-content-token` events in 40-character batches
+- `file-content-start` is emitted when the content field begins (with filePath extracted from the buffer)
+- `file-content-end` is emitted when the closing `"` of the content value is reached
+- `_sfStreamedFileWrites` Set tracks which files were already streamed in real-time — the post-generation emission is skipped for those
+- `_sfFlush()` gracefully finalizes any in-progress content stream if generation is interrupted
+- All new state variables reset between tool iteration rounds
+
+#### `frontend/src/components/WelcomeScreen.jsx`
+- Changed `llmModels.map()` to `llmModels.slice(0, 2).map()` — only 2 models shown
+- Added "+N more installed" button when truncated, links to download panel
+
+#### `frontend/src/components/ThemeProvider.jsx`
+- Changed default theme from `'monolith'` to `'carbon'` in three places: context default, useState initializer, and fallback
+
+#### `frontend/src/components/TitleBar.jsx`
+- Rewrote `openFolder` handler: uses `electronAPI.openFolderDialog()` (native OS dialog) + `POST /api/project/open` + `setFileTree(t.items || [])` — matching the working Sidebar implementation
+- Added "New Window" item to File menu (`action: 'newWindow'`)
+- Added `newWindow` case in `executeMenuAction` → calls `electronAPI.newWindow()`
+
+#### `appMenu.js`
+- Added "New Window" item with `CmdOrCtrl+Shift+N` accelerator to native File menu
+
+#### `electron-main.js`
+- Removed single instance lock (`app.requestSingleInstanceLock()`) so multiple windows can run
+- Added `new-window` IPC handler — spawns a detached child process via `process.execPath`
+
+#### `preload.js`
+- Exposed `newWindow` method via `ipcRenderer.invoke('new-window')`
+
+#### `frontend/src/App.jsx`
+- Added `newWindow` case in native menu action handler
+
+---
+
 ## 2026-04-14 — Wire tool call events to frontend, strip raw JSON from chat
 
 ### Problem

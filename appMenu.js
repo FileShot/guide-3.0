@@ -25,6 +25,7 @@ function buildAppMenu(mainWindow) {
       label: 'File',
       submenu: [
         { label: 'New File', accelerator: 'CmdOrCtrl+N', click: () => send('newFile') },
+        { label: 'New Window', accelerator: 'CmdOrCtrl+Shift+N', click: () => send('newWindow') },
         { label: 'Open Folder...', accelerator: 'CmdOrCtrl+K CmdOrCtrl+O', click: () => send('openFolder') },
         { type: 'separator' },
         { label: 'Save', accelerator: 'CmdOrCtrl+S', click: () => send('save') },
