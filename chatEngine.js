@@ -7,6 +7,9 @@ const os = require('os');
 const { pathToFileURL } = require('url');
 const { parseToolCalls, repairToolCalls, stripToolCallText } = require('./tools/toolParser');
 
+/** Max chars of each tool result injected into chat history (full JSON/snippets must reach the model). */
+const MAX_TOOL_RESULT_INJECT_CHARS = 32000;
+
 // Original system prompt — kept for reference and easy rollback
 const SYSTEM_PROMPT_ORIGINAL = `You are guIDE, a local AI coding assistant. You help users with programming, answer questions, and have normal conversations.
 
@@ -19,7 +22,7 @@ const SYSTEM_PROMPT_ORIGINAL = `You are guIDE, a local AI coding assistant. You 
 - For multi-step tasks: call write_todos to create a plan, then implement each step
 - For saving or retrieving information across sessions: use the memory tools
 - For error analysis or debugging: use the analysis tools
-- For greetings, opinions, questions, explanations, and casual conversation: respond naturally without tools
+- For greetings, opinions, questions, explanations, and casual conversation: respond naturally in chat without tools — do NOT create files unless the user asks you to write or save something
 - When you have completed the task, stop and respond
 
 ## Continuation
@@ -52,6 +55,7 @@ YOU ARE AN AI THAT CALLS TOOLS. EVERY FILE OPERATION IS A TOOL CALL.
 NEVER output file contents as code blocks in chat.
 NEVER say "here is the code" and then show it.
 NEVER write HTML, CSS, JavaScript, Python, or any other code as a chat response.
+NEVER create or write files when the user only sends a greeting or small talk — answer in chat only.
 NEVER say "I can't", "I don't have access", "I'm unable to", or "I cannot" when you have a tool that can do it.
 NEVER call the same tool with the same arguments repeatedly — call it once and use the results.
 
@@ -215,6 +219,9 @@ class ChatEngine extends EventEmitter {
       let _sfInFence = false;    // inside a code fence
       let _sfFenceBuf = '';      // accumulated fence content (markers + body)
       let _sfFenceTickCount = 0; // tracks consecutive backticks
+      /** When true, fence body is plain markdown code (html, etc.) — stream to UI instead of buffering until ``` */
+      let _sfFenceStreamPlain = false;
+      let _sfFencePlainTick = 0; // backticks while streaming plain fence (closing ```)
 
       // Real-time file content streaming state — detects write_file/create_file/append_to_file
       // content fields inside tool call JSON and streams them to the UI as they arrive
@@ -270,6 +277,8 @@ class ChatEngine extends EventEmitter {
           _sfFenceBuf = '';
         }
         _sfInFence = false;
+        _sfFenceStreamPlain = false;
+        _sfFencePlainTick = 0;
         _sfFenceTickCount = 0;
         _sfFileWriteDetected = false;
         _sfContentDone = false;
@@ -284,7 +293,58 @@ class ChatEngine extends EventEmitter {
 
           // ── Fence mode: accumulating content inside ```...``` ──
           if (_sfInFence) {
+            // Stream normal markdown code fences (```html, ```css, …) to the UI immediately.
+            // Only JSON tool-call fences stay buffered until close (so we can strip/suppress).
+            if (_sfFenceStreamPlain) {
+              if (ch === '`') {
+                _sfFencePlainTick++;
+                if (_sfFencePlainTick >= 3) {
+                  _sfForward('```');
+                  _sfInFence = false;
+                  _sfFenceStreamPlain = false;
+                  _sfFencePlainTick = 0;
+                  _sfFenceBuf = '';
+                  _sfLastCharWasNewlineOrStart = (ch === '\n' || ch === '\r');
+                }
+              } else {
+                if (_sfFencePlainTick > 0) {
+                  _sfForward('`'.repeat(_sfFencePlainTick));
+                  _sfFencePlainTick = 0;
+                }
+                _sfForward(ch);
+              }
+              continue;
+            }
+
             _sfFenceBuf += ch;
+
+            if (!_sfFenceStreamPlain && !_sfFileWriteDetected && !_sfContentStreamActive && /^```\s*(\w*)\r?\n/.test(_sfFenceBuf)) {
+              const hm = _sfFenceBuf.match(/^```\s*(\w*)\r?\n/);
+              const lang = (hm[1] || '').toLowerCase();
+              const afterHeader = _sfFenceBuf.slice(hm[0].length);
+              const PLAIN_LANGS = new Set([
+                'html', 'htm', 'css', 'scss', 'sass', 'less', 'js', 'javascript', 'jsx', 'mjs', 'cjs',
+                'ts', 'tsx', 'vue', 'svelte', 'md', 'markdown', 'py', 'python', 'bash', 'sh', 'shell',
+                'yaml', 'yml', 'xml', 'svg', 'go', 'rust', 'rs', 'java', 'cpp', 'c', 'h', 'cs', 'php',
+                'rb', 'swift', 'kt', 'txt', 'plaintext', 'sql', 'jsonl',
+              ]);
+              if (PLAIN_LANGS.has(lang)) {
+                _sfFenceStreamPlain = true;
+                _sfForward(_sfFenceBuf);
+                _sfFenceBuf = '';
+                continue;
+              }
+              if (lang === 'json' || lang === '') {
+                if (/"tool"\s*:/.test(afterHeader.slice(0, 6000))) {
+                  /* keep buffering — tool JSON fence */
+                } else if (afterHeader.length >= 100) {
+                  _sfFenceStreamPlain = true;
+                  _sfForward(_sfFenceBuf);
+                  _sfFenceBuf = '';
+                  continue;
+                }
+              }
+            }
 
             // Real-time content streaming from WITHIN a fenced tool call.
             // Uses the same shared state variables as the raw JSON path.
@@ -395,6 +455,8 @@ class ChatEngine extends EventEmitter {
                 _sfInFence = true;
                 _sfFenceBuf = '```';
                 _sfFenceTickCount = 0;
+                _sfFenceStreamPlain = false;
+                _sfFencePlainTick = 0;
                 _sfLastCharWasNewlineOrStart = false;
                 continue;
               }
@@ -679,8 +741,12 @@ class ChatEngine extends EventEmitter {
               onStreamEvent('mcp-tool-results', [{ tool: call.tool, result: toolResult }]);
             }
 
-            const truncResult = resultStr.length > 500 ? resultStr.substring(0, 500) + '...' : resultStr;
-            toolResultLines.push(`${call.tool}: ${truncResult}`);
+            let injectResult = resultStr;
+            if (injectResult.length > MAX_TOOL_RESULT_INJECT_CHARS) {
+              injectResult = injectResult.slice(0, MAX_TOOL_RESULT_INJECT_CHARS)
+                + '\n[... result truncated by system for context size; use only text above]';
+            }
+            toolResultLines.push(`${call.tool}: ${injectResult}`);
           }
 
           // If every call in this round was a duplicate, the model is looping — stop immediately
@@ -895,14 +961,16 @@ class ChatEngine extends EventEmitter {
       const availableForLastItem = budget - systemTokens - 20;
       if (availableForLastItem > 100) {
         const fullText = getItemText(lastItem);
+        const isToolOrSystemInject = /^\[(?:Tool Results|System)\]/i.test(fullText);
         let keepChars = Math.floor(availableForLastItem * 3);
-        let truncatedText = fullText.slice(-keepChars);
+        // Tool/system inject messages must keep the START (JSON + snippets), not the tail.
+        let truncatedText = isToolOrSystemInject ? fullText.slice(0, keepChars) : fullText.slice(-keepChars);
         let truncTokens = tokenize(truncatedText);
 
         let iterations = 0;
         while (truncTokens > availableForLastItem && keepChars > 200 && iterations < 5) {
           keepChars = Math.floor(keepChars * 0.75);
-          truncatedText = fullText.slice(-keepChars);
+          truncatedText = isToolOrSystemInject ? fullText.slice(0, keepChars) : fullText.slice(-keepChars);
           truncTokens = tokenize(truncatedText);
           iterations++;
         }
@@ -913,7 +981,7 @@ class ChatEngine extends EventEmitter {
           effectiveLastItem = { ...lastItem, text: truncatedText };
         }
         lastItemTokens = truncTokens + 10;
-        console.log(`[ChatEngine] Context shift: truncated lastItem from ${fullText.length} to ${truncatedText.length} chars`);
+        console.log(`[ChatEngine] Context shift: truncated lastItem from ${fullText.length} to ${truncatedText.length} chars (${isToolOrSystemInject ? 'head' : 'tail'})`);
       }
     }
 
