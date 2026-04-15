@@ -311,7 +311,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
   }
   try {
     agenticCancelled = false;
-    const settings = chatContext?.settings || {};
+    const settings = chatContext?.params || chatContext?.settings || {};
 
     // Build tool functions from enabled tool definitions
     const toolDefs = mcpToolServer.getToolDefinitions();

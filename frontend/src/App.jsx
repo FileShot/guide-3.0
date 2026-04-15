@@ -1,7 +1,7 @@
 /**
  * App — Root component. Connects WebSocket, routes events to store, renders layout.
  */
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useRef } from 'react';
 import useAppStore from './stores/appStore';
 import ThemeProvider from './components/ThemeProvider';
 import Layout from './components/Layout';
@@ -12,6 +12,8 @@ import WelcomeGuide from './components/WelcomeGuide';
 
 export default function App() {
   const store = useAppStore();
+  const settingsHydratedFromBackendRef = useRef(false);
+  const lastSyncedSettingsJsonRef = useRef('');
 
   const handleEvent = useCallback((event, data) => {
     const s = useAppStore.getState();
@@ -34,7 +36,14 @@ export default function App() {
             }).catch(() => {});
           }
         }).catch(() => {});
-        fetch('/api/settings').then(r => r.json()).then(d => s.setSettings(d)).catch(() => {});
+        fetch('/api/settings').then(r => r.json()).then(d => {
+          s.setSettings(d);
+          settingsHydratedFromBackendRef.current = true;
+          lastSyncedSettingsJsonRef.current = JSON.stringify(d || {});
+          s.setSettingsSyncState({ status: 'saved', error: null, at: Date.now() });
+        }).catch(() => {
+          s.setSettingsSyncState({ status: 'error', error: 'Failed to load settings from backend', at: null });
+        });
         break;
 
       // LLM streaming events
@@ -292,6 +301,42 @@ export default function App() {
 
     return () => cleanups.forEach(fn => fn());
   }, [handleEvent]);
+
+  // Persist settings to backend (debounced) so model loads and restarts use the same values users see in UI.
+  useEffect(() => {
+    const s = useAppStore.getState();
+    const settings = s.settings;
+    const settingsJson = JSON.stringify(settings || {});
+
+    // Wait until initial /api/settings hydration completes to avoid writing defaults over saved backend config.
+    if (!settingsHydratedFromBackendRef.current) return;
+    // No-op if nothing changed since last successful sync.
+    if (settingsJson === lastSyncedSettingsJsonRef.current) return;
+
+    s.setSettingsSyncState({ status: 'saving', error: null, at: s.settingsLastSyncedAt });
+
+    const t = setTimeout(() => {
+      fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: settingsJson,
+      })
+        .then(r => r.json())
+        .then(() => {
+          lastSyncedSettingsJsonRef.current = settingsJson;
+          useAppStore.getState().setSettingsSyncState({ status: 'saved', error: null, at: Date.now() });
+        })
+        .catch((e) => {
+          useAppStore.getState().setSettingsSyncState({
+            status: 'error',
+            error: e?.message || 'Failed to save settings to backend',
+            at: useAppStore.getState().settingsLastSyncedAt,
+          });
+        });
+    }, 300);
+
+    return () => clearTimeout(t);
+  }, [store.settings]);
 
   // Listen for native Electron menu actions (sent via IPC from appMenu.js)
   useEffect(() => {

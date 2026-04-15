@@ -730,6 +730,14 @@ const useAppStore = create((set, get) => ({
       return { ...DEFAULTS, ...stored };
     } catch { return DEFAULTS; }
   })(),
+  settingsSyncStatus: 'idle', // 'idle' | 'saving' | 'saved' | 'error'
+  settingsSyncError: null,
+  settingsLastSyncedAt: null,
+  setSettingsSyncState: (state) => set({
+    settingsSyncStatus: state.status ?? 'idle',
+    settingsSyncError: state.error ?? null,
+    settingsLastSyncedAt: state.at ?? null,
+  }),
   setSettings: (s) => {
     localStorage.setItem('guIDE-settings', JSON.stringify(s));
     set({ settings: s });

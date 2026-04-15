@@ -342,7 +342,10 @@ export default function ChatPanel() {
   const [dragOver, setDragOver] = useState(false);
   const [fileContextDismissed, setFileContextDismissed] = useState(false);
   const [savedSessions, setSavedSessions] = useState([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [activeConversationId, setActiveConversationId] = useState('current');
   const sessionSaveTimerRef = useRef(null);
+  const historyMenuRef = useRef(null);
 
   // Load saved sessions from localStorage on mount
   useEffect(() => {
@@ -384,6 +387,18 @@ export default function ChatPanel() {
     }, 3000);
     return () => { if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current); };
   }, [chatMessages]);
+
+  // Close history popover when clicking outside
+  useEffect(() => {
+    if (!historyOpen) return;
+    const onDown = (e) => {
+      if (historyMenuRef.current && !historyMenuRef.current.contains(e.target)) {
+        setHistoryOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [historyOpen]);
 
   const handleFileAttach = useCallback((files) => {
     for (const file of files) {
@@ -747,6 +762,7 @@ export default function ChatPanel() {
 
   const handleClear = useCallback(async () => {
     clearChat();
+    setActiveConversationId('current');
     try {
       await fetch('/api/session/clear', { method: 'POST' });
     } catch (_) {}
@@ -777,10 +793,37 @@ export default function ChatPanel() {
       ? (modelInfo.family || modelInfo.name || '').split('/').pop().slice(0, 20)
       : 'No Model';
 
+  const filteredSessions = useMemo(() => (
+    projectPath ? savedSessions.filter(s => s.projectPath === projectPath) : savedSessions
+  ), [savedSessions, projectPath]);
+
+  const currentTitle = useMemo(() => {
+    if (chatMessages.length === 0) return 'Current';
+    const firstUser = chatMessages.find(m => m.role === 'user');
+    return firstUser?.content?.slice(0, 24) || 'Current';
+  }, [chatMessages]);
+
+  const currentSessionId = chatMessages[0]?.id || 'current';
+  const conversationTabs = useMemo(() => {
+    const tabs = [{ id: 'current', title: currentTitle, isCurrent: true }];
+    for (const s of filteredSessions) {
+      if (s.id === currentSessionId) continue;
+      tabs.push({ id: s.id, title: s.title || 'Chat session', isCurrent: false, session: s });
+      if (tabs.length >= 6) break;
+    }
+    return tabs;
+  }, [filteredSessions, currentSessionId, currentTitle]);
+
+  const openSavedSession = useCallback((session) => {
+    useAppStore.setState({ chatMessages: session.messages || [] });
+    setActiveConversationId(session.id);
+    setHistoryOpen(false);
+  }, []);
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="h-[35px] flex items-center justify-between px-3 border-b border-vsc-panel-border/50 no-select flex-shrink-0">
+      <div className="h-[35px] flex items-center justify-between px-3 border-b border-vsc-panel-border/50 no-select flex-shrink-0 bg-vsc-sidebar/80 backdrop-blur-sm shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
         <div className="flex items-center gap-2 text-vsc-sm font-medium text-vsc-text min-w-0">
           <span className="text-vsc-text flex-shrink-0">Chat</span>
           {modelInfo && (
@@ -790,9 +833,12 @@ export default function ChatPanel() {
           )}
           {chatStreaming && <Loader size={12} className="animate-spin text-vsc-accent flex-shrink-0" />}
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 relative" ref={historyMenuRef}>
           <button className="p-1 hover:bg-vsc-list-hover rounded" title="New Chat" onClick={handleClear}>
             <Plus size={14} className="text-vsc-text-dim" />
+          </button>
+          <button className="p-1 hover:bg-vsc-list-hover rounded" title="Conversation History" onClick={() => setHistoryOpen(v => !v)}>
+            <Clock size={14} className={`${historyOpen ? 'text-vsc-accent' : 'text-vsc-text-dim'}`} />
           </button>
           <button className="p-1 hover:bg-vsc-list-hover rounded" title="Settings" onClick={() => setActiveActivity('settings')}>
             <Settings size={14} className="text-vsc-text-dim" />
@@ -800,11 +846,60 @@ export default function ChatPanel() {
           <button className="p-1 hover:bg-vsc-list-hover rounded" title="Clear Chat" onClick={handleClear}>
             <Trash2 size={14} className="text-vsc-text-dim" />
           </button>
+
+          {historyOpen && (
+            <div className="absolute right-0 top-[32px] z-20 w-[320px] max-h-[320px] overflow-y-auto rounded-lg border border-vsc-panel-border/70 bg-vsc-sidebar/95 backdrop-blur-md shadow-[0_10px_30px_rgba(0,0,0,0.35)] p-1.5">
+              <div className="text-[10px] font-medium text-vsc-text-dim uppercase tracking-wider px-1 py-1">History</div>
+              {filteredSessions.length === 0 ? (
+                <div className="text-[11px] text-vsc-text-dim px-2 py-2">No saved sessions for this workspace.</div>
+              ) : (
+                filteredSessions.map((session) => (
+                  <button
+                    key={session.id}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-vsc-list-hover/60 transition-colors group"
+                    onClick={() => openSavedSession(session)}
+                  >
+                    <Clock size={11} className="text-vsc-text-dim/60 flex-shrink-0" />
+                    <span className="text-[11px] text-vsc-text truncate flex-1">{session.title}</span>
+                    <span className="text-[9px] text-vsc-text-dim/50 flex-shrink-0">
+                      {new Date(session.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Conversation tabs */}
+      <div className="px-2 py-1.5 border-b border-vsc-panel-border/40 bg-vsc-sidebar/55 backdrop-blur-sm shadow-[0_1px_0_rgba(255,255,255,0.02)_inset] no-select">
+        <div className="flex items-center gap-1 overflow-x-auto scrollbar-thin">
+          {conversationTabs.map((tab) => (
+            <button
+              key={tab.id}
+              className={`max-w-[180px] truncate px-2 py-1 rounded-md text-[10px] border transition-colors ${
+                (tab.id === 'current' ? activeConversationId === 'current' : activeConversationId === tab.id)
+                  ? 'bg-vsc-list-active/70 border-vsc-accent/50 text-vsc-text-bright shadow-[0_1px_6px_rgba(0,0,0,0.22)]'
+                  : 'bg-vsc-bg/50 border-vsc-panel-border/60 text-vsc-text-dim hover:bg-vsc-list-hover/50'
+              }`}
+              title={tab.title}
+              onClick={() => {
+                if (tab.isCurrent) {
+                  setActiveConversationId('current');
+                  return;
+                }
+                openSavedSession(tab.session);
+              }}
+            >
+              {tab.title}
+            </button>
+          ))}
         </div>
       </div>
 
       {/* Messages area (virtualized) */}
-      <div className="flex-1 min-h-0" onWheel={handleUserWheel}>
+      <div className="flex-1 min-h-0 bg-gradient-to-b from-transparent to-vsc-bg/20" onWheel={handleUserWheel}>
         {/* Session history shown when chat is empty — filtered to current project */}
         {chatMessages.length === 0 && savedSessions.length > 0 && (() => {
           const filtered = projectPath
@@ -864,9 +959,9 @@ export default function ChatPanel() {
               {/* Checkpoint divider */}
               {idx > 0 && msg.role === 'user' && chatMessages[idx - 1]?.role === 'assistant' && (
                 <div className="flex items-center gap-2 px-4 my-2">
-                  <div className="flex-1 h-px bg-vsc-panel-border/30" />
+                  <div className="flex-1 h-px bg-gradient-to-r from-transparent via-vsc-panel-border/40 to-transparent" />
                   <button
-                    className="flex items-center gap-1 text-[9px] text-vsc-text-dim/50 hover:text-vsc-text-dim px-1.5 py-0.5 rounded hover:bg-vsc-list-hover/30 transition-colors"
+                    className="flex items-center gap-1 text-[9px] text-vsc-text-dim/60 hover:text-vsc-text-dim px-1.5 py-0.5 rounded-md border border-vsc-panel-border/40 bg-vsc-bg/30 hover:bg-vsc-list-hover/30 transition-colors shadow-[0_1px_4px_rgba(0,0,0,0.2)]"
                     title="Restore conversation to this point"
                     onClick={() => {
                       // R46-D: Truncate chat to this checkpoint (keep messages up to the assistant reply before this user message)
@@ -885,7 +980,7 @@ export default function ChatPanel() {
                       }
                     </span>
                   </button>
-                  <div className="flex-1 h-px bg-vsc-panel-border/30" />
+                  <div className="flex-1 h-px bg-gradient-to-r from-transparent via-vsc-panel-border/40 to-transparent" />
                 </div>
               )}
               {msg.role === 'system' ? (
@@ -974,7 +1069,7 @@ export default function ChatPanel() {
 
       {/* ─── Unified Input Container ──────────────────────── */}
       <div className="flex-shrink-0 p-2 relative">
-        <div className="rounded-xl border border-vsc-panel-border/60 bg-vsc-sidebar overflow-visible">
+        <div className="rounded-xl border border-vsc-panel-border/60 bg-vsc-sidebar/88 backdrop-blur-sm overflow-visible shadow-[0_8px_30px_rgba(0,0,0,0.28),0_1px_0_rgba(255,255,255,0.03)_inset]">
 
           {/* Todo list progress (collapsible) */}
           {todos.length > 0 && <TodoDropdown todos={todos} />}

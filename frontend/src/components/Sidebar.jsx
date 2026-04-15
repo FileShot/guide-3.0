@@ -99,8 +99,8 @@ function FileExplorer() {
   }, [setProjectPath, setFileTree, addNotification]);
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="sidebar-header justify-between">
+    <div className="flex flex-col h-full bg-vsc-sidebar/85 backdrop-blur-sm">
+      <div className="sidebar-header justify-between border-b border-vsc-panel-border/35 shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]">
         <span>Explorer</span>
         <div className="flex items-center gap-1">
           <button className="p-1 hover:bg-vsc-list-hover rounded" title="New File" onClick={() => {}}>
@@ -127,7 +127,7 @@ function FileExplorer() {
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
-          <div className="sidebar-section-header">
+          <div className="sidebar-section-header shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]">
             <ChevronDown size={12} className="mr-1 flex-shrink-0" />
             <span className="truncate">{projectPath.split(/[\\/]/).pop()}</span>
           </div>
@@ -1100,9 +1100,20 @@ function SettingsPanel() {
   const modelLoading = useAppStore(s => s.modelLoading);
   const addNotification = useAppStore(s => s.addNotification);
   const settings = useAppStore(s => s.settings);
+  const settingsSyncStatus = useAppStore(s => s.settingsSyncStatus);
+  const settingsSyncError = useAppStore(s => s.settingsSyncError);
+  const settingsLastSyncedAt = useAppStore(s => s.settingsLastSyncedAt);
   const updateSetting = useAppStore(s => s.updateSetting);
   const resetSettings = useAppStore(s => s.resetSettings);
   const { themeId, setTheme } = useTheme();
+
+  const syncLabel = settingsSyncStatus === 'saving'
+    ? 'Saving...'
+    : settingsSyncStatus === 'saved'
+      ? 'Saved'
+      : settingsSyncStatus === 'error'
+        ? 'Save failed'
+        : 'Not synced';
 
   const loadModel = (modelPath) => {
     fetch('/api/models/load', {
@@ -1118,7 +1129,27 @@ function SettingsPanel() {
     <div className="flex flex-col h-full overflow-y-auto scrollbar-thin">
       {/* Header with Reset */}
       <div className="sidebar-header justify-between">
-        <span>Settings</span>
+        <div className="flex items-center gap-2">
+          <span>Settings</span>
+          <span
+            className={`text-[10px] px-1.5 py-0.5 rounded border ${
+              settingsSyncStatus === 'saved'
+                ? 'text-green-300 border-green-400/40 bg-green-500/10'
+                : settingsSyncStatus === 'saving'
+                  ? 'text-vsc-accent border-vsc-accent/40 bg-vsc-accent/10'
+                  : settingsSyncStatus === 'error'
+                    ? 'text-vsc-error border-vsc-error/40 bg-vsc-error/10'
+                    : 'text-vsc-text-dim border-vsc-panel-border bg-vsc-bg'
+            }`}
+            title={
+              settingsSyncStatus === 'saved' && settingsLastSyncedAt
+                ? `Last synced: ${new Date(settingsLastSyncedAt).toLocaleTimeString()}`
+                : settingsSyncError || 'Settings sync status'
+            }
+          >
+            {syncLabel}
+          </span>
+        </div>
         <button
           onClick={() => { resetSettings(); addNotification({ type: 'info', message: 'Settings reset to defaults', duration: 2000 }); }}
           className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover"
@@ -1126,6 +1157,14 @@ function SettingsPanel() {
         >
           <RotateCcw size={11} /> Reset
         </button>
+      </div>
+
+      <div className="px-3 pt-2 pb-1 text-[10px] text-vsc-text-dim border-b border-vsc-panel-border/40">
+        <div>Most settings apply on the next request immediately.</div>
+        <div className="text-yellow-300/80">Model context/GPU settings require model reload.</div>
+        {settingsSyncStatus === 'error' && settingsSyncError && (
+          <div className="text-vsc-error mt-1">{settingsSyncError}</div>
+        )}
       </div>
 
       {/* Theme */}

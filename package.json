@@ -1,6 +1,6 @@
 {
   "name": "guide-ide",
-  "version": "3.0.10",
+  "version": "3.0.11",
   "description": "guIDE — Local-first AI IDE. VS Code + Copilot quality, running entirely locally with zero cloud dependency.",
   "main": "electron-main.js",
   "scripts": {

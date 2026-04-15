@@ -196,6 +196,7 @@
   .sidebar-header {
     @apply h-[35px] flex items-center px-5 text-[11px] uppercase tracking-wider font-semibold text-vsc-text-dim;
     @apply select-none;
+    background: linear-gradient(180deg, rgb(var(--guide-sidebar) / 0.9), rgb(var(--guide-sidebar) / 0.78));
   }
 
   .sidebar-section-header {
@@ -212,9 +213,11 @@
     border-left: 2px solid transparent;
     border-radius: 3px;
     margin: 0 2px;
+    box-shadow: 0 0 0 1px transparent;
   }
   .file-tree-item:hover {
     border-left-color: rgb(var(--guide-accent) / 0.3);
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12), 0 0 0 1px rgb(var(--guide-panel-border) / 0.18) inset;
   }
   .file-tree-item.active {
     @apply bg-vsc-list-active text-vsc-text-bright;
@@ -285,7 +288,7 @@
 
   .chat-message pre {
     @apply bg-vsc-bg rounded-lg p-3 my-2 overflow-x-auto text-vsc-sm;
-    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 0 rgba(255, 255, 255, 0.03);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.28), 0 6px 20px rgba(0, 0, 0, 0.2), 0 1px 0 rgba(255, 255, 255, 0.03);
     border: 1px solid rgb(var(--guide-panel-border) / 0.3);
   }
   .chat-message code:not(pre code) {
@@ -428,7 +431,8 @@
     background: transparent;
   }
   .splitter-v:hover {
-    background: linear-gradient(180deg, transparent, rgb(var(--guide-accent) / 0.5), transparent);
+    background: linear-gradient(180deg, transparent, rgb(var(--guide-accent) / 0.45), transparent);
+    box-shadow: 0 0 8px rgb(var(--guide-accent) / 0.25);
   }
   .splitter-v:active {
     background: rgb(var(--guide-accent));
@@ -439,7 +443,8 @@
     background: transparent;
   }
   .splitter-h:hover {
-    background: linear-gradient(90deg, transparent, rgb(var(--guide-accent) / 0.5), transparent);
+    background: linear-gradient(90deg, transparent, rgb(var(--guide-accent) / 0.45), transparent);
+    box-shadow: 0 0 8px rgb(var(--guide-accent) / 0.2);
   }
   .splitter-h:active {
     background: rgb(var(--guide-accent));
