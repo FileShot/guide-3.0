@@ -321,7 +321,7 @@ class MCPToolServer {
     this._allToolDefsCache = [
       {
         name: 'web_search',
-        description: 'Search the web (DuckDuckGo and fallbacks). Each hit is title, url, and a short search snippet only — not a full article. The response JSON includes `resultSemantics` explaining coverage. If the answer needs body text or facts not present in those snippet/title fields, call fetch_webpage(url) on the best hit before asserting specifics.',
+        description: 'Search the web for current information using DuckDuckGo. Returns structured results (title, url, snippet per hit). After a search, base your answer on those snippet and title strings — do not answer with generic descriptions of what a site or brand is unless the snippet supports it.',
         parameters: {
           query: { type: 'string', description: 'Search query', required: true },
           maxResults: { type: 'number', description: 'Max results (default 5)', required: false },
@@ -329,7 +329,7 @@ class MCPToolServer {
       },
       {
         name: 'fetch_webpage',
-        description: 'Fetch a URL and return extracted page text (HTML stripped). Use after web_search when snippets are insufficient for a factual answer. For interactive browsing, use browser_navigate instead.',
+        description: 'Fetch and extract text content from a webpage URL. Downloads and parses HTML to return readable text. For interactive browsing, use browser_navigate instead.',
         parameters: {
           url: { type: 'string', description: 'URL to fetch', required: true },
         },
@@ -1327,30 +1327,12 @@ class MCPToolServer {
     if (raw && raw.error) return { success: false, error: raw.error };
     const results = Array.isArray(raw) ? raw : (raw?.results || []);
     if (results.length === 0) return { success: false, error: 'No results found' };
-    return {
-      success: true,
-      results,
-      resultSemantics: {
-        kind: 'search_engine_hits',
-        fieldsPerHit: ['title', 'url', 'snippet'],
-        limitation: 'Each snippet is a short excerpt from the search index, not the full page. It may omit facts, numbers, or paragraphs the user asked for.',
-        whenInsufficient: 'If title/snippet do not contain the information needed, call fetch_webpage with the url of the most relevant hit before stating specifics.',
-      },
-    };
+    return { success: true, results };
   }
 
   async _fetchWebpage(url) {
     if (!this.webSearch) return { success: false, error: 'Web fetch not available' };
-    const r = await this.webSearch.fetchPage(url);
-    if (!r.success) return r;
-    return {
-      ...r,
-      resultSemantics: {
-        kind: 'fetched_page_text',
-        fields: ['title', 'url', 'content'],
-        note: 'Content is extracted visible text from the page (may be truncated). Prefer this over search snippets when both exist for the same topic.',
-      },
-    };
+    return this.webSearch.fetchPage(url);
   }
 
   async _readFile(filePath, startLine, endLine) {
