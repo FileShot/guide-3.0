@@ -784,7 +784,7 @@ class ChatEngine extends EventEmitter {
           }
 
           // Feed tool results back to the model so it knows what happened
-          const toolResultsGrounding = 'Grounding: The JSON below is authoritative. For web_search, use each result\'s title and snippet in your reply; do not replace them with generic descriptions of news sites or products.\n\n';
+          const toolResultsGrounding = 'Grounding: The JSON below is authoritative. Use only fields that appear in each tool\'s output. Respect any `resultSemantics` object in the JSON. If the payload is search hits only (snippets), do not invent facts absent from those fields — call fetch_webpage on a hit url when full page text is needed.\n\n';
           this._chatHistory.push({ type: 'user', text: `[Tool Results]\n${toolResultsGrounding}${toolResultLines.join('\n')}\n\nNow respond to the user using the results above.` });
 
           genOptions.lastEvaluationContextWindow = this._lastEvaluation ? {
@@ -986,15 +986,34 @@ class ChatEngine extends EventEmitter {
       }
     }
 
-    // Pure sliding window: keep most recent messages that fit, no pinning
+    // Sliding window with priority: keep [Tool Results] / [System] middle messages
+    // before dropping them for casual turns (same token budget, better grounding retention).
     let used = systemTokens + lastItemTokens;
     const keptIndices = new Set();
 
-    for (let i = chatHistory.length - 2; i >= 1; i--) {
+    const middleIsToolOrSystem = (idx) => {
+      const t = getItemText(chatHistory[idx]);
+      return /^\[(?:Tool Results|System)\]/i.test(t);
+    };
+
+    const middleIndices = [];
+    for (let i = 1; i <= chatHistory.length - 2; i++) middleIndices.push(i);
+    const priorityMiddle = middleIndices.filter(middleIsToolOrSystem).sort((a, b) => b - a);
+    const restMiddle = middleIndices.filter((i) => !middleIsToolOrSystem(i)).sort((a, b) => b - a);
+
+    for (const i of priorityMiddle) {
       const cost = estimateTokens(chatHistory[i]);
-      if (used + cost > budget) break;
-      used += cost;
-      keptIndices.add(i);
+      if (used + cost <= budget) {
+        used += cost;
+        keptIndices.add(i);
+      }
+    }
+    for (const i of restMiddle) {
+      const cost = estimateTokens(chatHistory[i]);
+      if (used + cost <= budget) {
+        used += cost;
+        keptIndices.add(i);
+      }
     }
 
     const droppedCount = (chatHistory.length - 2) - keptIndices.size;
