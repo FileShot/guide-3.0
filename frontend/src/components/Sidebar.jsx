@@ -1156,7 +1156,8 @@ function SettingsPanel() {
           min={256} max={8192} step={256} onChange={v => updateSetting('maxResponseTokens', v)} />
         <div>
           <SettingNumberField label="Context Size" value={settings.contextSize}
-            min={2048} max={131072} step={1024} onChange={v => updateSetting('contextSize', v)} />
+            min={0} max={131072} step={1024} onChange={v => updateSetting('contextSize', v)}
+            hint="0 = auto — use the largest context the model allows and VRAM can fit (recommended). Otherwise set an explicit token budget." />
           <div className="text-[10px] text-yellow-400/80 mt-0.5">Requires model reload to apply</div>
         </div>
         <SettingSlider label="Top P" value={settings.topP} min={0} max={1} step={0.05}
@@ -1360,6 +1361,9 @@ function SettingsPanel() {
             <div className="text-vsc-text-bright font-medium truncate">{modelInfo.name}</div>
             <div className="text-vsc-text-dim mt-1">
               Context: {modelInfo.contextSize?.toLocaleString()} tokens
+              {modelInfo.contextSizeRequested === 'auto' && modelInfo.contextSizeCap != null && (
+                <span> (auto, cap {Number(modelInfo.contextSizeCap).toLocaleString()})</span>
+              )}
               {modelInfo.gpuLayers > 0 && ` | GPU: ${modelInfo.gpuLayers} layers`}
             </div>
           </div>
@@ -1452,7 +1456,10 @@ function SettingNumberField({ label, value, min, max, step, onChange, hint }) {
         <label className="text-[11px] text-vsc-text-dim">{label}</label>
         <input type="number" className="w-[72px] h-5 px-1 text-[11px] text-center bg-vsc-input border border-vsc-input-border rounded-sm text-vsc-text"
           value={value} min={min} max={max} step={step}
-          onChange={e => onChange(parseInt(e.target.value) || min)} />
+          onChange={e => {
+            const v = parseInt(e.target.value, 10);
+            onChange(Number.isFinite(v) ? v : min);
+          }} />
       </div>
       {hint && <div className="text-[10px] text-vsc-text-dim">{hint}</div>}
     </div>

@@ -37,11 +37,15 @@ const MIN_CONTEXT_WHEN_GPU_REQUIRED = 4096;
  * @param {object} raw
  * @returns {{ gpuPreference: 'auto'|'cpu', gpuLayers: number, contextSize: number, requireMinContextForGpu: boolean }}
  */
+/** When GGUF train cap is missing, upper bound hint for auto context (node-llama shrinks to fit VRAM). */
+const CONTEXT_MAX_FALLBACK_NO_GGUF = 262144;
+
 function buildEngineLoadSettings(raw = {}) {
   const gpuPreference = raw.gpuPreference === 'cpu' ? 'cpu' : 'auto';
   const gpuLayers = typeof raw.gpuLayers === 'number' ? raw.gpuLayers : -1;
   const ctx = Number(raw.contextSize);
-  const contextSize = Number.isFinite(ctx) && ctx > 0 ? Math.floor(ctx) : 16384;
+  // 0 = auto — use model train cap (and VRAM) as upper bound, not a fixed 16k default
+  const contextSize = !Number.isFinite(ctx) || ctx < 0 ? 0 : Math.floor(ctx);
   return {
     gpuPreference,
     gpuLayers,
@@ -159,9 +163,17 @@ class ChatEngine extends EventEmitter {
       }
 
       const testMaxCtx = parseInt(process.env.TEST_MAX_CONTEXT, 10) || 0;
-      let desiredMax = testMaxCtx > 0 ? testMaxCtx : s.contextSize;
-      if (trainMaxContext != null) desiredMax = Math.min(desiredMax, trainMaxContext);
-      if (testMaxCtx <= 0) desiredMax = Math.max(MIN_CONTEXT_FLOOR, desiredMax);
+      let desiredMax;
+      if (testMaxCtx > 0) {
+        desiredMax = testMaxCtx;
+      } else if (s.contextSize <= 0) {
+        // Auto: cap at architecture train length; library picks actual ctx in [min,max] from VRAM
+        desiredMax = trainMaxContext != null ? trainMaxContext : CONTEXT_MAX_FALLBACK_NO_GGUF;
+      } else {
+        desiredMax = s.contextSize;
+        if (trainMaxContext != null) desiredMax = Math.min(desiredMax, trainMaxContext);
+        desiredMax = Math.max(MIN_CONTEXT_FLOOR, desiredMax);
+      }
 
       const minBase = s.requireMinContextForGpu ? MIN_CONTEXT_WHEN_GPU_REQUIRED : MIN_CONTEXT_FLOOR;
       const contextMin = Math.min(minBase, desiredMax);
@@ -212,7 +224,8 @@ class ChatEngine extends EventEmitter {
         name: path.basename(modelPath),
         size: modelStats.size,
         contextSize: actualCtx,
-        contextSizeRequested: desiredMax,
+        contextSizeRequested: s.contextSize <= 0 ? 'auto' : s.contextSize,
+        contextSizeCap: desiredMax,
         contextTrainMax: trainMaxContext,
         totalLayers: totalLayersFromGguf != null ? totalLayersFromGguf : undefined,
         gpuLayers: this._model.gpuLayers || 0,
@@ -224,7 +237,7 @@ class ChatEngine extends EventEmitter {
       this.isLoading = false;
 
       console.log(
-        `[ChatEngine] Model ready: ctx=${actualCtx} (requested max ${desiredMax}${trainMaxContext != null ? `, train cap ${trainMaxContext}` : ''}), gpuLayers=${this.modelInfo.gpuLayers}`,
+        `[ChatEngine] Model ready: ctx=${actualCtx} (${s.contextSize <= 0 ? 'auto' : `fixed ${s.contextSize}`}, cap ${desiredMax}${trainMaxContext != null ? `, train ${trainMaxContext}` : ''}), gpuLayers=${this.modelInfo.gpuLayers}`,
       );
 
       this.emit('status', { state: 'ready', message: `Model ready: ${this.modelInfo.name}`, modelInfo: this.modelInfo });

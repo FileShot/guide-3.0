@@ -82,28 +82,24 @@ class FirstRunSetup {
     const vramGB = info.vramMB / 1024;
 
     let gpuLayers = -1; // -1 = auto (let node-llama-cpp decide)
-    let contextSize = 16384;
+    /** 0 = auto (maximize to model + memory); CPU-only keeps a modest fixed window */
+    let contextSize = 0;
     let recommendation = '';
 
     if (info.vramMB === 0) {
       // CPU-only
       gpuLayers = 0;
       contextSize = 4096;
-      recommendation = 'No GPU detected. Using CPU inference with a small context window. A 0.6B-1.7B model is recommended.';
+      recommendation = 'No GPU detected. Using CPU inference with a smaller context window. A 0.6B-1.7B model is recommended.';
     } else if (vramGB < 4) {
-      contextSize = 4096;
-      recommendation = `${info.gpu} with ${Math.round(vramGB)}GB VRAM. A 0.6B-1.7B Q8 model fits well.`;
+      recommendation = `${info.gpu} with ${Math.round(vramGB)}GB VRAM. A 0.6B-1.7B Q8 model fits well. Context defaults to auto (as large as the model and VRAM allow).`;
     } else if (vramGB < 8) {
-      contextSize = 8192;
       recommendation = `${info.gpu} with ${Math.round(vramGB)}GB VRAM. A 4B Q8 or 8B Q4 model is recommended.`;
     } else if (vramGB < 16) {
-      contextSize = 16384;
       recommendation = `${info.gpu} with ${Math.round(vramGB)}GB VRAM. An 8B-14B model works well.`;
     } else if (vramGB < 32) {
-      contextSize = 32768;
       recommendation = `${info.gpu} with ${Math.round(vramGB)}GB VRAM. A 14B-32B model is recommended.`;
     } else {
-      contextSize = 65536;
       recommendation = `${info.gpu} with ${Math.round(vramGB)}GB VRAM. Large models (32B+) are available.`;
     }
 

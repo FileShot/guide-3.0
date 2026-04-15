@@ -21,7 +21,7 @@ const SETTINGS_DEFAULTS = {
   // LLM / Inference
   temperature: 0.4,
   maxResponseTokens: 2048,
-  contextSize: 16384,
+  contextSize: 0, // 0 = auto (maximize to model train cap + available VRAM; reload model after change)
   topP: 0.95,
   topK: 40,
   repeatPenalty: 1.1,

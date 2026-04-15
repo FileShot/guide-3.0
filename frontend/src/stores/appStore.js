@@ -693,7 +693,7 @@ const useAppStore = create((set, get) => ({
       // LLM / Inference
       temperature: 0.4,
       maxResponseTokens: 2048,
-      contextSize: 16384,
+      contextSize: 0,
       topP: 0.95,
       topK: 40,
       repeatPenalty: 1.1,
@@ -741,7 +741,7 @@ const useAppStore = create((set, get) => ({
   }),
   resetSettings: () => {
     const DEFAULTS = {
-      temperature: 0.4, maxResponseTokens: 2048, contextSize: 16384,
+      temperature: 0.4, maxResponseTokens: 2048, contextSize: 0,
       topP: 0.95, topK: 40, repeatPenalty: 1.1, seed: -1,
       thinkingBudget: 2048, reasoningEffort: 'medium',
       maxIterations: 25, generationTimeoutSec: 0, snapshotMaxChars: 8000,
