@@ -171,7 +171,7 @@ for (const dir of [MODELS_DIR, userDataPath, path.join(userDataPath, 'sessions')
 const log = require('./logger');
 log.installConsoleIntercepts();
 
-const { ChatEngine } = require('./chatEngine');
+const { ChatEngine, buildEngineLoadSettings } = require('./chatEngine');
 const { MCPToolServer } = require('./mcpToolServer');
 const { ModelManager } = require('./modelManager');
 const { MemoryStore } = require('./memoryStore');
@@ -375,8 +375,9 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/models/load' && method === 'POST') {
       const { modelPath } = body;
       if (!modelPath) return { _status: 400, error: 'modelPath required' };
+      try { llmEngine.cancelGeneration('model-load'); } catch (_) {}
       _send('model-loading', { path: modelPath });
-      await llmEngine.initialize(modelPath);
+      await llmEngine.initialize(modelPath, buildEngineLoadSettings(settingsManager.getAll()));
       const info = llmEngine.modelInfo;
       settingsManager.set('lastModelPath', modelPath);
       _send('model-loaded', info);
@@ -479,6 +480,17 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         totalIdle += cpu.times.idle;
       }
       info.cpuUsage = Math.round(100 - (totalIdle / totalTick * 100));
+      if (llmEngine.modelInfo) {
+        if (typeof llmEngine.modelInfo.gpuLayers === 'number') {
+          info.gpuLayers = llmEngine.modelInfo.gpuLayers;
+        }
+        if (typeof llmEngine.modelInfo.contextSize === 'number') {
+          info.modelContextSize = llmEngine.modelInfo.contextSize;
+        }
+        if (typeof llmEngine.modelInfo.totalLayers === 'number') {
+          info.totalLayers = llmEngine.modelInfo.totalLayers;
+        }
+      }
       return info;
     }
 
@@ -1211,7 +1223,7 @@ app.whenReady().then(async () => {
       const target = lastModel || modelManager.getDefaultModel();
       if (target) {
         console.log(`[Main] Auto-loading ${lastModel ? 'last-used' : 'default'} model: ${target.name}`);
-        llmEngine.initialize(target.path).catch(e => console.error(`[Main] Auto-load failed: ${e.message}`));
+        llmEngine.initialize(target.path, buildEngineLoadSettings(settingsManager.getAll())).catch(e => console.error(`[Main] Auto-load failed: ${e.message}`));
       }
     }
   }).catch(e => console.error(`[Main] Model scan failed: ${e.message}`));

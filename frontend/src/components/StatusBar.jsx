@@ -141,6 +141,14 @@ export default function StatusBar() {
     ? Math.round((chatContextUsage.used / chatContextUsage.total) * 100)
     : null;
 
+  const gpuLayerOffload =
+    typeof gpuMemory?.gpuLayers === 'number'
+      ? gpuMemory.gpuLayers
+      : modelLoaded && modelInfo && typeof modelInfo.gpuLayers === 'number'
+        ? modelInfo.gpuLayers
+        : undefined;
+  const gpuTotalLayers = typeof gpuMemory?.totalLayers === 'number' ? gpuMemory.totalLayers : modelInfo?.totalLayers;
+
   return (
     <div className={`h-statusbar flex items-center no-select text-[11px] ${
       modelLoading ? 'bg-vsc-statusbar-debug' : 'bg-vsc-statusbar'
@@ -234,13 +242,22 @@ export default function StatusBar() {
           </div>
         )}
 
-        {/* GPU memory */}
+        {/* GPU memory + layers offloaded (nvidia-smi + modelInfo merged in /api/gpu; modelInfo fallback until first poll) */}
         {gpuMemory && gpuMemory.memoryUsed !== undefined && (
-          <div className="statusbar-item" title={`GPU: ${gpuMemory.memoryUsed}MB / ${gpuMemory.memoryTotal}MB used${gpuMemory.name ? ` (${gpuMemory.name})` : ''}${gpuMemory.gpuLayers ? ` | ${gpuMemory.gpuLayers}${modelInfo?.totalLayers ? '/' + modelInfo.totalLayers : ''} layers` : ''}`}>
+          <div
+            className="statusbar-item"
+            title={`GPU: ${gpuMemory.memoryUsed}MB / ${gpuMemory.memoryTotal}MB used${gpuMemory.name ? ` (${gpuMemory.name})` : ''}${
+              gpuLayerOffload !== undefined
+                ? ` | ${gpuLayerOffload}${gpuTotalLayers != null ? `/${gpuTotalLayers}` : ''} layer(s) on GPU`
+                : ''
+            }`}
+          >
             <HardDrive size={12} className="mr-1" />
             <span>{gpuMemory.memoryUsed}MB</span>
-            {gpuMemory.gpuLayers > 0 && (
-              <span className="ml-1 text-vsc-text-dim/70">{gpuMemory.gpuLayers}{modelInfo?.totalLayers ? '/' + modelInfo.totalLayers : ''} layers</span>
+            {gpuLayerOffload !== undefined && (
+              <span className="ml-1 text-vsc-text-dim/70">
+                {gpuLayerOffload}{gpuTotalLayers != null ? `/${gpuTotalLayers}` : ''} layers
+              </span>
             )}
           </div>
         )}

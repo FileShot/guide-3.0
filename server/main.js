@@ -79,7 +79,7 @@ console.log('[Server] Loading modules...');
 const log = require(path.join(ROOT_DIR, 'logger'));
 log.installConsoleIntercepts();
 
-const { ChatEngine } = require(path.join(ROOT_DIR, 'chatEngine'));
+const { ChatEngine, buildEngineLoadSettings } = require(path.join(ROOT_DIR, 'chatEngine'));
 const { MCPToolServer } = require(path.join(ROOT_DIR, 'mcpToolServer'));
 const { ModelManager } = require(path.join(ROOT_DIR, 'modelManager'));
 const { MemoryStore } = require(path.join(ROOT_DIR, 'memoryStore'));
@@ -308,9 +308,10 @@ app.post('/api/models/load', async (req, res) => {
   const { modelPath } = req.body;
   if (!modelPath) return res.status(400).json({ error: 'modelPath required' });
   try {
+    try { llmEngine.cancelGeneration('model-load'); } catch (_) {}
     // Send loading status to connected clients
     mainWindow.webContents.send('model-loading', { path: modelPath });
-    await llmEngine.initialize(modelPath);
+    await llmEngine.initialize(modelPath, buildEngineLoadSettings(settingsManager.getAll()));
     const info = llmEngine.modelInfo;
     // Persist last-used model so it auto-loads on next startup
     settingsManager.set('lastModelPath', modelPath);
@@ -427,6 +428,11 @@ app.get('/api/gpu', async (req, res) => {
       totalIdle += cpu.times.idle;
     }
     info.cpuUsage = Math.round(100 - (totalIdle / totalTick * 100));
+    if (llmEngine.modelInfo) {
+      if (typeof llmEngine.modelInfo.gpuLayers === 'number') info.gpuLayers = llmEngine.modelInfo.gpuLayers;
+      if (typeof llmEngine.modelInfo.contextSize === 'number') info.modelContextSize = llmEngine.modelInfo.contextSize;
+      if (typeof llmEngine.modelInfo.totalLayers === 'number') info.totalLayers = llmEngine.modelInfo.totalLayers;
+    }
     res.json(info);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1467,7 +1473,7 @@ modelManager.initialize().then((models) => {
     const target = lastModel || modelManager.getDefaultModel();
     if (target) {
       console.log(`[Server] Auto-loading ${lastModel ? 'last-used' : 'default'} model: ${target.name}`);
-      llmEngine.initialize(target.path).catch(e => {
+      llmEngine.initialize(target.path, buildEngineLoadSettings(settingsManager.getAll())).catch(e => {
         console.error(`[Server] Auto-load failed: ${e.message}`);
       });
     }

@@ -10,6 +10,46 @@ const { parseToolCalls, repairToolCalls, stripToolCallText } = require('./tools/
 /** Max chars of each tool result injected into chat history (full JSON/snippets must reach the model). */
 const MAX_TOOL_RESULT_INJECT_CHARS = 32000;
 
+/** Web-facing tools — if these share a batch with workspace navigation tools, drop the latter (structural conflict rule). */
+const WEB_TOOL_BATCH = new Set(['web_search', 'fetch_webpage', 'http_request']);
+const WORKSPACE_NAV_TOOLS = new Set(['list_directory', 'get_project_structure']);
+
+function filterWebWorkspaceToolConflict(calls) {
+  if (!calls?.length) return calls;
+  const hasWeb = calls.some((c) => WEB_TOOL_BATCH.has(c.tool));
+  const hasWs = calls.some((c) => WORKSPACE_NAV_TOOLS.has(c.tool));
+  if (!hasWeb || !hasWs) return calls;
+  const dropped = calls.filter((c) => WORKSPACE_NAV_TOOLS.has(c.tool));
+  const kept = calls.filter((c) => !WORKSPACE_NAV_TOOLS.has(c.tool));
+  console.log(
+    `[ChatEngine] Same-batch conflict: dropped workspace tool(s) ${dropped.map((d) => d.tool).join(', ')} because web tool(s) are present`,
+  );
+  return kept;
+}
+
+/** Hard floor for context window (aligned with llama.cpp 256-token alignment). */
+const MIN_CONTEXT_FLOOR = 2048;
+/** When requireMinContextForGpu is true, prefer at least this before accepting GPU offload. */
+const MIN_CONTEXT_WHEN_GPU_REQUIRED = 4096;
+
+/**
+ * Normalize settings / IPC payload for model load. Matches settingsManager defaults when fields are missing.
+ * @param {object} raw
+ * @returns {{ gpuPreference: 'auto'|'cpu', gpuLayers: number, contextSize: number, requireMinContextForGpu: boolean }}
+ */
+function buildEngineLoadSettings(raw = {}) {
+  const gpuPreference = raw.gpuPreference === 'cpu' ? 'cpu' : 'auto';
+  const gpuLayers = typeof raw.gpuLayers === 'number' ? raw.gpuLayers : -1;
+  const ctx = Number(raw.contextSize);
+  const contextSize = Number.isFinite(ctx) && ctx > 0 ? Math.floor(ctx) : 16384;
+  return {
+    gpuPreference,
+    gpuLayers,
+    contextSize,
+    requireMinContextForGpu: !!raw.requireMinContextForGpu,
+  };
+}
+
 // Original system prompt — kept for reference and easy rollback
 const SYSTEM_PROMPT_ORIGINAL = `You are guIDE, a local AI coding assistant. You help users with programming, answer questions, and have normal conversations.
 
@@ -89,24 +129,50 @@ class ChatEngine extends EventEmitter {
     this._abortController = null;
   }
 
-  async initialize(modelPath) {
+  /**
+   * @param {string} modelPath
+   * @param {object} [rawLoadSettings] — from settingsManager.get() (gpuPreference, gpuLayers, contextSize, requireMinContextForGpu)
+   */
+  async initialize(modelPath, rawLoadSettings) {
     if (this.isLoading) throw new Error('Already loading a model');
     this.isLoading = true;
     this.emit('status', { state: 'loading', message: 'Loading model...' });
 
     try {
       const llamaCppPath = this._getNodeLlamaCppPath();
-      const { getLlama, LlamaChat } = await import(pathToFileURL(llamaCppPath).href);
+      const { getLlama, LlamaChat, readGgufFileInfo } = await import(pathToFileURL(llamaCppPath).href);
+
+      const s = buildEngineLoadSettings(rawLoadSettings || {});
+      this.gpuPreference = s.gpuPreference;
 
       if (this._model) await this._dispose();
 
+      let trainMaxContext = null;
+      let totalLayersFromGguf = null;
+      try {
+        const gguf = await readGgufFileInfo(modelPath, { readTensorInfo: false, logWarnings: false });
+        const am = gguf.architectureMetadata;
+        if (am && typeof am.context_length === 'number') trainMaxContext = am.context_length;
+        if (am && typeof am.block_count === 'number') totalLayersFromGguf = am.block_count;
+      } catch (e) {
+        console.warn(`[ChatEngine] readGgufFileInfo: ${e.message}`);
+      }
+
+      const testMaxCtx = parseInt(process.env.TEST_MAX_CONTEXT, 10) || 0;
+      let desiredMax = testMaxCtx > 0 ? testMaxCtx : s.contextSize;
+      if (trainMaxContext != null) desiredMax = Math.min(desiredMax, trainMaxContext);
+      if (testMaxCtx <= 0) desiredMax = Math.max(MIN_CONTEXT_FLOOR, desiredMax);
+
+      const minBase = s.requireMinContextForGpu ? MIN_CONTEXT_WHEN_GPU_REQUIRED : MIN_CONTEXT_FLOOR;
+      const contextMin = Math.min(minBase, desiredMax);
+
       this._llama = await getLlama({
-        gpu: this.gpuPreference === 'cpu' ? false : 'auto',
+        gpu: s.gpuPreference === 'cpu' ? false : 'auto',
       });
 
       const modelStats = fs.statSync(modelPath);
 
-      this._model = await this._llama.loadModel({
+      const loadModelOpts = {
         modelPath,
         defaultContextFlashAttention: false,
         ignoreMemorySafetyChecks: true,
@@ -114,16 +180,25 @@ class ChatEngine extends EventEmitter {
         onLoadProgress: (p) => {
           this.emit('status', { state: 'loading', message: `Loading model... ${Math.round(p * 100)}%`, progress: p });
         },
-      });
+      };
 
-      const testMaxCtx = parseInt(process.env.TEST_MAX_CONTEXT, 10) || 0;
-      let targetCtx = testMaxCtx || undefined;
+      if (s.gpuPreference === 'cpu') {
+        loadModelOpts.gpuLayers = 0;
+      } else if (s.gpuLayers >= 0) {
+        loadModelOpts.gpuLayers = s.gpuLayers;
+      } else {
+        loadModelOpts.gpuLayers = {
+          fitContext: { contextSize: desiredMax },
+        };
+      }
+
+      this._model = await this._llama.loadModel(loadModelOpts);
 
       this._context = await this._model.createContext({
-        contextSize: targetCtx,
-        flashAttention: this.gpuPreference !== 'cpu',
+        contextSize: { min: contextMin, max: desiredMax },
+        flashAttention: s.gpuPreference !== 'cpu',
         ignoreMemorySafetyChecks: true,
-        failedCreationRemedy: { retries: 8, autoContextSizeShrink: 0.5 },
+        failedCreationRemedy: { retries: 6, autoContextSizeShrink: 0.16 },
       });
 
       this._sequence = this._context.getSequence();
@@ -131,18 +206,26 @@ class ChatEngine extends EventEmitter {
       this._chatHistory = [{ type: 'system', text: SYSTEM_PROMPT }];
       this._lastEvaluation = null;
 
+      const actualCtx = this._context.contextSize || 0;
       this.modelInfo = {
         path: modelPath,
         name: path.basename(modelPath),
         size: modelStats.size,
-        contextSize: this._context.contextSize || 0,
+        contextSize: actualCtx,
+        contextSizeRequested: desiredMax,
+        contextTrainMax: trainMaxContext,
+        totalLayers: totalLayersFromGguf != null ? totalLayersFromGguf : undefined,
         gpuLayers: this._model.gpuLayers || 0,
-        gpuMode: this.gpuPreference === 'cpu' ? false : 'auto',
+        gpuMode: s.gpuPreference === 'cpu' ? false : 'auto',
       };
 
       this.currentModelPath = modelPath;
       this.isReady = true;
       this.isLoading = false;
+
+      console.log(
+        `[ChatEngine] Model ready: ctx=${actualCtx} (requested max ${desiredMax}${trainMaxContext != null ? `, train cap ${trainMaxContext}` : ''}), gpuLayers=${this.modelInfo.gpuLayers}`,
+      );
 
       this.emit('status', { state: 'ready', message: `Model ready: ${this.modelInfo.name}`, modelInfo: this.modelInfo });
       return this.modelInfo;
@@ -660,7 +743,7 @@ class ChatEngine extends EventEmitter {
         let parsedCalls = parseToolCalls(fullResponse);
         if (parsedCalls.length > 0) {
           const { repaired } = repairToolCalls(parsedCalls, fullResponse);
-          parsedCalls = repaired;
+          parsedCalls = filterWebWorkspaceToolConflict(repaired);
         }
 
         // Safety net: if the streaming filter missed any tool JSON (e.g., fenced blocks),
@@ -826,7 +909,7 @@ class ChatEngine extends EventEmitter {
           parsedCalls = parseToolCalls(newText);
           if (parsedCalls.length > 0) {
             const { repaired } = repairToolCalls(parsedCalls, newText);
-            parsedCalls = repaired;
+            parsedCalls = filterWebWorkspaceToolConflict(repaired);
 
             // Safety net cleanup for any missed tool JSON in new text
             if (onStreamEvent) {
@@ -1069,4 +1152,4 @@ ChatEngine.DEFAULT_ENABLED_TOOLS = new Set([
   'get_project_structure', 'run_command', 'web_search', 'fetch_webpage',
 ]);
 
-module.exports = { ChatEngine };
+module.exports = { ChatEngine, buildEngineLoadSettings };
