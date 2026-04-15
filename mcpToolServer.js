@@ -321,7 +321,7 @@ class MCPToolServer {
     this._allToolDefsCache = [
       {
         name: 'web_search',
-        description: 'Search the web for current information using DuckDuckGo. Returns results for current, live, or time-sensitive queries: prices, weather, news, documentation, scores, events, and more.',
+        description: 'Search the web for current information using DuckDuckGo. Returns structured results (title, url, snippet per hit). After a search, base your answer on those snippet and title strings — do not answer with generic descriptions of what a site or brand is unless the snippet supports it.',
         parameters: {
           query: { type: 'string', description: 'Search query', required: true },
           maxResults: { type: 'number', description: 'Max results (default 5)', required: false },

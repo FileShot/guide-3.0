@@ -31,6 +31,7 @@ If your output is cut off mid-generation, the system will automatically continue
 ## Rules
 - Only claim you did something if you called the tool that did it
 - After calling a tool, use the results immediately — do not repeat the same call
+- For web_search and fetch_webpage: your answer must use the returned titles and snippets (or fetched text), not generic descriptions of sites or brands
 - Never say "I can't", "I'm unable to", or "I don't have access" when you have a tool available
 - For file edits: read the file first to get exact text, then edit
 - Browser workflow: navigate first, then take a snapshot, then interact using element refs
@@ -45,11 +46,10 @@ const SYSTEM_PROMPT = `USE TOOLS. YOU HAVE TOOLS. USE THEM.
 YOU ARE AN AI THAT CALLS TOOLS. EVERY FILE OPERATION IS A TOOL CALL.
 
 ## TOOLS ARE HOW YOU WORK
-- write_file: CREATE files on disk. Use this. Always.
-- edit_file: MODIFY files on disk. Use this. Always.
-- read_file: READ files. Use this before editing.
-- run_command: RUN terminal commands.
-- web_search: SEARCH the web for live information.
+- write_file / edit_file / append_to_file: use these when the user wants code or files in their project.
+- read_file: read before editing.
+- run_command: when they need a shell command.
+- web_search: only when you need live or external facts (news, prices, docs, weather). Do NOT web-search before building code or files unless the user asked for research, best practices from the web, or facts you cannot know from the project alone.
 
 ## NEVER DO THIS
 NEVER output file contents as code blocks in chat.
@@ -58,14 +58,14 @@ NEVER write HTML, CSS, JavaScript, Python, or any other code as a chat response.
 NEVER create or write files when the user only sends a greeting or small talk — answer in chat only.
 NEVER say "I can't", "I don't have access", "I'm unable to", or "I cannot" when you have a tool that can do it.
 NEVER call the same tool with the same arguments repeatedly — call it once and use the results.
+NEVER answer from web_search by describing what a website "is" in generic terms. You MUST use the returned title and snippet text.
 
-## ALWAYS DO THIS
-ALWAYS call write_file when creating a file.
-ALWAYS call edit_file when modifying a file.
-ALWAYS call run_command to run commands.
-ALWAYS use browser tools when warranted.
-ALWAYS use the tool. Every time.
-When you receive tool results, IMMEDIATELY use those results to answer the user. Do not call the tool again.
+## WHEN TO USE WHAT
+- User asks to build, create, or change project files → file tools first; skip web_search unless they need live data or external references.
+- User asks for news, weather, prices, or "look up" → web_search (or fetch_webpage), then answer from tool output.
+
+## AFTER TOOL RESULTS
+When tool results appear in the conversation, base your reply on that data. For web_search, quote or paraphrase the snippet and title fields; do not invent headlines or substitute training-memory descriptions of brands.
 
 ## Continuation
 If your output is cut off mid-generation, the system will automatically continue.`;
@@ -784,7 +784,8 @@ class ChatEngine extends EventEmitter {
           }
 
           // Feed tool results back to the model so it knows what happened
-          this._chatHistory.push({ type: 'user', text: `[Tool Results]\n${toolResultLines.join('\n')}\n\nNow respond to the user using the results above.` });
+          const toolResultsGrounding = 'Grounding: The JSON below is authoritative. For web_search, use each result\'s title and snippet in your reply; do not replace them with generic descriptions of news sites or products.\n\n';
+          this._chatHistory.push({ type: 'user', text: `[Tool Results]\n${toolResultsGrounding}${toolResultLines.join('\n')}\n\nNow respond to the user using the results above.` });
 
           genOptions.lastEvaluationContextWindow = this._lastEvaluation ? {
             contextWindow: this._lastEvaluation.contextWindow,
