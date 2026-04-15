@@ -31,7 +31,7 @@ If your output is cut off mid-generation, the system will automatically continue
 ## Rules
 - Only claim you did something if you called the tool that did it
 - After calling a tool, use the results immediately — do not repeat the same call
-- For web_search and fetch_webpage: when you use web_search for any substantive web answer, you MUST call fetch_webpage on the first and second ranked result URLs before your final reply (if the search returned only one hit, fetch that URL). Ground answers in fetched page text and snippet/title fields — never generic descriptions of sites or brands
+- For web_search and fetch_webpage: after web_search returns, you MUST call fetch_webpage on the first and second ranked result URLs in the same continuation (one fetch if only one hit). Do not ask the user whether to fetch — do not use phrases like "Would you like me to fetch". Ground answers in fetched page text and snippet/title fields. While doing a web lookup, do not call list_directory or get_project_structure in the same tool round as web_search/fetch_webpage unless the user explicitly asked about the project files
 - Never say "I can't", "I'm unable to", or "I don't have access" when you have a tool available
 - For file edits: read the file first to get exact text, then edit
 - Browser workflow: navigate first, then take a snapshot, then interact using element refs
@@ -49,7 +49,7 @@ YOU ARE AN AI THAT CALLS TOOLS. EVERY FILE OPERATION IS A TOOL CALL.
 - write_file / edit_file / append_to_file: use these when the user wants code or files in their project.
 - read_file: read before editing.
 - run_command: when they need a shell command.
-- web_search: only when you need live or external facts (news, prices, docs, weather). Do NOT web-search before building code or files unless the user asked for research, best practices from the web, or facts you cannot know from the project alone. After every web_search you MUST call fetch_webpage on the first and second ranked result URLs before answering (if only one hit, fetch that URL). Do not treat search snippets alone as sufficient for a substantive answer — ground claims in fetched page text.
+- web_search: only when you need live or external facts (news, prices, docs, weather). Do NOT web-search before building code or files unless the user asked for research, best practices from the web, or facts you cannot know from the project alone. After every web_search, in the same continuation round, you MUST emit fetch_webpage for the first and second ranked result URLs before your final answer (if only one hit, fetch that URL). Do not ask the user for permission to fetch. Do not treat search snippets alone as sufficient — ground claims in fetched page text. Do not interleave list_directory or get_project_structure with web_search/fetch_webpage in the same tool round unless the user explicitly asked about the project
 
 ## NEVER DO THIS
 NEVER output file contents as code blocks in chat.
@@ -58,14 +58,14 @@ NEVER write HTML, CSS, JavaScript, Python, or any other code as a chat response.
 NEVER create or write files when the user only sends a greeting or small talk — answer in chat only.
 NEVER say "I can't", "I don't have access", "I'm unable to", or "I cannot" when you have a tool that can do it.
 NEVER call the same tool with the same arguments repeatedly — call it once and use the results.
-NEVER answer from web_search alone for substantive questions — snippets are not full pages. After web_search you MUST call fetch_webpage on the top two result URLs (or the only URL) before replying. NEVER describe what a website "is" in generic terms; ground claims in fetched page text and the title/snippet fields.
+NEVER answer from web_search alone for substantive questions — snippets are not full pages. After web_search you MUST call fetch_webpage on the top two result URLs (or the only URL) in the same continuation, before replying. NEVER ask the user if you should fetch. NEVER describe what a website "is" in generic terms; ground claims in fetched page text and the title/snippet fields.
 
 ## WHEN TO USE WHAT
 - User asks to build, create, or change project files → file tools first; skip web_search unless they need live data or external references.
-- User asks for news, weather, prices, research, documentation, or "look up" on the web → web_search, then you MUST call fetch_webpage on the first and second ranked result URLs (or each returned URL if fewer than two), then answer from fetched tool output.
+- User asks for news, weather, prices, research, documentation, or "look up" on the web → web_search, then immediately fetch_webpage for the first and second ranked result URLs (or each returned URL if fewer than two) in the same turn, then answer from fetched tool output. Do not ask the user to confirm fetching.
 
 ## AFTER TOOL RESULTS
-When tool results appear, base your reply on that data. If the round included web_search, your next tool calls MUST include fetch_webpage for the top two result URLs before you finalize your answer to the user (one fetch if only one hit). Quote or paraphrase from fetched content and snippets; do not invent facts or substitute training-memory descriptions of brands.
+When tool results appear, base your reply on that data. If the round included web_search only, your next output MUST be fetch_webpage tool call(s) for the top result URLs before any file tools or final answer. If the round already included fetch_webpage results, answer from that text. Quote or paraphrase from fetched content; do not invent facts or substitute training-memory descriptions of brands.
 
 ## Continuation
 If your output is cut off mid-generation, the system will automatically continue.`;
@@ -784,7 +784,7 @@ class ChatEngine extends EventEmitter {
           }
 
           // Feed tool results back to the model so it knows what happened
-          const toolResultsGrounding = 'Grounding: The JSON below is authoritative. If these results include web_search hits, you MUST call fetch_webpage on the first and second ranked result URLs before your final answer to the user (or the only URL if there is a single hit). Ground your reply in fetched page text; do not answer with generic descriptions of sites or products.\n\n';
+          const toolResultsGrounding = 'Grounding: The JSON below is authoritative. If these results include web_search only (no fetch_webpage yet), your next tool calls MUST be fetch_webpage for the first and second ranked result URLs (or the only URL if one hit) in this continuation — do not ask the user for permission to fetch. If fetch_webpage results are already present, answer from that content. Do not call list_directory or get_project_structure in the same round as completing web fetch unless the user asked about the project. Ground your reply in fetched page text; do not use generic site blurbs.\n\n';
           this._chatHistory.push({ type: 'user', text: `[Tool Results]\n${toolResultsGrounding}${toolResultLines.join('\n')}\n\nNow respond to the user using the results above.` });
 
           genOptions.lastEvaluationContextWindow = this._lastEvaluation ? {
@@ -1012,7 +1012,7 @@ class ChatEngine extends EventEmitter {
     const toolLines = Object.entries(functions).map(([name, def]) => {
       return `- ${name}: ${def.description || 'No description'}`;
     });
-    return `\n\nYou have access to the following tools:\n${toolLines.join('\n')}\n\nTOOL USAGE RULES:\n- When the user asks you to create, write, edit, read, or delete files in their project, you MUST use the appropriate file tool (write_file, read_file, edit_file, append_to_file, delete_file). Do NOT output file contents inline.\n- When the user asks you to find, search, or look for something in their code, use grep_search or find_files.\n- When the user asks to list or explore project structure, use list_directory.\n- When the user asks to run a command, script, or install something, use run_command.\n- When the user asks to search the web or look something up online, use web_search and then you MUST call fetch_webpage on the first and second ranked result URLs from the search before answering (if only one hit, fetch that URL).\n- When the user asks a general question, wants an explanation, or asks you to review code you already have, respond with text directly.\n- You can chain tools: use read_file to see existing code, then edit_file to modify it, then run_command to test it.\n- Always prefer tools over inline code when the user wants changes to their actual project files.`;
+    return `\n\nYou have access to the following tools:\n${toolLines.join('\n')}\n\nTOOL USAGE RULES:\n- When the user asks you to create, write, edit, read, or delete files in their project, you MUST use the appropriate file tool (write_file, read_file, edit_file, append_to_file, delete_file). Do NOT output file contents inline.\n- When the user asks you to find, search, or look for something in their code, use grep_search or find_files.\n- When the user asks to list or explore project structure, use list_directory.\n- When the user asks to run a command, script, or install something, use run_command.\n- When the user asks to search the web or look something up online, use web_search then immediately fetch_webpage on the first and second ranked result URLs in the same continuation before answering (if only one hit, fetch that URL). Do not ask the user whether to fetch. Do not list the project directory in the same tool round as web_search/fetch_webpage unless the user asked about the project.\n- When the user asks a general question, wants an explanation, or asks you to review code you already have, respond with text directly.\n- You can chain tools: use read_file to see existing code, then edit_file to modify it, then run_command to test it.\n- Always prefer tools over inline code when the user wants changes to their actual project files.`;
   }
 
   _getNodeLlamaCppPath() {

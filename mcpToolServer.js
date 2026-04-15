@@ -321,7 +321,7 @@ class MCPToolServer {
     this._allToolDefsCache = [
       {
         name: 'web_search',
-        description: 'Search the web (DuckDuckGo and fallbacks). Returns title, url, and short snippet per hit — not full page text. Mandatory workflow: after every web_search you MUST call fetch_webpage on the first and second ranked result URLs before your final answer (if fewer than two hits, fetch each returned URL). Ground answers in fetched page text; do not substitute generic descriptions of sites or brands.',
+        description: 'Search the web (DuckDuckGo and fallbacks). Returns title, url, and short snippet per hit — not full page text. After every web_search, in the same continuation, you MUST call fetch_webpage on the first and second ranked result URLs (or each URL if fewer than two) before your final answer. Do not ask the user whether to fetch. Ground answers in fetched page text; do not substitute generic descriptions of sites or brands.',
         parameters: {
           query: { type: 'string', description: 'Search query', required: true },
           maxResults: { type: 'number', description: 'Max results (default 5)', required: false },
@@ -329,7 +329,7 @@ class MCPToolServer {
       },
       {
         name: 'fetch_webpage',
-        description: 'Fetch a URL and return extracted page text (HTML stripped). Required after web_search for substantive answers: call this for the first and second ranked result URLs from the search (or the only URL if one hit) before answering the user. For interactive browsing, use browser_navigate instead.',
+        description: 'Fetch a URL and return extracted page text (HTML stripped). Required immediately after web_search in the same continuation: call for the first and second ranked result URLs from the search results (or the only URL if one hit) before answering. Do not ask the user for permission to fetch. For interactive browsing, use browser_navigate instead.',
         parameters: {
           url: { type: 'string', description: 'URL to fetch', required: true },
         },
@@ -2798,7 +2798,7 @@ class MCPToolServer {
 
     // For minimal mode, build a single part with just core tools
     if (options && options.minimal) {
-      const minimalTools = ['read_file', 'write_file', 'edit_file', 'append_to_file', 'list_directory', 'run_command', 'web_search'];
+      const minimalTools = ['read_file', 'write_file', 'edit_file', 'append_to_file', 'list_directory', 'run_command', 'web_search', 'fetch_webpage'];
       let minPart = '';
       for (const name of minimalTools) {
         const tool = toolMap[name];
@@ -2835,7 +2835,7 @@ class MCPToolServer {
     rules += '- Use write_file to create new files, append_to_file to add to existing files\n';
     rules += '- For edits: read_file first, then edit_file with exact oldText\n';
     rules += '- For large files: write_file for first section, then append_to_file for remaining sections\n';
-    rules += '- Web: after web_search you MUST call fetch_webpage on the first and second ranked result URLs before answering (or each returned URL if fewer than two)\n';
+    rules += '- Web: after web_search, in the same continuation, call fetch_webpage on the first and second ranked result URLs before answering (or each returned URL if fewer than two). Do not ask the user to confirm fetching. Do not call list_directory in the same tool round as web_search/fetch_webpage unless the user asked about the project\n';
     rules += '- Browser workflow: browser_navigate → browser_snapshot → interact using [ref=N] IDs\n';
     parts.push(rules);
 
@@ -2928,7 +2928,7 @@ class MCPToolServer {
     }
 
     prompt += `### Common Patterns
-- **Web lookup (mandatory)**: web_search → fetch_webpage(1st result url) → fetch_webpage(2nd result url) if two or more hits → answer from fetched text. Do not stop after snippets alone.
+- **Web lookup (mandatory)**: web_search → fetch_webpage(1st result url) → fetch_webpage(2nd result url) if two or more hits → answer from fetched text — same continuation, no asking the user to fetch, do not stop at snippets alone, do not interleave list_directory with this chain unless the user asked about project files
 - **Web research (interactive UI)**: browser_navigate → browser_snapshot → browser_click/type using [ref=N]
 - **Create & verify**: write_file → browser_navigate("file:///abs/path")
 - **Edit existing file**: read_file → edit_file (oldText/newText)
@@ -2939,6 +2939,7 @@ class MCPToolServer {
 - Your browser is REAL Chromium — no CAPTCHA restrictions
 - NEVER provide manual instructions — USE the tools to do the work
 - NEVER output full file content as code blocks in chat — use write_file, edit_file, or append_to_file
+- After web_search, fetch required URLs in the same continuation — NEVER ask "Would you like me to fetch"
 - If an error occurs, retry with a different approach — do NOT give up
 `;
     return prompt;
