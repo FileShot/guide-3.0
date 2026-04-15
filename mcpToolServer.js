@@ -321,7 +321,7 @@ class MCPToolServer {
     this._allToolDefsCache = [
       {
         name: 'web_search',
-        description: 'Search the web for current information using DuckDuckGo. Returns structured results (title, url, snippet per hit). After a search, base your answer on those snippet and title strings — do not answer with generic descriptions of what a site or brand is unless the snippet supports it.',
+        description: 'Search the web (DuckDuckGo and fallbacks). Returns title, url, and short snippet per hit — not full page text. Mandatory workflow: after every web_search you MUST call fetch_webpage on the first and second ranked result URLs before your final answer (if fewer than two hits, fetch each returned URL). Ground answers in fetched page text; do not substitute generic descriptions of sites or brands.',
         parameters: {
           query: { type: 'string', description: 'Search query', required: true },
           maxResults: { type: 'number', description: 'Max results (default 5)', required: false },
@@ -329,7 +329,7 @@ class MCPToolServer {
       },
       {
         name: 'fetch_webpage',
-        description: 'Fetch and extract text content from a webpage URL. Downloads and parses HTML to return readable text. For interactive browsing, use browser_navigate instead.',
+        description: 'Fetch a URL and return extracted page text (HTML stripped). Required after web_search for substantive answers: call this for the first and second ranked result URLs from the search (or the only URL if one hit) before answering the user. For interactive browsing, use browser_navigate instead.',
         parameters: {
           url: { type: 'string', description: 'URL to fetch', required: true },
         },
@@ -2835,6 +2835,7 @@ class MCPToolServer {
     rules += '- Use write_file to create new files, append_to_file to add to existing files\n';
     rules += '- For edits: read_file first, then edit_file with exact oldText\n';
     rules += '- For large files: write_file for first section, then append_to_file for remaining sections\n';
+    rules += '- Web: after web_search you MUST call fetch_webpage on the first and second ranked result URLs before answering (or each returned URL if fewer than two)\n';
     rules += '- Browser workflow: browser_navigate → browser_snapshot → interact using [ref=N] IDs\n';
     parts.push(rules);
 
@@ -2927,7 +2928,8 @@ class MCPToolServer {
     }
 
     prompt += `### Common Patterns
-- **Web research**: web_search → browser_navigate → browser_snapshot → browser_click/type using [ref=N]
+- **Web lookup (mandatory)**: web_search → fetch_webpage(1st result url) → fetch_webpage(2nd result url) if two or more hits → answer from fetched text. Do not stop after snippets alone.
+- **Web research (interactive UI)**: browser_navigate → browser_snapshot → browser_click/type using [ref=N]
 - **Create & verify**: write_file → browser_navigate("file:///abs/path")
 - **Edit existing file**: read_file → edit_file (oldText/newText)
 - **Form filling**: browser_navigate → browser_snapshot → browser_type/click each field → submit
