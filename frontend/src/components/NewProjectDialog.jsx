@@ -52,6 +52,15 @@ export default function NewProjectDialog() {
       .catch(() => {});
   }, [show]);
 
+  // Pre-populate parent directory with user's home directory
+  useEffect(() => {
+    if (!show) return;
+    fetch('/api/system/homedir')
+      .then(r => r.json())
+      .then(data => { if (data.homedir && !parentDir) setParentDir(data.homedir); })
+      .catch(() => {});
+  }, [show]);
+
   useEffect(() => {
     if (show && nameRef.current) nameRef.current.focus();
   }, [show, selectedTemplate]);
@@ -89,6 +98,11 @@ export default function NewProjectDialog() {
       if (data.success) {
         const openedPath = data.path || data.projectDir;
         setProjectPath(openedPath);
+        await fetch('/api/project/open', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projectPath: openedPath }),
+        });
         const treeRes = await fetch(`/api/files/tree?path=${encodeURIComponent(openedPath)}`);
         const treeData = await treeRes.json();
         setFileTree(treeData.items || []);
@@ -180,7 +194,7 @@ export default function NewProjectDialog() {
                 <input
                   type="text"
                   className="flex-1 bg-vsc-input border border-vsc-panel-border rounded px-2 py-1.5 text-vsc-sm text-vsc-text outline-none focus:border-vsc-accent"
-                  placeholder="C:\Users\me\projects"
+                  placeholder="Select a directory..."
                   value={parentDir}
                   onChange={e => setParentDir(e.target.value)}
                 />

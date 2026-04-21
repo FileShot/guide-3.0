@@ -4,142 +4,171 @@
 
 ---
 
-## 2026-04-14 — Fix streaming in fence path, title bar drag, web search multi-backend
-
-### Problems
-1. Code block streaming fix from previous commit only worked for raw JSON tool calls — models that output tool calls inside code fences (` ```json ... ``` `) still showed three dots during generation because the fence path had no content streaming
-2. Title bar not draggable — all child elements had `WebkitAppRegion: 'no-drag'`, including the center `flex-1` div, leaving zero draggable pixels
-3. Web search (DuckDuckGo) consistently rate-limited — "Search temporarily unavailable" on every query
-4. Recommended models showed 3 entries instead of 2
-
-### Changes
-
-#### `chatEngine.js`
-- **Fence path content streaming**: Added the same real-time JSON content extraction state machine to the `_sfInFence` branch of `_sfProcessChunk`. When a fenced code block is detected as containing a file write tool call, the `"content"` field value is streamed character-by-character to `file-content-token` events (with JSON escape decoding), identical to the raw JSON path.
-- **`_sfFlushFence()` updated**: Now gracefully finalizes any in-progress content stream before flushing the fence buffer, and resets all content streaming state variables.
-- **Fence close handling**: When closing ``` is detected and content was being streamed, pending content is flushed and `file-content-end` is emitted before the fence is suppressed.
-- Both fence and raw JSON paths now share the same state variables (`_sfContentStreamActive`, `_sfFileWriteDetected`, etc.) for content streaming.
-
-#### `webSearch.js`
-- Complete rewrite with multi-backend architecture:
-  1. **Primary: Brave Search** — scrapes `search.brave.com` HTML results (more reliable, no rate limiting)
-  2. **Fallback: DuckDuckGo POST** — uses POST to `lite.duckduckgo.com` with proper headers (Referer, Origin) — less likely to trigger bot detection than GET
-  3. **Last resort: DuckDuckGo GET** — original method with retry
-- **User-Agent rotation**: 4 different browser UA strings, randomly selected
-- **Better headers**: Sec-Fetch-*, Accept-Encoding, Referer headers match real browsers
-- Dedicated `_httpPost` helper method for POST-based search
-
-#### `frontend/src/components/TitleBar.jsx`
-- Moved `WebkitAppRegion: 'no-drag'` from the outer `flex-1` center container to the inner `search-bar-container` (max-w-[480px]). The space on either side of the search bar is now draggable.
-
-#### `frontend/src/components/WelcomeScreen.jsx`
-- Reduced `RECOMMENDED_MODELS` from 3 entries to 2 (removed Qwen 3.5 27B "advanced" tier)
-
----
-
-## 2026-04-14 — Real-time code block streaming, UI fixes, New Window support
-
-### Problems
-1. File content (e.g., 312-line HTML files) only appeared after the entire tool call completed — user saw bouncing dots during generation, then the full code block appeared at once
-2. Welcome screen installed models list showed all models with no limit, causing overhang
-3. Default theme was "Monolith" instead of "Carbon"
-4. TitleBar "Open Folder" used `prompt()` instead of native dialog and referenced wrong API fields (`d.tree` vs `d.items`)
-5. No "New Window" option; single instance lock prevented multiple windows
-
-### Root Cause (Streaming)
-The streaming filter in `chatEngine.js` correctly suppressed tool call JSON from the UI, but the `file-content-*` events were only emitted **after** `generateResponse()` completed (in the tool execution loop). The entire file content was sent as a single `file-content-token` burst. During generation, `streamingSegments.length === 0` triggered the three-dot loading indicator.
-
-### Changes
-
-#### `chatEngine.js`
-- Added real-time file content streaming state machine inside the streaming filter (`_sfProcessChunk`)
-- When a confirmed tool call is detected as a file write (`write_file`/`create_file`/`append_to_file`), the filter watches for the `"content": "` key-value pattern
-- Once found, subsequent characters are decoded from JSON escape sequences (`\n`, `\t`, `\"`, `\\`, `\uXXXX`) and streamed to the UI via `file-content-token` events in 40-character batches
-- `file-content-start` is emitted when the content field begins (with filePath extracted from the buffer)
-- `file-content-end` is emitted when the closing `"` of the content value is reached
-- `_sfStreamedFileWrites` Set tracks which files were already streamed in real-time — the post-generation emission is skipped for those
-- `_sfFlush()` gracefully finalizes any in-progress content stream if generation is interrupted
-- All new state variables reset between tool iteration rounds
-
-#### `frontend/src/components/WelcomeScreen.jsx`
-- Changed `llmModels.map()` to `llmModels.slice(0, 2).map()` — only 2 models shown
-- Added "+N more installed" button when truncated, links to download panel
-
-#### `frontend/src/components/ThemeProvider.jsx`
-- Changed default theme from `'monolith'` to `'carbon'` in three places: context default, useState initializer, and fallback
-
-#### `frontend/src/components/TitleBar.jsx`
-- Rewrote `openFolder` handler: uses `electronAPI.openFolderDialog()` (native OS dialog) + `POST /api/project/open` + `setFileTree(t.items || [])` — matching the working Sidebar implementation
-- Added "New Window" item to File menu (`action: 'newWindow'`)
-- Added `newWindow` case in `executeMenuAction` → calls `electronAPI.newWindow()`
-
-#### `appMenu.js`
-- Added "New Window" item with `CmdOrCtrl+Shift+N` accelerator to native File menu
-
-#### `electron-main.js`
-- Removed single instance lock (`app.requestSingleInstanceLock()`) so multiple windows can run
-- Added `new-window` IPC handler — spawns a detached child process via `process.execPath`
-
-#### `preload.js`
-- Exposed `newWindow` method via `ipcRenderer.invoke('new-window')`
-
-#### `frontend/src/App.jsx`
-- Added `newWindow` case in native menu action handler
-
----
-
-## 2026-04-14 — Wire tool call events to frontend, strip raw JSON from chat
+## 2026-04-20 — Install Playwright + fix browser loop + reduce inject cap
 
 ### Problem
-Tool calls displayed as raw JSON text in chat. Model outputs like `{"tool":"web_search","query":"..."}` appeared verbatim to the user instead of rendering as ToolCallCard UI components. File operations (write_file, etc.) were completely invisible — the R42-Fix-4 skip excluded them from ToolCallCards expecting FileContentBlock, but file-content-* events were never emitted by the backend.
-
-### Root Causes
-Three disconnected wiring gaps between chatEngine → server → frontend:
-1. `chatEngine.js` line 152 destructured `onToken`, `onToolCall`, etc. but **never destructured `onStreamEvent`** — the callback passed by server/main.js was silently dropped
-2. `onToolCall` emitted `tool-call` events, but `App.jsx` had no handler for `tool-call` — it expected `tool-executing` and `mcp-tool-results` events
-3. All tokens including tool call JSON were forwarded via `onToken` → `llm-token` → `appendStreamToken` — displayed as regular text
+Three bugs observed in tool-chaining test (news headline fetch):
+1. `browser_navigate` succeeded (iframe mode) but `browser_snapshot` always returned `"No browser page open"` — no Playwright was installed, so DOM tools were unusable. Model looped navigate→snapshot→navigate→dedup→final continuation→more tools.
+2. Dedup break message said "continue with different tools or parameters if more work remains" → model generated more tool calls in the final continuation (sent nothing to user).
+3. `MAX_TOOL_RESULT_INJECT_CHARS = 32000` was too large: one `fetch_webpage` result (~10K tokens) nearly filled the entire 11,359-token history budget. After 2 fetches, context shifted and dropped the original user message. Model hallucinates about conversation ("the snippet you shared...").
 
 ### Changes
+1. `npm install playwright --save` (using D:\Server\npm.cmd + PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1, then `npx playwright install chromium`). Playwright 1.59.1 installed, chromium-1217 binary present. `package.json` updated.
+2. `tools/mcpBrowserTools.js` `_browserNavigate()`: Added `if (!this.browserManager._page) { await this.browserManager.launchPlaywright(); }` before `browserManager.navigate(url)` — auto-launches Playwright (headless Chromium) on first browser_navigate call so `browser_snapshot` and all DOM tools work immediately after navigation.
+3. `chatEngine.js` dedup break message: Changed from "Continue the task with different tools or parameters if more work remains. Only write a prose reply when the task is fully done." to "All tool calls in this round were already executed. No more tool calls are permitted. Write your final reply to the user now." — removes permission to continue tooling.
+4. `chatEngine.js` `MAX_TOOL_RESULT_INJECT_CHARS`: `32000` → `10000` — fits ~2,500 tokens, allowing 3-4 tool results to coexist in the 11,359-token history budget without triggering aggressive context shifts.
 
-#### `tools/toolParser.js`
-- Added `stripToolCallText(text)` — removes tool call JSON blocks from model output text using the same structural patterns parseToolCalls detects (XML `<tool_call>` tags, fenced code blocks, raw JSON objects with "tool" key via brace-counting)
-- Added `_isInsideExistingRange(ranges, index)` helper for range overlap detection
-- Exported `stripToolCallText` in module.exports
+### Root cause
+- Bug 1: browserManager.navigate() fell back to iframe mode (no Playwright), then DOM tools checked `this._page` (null) → always failing. Playwright needed to be installed AND launched on first use.
+- Bug 2: "Continue with different tools" was genuinely permissive — the model chose that option since the task was incomplete.
+- Bug 3: A 32,000-char result ≈ 8,000 tokens — nearly the entire available body budget. History shifted after every large fetch, deleting the user's original message from context.
 
-#### `chatEngine.js`
-- Line 152: Added `onStreamEvent` to options destructuring (was previously passed by server/main.js but never received)
-- After initial `parseToolCalls()`: emit `llm-replace-last` with cleaned text to replace raw JSON in UI
-- Before tool execution loop: emit `tool-executing` event with all parsed calls (triggers ToolCallCard rendering)
-- After each individual tool execution: emit `mcp-tool-results` event (updates ToolCallCard with result/error status)
-- After each continuation round: same `llm-replace-last` cleanup for new text
+### Not changed
+- `webSearch.js` raw HTTP cap: 5MB (unchanged from previous session)
+- `mcpToolServer.js` tool result per-field cap: 40,000 chars — inject cap is now the binding constraint
+- Server PID: 30288, port 3000
 
-#### `frontend/src/App.jsx`
-- Removed R42-Fix-4 FILE_OPS skip from `tool-executing` handler — all tools now show as ToolCallCards (file-content-* events were never wired, so the skip made file ops invisible)
-- Removed matching FILE_OPS_R skip from `mcp-tool-results` handler
+---
 
-### What Should Change
-- Raw tool call JSON never appears in chat — suppressed during streaming
-- All tool calls render as proper ToolCallCard components with pending/success/error states
-- File write operations (write_file, create_file, append_to_file) display as FileContentBlocks with syntax highlighting
-- Tool execution results update the cards in real-time (spinner → check mark or error)
-- Web search retries automatically on rate limiting (up to 3 attempts with exponential backoff)
+## 2026-04-20 — Raise fetch cap to 5MB + add message/response content logging
 
-### Follow-up (same day) — Real-time streaming filter + file content events + web search retry
+### Problem
+1. `fetch_webpage` returned `"Response too large"` for Google News and other heavy JS sites because `webSearch.js` hard-capped raw HTTP response at 2MB
+2. Backend logs showed only `argsLen=X` / `responseLen=Y` — actual user message and model text not visible, making debugging impossible without asking the user what they sent
 
-#### `chatEngine.js` — Streaming filter
-- Added two-layer tool call suppression:
-  - Layer 1 (real-time): Character-by-character state machine in onTextChunk detects `{` at line boundaries, buffers, checks for `"tool":` within first 80 chars. If confirmed, JSON is silently consumed. Also detects ``` code fences and suppresses fence content containing tool calls.
-  - Layer 2 (post-generation): stripToolCallText() catches anything the streaming filter missed (XML tags, edge cases)
-- Filter state is properly reset between generation rounds
-- File write operations emit file-content-start/token/end events for FileContentBlock rendering
+### Changes
+1. `webSearch.js` L77 (`_nodeFetch` GET path): `2 * 1024 * 1024` → `5 * 1024 * 1024`
+2. `webSearch.js` L117 (`_nodePost` POST path): `2 * 1024 * 1024` → `5 * 1024 * 1024`
+3. `server/main.js` `ai-chat` handler: added `console.log(\`[Chat] User: ${userMessage.slice(0,300)}\`)` before `llmEngine.chat()`
+4. `chatEngine.js` L885: `generateResponse returned` log now appends `\nText: <first 300 chars>`
+5. `chatEngine.js` L1052: `Final continuation (post-dedup)` log now appends `\nText: <first 300 chars>`
+6. `chatEngine.js` L1109: `Continuation after tools` log now appends `\nText: <first 300 chars>`
 
-#### `frontend/src/App.jsx`
-- File write ops (write_file, create_file, append_to_file) now skip ToolCallCard but display via FileContentBlock
-- Non-file tools (read_file, edit_file, delete_file, web_search, run_command, etc.) show as ToolCallCards
+### Root cause
+- Bug 1: 2MB cap was set for memory safety but is too low for real news/content sites
+- Bug 2: Log lines were purely statistical — no content visibility
 
-#### `webSearch.js`
-- Added retry with exponential backoff (up to 3 attempts) when DuckDuckGo returns 202/bot-detection
-- Added random jitter to retry delays to avoid thundering herd
+### Not changed
+- `_electronFetch` has no size cap but is Electron-only and inactive in web-server mode
+- Downstream limits unchanged: 40,000 chars/field in mcpToolServer, 32,000 chars inject cap in chatEngine
+
+---
+
+### Problem
+1. `browser_navigate` returned `{"success":false,"error":"this.browserManager.navigate is not a function"}` — `server/main.js` was calling `mcpToolServer.setBrowserManager({ parentWindow: mainWindow })` with a plain stub object before the real `BrowserManager` was instantiated. All browser tool methods call `this.browserManager.navigate()`, which doesn't exist on the stub.
+2. Model was wrapping narration text in `\`\`\`vbnet` (or other language-labeled) code fences between tool calls. SYSTEM_PROMPT had no rule against this.
+
+### Changes
+1. `server/main.js`: Removed the early stub `setBrowserManager({ parentWindow: mainWindow })` call. Moved the real wiring to after `const browserManager = new BrowserManager(...)` — added `mcpToolServer.setBrowserManager(browserManager)` so the full BrowserManager instance (with `.navigate()` and `.parentWindow`) is passed.
+2. `chatEngine.js` `SYSTEM_PROMPT_ORIGINAL` `## Rules` section: Added rule — "Do NOT wrap narration text, step descriptions, or reasoning in code fences. Code fences are only for tool-call JSON (```json fences) or actual code samples requested by the user."
+
+### Root cause
+- Bug 1: Initialization order — `setBrowserManager` was called at L124 but `new BrowserManager()` was at L136. The stub had `parentWindow` but no class methods.
+- Bug 2: No explicit instruction in system prompt; model used language-labeled fences for step narration by default.
+
+### Not changed
+- Playwright not installed — browser tools fall back to `BrowserManager.navigate()` (preview iframe via IPC or noop in web-server mode). This is correct behavior.
+- Fetch truncation pipeline unchanged: raw HTTP 2MB → per-field 40,000 chars → inject cap 32,000 chars.
+
+---
+
+## 2026-04-17 — Match live GraySoft typography more closely and slim the search control
+
+### Problem
+The prior pass still had non-matching GraySoft brand typography, the in-page search strip carried too much chrome, and the metadata pills were wasting vertical space by sitting under the description instead of under the hero image.
+
+### Changes
+1. Added the live-site `Audiowide` brand treatment to the header/footer wordmark in [tools/graysoft-html-pipeline/src/templates/modelPage.js](tools/graysoft-html-pipeline/src/templates/modelPage.js), while keeping header nav and footer links on the same `Inter` sizing/color pattern measured from graysoft.dev.
+2. Replaced the chunky in-page search controls in [tools/graysoft-html-pipeline/src/templates/modelPage.js](tools/graysoft-html-pipeline/src/templates/modelPage.js) with a slimmer search bar and a compact scope dropdown on the right.
+3. Moved the metadata pills into the hero image column in [tools/graysoft-html-pipeline/src/templates/modelPage.js](tools/graysoft-html-pipeline/src/templates/modelPage.js) so they occupy the empty vertical space beneath the logo/image instead of pushing the main text column downward.
+4. Regenerated the static pages and browser-validated that the compact search still returns live results for `allenai` on the target page.
+
+### Remaining gap
+This pass is closer to the live GraySoft typography and structure, but it still is not a pixel-perfect mirror of every live page spacing detail.
+
+---
+
+## 2026-04-17 — Move search into page body and align header/footer closer to GraySoft
+
+### Problem
+The first search pass crowded the fixed header, the model-page nav still carried `Roadmap`, the top stats remained visually heavy, and the footer did not follow the live GraySoft footer pattern.
+
+### Changes
+1. Removed `Roadmap` from the model-page header nav in [tools/graysoft-html-pipeline/src/templates/modelPage.js](tools/graysoft-html-pipeline/src/templates/modelPage.js).
+2. Moved the global model search UI out of the fixed header and into its own in-page band near the top of [tools/graysoft-html-pipeline/src/templates/modelPage.js](tools/graysoft-html-pipeline/src/templates/modelPage.js), while keeping the generated `_search` artifacts and client-side behavior intact.
+3. Tightened the stat-card typography and spacing again in [tools/graysoft-html-pipeline/src/templates/modelPage.js](tools/graysoft-html-pipeline/src/templates/modelPage.js) to reduce the bulk of the top card.
+4. Replaced the footer in [tools/graysoft-html-pipeline/src/templates/modelPage.js](tools/graysoft-html-pipeline/src/templates/modelPage.js) with a GraySoft-style minimal footer using the live site’s product-link pattern.
+5. Regenerated the static pages and browser-validated that the header nav now reads `Projects / Models / About / FAQ / Contact`, the in-page search still returns live results for `allenai`, and the footer now follows the GraySoft product-link structure.
+
+### Remaining gap
+This pass improves structure and typography, but it does not attempt a pixel-identical clone of every live GraySoft spacing and font treatment.
+
+---
+
+## 2026-04-17 — Compact hero layout and add generated global model search
+
+### Problem
+The enriched model page still felt too tall at the top, the quantization sidebar looked visually disconnected from the benchmarks section, and there was no way to jump between generated model pages from the page header. The static output also had no generated search artifact for a real header search UI to query.
+
+### Changes
+1. Tightened the hero spacing and stat-card footprint in [tools/graysoft-html-pipeline/src/templates/modelPage.js](tools/graysoft-html-pipeline/src/templates/modelPage.js) to reduce vertical bulk without removing metadata.
+2. Restacked the benchmark and related-quantization sections in [tools/graysoft-html-pipeline/src/templates/modelPage.js](tools/graysoft-html-pipeline/src/templates/modelPage.js) so quantizations render below benchmarks as a full-width card band instead of a sidebar.
+3. Added a generated static search index in [tools/graysoft-html-pipeline/src/index.js](tools/graysoft-html-pipeline/src/index.js) under `output/models/_search/{all,author,model}/` so model pages can search other generated pages without relying on the React frontend.
+4. Added a styled global header search UI and client-side search logic in [tools/graysoft-html-pipeline/src/templates/modelPage.js](tools/graysoft-html-pipeline/src/templates/modelPage.js), including `All`, `Model`, and `Author` filter buttons.
+5. Regenerated the corpus and browser-validated the local page so the new header search returned live results for `allenai` and the `_search` shard fetch returned HTTP `200`.
+
+### Remaining gap
+This is still a lightweight static-site search, not a full ranked search engine. Search currently operates against generated shard files rather than a dedicated search service.
+
+---
+
+## 2026-04-17 — Fix HF repo-path enrichment for slash-based model IDs
+
+### Problem
+README enrichment and file-tree enrichment were silently broken for repos with IDs like `author/model`. The client encoded the slash inside the path segment, so Hugging Face returned HTTP `400` for README fetches and `Invalid repo name ... includes an url-encoded slash` for tree fetches. That left model pages with generic descriptions, no hero image, and `Unknown` file sizes. The related-quantizations API query also returned unrelated global models.
+
+### Changes
+1. Added path-safe repo encoding in [tools/graysoft-html-pipeline/src/pipeline/hfClient.js](tools/graysoft-html-pipeline/src/pipeline/hfClient.js) so model IDs are encoded by segment instead of encoding `/` itself.
+2. Switched text fetches in [tools/graysoft-html-pipeline/src/pipeline/hfClient.js](tools/graysoft-html-pipeline/src/pipeline/hfClient.js) to use text-friendly accept headers for README and HTML page retrieval.
+3. Replaced the broken related-quantizations API lookup in [tools/graysoft-html-pipeline/src/pipeline/hfClient.js](tools/graysoft-html-pipeline/src/pipeline/hfClient.js) with extraction from the Hugging Face HTML search page for `other=base_model:quantized:<modelId>`.
+4. Re-scraped `allenai/olmOCR-2-7B-1025` and regenerated static HTML, which populated README-derived hero content, quick links, benchmark HTML, correct quantized variants, and real file sizes.
+
+### Remaining gap
+The HTML quantization fallback currently yields model IDs without downloads/likes/library stats, so related-quantization cards render those values as empty data. That needs a separate approved follow-up if the page should display richer quantization metadata.
+
+---
+
+## 2026-04-17 — Enrich model pages with README content and all-file downloads
+
+### Problem
+The first model-page pass assumed every page should be GGUF-first. That produced empty-looking download sections for non-GGUF repositories such as BF16 safetensors models, and the page was missing README-derived model-card content like images, long descriptions, quick links, and benchmark tables.
+
+### Changes
+1. Added authenticated retry-aware text fetching plus README and related-quantization enrichment in [tools/graysoft-html-pipeline/src/pipeline/hfClient.js](tools/graysoft-html-pipeline/src/pipeline/hfClient.js).
+2. Wired README parsing and related quantization lookup into scrape ingestion in [tools/graysoft-html-pipeline/src/index.js](tools/graysoft-html-pipeline/src/index.js).
+3. Updated normalization to use README summary as the description fallback and preserve enriched card data in [tools/graysoft-html-pipeline/src/pipeline/normalize.js](tools/graysoft-html-pipeline/src/pipeline/normalize.js).
+4. Reworked the static template in [tools/graysoft-html-pipeline/src/templates/modelPage.js](tools/graysoft-html-pipeline/src/templates/modelPage.js) to show all repository files, richer hero content, quick links, benchmark table rendering, related quantizations, tighter header typography, and a denser layout.
+
+### Current blocker
+Existing rows in corpus.db still reflect older scrape passes until individual models are re-scraped with the new enrichment path, so preview accuracy for file sizes and card-derived content depends on refreshing those models.
+
+---
+
+## 2026-04-17 — Build graysoft-html-pipeline ingestion baseline
+
+### Scope
+Implemented the first end-to-end data pipeline in [tools/graysoft-html-pipeline](tools/graysoft-html-pipeline) for ingesting Hugging Face model metadata/files into SQLite, generating static model HTML, and generating sitemap shards at 2000 URLs each.
+
+### Changes
+1. Switched pipeline DB layer from better-sqlite3 to sqlite/sqlite3 in [tools/graysoft-html-pipeline/package.json](tools/graysoft-html-pipeline/package.json) and [tools/graysoft-html-pipeline/src/storage/db.js](tools/graysoft-html-pipeline/src/storage/db.js).
+2. Added HF API client in [tools/graysoft-html-pipeline/src/pipeline/hfClient.js](tools/graysoft-html-pipeline/src/pipeline/hfClient.js).
+3. Added scrape command wiring and async DB ingestion flow in [tools/graysoft-html-pipeline/src/index.js](tools/graysoft-html-pipeline/src/index.js).
+4. Expanded normalization coverage in [tools/graysoft-html-pipeline/src/pipeline/normalize.js](tools/graysoft-html-pipeline/src/pipeline/normalize.js).
+5. Expanded schema and migration support in [tools/graysoft-html-pipeline/src/storage/schema.sql](tools/graysoft-html-pipeline/src/storage/schema.sql) and [tools/graysoft-html-pipeline/src/storage/db.js](tools/graysoft-html-pipeline/src/storage/db.js).
+6. Expanded generated model template content in [tools/graysoft-html-pipeline/src/templates/modelPage.js](tools/graysoft-html-pipeline/src/templates/modelPage.js).
+
+### Current blocker
+Live HF API requests from this IP now return HTTP 429 with a message requiring authenticated requests using HF_TOKEN, so scrape validation cannot proceed without either a token or a local snapshot import source.
 
 ---
 

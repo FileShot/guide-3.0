@@ -1106,6 +1106,8 @@ function SettingsPanel() {
   const updateSetting = useAppStore(s => s.updateSetting);
   const resetSettings = useAppStore(s => s.resetSettings);
   const { themeId, setTheme } = useTheme();
+  const reloadTimerRef = useRef(null);
+  const reloadInFlightRef = useRef(false);
 
   const syncLabel = settingsSyncStatus === 'saving'
     ? 'Saving...'
@@ -1124,6 +1126,42 @@ function SettingsPanel() {
       if (!d.success) addNotification({ type: 'error', message: d.error });
     }).catch(e => addNotification({ type: 'error', message: e.message }));
   };
+
+  const triggerModelReload = useCallback((reasonLabel) => {
+    if (!modelInfo?.path || modelLoading || reloadInFlightRef.current) return;
+    if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+    reloadTimerRef.current = setTimeout(() => {
+      if (!modelInfo?.path || reloadInFlightRef.current) return;
+      reloadInFlightRef.current = true;
+      fetch('/api/models/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelPath: modelInfo.path }),
+      }).then(r => r.json()).then(d => {
+        if (!d.success) {
+          addNotification({ type: 'error', message: d.error || 'Model reload failed' });
+        } else {
+          addNotification({ type: 'info', message: `Model reloaded (${reasonLabel})`, duration: 1800 });
+        }
+      }).catch(e => {
+        addNotification({ type: 'error', message: e.message || 'Model reload failed' });
+      }).finally(() => {
+        reloadInFlightRef.current = false;
+      });
+    }, 250);
+  }, [modelInfo, modelLoading, addNotification]);
+
+  const updateSettingWithReload = useCallback((key, value) => {
+    updateSetting(key, value);
+    const requiresReload = key === 'contextSize' || key === 'gpuLayers' || key === 'gpuPreference' || key === 'requireMinContextForGpu';
+    if (requiresReload) triggerModelReload(key);
+  }, [updateSetting, triggerModelReload]);
+
+  useEffect(() => {
+    return () => {
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+    };
+  }, []);
 
   return (
     <div className="flex flex-col h-full overflow-y-auto scrollbar-thin">
@@ -1195,7 +1233,7 @@ function SettingsPanel() {
           min={256} max={8192} step={256} onChange={v => updateSetting('maxResponseTokens', v)} />
         <div>
           <SettingNumberField label="Context Size" value={settings.contextSize}
-            min={0} max={131072} step={1024} onChange={v => updateSetting('contextSize', v)}
+            min={0} max={131072} step={1024} onChange={v => updateSettingWithReload('contextSize', v)}
             hint="0 = auto — use the largest context the model allows and VRAM can fit (recommended). Otherwise set an explicit token budget." />
           <div className="text-[10px] text-yellow-400/80 mt-0.5">Requires model reload to apply</div>
         </div>
@@ -1335,19 +1373,19 @@ function SettingsPanel() {
                   settings.gpuPreference === opt.v
                     ? 'bg-vsc-accent border-vsc-accent text-white'
                     : 'bg-vsc-bg border-vsc-panel-border text-vsc-text-dim hover:border-vsc-accent/50'}`}
-                onClick={() => updateSetting('gpuPreference', opt.v)}
+                onClick={() => updateSettingWithReload('gpuPreference', opt.v)}
               >{opt.l}</button>
             ))}
           </div>
         </div>
         <div>
           <SettingNumberField label="GPU Layers" value={settings.gpuLayers}
-            min={-1} max={200} step={1} onChange={v => updateSetting('gpuLayers', v)}
+            min={-1} max={200} step={1} onChange={v => updateSettingWithReload('gpuLayers', v)}
             hint="-1 = auto. More layers = faster but more VRAM" />
           <div className="text-[10px] text-yellow-400/80 mt-0.5">Requires model reload to apply</div>
         </div>
         <SettingToggle label="Require Min Context for GPU" value={settings.requireMinContextForGpu}
-          onChange={v => updateSetting('requireMinContextForGpu', v)}
+          onChange={v => updateSettingWithReload('requireMinContextForGpu', v)}
           hint="If GPU yields < 4096 ctx, retry on CPU for larger context" />
       </SettingsSection>
 
@@ -1405,6 +1443,17 @@ function SettingsPanel() {
               )}
               {modelInfo.gpuLayers > 0 && ` | GPU: ${modelInfo.gpuLayers} layers`}
             </div>
+            {modelInfo.contextSizeRequested === 'auto' && (modelInfo.contextHardwareCap != null || modelInfo.contextTrainMax != null) && (
+              <div className="text-vsc-text-dim mt-0.5 text-[10px]">
+                {modelInfo.contextHardwareCap != null && (
+                  <span>HW cap: {Number(modelInfo.contextHardwareCap).toLocaleString()}{modelInfo.kvMemSource ? ` (${modelInfo.kvMemSource})` : ''}</span>
+                )}
+                {modelInfo.contextHardwareCap != null && modelInfo.contextTrainMax != null && <span> · </span>}
+                {modelInfo.contextTrainMax != null && (
+                  <span>Train max: {Number(modelInfo.contextTrainMax).toLocaleString()}</span>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <div className="text-vsc-xs text-vsc-text-dim">No model loaded</div>

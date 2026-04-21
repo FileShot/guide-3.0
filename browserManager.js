@@ -102,6 +102,7 @@ class BrowserManager extends EventEmitter {
    * Navigate to a URL. Uses Playwright if available, otherwise opens in preview.
    */
   async navigate(url) {
+    if (!this._page) await this.launchPlaywright();
     if (this._page) {
       try {
         await this._page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });

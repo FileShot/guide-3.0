@@ -45,6 +45,10 @@ async function _browserNavigate(url) {
     if (this.browserManager.parentWindow) {
       this.browserManager.parentWindow.webContents.send('show-viewport-browser');
     }
+    // Auto-launch Playwright on first use so browser_snapshot and DOM tools work
+    if (!this.browserManager._page) {
+      await this.browserManager.launchPlaywright();
+    }
     return this.browserManager.navigate(url);
   }
   return { success: false, error: 'No browser available' };

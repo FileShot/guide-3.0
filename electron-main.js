@@ -325,6 +325,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       onContextUsage: (data) => _send('context-usage', data),
       onToolCall: (data) => _send('tool-call', data),
       onStreamEvent: (eventName, data) => _send(eventName, data),
+      attachments: Array.isArray(chatContext?.attachments) ? chatContext.attachments : [],
       functions,
       toolPrompt,
       compactToolPrompt,
@@ -347,6 +348,11 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
 });
 
 ipcMain.handle('cancel-generation', async () => {
+  llmEngine.cancelGeneration('user');
+  return { success: true };
+});
+
+ipcMain.handle('agent-pause', async () => {
   llmEngine.cancelGeneration('user');
   return { success: true };
 });

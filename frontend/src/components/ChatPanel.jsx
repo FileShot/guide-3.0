@@ -56,7 +56,7 @@ class StreamingErrorBoundary extends Component {
 // Finalized thinking block — shown on already-completed assistant messages.
 // Collapsed by default (unlike streaming ThinkingBlock which auto-expands).
 function FinalizedThinkingBlock({ text }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const lines = text.split('\n').filter(l => l.trim());
 
   return (
@@ -483,13 +483,70 @@ export default function ChatPanel() {
     });
   }, [chatStreaming, chatStreamingText, streamingSegments, streamingToolCalls]);
 
+  // Scroll to the newly finalized assistant message.
+  // When streaming ends, the streaming state is cleared on the same frame that
+  // chatMessages grows by one. The streaming-scroll effect above early-returns
+  // (chatStreaming is now false), so the new message can land below the fold
+  // and the panel appears blank until the user clicks or scrolls. Scrolling
+  // when chatMessages.length changes keeps the new message visible.
+  useEffect(() => {
+    if (userScrolledAwayRef.current) return;
+    requestAnimationFrame(() => {
+      if (virtuosoRef.current && !userScrolledAwayRef.current) {
+        virtuosoRef.current.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: 'auto' });
+      }
+    });
+  }, [chatMessages.length]);
+
   // Core send logic — takes explicit text param so queue auto-send can use it
   const doSend = useCallback(async (text) => {
     if (!text || chatStreaming) return;
 
-    setInput('');
-    addChatMessage({ role: 'user', content: text });
+    const serializeAttachments = async (attachments) => {
+      const out = [];
+      for (const a of attachments) {
+        if (!a || typeof a !== 'object') continue;
+        const entry = {
+          id: a.id,
+          name: a.name,
+          type: a.type,
+          size: a.size,
+          data: null,
+        };
+        try {
+          const resp = await fetch(a.url);
+          const blob = await resp.blob();
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error || new Error('Attachment read failed'));
+            reader.readAsDataURL(blob);
+          });
+          if (typeof dataUrl === 'string') {
+            const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+            if (m) {
+              entry.mimeType = m[1];
+              entry.data = m[2];
+            } else {
+              entry.data = dataUrl;
+            }
+          }
+          out.push(entry);
+        } catch (_) {
+          out.push(entry);
+        }
+      }
+      return out;
+    };
 
+    const attachmentsSnapshot = Array.isArray(chatAttachments) ? [...chatAttachments] : [];
+    const serializedAttachments = await serializeAttachments(attachmentsSnapshot);
+
+    setInput('');
+    const imageAttachments = attachmentsSnapshot.filter(a => (a.type || '').startsWith('image/'));
+    addChatMessage({ role: 'user', content: text, imageAttachments: imageAttachments.length > 0 ? imageAttachments : undefined });
+
+    if (attachmentsSnapshot.length > 0) clearChatAttachments();
     const store = useAppStore.getState();
     store.setChatStreaming(true);
 
@@ -501,6 +558,7 @@ export default function ChatPanel() {
         currentFile: (!fileContextDismissed && activeTab) ? { path: activeTab.path, content: activeTab.content } : null,
         selectedCode: null,
         conversationHistory: [],
+        attachments: serializedAttachments,
         cloudProvider: store.cloudProvider,
         cloudModel: store.cloudModel,
         params: {
@@ -527,9 +585,13 @@ export default function ChatPanel() {
           contextSize: s.contextSize,
         },
       };
+      const attachmentSummary = serializedAttachments.length > 0
+        ? `\n\n[Attached context]\n${serializedAttachments.map((a, idx) => `- ${idx + 1}. ${a.name || 'attachment'} (${a.type || 'unknown'}, ${a.size || 0} bytes)`).join('\n')}`
+        : '';
+      const modelInputText = text + attachmentSummary;
       const result = window.electronAPI?.aiChat
-        ? await window.electronAPI.aiChat(text, _chatContext)
-        : await (await import('../api/websocket')).invoke('ai-chat', text, _chatContext);
+        ? await window.electronAPI.aiChat(modelInputText, _chatContext)
+        : await (await import('../api/websocket')).invoke('ai-chat', modelInputText, _chatContext);
 
       // Quota exceeded — show upgrade prompt instead of empty message
       if (result?.isQuotaError || result?.error === '__QUOTA_EXCEEDED__') {
@@ -722,7 +784,7 @@ export default function ChatPanel() {
     } finally {
       useAppStore.getState().setChatStreaming(false);
     }
-  }, [chatStreaming, addChatMessage, chatMode]);
+  }, [chatStreaming, addChatMessage, chatMode, chatAttachments, clearChatAttachments, fileContextDismissed]);
 
   // handleSend: reads from input state
   const handleSend = useCallback(() => {
@@ -750,7 +812,11 @@ export default function ChatPanel() {
     prevStreamingRef.current = chatStreaming;
   }, [chatStreaming, handleSendQueued]);
 
+  const [stopPending, setStopPending] = useState(false);
+
   const handleStop = useCallback(async () => {
+    if (stopPending) return;
+    setStopPending(true);
     try {
       if (window.electronAPI?.agentPause) {
         await window.electronAPI.agentPause();
@@ -758,7 +824,10 @@ export default function ChatPanel() {
         await (await import('../api/websocket')).invoke('agent-pause');
       }
     } catch (_) {}
-  }, []);
+    // Re-enable after a short cooldown so the user can issue a second stop
+    // if the first one races with a still-streaming chunk.
+    setTimeout(() => setStopPending(false), 1000);
+  }, [stopPending]);
 
   const handleClear = useCallback(async () => {
     clearChat();
@@ -809,7 +878,7 @@ export default function ChatPanel() {
     for (const s of filteredSessions) {
       if (s.id === currentSessionId) continue;
       tabs.push({ id: s.id, title: s.title || 'Chat session', isCurrent: false, session: s });
-      if (tabs.length >= 6) break;
+      if (tabs.length >= 2) break; // current + 1 recent max; rest via ··· history
     }
     return tabs;
   }, [filteredSessions, currentSessionId, currentTitle]);
@@ -873,29 +942,31 @@ export default function ChatPanel() {
       </div>
 
       {/* Conversation tabs */}
-      <div className="px-2 py-1.5 border-b border-vsc-panel-border/40 bg-vsc-sidebar/55 backdrop-blur-sm shadow-[0_1px_0_rgba(255,255,255,0.02)_inset] no-select">
-        <div className="flex items-center gap-1 overflow-x-auto scrollbar-thin">
-          {conversationTabs.map((tab) => (
-            <button
-              key={tab.id}
-              className={`max-w-[180px] truncate px-2 py-1 rounded-md text-[10px] border transition-colors ${
-                (tab.id === 'current' ? activeConversationId === 'current' : activeConversationId === tab.id)
-                  ? 'bg-vsc-list-active/70 border-vsc-accent/50 text-vsc-text-bright shadow-[0_1px_6px_rgba(0,0,0,0.22)]'
-                  : 'bg-vsc-bg/50 border-vsc-panel-border/60 text-vsc-text-dim hover:bg-vsc-list-hover/50'
-              }`}
-              title={tab.title}
-              onClick={() => {
-                if (tab.isCurrent) {
-                  setActiveConversationId('current');
-                  return;
-                }
-                openSavedSession(tab.session);
-              }}
-            >
-              {tab.title}
-            </button>
-          ))}
-        </div>
+      <div className="flex items-center border-b border-vsc-panel-border/40 bg-vsc-sidebar/55 no-select">
+        {conversationTabs.map((tab) => (
+          <button
+            key={tab.id}
+            className={`px-3 h-[30px] text-[11px] truncate max-w-[140px] border-b-2 transition-colors flex-shrink-0 ${
+              (tab.id === 'current' ? activeConversationId === 'current' : activeConversationId === tab.id)
+                ? 'border-vsc-accent text-vsc-text'
+                : 'border-transparent text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/30'
+            }`}
+            title={tab.title}
+            onClick={() => {
+              if (tab.isCurrent) { setActiveConversationId('current'); return; }
+              openSavedSession(tab.session);
+            }}
+          >
+            {tab.title}
+          </button>
+        ))}
+        {filteredSessions.length > 1 && (
+          <button
+            className="px-2 h-[30px] text-[11px] text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/30 border-b-2 border-transparent flex-shrink-0"
+            title="More conversations"
+            onClick={() => setHistoryOpen(v => !v)}
+          >···</button>
+        )}
       </div>
 
       {/* Messages area (virtualized) */}
@@ -1058,7 +1129,29 @@ export default function ChatPanel() {
                       )}
                     </>
                   ) : (
-                    <div className="whitespace-pre-wrap">{msg.content}</div>
+                    <>
+                      {Array.isArray(msg.imageAttachments) && msg.imageAttachments.length > 0 && (
+                        <div className="mb-2 flex flex-wrap gap-2">
+                          {msg.imageAttachments.map((img, idx) => (
+                            <a
+                              key={img.id || `${img.name || 'image'}-${idx}`}
+                              href={img.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="block"
+                              title={img.name || 'Attached image'}
+                            >
+                              <img
+                                src={img.url}
+                                alt={img.name || 'Attached image'}
+                                className="h-16 w-16 rounded-md border border-vsc-panel-border/60 object-cover"
+                              />
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                      <div className="whitespace-pre-wrap">{msg.content}</div>
+                    </>
                   )}
                 </div>
               )}
@@ -1357,9 +1450,10 @@ export default function ChatPanel() {
             {/* Send / Stop */}
             {chatStreaming ? (
               <button
-                className="p-1.5 bg-vsc-error/20 hover:bg-vsc-error/30 text-vsc-error rounded-lg transition-colors"
+                className="p-1.5 bg-vsc-error/20 hover:bg-vsc-error/30 text-vsc-error rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 onClick={handleStop}
-                title="Stop generation"
+                disabled={stopPending}
+                title={stopPending ? 'Stopping…' : 'Stop generation'}
               >
                 <Square size={14} />
               </button>
@@ -1645,6 +1739,19 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
       body: JSON.stringify({ modelPath }),
     }).then(r => r.json()).then(d => {
       if (!d.success) addNotification({ type: 'error', message: d.error });
+    }).catch(e => addNotification({ type: 'error', message: e.message }));
+    onClose();
+  };
+
+  const reloadModel = () => {
+    if (!currentModel?.path) return;
+    fetch('/api/models/load', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelPath: currentModel.path }),
+    }).then(r => r.json()).then(d => {
+      if (!d.success) addNotification({ type: 'error', message: d.error || 'Failed to reload model' });
+      else addNotification({ type: 'info', message: 'Model reloaded' });
     }).catch(e => addNotification({ type: 'error', message: e.message }));
     onClose();
   };
@@ -1964,8 +2071,16 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
                   <div className="flex items-center gap-1 flex-shrink-0 ml-2">
                     <span className="inline-block w-1.5 h-1.5 rounded-full bg-vsc-success" title="Loaded" />
                     <button
+                      className="px-1.5 py-0.5 text-[10px] text-vsc-text-dim hover:text-vsc-accent hover:bg-vsc-accent/10 rounded transition-colors"
+                      onClick={reloadModel}
+                      disabled={modelLoading}
+                    >
+                      Reload
+                    </button>
+                    <button
                       className="px-1.5 py-0.5 text-[10px] text-vsc-text-dim hover:text-vsc-error hover:bg-vsc-error/10 rounded transition-colors"
                       onClick={unloadModel}
+                      disabled={modelLoading}
                     >
                       Unload
                     </button>

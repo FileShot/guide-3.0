@@ -6,7 +6,7 @@
  *
  * Provides tool definitions + execution for the LLM to use autonomously.
  */
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs').promises;
 const https = require('https');
@@ -69,6 +69,33 @@ class MCPToolServer {
       'delete_file', 'replace_in_file', 'write_file', 'terminal_run',
       'git_commit', 'git_push', 'git_reset', 'git_branch_delete',
     ]);
+
+    // Active child processes from run_command, keyed by childId. Killed on
+    // cancelGeneration() so Stop actually stops.
+    this._activeChildren = new Map();
+    this._nextChildId = 1;
+  }
+
+  // ─── Child Process Management ───────────────────────────────────────────
+
+  killActiveChildren(reason) {
+    if (this._activeChildren.size === 0) return 0;
+    const count = this._activeChildren.size;
+    console.log(`[MCPToolServer] killActiveChildren: ${count} process(es), reason=${reason || 'unspecified'}`);
+    for (const [id, child] of this._activeChildren) {
+      try {
+        if (process.platform === 'win32') {
+          // Windows: SIGTERM does not cascade to shell children. Use taskkill /T /F
+          // to terminate the entire process tree rooted at the shell.
+          try { require('child_process').execSync(`taskkill /pid ${child.pid} /T /F`, { windowsHide: true, stdio: 'ignore' }); } catch (_) {}
+        } else {
+          child.kill('SIGTERM');
+          setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} }, 500).unref();
+        }
+      } catch (_) {}
+      this._activeChildren.delete(id);
+    }
+    return count;
   }
 
   // ─── T30-Fix: projectPath getter/setter — always normalize to absolute ───
@@ -82,6 +109,10 @@ class MCPToolServer {
     this._projectPath = val ? path.resolve(val) : null;
     this._scratchDir = this._projectPath ? path.join(this._projectPath, '.guide-scratch') : null;
     if (_prev !== this._projectPath) {
+      // Tool prompt embeds the project path in its header — invalidate so next
+      // getToolPrompt() rebuilds with the current path rather than returning a
+      // stale cached prompt pointing at the previous project.
+      this._toolPromptCache = null;
       const _stack = new Error().stack.split('\n').slice(2, 4).map(l => l.trim()).join(' | ');
       console.log(`[MCPToolServer] DIAG-PP: projectPath changed "${_prev}" → "${this._projectPath}" | ${_stack}`);
     }
@@ -248,8 +279,9 @@ class MCPToolServer {
 
     if (!this.projectPath) {
       if (path.isAbsolute(filePath)) {
-        console.log(`[MCPToolServer] Absolute path blocked (no project): "${filePath}"`);
-        return path.basename(filePath);
+        const err = new Error(`Path "${filePath}" is absolute but no project is open. Open a project before using absolute paths, or use a relative path.`);
+        err.code = 'ENOPROJECT';
+        throw err;
       }
       return filePath;
     }
@@ -258,34 +290,27 @@ class MCPToolServer {
     const resolvedNorm = resolved.replace(/\\/g, '/').toLowerCase();
     const projNorm = this.projectPath.replace(/\\/g, '/').toLowerCase();
 
-    if (!resolvedNorm.startsWith(projNorm)) {
-      console.log(`[MCPToolServer] Path traversal blocked: "${filePath}" → "${resolved}" escapes project`);
-      return path.basename(filePath);
+    // Accept: resolves inside the project.
+    if (resolvedNorm === projNorm || resolvedNorm.startsWith(projNorm + '/')) {
+      // Handle doubled project root — model repeated the project name inside a project-rooted path.
+      const projBasename = path.basename(this.projectPath).toLowerCase();
+      const afterProj = resolvedNorm.substring(projNorm.length);
+      if (afterProj === '/' + projBasename || afterProj.startsWith('/' + projBasename + '/')) {
+        const rest = afterProj.substring(('/' + projBasename).length);
+        const corrected = this.projectPath + rest.replace(/\//g, path.sep);
+        console.log(`[MCPToolServer] Doubled project root corrected: "${filePath}" → "${corrected}"`);
+        return corrected;
+      }
+      return resolved;
     }
 
-    const normalized = filePath.replace(/\\/g, '/');
-    const projNormalized = this.projectPath.replace(/\\/g, '/');
-
-    if (!path.isAbsolute(filePath)) return filePath;
-
-    // Detect doubled project root
-    const projBasename = path.basename(this.projectPath).toLowerCase();
-    const afterProj = resolvedNorm.substring(projNorm.length);
-    if (afterProj === '/' + projBasename || afterProj.startsWith('/' + projBasename + '/')) {
-      const rest = afterProj.substring(('/' + projBasename).length);
-      const corrected = this.projectPath + rest.replace(/\//g, path.sep);
-      console.log(`[MCPToolServer] Doubled project root corrected: "${filePath}" → "${corrected}"`);
-      return corrected;
-    }
-
-    if (normalized.toLowerCase().startsWith(projNormalized.toLowerCase())) return filePath;
-
-    const basename = path.basename(filePath);
-    if (basename) {
-      console.log(`[MCPToolServer] Sanitized hallucinated path "${filePath}" → "${basename}"`);
-      return basename;
-    }
-    return filePath;
+    // Reject: resolves outside the project. Fail hard — the tool handler's
+    // try/catch converts this to {success:false, error} so the model sees
+    // the error and self-corrects instead of the call silently succeeding on
+    // the wrong path.
+    const err = new Error(`Path "${filePath}" is outside the current project ("${this.projectPath}"). Either reopen the target project or use a path inside the current one.`);
+    err.code = 'EOUTSIDEPROJECT';
+    throw err;
   }
 
   _sanitizeShellArg(str) {
@@ -361,7 +386,7 @@ class MCPToolServer {
       },
       {
         name: 'run_command',
-        description: 'Execute a shell command in the project directory and return the output. Default timeout 60 seconds, maximum 5 minutes.',
+        description: 'Execute a shell command in the project directory and return the output. Default timeout 60 seconds, maximum 5 minutes. On Windows, runs in cmd.exe — use CMD commands (del, rmdir /s /q, copy, move, type, echo). PowerShell cmdlets (Remove-Item, Get-ChildItem, etc.) are not available unless you prefix the command with "powershell -Command".',
         parameters: {
           command: { type: 'string', description: 'Command to execute', required: true },
           cwd: { type: 'string', description: 'Working directory', required: false },
@@ -865,10 +890,13 @@ class MCPToolServer {
     const startTime = Date.now();
     let result;
 
-    // Reject disabled tools
+    // Reject disabled tools. We intentionally report this as "does not exist"
+    // rather than "disabled in settings" so the model treats it as an unknown
+    // tool and picks a different path, instead of retrying the same call
+    // expecting the user to flip a setting mid-generation.
     if (this._disabledTools.has(toolName)) {
       console.log(`[MCPToolServer] Blocked disabled tool: ${toolName}`);
-      return { success: false, error: `Tool "${toolName}" is disabled in settings. Enable it in Settings → Tools.` };
+      return { success: false, error: `Tool "${toolName}" does not exist. Choose a different tool.` };
     }
 
     if (toolName && typeof toolName === 'string') {
@@ -1323,6 +1351,9 @@ class MCPToolServer {
 
   async _webSearch(query, maxResults = 5) {
     if (!this.webSearch) return { success: false, error: 'Web search not available' };
+    if (typeof query !== 'string' || query.trim() === '') {
+      return { success: false, error: 'web_search requires a non-empty string parameter named "query" inside params. Example: {"tool":"web_search","params":{"query":"node lts release notes","maxResults":5}}' };
+    }
     const raw = await this.webSearch.search(query, maxResults);
     if (raw && raw.error) return { success: false, error: raw.error };
     const results = Array.isArray(raw) ? raw : (raw?.results || []);
@@ -1393,23 +1424,6 @@ class MCPToolServer {
         this._setFileBackup(fullPath, { original: null, timestamp: Date.now(), tool: 'write_file', isNew: true });
       }
 
-      // Overwrite protection — disk check: if file exists on disk with content,
-      // block writes that would produce a shorter file (any length reduction = data loss).
-      if (!isNew && existingContent && existingContent.length > 200) {
-        const newLen = (content || '').length;
-        if (newLen < existingContent.length) {
-          const existingLines = existingContent.split('\n').length;
-          const newLines = (content || '').split('\n').length;
-          console.log(`[MCP] Overwrite blocked — "${filePath}" has ${existingLines} lines (${existingContent.length} chars) but write_file called with only ${newLines} lines (${newLen} chars)`);
-          return {
-            success: false,
-            error: `BLOCKED: File "${filePath}" already has ${existingLines} lines (${existingContent.length} chars). Your write_file call contains only ${newLines} lines (${newLen} chars) which would reduce the file. Use append_to_file to add content, or edit_file to modify specific sections.`,
-            existingLines,
-            existingChars: existingContent.length,
-          };
-        }
-      }
-
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
       // Unconditional unescape: handle ALL JSON double-escape sequences.
       // Models often double-escape when generating JSON content strings.
@@ -1441,6 +1455,9 @@ class MCPToolServer {
         if (!['md', 'markdown', 'txt', 'rst'].includes(_fenceExt)) {
           content = content.replace(/^```[a-zA-Z0-9+#.-]*\r?\n/, '');
           content = content.replace(/\r?\n```[^\n]*$/, '');
+          // Closing fence without newline before ```, or extra trailing fence (common on HTML)
+          content = content.replace(/\r?\n```[a-zA-Z0-9+#.-]*\s*$/m, '');
+          content = content.replace(/```[a-zA-Z0-9+#.-]*\s*$/m, '');
         }
       }
       await fs.writeFile(fullPath, content, 'utf8');
@@ -1733,11 +1750,11 @@ class MCPToolServer {
             const stats = fsSync.statSync(resolved);
             if (stats.isDirectory()) {
               workDir = resolved;
-            } else {
+            } else if (cwdStr !== '.') {
               console.log(`[MCPToolServer] cwd "${cwd}" is not a directory, using project path`);
             }
           } catch (e) {
-            console.log(`[MCPToolServer] cwd "${cwd}" does not exist, using project path`);
+            if (cwdStr !== '.') console.log(`[MCPToolServer] cwd "${cwd}" does not exist, using project path`);
           }
         } else {
           console.log(`[MCPToolServer] Ignoring cwd "${cwd}" — resolves outside project`);
@@ -1746,22 +1763,72 @@ class MCPToolServer {
     }
     const timeoutMs = Math.min(Math.max(timeout || 60000, 5000), 300000);
     return new Promise((resolve) => {
-      // Use PowerShell on Windows to support PowerShell cmdlets (Get-ChildItem, etc.)
       const isWindows = process.platform === 'win32';
-      const finalCommand = isWindows
-        ? `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${command.replace(/"/g, '\"')}"`
-        : command;
-      exec(finalCommand, { cwd: workDir, timeout: timeoutMs, maxBuffer: 1024 * 1024 * 5, shell: isWindows ? undefined : '/bin/bash' }, (error, stdout, stderr) => {
-        const output = (stdout?.toString() || '') + (stderr?.toString() || '');
-        resolve({
-          success: !error,
-          output: output.trim() || (error ? error.message : 'Command completed'),
-          message: output.trim() || (error ? error.message : 'Command completed successfully'),
-          stdout: stdout?.toString() || '',
-          stderr: stderr?.toString() || '',
-          exitCode: error?.code || 0,
-        });
+      // Shell selection:
+      //   Windows: cmd.exe /d /s /c — POSIX-style commands the model generates
+      //     (git, npm, node, 2>nul, >nul, &&, ||, pipes, native find/dir) all
+      //     work natively. PowerShell was previously used but broke on 2>nul
+      //     and misquoted arguments.
+      //   Unix:    /bin/sh -c — standard POSIX shell.
+      const shellBin = isWindows ? 'cmd.exe' : '/bin/sh';
+      const shellArgs = isWindows ? ['/d', '/s', '/c', command] : ['-c', command];
+      let child;
+      try {
+        child = spawn(shellBin, shellArgs, { cwd: workDir, windowsHide: true });
+      } catch (e) {
+        resolve({ success: false, output: e.message, stdout: '', stderr: e.message, exitCode: -1, error: e.message });
+        return;
+      }
+
+      const childId = this._nextChildId++;
+      this._activeChildren.set(childId, child);
+
+      let stdoutBuf = '';
+      let stderrBuf = '';
+      const MAX_BUF = 5 * 1024 * 1024;
+      let truncated = false;
+      child.stdout?.on('data', (chunk) => {
+        if (stdoutBuf.length < MAX_BUF) stdoutBuf += chunk.toString();
+        else truncated = true;
       });
+      child.stderr?.on('data', (chunk) => {
+        if (stderrBuf.length < MAX_BUF) stderrBuf += chunk.toString();
+        else truncated = true;
+      });
+
+      const timeoutHandle = setTimeout(() => {
+        try {
+          if (isWindows) {
+            try { require('child_process').execSync(`taskkill /pid ${child.pid} /T /F`, { windowsHide: true, stdio: 'ignore' }); } catch (_) {}
+          } else {
+            child.kill('SIGTERM');
+            setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} }, 500).unref();
+          }
+        } catch (_) {}
+      }, timeoutMs);
+
+      const settle = (exitCode, signal) => {
+        clearTimeout(timeoutHandle);
+        this._activeChildren.delete(childId);
+        const killed = signal === 'SIGTERM' || signal === 'SIGKILL' || exitCode === null;
+        const success = !killed && exitCode === 0;
+        const trimmedOut = stdoutBuf.trim();
+        const trimmedErr = stderrBuf.trim();
+        const output = trimmedOut || trimmedErr || (killed ? `Command terminated (signal=${signal || 'cancelled'})` : `Command exited with code ${exitCode}`);
+        resolve({
+          success,
+          output: truncated ? output + '\n[... output truncated]' : output,
+          message: success ? (trimmedOut || 'Command completed') : (trimmedErr || `exit ${exitCode}${signal ? ` (${signal})` : ''}`),
+          stdout: stdoutBuf,
+          stderr: stderrBuf,
+          exitCode: exitCode == null ? -1 : exitCode,
+          signal: signal || undefined,
+          truncated,
+        });
+      };
+
+      child.on('error', (err) => settle(-1, null) || console.log(`[MCPToolServer] run_command spawn error: ${err.message}`));
+      child.on('close', (code, signal) => settle(code, signal));
     });
   }
 
@@ -1803,13 +1870,51 @@ class MCPToolServer {
       const results = this.ragEngine.searchFiles(pattern, 20);
       return { success: true, files: results };
     }
-    const safePattern = this._sanitizeShellArg(pattern);
-    return this._runCommand(
-      process.platform === 'win32'
-        ? `dir /s /b "*${safePattern}*" 2>nul`
-        : `find . -name "*${safePattern}*" -not -path "*/node_modules/*" -not -path "*/.git/*" 2>/dev/null`,
-      this.projectPath
-    );
+    // Native file walk — cross-platform. The previous shell-based implementation
+    // passed cmd.exe syntax ("dir /s /b ... 2>nul") through _runCommand, which
+    // wraps commands in powershell.exe on Windows. PowerShell interprets "2>nul"
+    // as redirecting to a device named "nul" and fails with a FileStream error.
+    if (!pattern || typeof pattern !== 'string') {
+      return { success: false, error: 'pattern parameter is required' };
+    }
+    if (!this.projectPath) {
+      return { success: false, error: 'No project path set' };
+    }
+    const root = this.projectPath;
+    const needle = pattern.toLowerCase();
+    const skipDirs = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.cache', 'out', 'coverage']);
+    const matches = [];
+    const MAX_MATCHES = 100;
+    const MAX_ENTRIES_SCANNED = 50000;
+    let scanned = 0;
+    const walk = async (dir) => {
+      if (matches.length >= MAX_MATCHES || scanned >= MAX_ENTRIES_SCANNED) return;
+      let entries;
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        scanned++;
+        if (matches.length >= MAX_MATCHES || scanned >= MAX_ENTRIES_SCANNED) return;
+        const name = entry.name;
+        if (entry.isDirectory()) {
+          if (skipDirs.has(name) || name.startsWith('.')) continue;
+          await walk(path.join(dir, name));
+        } else if (entry.isFile()) {
+          if (name.toLowerCase().includes(needle)) {
+            matches.push(path.relative(root, path.join(dir, name)));
+          }
+        }
+      }
+    };
+    try {
+      await walk(root);
+      return { success: true, files: matches, truncated: matches.length >= MAX_MATCHES };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
   }
 
   async _analyzeError(errorMessage, stackTrace) {
@@ -2105,6 +2210,9 @@ class MCPToolServer {
         if (!['md', 'markdown', 'txt', 'rst'].includes(_fenceExt)) {
           content = content.replace(/^```[a-zA-Z0-9+#.-]*\r?\n/, '');
           content = content.replace(/\r?\n```[^\n]*$/, '');
+          // Closing fence without newline before ```, or extra trailing fence (common on HTML)
+          content = content.replace(/\r?\n```[a-zA-Z0-9+#.-]*\s*$/m, '');
+          content = content.replace(/```[a-zA-Z0-9+#.-]*\s*$/m, '');
         }
       }
       // Smart insert for HTML files: if file already ends with </html>, insert new content
@@ -2882,7 +2990,15 @@ class MCPToolServer {
   }
 
   _buildToolPrompt(tools) {
-    let prompt = '## Tools\nCall tools with:\n```json\n{"tool":"tool_name","params":{"param":"value"}}\n```\nExample:\n```json\n{"tool":"list_directory","params":{"dirPath":"."}}\n```\n';
+    let prompt = '## Tools\nCall tools with:\n```json\n{"tool":"tool_name","params":{"param":"value"}}\n```\n';
+    prompt += 'To create or write a file, put the complete content inside write_file params — never in the chat response:\n```json\n{"tool":"write_file","params":{"filePath":"index.html","content":"<html><body>Hello</body></html>"}}\n```\n';
+    prompt += 'You HAVE the tools listed below — use them. NEVER say "I can\'t", "I don\'t have access", or "I can\'t browse" when a tool is available.\n';
+    prompt += 'NEVER output full file content as code blocks in chat — use write_file, edit_file, or append_to_file.\n';
+    prompt += 'NEVER provide manual instructions — USE the tools to do the work.\n';
+    prompt += '\n### Tool-call formatting — strict\n';
+    prompt += 'Every tool call is ONE ```json fenced block containing ONE JSON object. All arguments go under a `params` object. Keys and string values use plain double quotes. Do not escape quotes inside a JSON string value. Do not repeat the same key twice in one object. To perform N actions, emit N separate ```json blocks — never merge them and never pass an array of paths.\n';
+    prompt += 'RIGHT — one action per fenced block, params present, clean quoting:\n```json\n{"tool":"create_directory","params":{"path":"src"}}\n```\n```json\n{"tool":"write_file","params":{"filePath":".gitignore","content":"node_modules\\n.env\\n"}}\n```\n';
+    prompt += 'If a prior tool call came back with `PARSE_FAILED`, re-emit that exact tool call cleanly using the RIGHT shape above — do not skip the action.\n\n';
     if (this.projectPath) {
       prompt += `Project directory: ${this.projectPath}\nUse relative file paths (e.g. "output.md") — they resolve to the project directory.\n`;
     }
@@ -2935,12 +3051,10 @@ class MCPToolServer {
 - **Form filling**: browser_navigate → browser_snapshot → browser_type/click each field → submit
 
 ### Important Rules
-- You HAVE tools — use them. NEVER say "I can't browse" or "I don't have internet"
 - Your browser is REAL Chromium — no CAPTCHA restrictions
-- NEVER provide manual instructions — USE the tools to do the work
-- NEVER output full file content as code blocks in chat — use write_file, edit_file, or append_to_file
 - After web_search, fetch required URLs in the same continuation — NEVER ask "Would you like me to fetch"
 - If an error occurs, retry with a different approach — do NOT give up
+- NEVER output file contents, configuration, or any substantive artifact as a code block in chat — use the appropriate tool to create or modify it
 `;
     return prompt;
   }

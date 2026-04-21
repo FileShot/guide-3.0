@@ -48,6 +48,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Upload artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: windows-cpu
@@ -88,6 +89,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Upload artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: windows-cuda
@@ -129,6 +131,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: linux-cpu
@@ -170,6 +173,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: linux-cuda
@@ -227,6 +231,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Upload artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: mac-cpu

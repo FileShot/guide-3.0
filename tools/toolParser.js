@@ -140,11 +140,26 @@ function fixBackticks(raw) {
   });
 }
 
+function fixSeparatorTypos(raw) {
+  if (!raw) return raw;
+  // Models occasionally emit a punctuation mark where a colon belongs, e.g.
+  //   {"tool":"list_directory","params":{"dirPath".""}}
+  //                                              ^ dot instead of colon
+  // Only repair when: quoted alphanumeric key immediately followed by one of
+  // [ . ; , | ] (the common typos) and then a value-start token. Never touches
+  // the inside of a string (extractJsonObjects has already isolated one object).
+  return raw.replace(
+    /("[A-Za-z_][\w-]*")\s*([.;,|])\s*(?=["\d\[\{tfn-])/g,
+    '$1:'
+  );
+}
+
 function tryParseJson(raw) {
-  // Triple-try chain: raw → fixQuoting → fixBackticks
+  // Quadruple-try chain: raw → fixQuoting → fixBackticks → fixSeparatorTypos
   try { return JSON.parse(sanitizeJson(raw)); } catch {}
   try { return JSON.parse(sanitizeJson(fixQuoting(raw))); } catch {}
   try { return JSON.parse(sanitizeJson(fixBackticks(fixQuoting(raw)))); } catch {}
+  try { return JSON.parse(sanitizeJson(fixSeparatorTypos(fixBackticks(fixQuoting(raw))))); } catch {}
   return null;
 }
 

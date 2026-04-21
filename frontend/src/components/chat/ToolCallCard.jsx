@@ -122,7 +122,7 @@ export default function ToolCallCard({ toolCall, count }) {
   const hasExpandable = !!(params || (result !== undefined && result !== null));
 
   return (
-    <div className="my-px">
+    <div className="my-px rounded-md shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04),inset_0_1px_2px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),inset_0_1px_3px_rgba(0,0,0,0.35),0_1px_2px_rgba(0,0,0,0.2)]">
       <button
         className={`flex items-center gap-1.5 w-full px-1.5 py-[3px] text-left rounded transition-colors hover:bg-vsc-list-hover/30 ${isError ? 'text-vsc-error/70' : 'text-vsc-text-dim'}`}
         onClick={() => hasExpandable && setExpanded(!expanded)}

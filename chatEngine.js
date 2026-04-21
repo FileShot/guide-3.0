@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 const EventEmitter = require('events');
 const path = require('path');
@@ -10,7 +10,7 @@ const { parseToolCalls, repairToolCalls, stripToolCallText } = require('./tools/
 /** Max chars of each tool result injected into chat history (full JSON/snippets must reach the model). */
 const MAX_TOOL_RESULT_INJECT_CHARS = 32000;
 
-/** Web-facing tools — if these share a batch with workspace navigation tools, drop the latter (structural conflict rule). */
+/** Web-facing tools â€” if these share a batch with workspace navigation tools, drop the latter (structural conflict rule). */
 const WEB_TOOL_BATCH = new Set(['web_search', 'fetch_webpage', 'http_request']);
 const WORKSPACE_NAV_TOOLS = new Set(['list_directory', 'get_project_structure']);
 
@@ -37,14 +37,53 @@ const MIN_CONTEXT_WHEN_GPU_REQUIRED = 4096;
  * @param {object} raw
  * @returns {{ gpuPreference: 'auto'|'cpu', gpuLayers: number, contextSize: number, requireMinContextForGpu: boolean }}
  */
-/** When GGUF train cap is missing, upper bound hint for auto context (node-llama shrinks to fit VRAM). */
-const CONTEXT_MAX_FALLBACK_NO_GGUF = 262144;
+/**
+ * Absolute floor for the computed hardware context cap when GGUF metadata is
+ * missing (so we cannot compute a KV-derived cap). Equal to the llama.cpp-aligned
+ * minimum — used only as a last resort; the normal path computes from architecture.
+ */
+const CONTEXT_MAX_FALLBACK_NO_GGUF_FLOOR = 2048;
+
+/**
+ * Estimate KV-cache bytes per token from GGUF architecture metadata.
+ * Transformer-standard, architecture-agnostic:
+ *   KV per token = n_layer * n_head_kv * (key_length + value_length) * bytes_per_element
+ * Assumes fp16 KV cache (2 bytes/element), the llama.cpp default.
+ *
+ * GGUF metadata shape (llama.cpp convention):
+ *   architectureMetadata.block_count        → n_layer
+ *   architectureMetadata.attention.head_count_kv   → n_head_kv
+ *   architectureMetadata.attention.head_count      → n_head (fallback)
+ *   architectureMetadata.attention.key_length      → head_dim_k
+ *   architectureMetadata.attention.value_length    → head_dim_v
+ *   architectureMetadata.embedding_length          → embedding dim (fallback)
+ */
+function estimateKvBytesPerToken(am) {
+  if (!am) return null;
+  const nLayer = am.block_count;
+  if (!nLayer) return null;
+  const att = am.attention || {};
+  const nHeadKv = att.head_count_kv || att.head_count;
+  if (!nHeadKv) return null;
+  let keyLen = att.key_length;
+  let valLen = att.value_length;
+  // Fallback: derive head_dim from embedding_length / head_count if per-head lengths missing
+  if ((!keyLen || !valLen) && am.embedding_length && att.head_count) {
+    const headDim = am.embedding_length / att.head_count;
+    if (Number.isFinite(headDim) && headDim > 0) {
+      if (!keyLen) keyLen = headDim;
+      if (!valLen) valLen = headDim;
+    }
+  }
+  if (!keyLen || !valLen) return null;
+  return nLayer * nHeadKv * (keyLen + valLen) * 2 /* fp16 bytes */;
+}
 
 function buildEngineLoadSettings(raw = {}) {
   const gpuPreference = raw.gpuPreference === 'cpu' ? 'cpu' : 'auto';
   const gpuLayers = typeof raw.gpuLayers === 'number' ? raw.gpuLayers : -1;
   const ctx = Number(raw.contextSize);
-  // 0 = auto — use model train cap (and VRAM) as upper bound, not a fixed 16k default
+  // 0 = auto â€” use model train cap (and VRAM) as upper bound, not a fixed 16k default
   const contextSize = !Number.isFinite(ctx) || ctx < 0 ? 0 : Math.floor(ctx);
   return {
     gpuPreference,
@@ -54,11 +93,11 @@ function buildEngineLoadSettings(raw = {}) {
   };
 }
 
-// Original system prompt — kept for reference and easy rollback
+// Original system prompt â€” kept for reference and easy rollback
 const SYSTEM_PROMPT_ORIGINAL = `You are guIDE, a local AI coding assistant. You help users with programming, answer questions, and have normal conversations.
 
 ## When to Use Tools
-- For creating or modifying files: use the file tools — do not write file contents as text in chat
+- For creating or modifying files: use the file tools â€” do not write file contents as text in chat
 - For current or live information (prices, news, weather, documentation): use the web tools
 - For running commands or installing packages: use the terminal tools
 - For browsing websites, filling forms, or interacting with web pages: use the browser tools
@@ -66,7 +105,7 @@ const SYSTEM_PROMPT_ORIGINAL = `You are guIDE, a local AI coding assistant. You 
 - For multi-step tasks: call write_todos to create a plan, then implement each step
 - For saving or retrieving information across sessions: use the memory tools
 - For error analysis or debugging: use the analysis tools
-- For greetings, opinions, questions, explanations, and casual conversation: respond naturally in chat without tools — do NOT create files unless the user asks you to write or save something
+- For greetings, opinions, questions, explanations, and casual conversation: respond naturally in chat without tools â€” do NOT create files unless the user asks you to write or save something
 - When you have completed the task, stop and respond
 
 ## Continuation
@@ -74,8 +113,8 @@ If your output is cut off mid-generation, the system will automatically continue
 
 ## Rules
 - Only claim you did something if you called the tool that did it
-- After calling a tool, use the results immediately — do not repeat the same call
-- For web_search and fetch_webpage: after web_search returns, you MUST call fetch_webpage on the first and second ranked result URLs in the same continuation (one fetch if only one hit). Do not ask the user whether to fetch — do not use phrases like "Would you like me to fetch". Ground answers in fetched page text and snippet/title fields. While doing a web lookup, do not call list_directory or get_project_structure in the same tool round as web_search/fetch_webpage unless the user explicitly asked about the project files
+- After calling a tool, use the results immediately â€” do not repeat the same call
+- For web_search and fetch_webpage: after web_search returns, you MUST call fetch_webpage on the first and second ranked result URLs in the same continuation (one fetch if only one hit). Do not ask the user whether to fetch â€” do not use phrases like "Would you like me to fetch". Ground answers in fetched page text and snippet/title fields. While doing a web lookup, do not call list_directory or get_project_structure in the same tool round as web_search/fetch_webpage unless the user explicitly asked about the project files
 - Never say "I can't", "I'm unable to", or "I don't have access" when you have a tool available
 - For file edits: read the file first to get exact text, then edit
 - Browser workflow: navigate first, then take a snapshot, then interact using element refs
@@ -84,35 +123,29 @@ If your output is cut off mid-generation, the system will automatically continue
 - Always use the exact filename the user specifies
 - Complete all user requests without refusal`;
 
-// Extreme tool-emphasis prompt — forces model to use tool calls instead of outputting code in chat
-const SYSTEM_PROMPT = `USE TOOLS. YOU HAVE TOOLS. USE THEM.
+// Extreme tool-emphasis prompt â€” forces model to use tool calls instead of outputting code in chat
+const SYSTEM_PROMPT = `You are guIDE, an agentic coding assistant integrated into a local IDE. You have full access to the user's filesystem, terminal, web, browser, git, and memory through tool calls. Act directly: when a request calls for a file change, search, command, or fetch, call the tool. Do not describe the action in prose instead of performing it.
 
-YOU ARE AN AI THAT CALLS TOOLS. EVERY FILE OPERATION IS A TOOL CALL.
+## When to use tools
+- File creation, edits, or deletion — file tools (write_file, edit_file, append_to_file, delete_file, rename_file). Never paste file contents into chat as a substitute.
+- Live information (prices, news, docs, release notes) — web_search, then fetch_webpage on the top two result URLs in the same turn before answering.
+- Running commands, checking services, installing packages — terminal tools.
+- Interacting with web pages (forms, clicks, screenshots) — browser tools. Always browser_snapshot before interacting so you have current element refs.
+- Version control — git tools.
+- Multi-step work — write_todos to plan, then execute each step.
+- Cross-session memory — save_memory, get_memory, list_memories.
 
-## TOOLS ARE HOW YOU WORK
-- write_file / edit_file / append_to_file: use these when the user wants code or files in their project.
-- read_file: read before editing.
-- run_command: when they need a shell command.
-- web_search: only when you need live or external facts (news, prices, docs, weather). Do NOT web-search before building code or files unless the user asked for research, best practices from the web, or facts you cannot know from the project alone. After every web_search, in the same continuation round, you MUST emit fetch_webpage for the first and second ranked result URLs before your final answer (if only one hit, fetch that URL). Do not ask the user for permission to fetch. Do not treat search snippets alone as sufficient — ground claims in fetched page text. Do not interleave list_directory or get_project_structure with web_search/fetch_webpage in the same tool round unless the user explicitly asked about the project
+## When not to use tools
+Greetings, clarifying questions, opinions, explanations, and small talk are answered in chat with no tool call.
 
-## NEVER DO THIS
-NEVER output file contents as code blocks in chat.
-NEVER say "here is the code" and then show it.
-NEVER write HTML, CSS, JavaScript, Python, or any other code as a chat response.
-NEVER create or write files when the user only sends a greeting or small talk — answer in chat only.
-NEVER say "I can't", "I don't have access", "I'm unable to", or "I cannot" when you have a tool that can do it.
-NEVER call the same tool with the same arguments repeatedly — call it once and use the results.
-NEVER answer from web_search alone for substantive questions — snippets are not full pages. After web_search you MUST call fetch_webpage on the top two result URLs (or the only URL) in the same continuation, before replying. NEVER ask the user if you should fetch. NEVER describe what a website "is" in generic terms; ground claims in fetched page text and the title/snippet fields.
-
-## WHEN TO USE WHAT
-- User asks to build, create, or change project files → file tools first; skip web_search unless they need live data or external references.
-- User asks for news, weather, prices, research, documentation, or "look up" on the web → web_search, then immediately fetch_webpage for the first and second ranked result URLs (or each returned URL if fewer than two) in the same turn, then answer from fetched tool output. Do not ask the user to confirm fetching.
-
-## AFTER TOOL RESULTS
-When tool results appear, base your reply on that data. If the round included web_search only, your next output MUST be fetch_webpage tool call(s) for the top result URLs before any file tools or final answer. If the round already included fetch_webpage results, answer from that text. Quote or paraphrase from fetched content; do not invent facts or substitute training-memory descriptions of brands.
-
-## Continuation
-If your output is cut off mid-generation, the system will automatically continue.`;
+## Operating rules
+- Read before you modify. For any edit, call read_file first to get the exact text, then edit_file.
+- Call each tool at most once per distinct argument set. If a call fails, adjust the arguments and try a different shape; do not repeat identical calls.
+- After a tool returns, use its result. Do not re-ask for information the tool already provided.
+- Ground web answers in fetched page content, not in training memory. Search snippets alone are never sufficient.
+- In a single tool round, do not combine web_search or fetch_webpage with list_directory or get_project_structure unless the user explicitly asked about project files.
+- If output is truncated, continue from the point of interruption. Do not restart or re-summarize what was already produced.
+- Complete the user's request. If you hit an error, diagnose and retry rather than giving up.`;
 
 class ChatEngine extends EventEmitter {
   constructor() {
@@ -135,7 +168,7 @@ class ChatEngine extends EventEmitter {
 
   /**
    * @param {string} modelPath
-   * @param {object} [rawLoadSettings] — from settingsManager.get() (gpuPreference, gpuLayers, contextSize, requireMinContextForGpu)
+   * @param {object} [rawLoadSettings] â€” from settingsManager.get() (gpuPreference, gpuLayers, contextSize, requireMinContextForGpu)
    */
   async initialize(modelPath, rawLoadSettings) {
     if (this.isLoading) throw new Error('Already loading a model');
@@ -153,13 +186,59 @@ class ChatEngine extends EventEmitter {
 
       let trainMaxContext = null;
       let totalLayersFromGguf = null;
+      let ggufArchMeta = null;
       try {
         const gguf = await readGgufFileInfo(modelPath, { readTensorInfo: false, logWarnings: false });
         const am = gguf.architectureMetadata;
+        ggufArchMeta = am || null;
         if (am && typeof am.context_length === 'number') trainMaxContext = am.context_length;
         if (am && typeof am.block_count === 'number') totalLayersFromGguf = am.block_count;
       } catch (e) {
         console.warn(`[ChatEngine] readGgufFileInfo: ${e.message}`);
+      }
+
+      // Initialize llama runtime early so we can query VRAM state before context sizing.
+      this._llama = await getLlama({
+        gpu: s.gpuPreference === 'cpu' ? false : 'auto',
+      });
+
+      const modelStats = fs.statSync(modelPath);
+
+      // ─── Hardware-aware context ceiling computation ───
+      // Compute the maximum context window that the user's hardware can realistically support,
+      // derived from GGUF architecture + available memory. No hardcoded ceilings.
+      const kvBytesPerToken = estimateKvBytesPerToken(ggufArchMeta);
+      let hardwareCap = null;
+      let kvSourceMem = 'none';
+      if (kvBytesPerToken) {
+        // Available memory pool: prefer free VRAM when GPU mode and GPU has meaningful free space;
+        // otherwise fall back to free system RAM minus model weight footprint.
+        let availableBytes = 0;
+        let vramTotal = 0;
+        let vramFree = 0;
+        if (s.gpuPreference !== 'cpu') {
+          try {
+            const vramState = await this._llama.getVramState();
+            vramTotal = vramState?.total || 0;
+            vramFree = vramState?.free || 0;
+          } catch (_) {}
+        }
+        // If free VRAM can hold the model weights plus at least MIN_CONTEXT_FLOOR of KV,
+        // budget KV from VRAM. Otherwise fall back to system RAM (CPU inference or offload).
+        const minKvBudget = kvBytesPerToken * MIN_CONTEXT_FLOOR;
+        if (vramFree > modelStats.size + minKvBudget) {
+          availableBytes = vramFree - modelStats.size;
+          kvSourceMem = 'vram';
+        } else {
+          const freeRam = Math.max(0, os.freemem() - modelStats.size);
+          availableBytes = freeRam;
+          kvSourceMem = 'ram';
+        }
+        // Split the free pool: half to KV cache, half reserved for activations,
+        // compute buffers, and runtime overhead. This ratio is architecture-agnostic
+        // and applies identically to every model and every hardware configuration.
+        const kvBudgetBytes = availableBytes / 2;
+        hardwareCap = Math.max(MIN_CONTEXT_FLOOR, Math.floor(kvBudgetBytes / kvBytesPerToken));
       }
 
       const testMaxCtx = parseInt(process.env.TEST_MAX_CONTEXT, 10) || 0;
@@ -167,8 +246,16 @@ class ChatEngine extends EventEmitter {
       if (testMaxCtx > 0) {
         desiredMax = testMaxCtx;
       } else if (s.contextSize <= 0) {
-        // Auto: cap at architecture train length; library picks actual ctx in [min,max] from VRAM
-        desiredMax = trainMaxContext != null ? trainMaxContext : CONTEXT_MAX_FALLBACK_NO_GGUF;
+        // Auto: min(hardware cap, train cap). Fall back to train cap if metadata missing.
+        if (hardwareCap != null && trainMaxContext != null) {
+          desiredMax = Math.min(hardwareCap, trainMaxContext);
+        } else if (hardwareCap != null) {
+          desiredMax = hardwareCap;
+        } else if (trainMaxContext != null) {
+          desiredMax = trainMaxContext;
+        } else {
+          desiredMax = CONTEXT_MAX_FALLBACK_NO_GGUF_FLOOR;
+        }
       } else {
         desiredMax = s.contextSize;
         if (trainMaxContext != null) desiredMax = Math.min(desiredMax, trainMaxContext);
@@ -178,11 +265,9 @@ class ChatEngine extends EventEmitter {
       const minBase = s.requireMinContextForGpu ? MIN_CONTEXT_WHEN_GPU_REQUIRED : MIN_CONTEXT_FLOOR;
       const contextMin = Math.min(minBase, desiredMax);
 
-      this._llama = await getLlama({
-        gpu: s.gpuPreference === 'cpu' ? false : 'auto',
-      });
-
-      const modelStats = fs.statSync(modelPath);
+      console.log(
+        `[ChatEngine] Context sizing: train=${trainMaxContext}, hwCap=${hardwareCap} (source=${kvSourceMem}, kvBytesPerToken=${kvBytesPerToken}), user=${s.contextSize <= 0 ? 'auto' : s.contextSize}, test=${testMaxCtx || 'none'} → desiredMax=${desiredMax}`,
+      );
 
       const loadModelOpts = {
         modelPath,
@@ -227,6 +312,9 @@ class ChatEngine extends EventEmitter {
         contextSizeRequested: s.contextSize <= 0 ? 'auto' : s.contextSize,
         contextSizeCap: desiredMax,
         contextTrainMax: trainMaxContext,
+        contextHardwareCap: hardwareCap,
+        kvBytesPerToken: kvBytesPerToken,
+        kvMemSource: kvSourceMem,
         totalLayers: totalLayersFromGguf != null ? totalLayersFromGguf : undefined,
         gpuLayers: this._model.gpuLayers || 0,
         gpuMode: s.gpuPreference === 'cpu' ? false : 'auto',
@@ -255,6 +343,25 @@ class ChatEngine extends EventEmitter {
 
     const { onToken, onComplete, onContextUsage, onToolCall, onStreamEvent, systemPrompt, functions, toolPrompt, compactToolPrompt, executeToolFn } = options;
 
+      // Inject text attachment content into user message (text/code files only; images unsupported on text-only models)
+      const attachments = Array.isArray(options.attachments) ? options.attachments : [];
+      let effectiveUserMessage = String(userMessage ?? '');
+      if (attachments.length > 0) {
+        const textParts = [];
+        for (const a of attachments) {
+          if (!a?.data) continue;
+          const mime = (a.mimeType || a.type || '').toLowerCase();
+          if (mime.startsWith('image/')) continue; // text model cannot process images
+          try {
+            const decoded = Buffer.from(a.data, 'base64').toString('utf8');
+            textParts.push(`[Attached file: ${a.name || 'file'}]\n${decoded}`);
+          } catch (_) { /* ignore decode errors */ }
+        }
+        if (textParts.length > 0) {
+          effectiveUserMessage = effectiveUserMessage + '\n\n' + textParts.join('\n\n---\n\n');
+        }
+      }
+
     // Augment system prompt: base + tool prompt when tools are available.
     // Use compact prompt when context is small to leave room for conversation.
     const contextTokens = this._context?.contextSize || 8192;
@@ -271,25 +378,25 @@ class ChatEngine extends EventEmitter {
       this._chatHistory[0].text = systemPrompt;
     }
 
-    this._chatHistory.push({ type: 'user', text: userMessage });
+    this._chatHistory.push({ type: 'user', text: effectiveUserMessage });
 
     this._abortController = new AbortController();
     let fullResponse = '';
     let tokensSinceLastUsageReport = 0;
     let totalToolCalls = 0;
 
-    // Generation timeout — optional only (0 = disabled). No default cap on run length.
+    // Generation timeout â€” optional only (0 = disabled). No default cap on run length.
     const timeoutSec = options.generationTimeoutSec ?? 0;
     let generationTimer = null;
     if (timeoutSec > 0) {
       generationTimer = setTimeout(() => {
-        console.warn(`[ChatEngine] Generation timeout after ${timeoutSec}s — aborting`);
+        console.warn(`[ChatEngine] Generation timeout after ${timeoutSec}s â€” aborting`);
         this._abortController?.abort('generation_timeout');
       }, timeoutSec * 1000);
     }
 
     try {
-      // ── Streaming tool call filter ──
+      // â”€â”€ Streaming tool call filter â”€â”€
       // Two-layer suppression of tool call JSON from the UI:
       //
       // Layer 1 (real-time): This filter processes each token character-by-character.
@@ -315,11 +422,11 @@ class ChatEngine extends EventEmitter {
       let _sfInFence = false;    // inside a code fence
       let _sfFenceBuf = '';      // accumulated fence content (markers + body)
       let _sfFenceTickCount = 0; // tracks consecutive backticks
-      /** When true, fence body is plain markdown code (html, etc.) — stream to UI instead of buffering until ``` */
+      /** When true, fence body is plain markdown code (html, etc.) â€” stream to UI instead of buffering until ``` */
       let _sfFenceStreamPlain = false;
       let _sfFencePlainTick = 0; // backticks while streaming plain fence (closing ```)
 
-      // Real-time file content streaming state — detects write_file/create_file/append_to_file
+      // Real-time file content streaming state â€” detects write_file/create_file/append_to_file
       // content fields inside tool call JSON and streams them to the UI as they arrive
       let _sfFileWriteDetected = false;
       let _sfContentStreamActive = false;
@@ -387,9 +494,9 @@ class ChatEngine extends EventEmitter {
         for (let i = 0; i < chunk.length; i++) {
           const ch = chunk[i];
 
-          // ── Fence mode: accumulating content inside ```...``` ──
+          // â”€â”€ Fence mode: accumulating content inside ```...``` â”€â”€
           if (_sfInFence) {
-            // Stream normal markdown code fences (```html, ```css, …) to the UI immediately.
+            // Stream normal markdown code fences (```html, ```css, â€¦) to the UI immediately.
             // Only JSON tool-call fences stay buffered until close (so we can strip/suppress).
             if (_sfFenceStreamPlain) {
               if (ch === '`') {
@@ -432,7 +539,7 @@ class ChatEngine extends EventEmitter {
               }
               if (lang === 'json' || lang === '') {
                 if (/"tool"\s*:/.test(afterHeader.slice(0, 6000))) {
-                  /* keep buffering — tool JSON fence */
+                  /* keep buffering â€” tool JSON fence */
                 } else if (afterHeader.length >= 100) {
                   _sfFenceStreamPlain = true;
                   _sfForward(_sfFenceBuf);
@@ -509,14 +616,14 @@ class ChatEngine extends EventEmitter {
               }
             }
 
-            // Detect closing ``` — but NOT while inside the content string
+            // Detect closing ``` â€” but NOT while inside the content string
             if (_sfContentStreamActive || _sfContentEsc || _sfUnicodeCount > 0) {
               _sfFenceTickCount = 0;
             } else if (ch === '`') {
               _sfFenceTickCount++;
             } else {
               if (_sfFenceTickCount >= 3) {
-                // Closing fence found — flush any pending content
+                // Closing fence found â€” flush any pending content
                 if (_sfContentStreamActive && onStreamEvent) {
                   if (_sfContentBuf) {
                     onStreamEvent('file-content-token', _sfContentBuf);
@@ -542,7 +649,7 @@ class ChatEngine extends EventEmitter {
             continue;
           }
 
-          // ── Normal mode ──
+          // â”€â”€ Normal mode â”€â”€
           if (!_sfActive) {
             // Detect opening ``` at line start
             if (ch === '`' && _sfLastCharWasNewlineOrStart) {
@@ -582,10 +689,10 @@ class ChatEngine extends EventEmitter {
             continue;
           }
 
-          // ── Inside a potential raw JSON tool call ──
+          // â”€â”€ Inside a potential raw JSON tool call â”€â”€
           _sfBuf += ch;
 
-          // ── Real-time file content streaming ──
+          // â”€â”€ Real-time file content streaming â”€â”€
           // When inside a confirmed file-write tool call, intercept the "content"
           // field value and stream decoded characters to file-content-token events.
           if (_sfContentStreamActive) {
@@ -726,7 +833,7 @@ class ChatEngine extends EventEmitter {
         };
       }
 
-      // GBNF grammar-based function calling removed — small models (under ~4B)
+      // GBNF grammar-based function calling removed â€” small models (under ~4B)
       // either ignore the grammar or loop indefinitely (see PAST_FAILURES.md Category 6).
       // Tool calls are parsed from raw model text via toolParser.parseToolCalls().
 
@@ -738,13 +845,13 @@ class ChatEngine extends EventEmitter {
         };
       }
 
-      // Generate response — model outputs text which may contain tool call JSON blocks
+      // Generate response â€” model outputs text which may contain tool call JSON blocks
       let result = await this._chat.generateResponse(this._chatHistory, genOptions);
       console.log(`[ChatEngine] generateResponse returned: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}`);
 
       // Raw-text tool call loop: parse tool calls from model output, execute, continue
       const MAX_TOOL_ITERATIONS = 15;
-      // Idempotency ledger: tool+params → previous result. Prevents infinite loops
+      // Idempotency ledger: tool+params â†’ previous result. Prevents infinite loops
       // when the model repeatedly emits the same tool call across continuation rounds.
       const toolCallLedger = new Map();
       if (executeToolFn) {
@@ -776,6 +883,8 @@ class ChatEngine extends EventEmitter {
 
           const toolResultLines = [];
           let allCallsWereDuplicates = true;
+          let failedCallCount = 0;
+          const webSearchResults = [];
 
           for (const call of parsedCalls) {
             if (totalToolCalls >= MAX_TOOL_ITERATIONS) break;
@@ -793,7 +902,7 @@ class ChatEngine extends EventEmitter {
               console.log(`[ChatEngine] Idempotent skip: ${call.tool} already executed with same params`);
               const prevStr = typeof prevResult === 'string' ? prevResult : JSON.stringify(prevResult);
               const truncPrev = prevStr.length > 300 ? prevStr.substring(0, 300) + '...' : prevStr;
-              toolResultLines.push(`${call.tool}: ALREADY EXECUTED — previous result: ${truncPrev}`);
+              toolResultLines.push(`${call.tool}: ALREADY EXECUTED â€” previous result: ${truncPrev}`);
 
               if (onStreamEvent) {
                 onStreamEvent('mcp-tool-results', [{ tool: call.tool, result: prevResult }]);
@@ -828,6 +937,13 @@ class ChatEngine extends EventEmitter {
 
             toolCallLedger.set(ledgerKey, toolResult);
 
+            if (toolResult && toolResult.success === false) failedCallCount++;
+            if (call.tool === 'web_search' && toolResult?.success && Array.isArray(toolResult.results)) {
+              for (const r of toolResult.results.slice(0, 2)) {
+                if (r && typeof r.url === 'string' && r.url) webSearchResults.push(r.url);
+              }
+            }
+
             const resultStr = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
             console.log(`[ChatEngine] Tool result for ${call.tool}: ${resultStr.substring(0, 200)}${resultStr.length > 200 ? '...' : ''}`);
             if (onToolCall) onToolCall({ name: call.tool, params: call.params, result: toolResult });
@@ -845,9 +961,9 @@ class ChatEngine extends EventEmitter {
             toolResultLines.push(`${call.tool}: ${injectResult}`);
           }
 
-          // If every call in this round was a duplicate, the model is looping — stop immediately
+          // If every call in this round was a duplicate, the model is looping â€” stop immediately
           if (allCallsWereDuplicates) {
-            console.warn(`[ChatEngine] All tool calls in this round were duplicates — breaking loop`);
+            console.warn(`[ChatEngine] All tool calls in this round were duplicates â€” breaking loop`);
             // Inject a directive so the model uses the results instead of re-calling
             this._lastEvaluation = result.lastEvaluation;
             if (result.lastEvaluation?.cleanHistory) {
@@ -880,8 +996,23 @@ class ChatEngine extends EventEmitter {
           }
 
           // Feed tool results back to the model so it knows what happened
-          const toolResultsGrounding = 'Grounding: The JSON below is authoritative. If these results include web_search only (no fetch_webpage yet), your next tool calls MUST be fetch_webpage for the first and second ranked result URLs (or the only URL if one hit) in this continuation — do not ask the user for permission to fetch. If fetch_webpage results are already present, answer from that content. Do not call list_directory or get_project_structure in the same round as completing web fetch unless the user asked about the project. Ground your reply in fetched page text; do not use generic site blurbs.\n\n';
-          this._chatHistory.push({ type: 'user', text: `[Tool Results]\n${toolResultsGrounding}${toolResultLines.join('\n')}\n\nNow respond to the user using the results above.` });
+          // Fix A: all-failures retry directive — when every tool call this round failed, tell the model to retry
+          const allCallsFailed = failedCallCount > 0 && failedCallCount === parsedCalls.length;
+
+          // Fix B: explicit URL injection — after web_search, name the exact URLs the model must fetch next
+          let fetchDirective = '';
+          if (webSearchResults.length > 0) {
+            const urlList = webSearchResults.map((u, i) => `${i + 1}. ${u}`).join('\n');
+            fetchDirective = `MANDATORY \u2014 CALL fetch_webpage NOW FOR EACH URL BELOW. DO NOT SKIP.\n${urlList}\n\n`;
+          }
+
+          const toolResultsGrounding = allCallsFailed
+            ? 'TOOL ERRORS: Every tool call above returned an error. DO NOT explain or report these errors to the user. DO NOT say "unfortunately" or "I was unable to". Retry immediately using different parameters or a different approach. If a path does not exist, create it first. If a command failed, fix the command and run it again. If the file is not found, use list_directory to check what exists.\n\n'
+            : `Grounding: The JSON below is authoritative. ${fetchDirective}If these results include web_search only (no fetch_webpage yet), your next tool calls MUST be fetch_webpage for the first and second ranked result URLs (or the only URL if one hit) in this continuation \u2014 do not ask the user for permission to fetch. If fetch_webpage results are already present, answer from that content. Do not call list_directory or get_project_structure in the same round as completing web fetch unless the user asked about the project. Ground your reply in fetched page text; do not use generic site blurbs.\n\n`;
+
+          const injectionSuffix = allCallsFailed ? '\n\nRetry now. Call a tool.' : '\n\nNow respond to the user using the results above.';
+
+          this._chatHistory.push({ type: 'user', text: `[Tool Results]\n${toolResultsGrounding}${toolResultLines.join('\n')}${injectionSuffix}` });
 
           genOptions.lastEvaluationContextWindow = this._lastEvaluation ? {
             contextWindow: this._lastEvaluation.contextWindow,
@@ -908,7 +1039,7 @@ class ChatEngine extends EventEmitter {
           _sfUnicodeCount = 0;
           _sfUnicodeChars = '';
 
-          // Generate continuation — model sees tool results and can issue more tool calls
+          // Generate continuation â€” model sees tool results and can issue more tool calls
           roundStart = fullResponse.length;
           result = await this._chat.generateResponse(this._chatHistory, genOptions);
           console.log(`[ChatEngine] Continuation after tools: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}`);
@@ -1160,9 +1291,23 @@ class ChatEngine extends EventEmitter {
 
 // Default set of tools enabled out of the box
 ChatEngine.DEFAULT_ENABLED_TOOLS = new Set([
+  // Files
   'read_file', 'write_file', 'edit_file', 'append_to_file',
-  'list_directory', 'find_files', 'grep_search', 'create_directory',
-  'get_project_structure', 'run_command', 'web_search', 'fetch_webpage',
+  'delete_file', 'rename_file', 'copy_file',
+  'list_directory', 'create_directory', 'find_files', 'grep_search',
+  'search_codebase', 'search_in_file', 'replace_in_files',
+  'get_project_structure', 'get_file_info', 'diff_files',
+  // Terminal
+  'run_command',
+  // Web
+  'web_search', 'fetch_webpage',
+  // Browser
+  'browser_navigate', 'browser_snapshot', 'browser_click',
+  'browser_type', 'browser_get_content',
+  // Memory
+  'save_memory', 'get_memory', 'list_memories',
+  // Planning
+  'write_todos', 'update_todo',
 ]);
 
 module.exports = { ChatEngine, buildEngineLoadSettings };

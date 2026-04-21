@@ -74,7 +74,7 @@ class WebSearch {
         }
         const chunks = [];
         let total = 0;
-        res.on('data', (c) => { total += c.length; if (total > 2 * 1024 * 1024) { res.destroy(); reject(new Error('Response too large')); return; } chunks.push(c); });
+        res.on('data', (c) => { total += c.length; if (total > 5 * 1024 * 1024) { res.destroy(); reject(new Error('Response too large')); return; } chunks.push(c); });
         res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf-8') }));
         res.on('error', reject);
       });
@@ -114,7 +114,7 @@ class WebSearch {
       }, (res) => {
         const chunks = [];
         let total = 0;
-        res.on('data', (c) => { total += c.length; if (total > 2 * 1024 * 1024) { res.destroy(); reject(new Error('Response too large')); return; } chunks.push(c); });
+        res.on('data', (c) => { total += c.length; if (total > 5 * 1024 * 1024) { res.destroy(); reject(new Error('Response too large')); return; } chunks.push(c); });
         res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf-8') }));
         res.on('error', reject);
       });

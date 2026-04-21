@@ -117,12 +117,6 @@ const mcpToolServer = new MCPToolServer({ projectPath: null, webSearch });
   console.log(`[Server] Tools: ${ChatEngine.DEFAULT_ENABLED_TOOLS.size} enabled, ${defaultDisabled.length} disabled by default`);
 }
 
-// R33-Phase1: Wire mcpToolServer to the mainWindow bridge so it can emit
-// 'files-changed' and 'agent-file-modified' events to the frontend.
-// Without this, the File Explorer never auto-updates after file operations
-// because browserManager.parentWindow is null in web-server mode.
-mcpToolServer.setBrowserManager({ parentWindow: mainWindow });
-
 const gitManager = new GitManager();
 mcpToolServer.setGitManager(gitManager);
 
@@ -134,6 +128,10 @@ const cloudLLM = new CloudLLMService();
 const modelDownloader = new ModelDownloader(path.join(ROOT_DIR, 'models'));
 const ragEngine = new RAGEngine();
 const browserManager = new BrowserManager({ liveServer, parentWindow: mainWindow });
+// Wire the real BrowserManager instance so browser tools have .navigate() and .parentWindow
+mcpToolServer.setBrowserManager(browserManager);
+// Forward todo updates to the frontend over WebSocket (mirrors electron-main.js)
+mcpToolServer.onTodoUpdate = (todos) => mainWindow.webContents.send('todo-update', todos);
 
 // Settings persistence — SettingsManager handles settings.json + encrypted API keys
 const settingsManager = new SettingsManager(USER_DATA);
@@ -221,6 +219,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     const functions = ChatEngine.convertToolDefs(toolDefs);
     const toolPrompt = mcpToolServer.getToolPrompt();
 
+    console.log(`[Chat] User: ${String(userMessage).slice(0, 300)}`);
     const result = await llmEngine.chat(userMessage, {
       onToken: (token) => {
         mainWindow.webContents.send('llm-token', token);
@@ -234,6 +233,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       onStreamEvent: (eventName, data) => {
         mainWindow.webContents.send(eventName, data);
       },
+      attachments: Array.isArray(chatContext?.attachments) ? chatContext.attachments : [],
       functions,
       toolPrompt,
       executeToolFn: async (toolName, params) => {
@@ -254,6 +254,15 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
 
 ipcMain.handle('cancel-generation', async () => {
   llmEngine.cancelGeneration('user');
+  try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
+  return { success: true };
+});
+
+// Alias: the frontend Stop button invokes 'agent-pause'. Route to the same
+// cancellation path so generation stops immediately.
+ipcMain.handle('agent-pause', async () => {
+  llmEngine.cancelGeneration('user');
+  try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
   return { success: true };
 });
 
@@ -456,6 +465,10 @@ app.post('/api/project/open', (req, res) => {
 
 app.get('/api/project/current', (req, res) => {
   res.json({ projectPath: ctx.currentProjectPath });
+});
+
+app.get('/api/system/homedir', (req, res) => {
+  res.json({ homedir: os.homedir() });
 });
 
 // File operations (for the file explorer)
