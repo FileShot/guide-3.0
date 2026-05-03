@@ -80,10 +80,13 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
+      # Same signing variables as legacy NewGUIDE/app: WIN_CSC_LINK (HTTPS, file path, or Base64 .pfx) + WIN_CSC_KEY_PASSWORD
       - name: Build Windows CPU installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Upload artifact
@@ -131,6 +134,8 @@ jobs:
         run: npx electron-builder --win --x64 --config electron-builder.nosign.cuda.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Upload artifact

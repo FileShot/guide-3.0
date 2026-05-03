@@ -77,6 +77,7 @@ global.__guideApp = appBridge;
 console.log('[Server] Loading modules...');
 
 const log = require(path.join(ROOT_DIR, 'logger'));
+const { chatLogBodyLimit } = require(path.join(ROOT_DIR, 'chatLogLimits'));
 log.installConsoleIntercepts();
 console.log(`[Server] Logger path: ${log.getLogPath()}`);
 
@@ -220,7 +221,12 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     const functions = ChatEngine.convertToolDefs(toolDefs);
     const toolPrompt = mcpToolServer.getToolPrompt();
 
-    console.log(`[Chat] User: ${String(userMessage).slice(0, 300)}`);
+    const u = String(userMessage ?? '');
+    console.log(`[Chat] User: ${u.slice(0, 300)}`);
+    const histN = Array.isArray(chatContext?.conversationHistory) ? chatContext.conversationHistory.length : 0;
+    const ipcLim = chatLogBodyLimit();
+    log.info('IPC', `[ai-chat] user_chars=${u.length} history_turns=${histN} attachments=${Array.isArray(chatContext?.attachments) ? chatContext.attachments.length : 0} preview_limit=${ipcLim}`);
+    log.info('IPC', `[ai-chat] user_message_preview=\n${u.length > ipcLim ? `${u.slice(0, ipcLim)}\n… [+${u.length - ipcLim} more chars]` : u}`);
     const result = await llmEngine.chat(userMessage, {
       onToken: (token) => {
         mainWindow.webContents.send('llm-token', token);
@@ -1056,7 +1062,7 @@ app.post('/api/session/clear', async (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'running',
-    version: '3.0.16',
+    version: '3.0.17',
     modelLoaded: llmEngine.isReady,
     modelInfo: llmEngine.modelInfo,
     projectPath: ctx.currentProjectPath,

@@ -169,6 +169,7 @@ for (const dir of [MODELS_DIR, userDataPath, path.join(userDataPath, 'sessions')
 }
 
 const log = require('./logger');
+const { chatLogBodyLimit } = require('./chatLogLimits');
 log.installConsoleIntercepts();
 console.log(`[Electron] Logger path: ${log.getLogPath()}`);
 
@@ -313,6 +314,11 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
   try {
     agenticCancelled = false;
     const settings = chatContext?.params || chatContext?.settings || {};
+    const u = String(userMessage ?? '');
+    const histN = Array.isArray(chatContext?.conversationHistory) ? chatContext.conversationHistory.length : 0;
+    const ipcLim = chatLogBodyLimit();
+    log.info('IPC', `[ai-chat] user_chars=${u.length} history_turns=${histN} attachments=${Array.isArray(chatContext?.attachments) ? chatContext.attachments.length : 0} preview_limit=${ipcLim}`);
+    log.info('IPC', `[ai-chat] user_message_preview=\n${u.length > ipcLim ? `${u.slice(0, ipcLim)}\n… [+${u.length - ipcLim} more chars]` : u}`);
 
     // Build tool functions from enabled tool definitions
     const toolDefs = mcpToolServer.getToolDefinitions();
@@ -1028,7 +1034,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/health' && method === 'GET') {
       return {
         status: 'running',
-        version: '3.0.16',
+        version: '3.0.17',
         modelLoaded: llmEngine.isReady,
         modelInfo: llmEngine.modelInfo,
         projectPath: currentProjectPath,

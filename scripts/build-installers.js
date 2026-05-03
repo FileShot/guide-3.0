@@ -33,7 +33,7 @@ const BACKUP_DIR = path.join(ROOT, '.build-backup', '@node-llama-cpp');
 const CUDA_KEEP   = ['win-x64-cuda', 'win-x64-cuda-ext', 'win-x64'];
 const CPU_KEEP    = ['win-x64', 'win-x64-vulkan'];
 
-const VERSION = '3.0.16';
+const VERSION = '3.0.17';
 
 // ─── Util ─────────────────────────────────────────────────────────────────────
 

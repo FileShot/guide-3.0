@@ -6,6 +6,25 @@ const fs = require('fs');
 const os = require('os');
 const { pathToFileURL } = require('url');
 const { parseToolCalls, repairToolCalls, stripToolCallText } = require('./tools/toolParser');
+const log = require('./logger');
+const { chatLogBodyLimit, chatLogToolLimit } = require('./chatLogLimits');
+
+function _truncateForLog(text, maxChars) {
+  const s = text == null ? '' : String(text);
+  if (s.length <= maxChars) return s;
+  return `${s.slice(0, maxChars)}… [+${s.length - maxChars} more chars]`;
+}
+
+function _summarizeToolParamsForLog(params) {
+  if (!params || typeof params !== 'object') return params;
+  const p = { ...params };
+  for (const key of ['content', 'oldText', 'newText', 'command']) {
+    if (typeof p[key] === 'string' && p[key].length > 400) {
+      p[key] = `[len=${p[key].length}] ${_truncateForLog(p[key], 200)}`;
+    }
+  }
+  return p;
+}
 
 /** Max chars of each tool result injected into chat history (full JSON/snippets must reach the model). */
 const MAX_TOOL_RESULT_INJECT_CHARS = 32000;
@@ -240,7 +259,15 @@ class ChatEngine extends EventEmitter {
         hardwareCap = Math.max(MIN_CONTEXT_FLOOR, Math.floor(kvBudgetBytes / kvBytesPerToken));
       }
 
-      const testMaxCtx = parseInt(process.env.TEST_MAX_CONTEXT, 10) || 0;
+      // TEST_MAX_CONTEXT caps KV only when GUIDE_ALLOW_TEST_MAX_CONTEXT=1 (dev/CI). Otherwise a
+      // leftover shell env would silently cap every Electron launch at e.g. 8000/8192 tokens.
+      const testMaxCtxRaw = parseInt(process.env.TEST_MAX_CONTEXT, 10);
+      const testMaxCtx =
+        process.env.GUIDE_ALLOW_TEST_MAX_CONTEXT === '1' &&
+        Number.isFinite(testMaxCtxRaw) &&
+        testMaxCtxRaw > 0
+          ? testMaxCtxRaw
+          : 0;
       let desiredMax;
       if (testMaxCtx > 0) {
         desiredMax = testMaxCtx;
@@ -258,7 +285,16 @@ class ChatEngine extends EventEmitter {
       } else {
         desiredMax = s.contextSize;
         if (trainMaxContext != null) desiredMax = Math.min(desiredMax, trainMaxContext);
+        // Fixed user context cannot exceed hardware KV budget when we computed one.
+        const requestedFixed = desiredMax;
+        if (hardwareCap != null) desiredMax = Math.min(desiredMax, hardwareCap);
         desiredMax = Math.max(MIN_CONTEXT_FLOOR, desiredMax);
+        if (s.contextSize > 0 && hardwareCap != null && requestedFixed > desiredMax) {
+          log.warn(
+            'ChatEngine',
+            `Context clamped: settings requested ${s.contextSize}, train_cap=${trainMaxContext ?? 'n/a'}, hardware_cap=${hardwareCap} → effective desiredMax=${desiredMax}`,
+          );
+        }
       }
 
       const minBase = s.requireMinContextForGpu ? MIN_CONTEXT_WHEN_GPU_REQUIRED : MIN_CONTEXT_FLOOR;
@@ -266,6 +302,10 @@ class ChatEngine extends EventEmitter {
 
       console.log(
         `[ChatEngine] Context sizing: train=${trainMaxContext}, hwCap=${hardwareCap} (source=${kvSourceMem}, kvBytesPerToken=${kvBytesPerToken}), user=${s.contextSize <= 0 ? 'auto' : s.contextSize}, test=${testMaxCtx || 'none'} → desiredMax=${desiredMax}`,
+      );
+      log.info(
+        'ChatEngine',
+        `Context sizing: train=${trainMaxContext}, hwCap=${hardwareCap}, userRequested=${s.contextSize <= 0 ? 'auto' : s.contextSize} → desiredMax=${desiredMax}`,
       );
 
       const loadModelOpts = {
@@ -342,6 +382,11 @@ class ChatEngine extends EventEmitter {
 
     const { onToken, onComplete, onContextUsage, onToolCall, onStreamEvent, systemPrompt, functions, toolPrompt, compactToolPrompt, executeToolFn, conversationHistory } = options;
 
+    const chatTurnId = `turn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    const chatBodyLogLimit = chatLogBodyLimit();
+    const chatToolLogLimit = chatLogToolLimit();
+    const logStreamChunks = process.env.GUIDE_CHAT_LOG_STREAM === '1';
+
       // Inject text attachment content into user message (text/code files only; images unsupported on text-only models)
       const attachments = Array.isArray(options.attachments) ? options.attachments : [];
       let effectiveUserMessage = String(userMessage ?? '');
@@ -361,18 +406,32 @@ class ChatEngine extends EventEmitter {
         }
       }
 
+    log.info(
+      'ChatTurn',
+      `[${chatTurnId}] start model=${this.modelInfo?.name ?? '?'} ctx=${this._context?.contextSize ?? '?'} history_turns=${Array.isArray(conversationHistory) ? conversationHistory.length : 0} user_chars=${effectiveUserMessage.length} attachments=${attachments.length} log_limits body=${chatBodyLogLimit} tool=${chatToolLogLimit}`,
+    );
+
     // Augment system prompt: base + tool prompt when tools are available.
     // Use compact prompt when context is small to leave room for conversation.
-    const contextTokens = this._context?.contextSize || 8192;
+    const contextTokens = this._context?.contextSize || this.modelInfo?.contextSizeCap || MIN_CONTEXT_FLOOR;
+    const trainMaxCtx = this.modelInfo?.contextTrainMax;
+    const useCompactToolDefs =
+      !!compactToolPrompt &&
+      ((trainMaxCtx != null && Number.isFinite(trainMaxCtx) && trainMaxCtx <= 8192) || contextTokens < 8192);
     const basePrompt = systemPrompt || SYSTEM_PROMPT;
     if (toolPrompt) {
-      const useCompact = compactToolPrompt && contextTokens < 8192;
+      const useCompact = useCompactToolDefs;
       const effectiveToolPrompt = useCompact ? compactToolPrompt : toolPrompt;
       this._chatHistory[0].text = basePrompt + '\n\n' + effectiveToolPrompt;
       console.log(`[ChatEngine] Tool prompt injected (${effectiveToolPrompt.length} chars${useCompact ? ', compact' : ''}, ctx=${contextTokens})`);
+      log.info(
+        'ChatTurn',
+        `[${chatTurnId}] tool_prompt injected_chars=${effectiveToolPrompt.length} compact=${!!useCompact} ctx=${contextTokens}`,
+      );
     } else if (functions && Object.keys(functions).length > 0) {
       this._chatHistory[0].text = basePrompt + this._buildToolPrompt(functions);
       console.log(`[ChatEngine] Functions provided (fallback): ${Object.keys(functions).length} tools`);
+      log.info('ChatTurn', `[${chatTurnId}] functions_fallback tool_defs=${Object.keys(functions).length}`);
     } else if (systemPrompt) {
       this._chatHistory[0].text = systemPrompt;
     }
@@ -390,6 +449,27 @@ class ChatEngine extends EventEmitter {
     this._chatHistory = [{ type: 'system', text: this._chatHistory[0].text }, ...normalizedHistory];
     this._lastEvaluation = null;
     this._chatHistory.push({ type: 'user', text: effectiveUserMessage });
+
+    const sysPromptText = this._chatHistory[0]?.text || '';
+    log.info(
+      'ChatTurn',
+      `[${chatTurnId}] system_prompt_chars=${sysPromptText.length} preview=\n${_truncateForLog(sysPromptText, chatBodyLogLimit)}`,
+    );
+    log.info(
+      'ChatTurn',
+      `[${chatTurnId}] user_message_preview=\n${_truncateForLog(effectiveUserMessage, chatBodyLogLimit)}`,
+    );
+    if (normalizedHistory.length > 0) {
+      const maxTurns = Math.min(normalizedHistory.length, 48);
+      const slice = normalizedHistory.slice(-maxTurns);
+      const perTurn = Math.max(180, Math.floor(chatBodyLogLimit / Math.max(1, slice.length)));
+      const startIdx = normalizedHistory.length - slice.length;
+      const histLines = slice.map((m, i) => `[${startIdx + i}] ${m.type}: ${_truncateForLog(m.text, perTurn)}`);
+      log.info(
+        'ChatTurn',
+        `[${chatTurnId}] prior_history (${normalizedHistory.length} msgs, showing last ${slice.length}):\n${histLines.join('\n---\n')}`,
+      );
+    }
 
     this._abortController = new AbortController();
     let fullResponse = '';
@@ -821,6 +901,7 @@ class ChatEngine extends EventEmitter {
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
           fullResponse += chunk;
+          if (logStreamChunks) log.debug('ChatTurnStream', `[${chatTurnId}]`, chunk);
           _sfProcessChunk(chunk);
           tokensSinceLastUsageReport++;
           if (onContextUsage && tokensSinceLastUsageReport >= 50) {
@@ -859,6 +940,10 @@ class ChatEngine extends EventEmitter {
       // Generate response â€” model outputs text which may contain tool call JSON blocks
       let result = await this._chat.generateResponse(this._chatHistory, genOptions);
       console.log(`[ChatEngine] generateResponse returned: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}`);
+      log.info(
+        'ChatTurn',
+        `[${chatTurnId}] generateResponse stopReason=${result.metadata?.stopReason ?? '?'} responseLen=${result.response?.length ?? 0} total_fullResponse_chars=${fullResponse.length}`,
+      );
 
       // Raw-text tool call loop: parse tool calls from model output, execute, continue
       // Idempotency ledger: tool+params â†’ previous result. Prevents infinite loops
@@ -886,6 +971,11 @@ class ChatEngine extends EventEmitter {
         }
 
         while (parsedCalls.length > 0) {
+          log.info(
+            'ChatTurn',
+            `[${chatTurnId}] tool_round parsed=${parsedCalls.length} tools=${parsedCalls.map((c) => c.tool).join(',')}`,
+          );
+
           // Notify UI so ToolCallCards appear for each tool call (spinner state)
           if (onStreamEvent) {
             onStreamEvent('tool-executing', parsedCalls.map(c => ({ tool: c.tool, params: c.params })));
@@ -909,6 +999,7 @@ class ChatEngine extends EventEmitter {
             if (toolCallLedger.has(ledgerKey)) {
               const prevResult = toolCallLedger.get(ledgerKey);
               console.log(`[ChatEngine] Idempotent skip: ${call.tool} already executed with same params`);
+              log.info('ChatTurn', `[${chatTurnId}] tool_skip_duplicate ${call.tool}`);
               const prevStr = typeof prevResult === 'string' ? prevResult : JSON.stringify(prevResult);
               const truncPrev = prevStr.length > 300 ? prevStr.substring(0, 300) + '...' : prevStr;
               toolResultLines.push(`${call.tool}: ALREADY EXECUTED â€” previous result: ${truncPrev}`);
@@ -922,6 +1013,10 @@ class ChatEngine extends EventEmitter {
             allCallsWereDuplicates = false;
 
             console.log(`[ChatEngine] Tool call: ${call.tool}(${JSON.stringify(call.params).substring(0, 200)})`);
+            log.info(
+              'ChatTurn',
+              `[${chatTurnId}] tool_exec ${call.tool} params=${JSON.stringify(_summarizeToolParamsForLog(call.params))}`,
+            );
 
             // Emit file-content events for file write operations so the UI
             // can show a FileContentBlock with syntax highlighting
@@ -955,6 +1050,10 @@ class ChatEngine extends EventEmitter {
 
             const resultStr = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
             console.log(`[ChatEngine] Tool result for ${call.tool}: ${resultStr.substring(0, 200)}${resultStr.length > 200 ? '...' : ''}`);
+            log.info(
+              'ChatTurn',
+              `[${chatTurnId}] tool_result ${call.tool} ok=${toolResult?.success !== false} preview=${_truncateForLog(resultStr, chatToolLogLimit)}`,
+            );
             if (onToolCall) onToolCall({ name: call.tool, params: call.params, result: toolResult });
 
             // Update ToolCallCard with result (check mark or error)
@@ -973,6 +1072,7 @@ class ChatEngine extends EventEmitter {
           // If every call in this round was a duplicate, we reached convergence on tool state.
           if (allCallsWereDuplicates) {
             console.warn(`[ChatEngine] No new tool state in this round â€” moving to synthesis`);
+            log.warn('ChatTurn', `[${chatTurnId}] tool_round all_duplicate → synthesis continuation`);
             this._lastEvaluation = result.lastEvaluation;
             if (result.lastEvaluation?.cleanHistory) {
               this._chatHistory = result.lastEvaluation.cleanHistory;
@@ -995,6 +1095,10 @@ No new tool state was produced in the previous round. Synthesize your final answ
             roundStart = fullResponse.length;
             result = await this._chat.generateResponse(this._chatHistory, genOptions);
             console.log(`[ChatEngine] Final continuation (post-dedup): stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}`);
+            log.info(
+              'ChatTurn',
+              `[${chatTurnId}] post_dedup_generate stopReason=${result.metadata?.stopReason ?? '?'} responseLen=${result.response?.length ?? 0}`,
+            );
             break;
           }
 
@@ -1022,7 +1126,12 @@ No new tool state was produced in the previous round. Synthesize your final answ
             ? '\n\nContinue by choosing the next corrective step.'
             : '\n\nContinue from the results above and complete the user request.';
 
-          this._chatHistory.push({ type: 'user', text: `[Tool Results]\n${toolResultsGrounding}${toolResultLines.join('\n')}${injectionSuffix}` });
+          const toolFeedbackText = `[Tool Results]\n${toolResultsGrounding}${toolResultLines.join('\n')}${injectionSuffix}`;
+          this._chatHistory.push({ type: 'user', text: toolFeedbackText });
+          log.info(
+            'ChatTurn',
+            `[${chatTurnId}] tool_feedback_injected_chars=${toolFeedbackText.length} preview=\n${_truncateForLog(toolFeedbackText, chatBodyLogLimit)}`,
+          );
 
           genOptions.lastEvaluationContextWindow = this._lastEvaluation ? {
             contextWindow: this._lastEvaluation.contextWindow,
@@ -1053,6 +1162,10 @@ No new tool state was produced in the previous round. Synthesize your final answ
           roundStart = fullResponse.length;
           result = await this._chat.generateResponse(this._chatHistory, genOptions);
           console.log(`[ChatEngine] Continuation after tools: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}`);
+          log.info(
+            'ChatTurn',
+            `[${chatTurnId}] continuation_after_tools stopReason=${result.metadata?.stopReason ?? '?'} responseLen=${result.response?.length ?? 0} fullResponse_chars=${fullResponse.length}`,
+          );
 
           // Flush streaming filter buffer before parsing new text
           _sfFlush();
@@ -1086,10 +1199,24 @@ No new tool state was produced in the previous round. Synthesize your final answ
         console.log(`[ChatEngine] Generation complete. Tool calls: ${totalToolCalls}, stop reason: ${stopReason}`);
       }
 
+      log.info(
+        'ChatTurn',
+        `[${chatTurnId}] complete stopReason=${stopReason} toolCalls=${totalToolCalls} assistant_chars=${fullResponse.length}`,
+      );
+      log.info(
+        'ChatTurn',
+        `[${chatTurnId}] assistant_output_preview=\n${_truncateForLog(fullResponse, chatBodyLogLimit)}`,
+      );
+
       if (onComplete) onComplete(fullResponse);
       return { text: fullResponse, stopReason, toolCallCount: totalToolCalls };
     } catch (err) {
+      log.error('ChatTurn', `[${chatTurnId}] error`, err?.message || err);
       if (err.name === 'AbortError' || this._abortController?.signal?.aborted) {
+        log.warn(
+          'ChatTurn',
+          `[${chatTurnId}] cancelled partial_chars=${fullResponse.length} partial_preview=\n${_truncateForLog(fullResponse, chatBodyLogLimit)}`,
+        );
         return { text: fullResponse, stopReason: 'cancelled', toolCallCount: totalToolCalls };
       }
       throw err;

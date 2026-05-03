@@ -4,6 +4,56 @@
 
 ---
 
+## 2026-05-05 — Fuller ChatTurn diary + env limits + Windows signing matches legacy IDE repo
+
+### Logging
+1. `chatLogLimits.js`: shared limits — default **32k chars** per preview field (was 4k). Env: **`GUIDE_CHAT_LOG_MAX_CHARS`** (numeric cap, or `0` / negative for max **512k** per field), **`GUIDE_CHAT_LOG_TOOL_CHARS`** for tool JSON previews.
+2. `chatEngine.js`: logs **system prompt** preview, **prior_history** (last 48 turns with per-turn budget), **tool_feedback_injected** after each tool round, **`GUIDE_CHAT_LOG_STREAM=1`** → **`log.debug('ChatTurnStream', …)`** per streamed chunk (**requires `LOG_LEVEL=debug`** in env for file capture).
+3. `electron-main.js` / `server/main.js`: IPC user preview uses the same body limit.
+
+### Windows CI signing
+Aligned with **`NewGUIDE/app/.github/workflows/build.yml`**: **`CSC_LINK: ${{ secrets.WIN_CSC_LINK }}`**, **`CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}`**, **`CSC_IDENTITY_AUTO_DISCOVERY: false`** (electron-builder accepts Base64 .pfx, URL, or path in `WIN_CSC_LINK`).
+
+### Version
+**3.0.17**
+
+---
+
+## 2026-05-03 — ChatTurn file logging + IPC user preview + context/compact fixes
+
+### Problem
+1. `guide-main.log` did not carry enough of the user message or assistant output to debug bad tool loops or misreads without reproducing in the UI.
+2. Tool-prompt “compact vs full” logic and missing-context fallbacks assumed `8192` tokens even when the loaded model or effective context was smaller.
+
+### Changes
+1. `chatEngine.js` `chat()`: stable `chatTurnId` per request; `log.info('ChatTurn', …)` for turn start (incl. truncated user text), tool prompt injection, each `generateResponse` stopReason/lengths, tool rounds (parsed tools, exec params summary, result previews), completion + truncated assistant text; `log.warn`/`log.error` on dedup-synthesis and failures.
+2. `electron-main.js` / `server/main.js` `ai-chat`: `log.info('IPC', …)` with message length, history depth, attachment count, and multiline user preview (4000 chars cap) so the diary matches IPC entry before engine work.
+3. `chatEngine.js`: `contextTokens` fallback uses `modelInfo.contextSizeCap` then `MIN_CONTEXT_FLOOR`, not a hard `8192`. Compact tool prompt when train cap is at most 8192 **or** effective context is under 8192 tokens (VRAM‑limited large models still get compact defs when the live context window is small).
+
+### Not changed
+- Defaults in `settingsManager` (`contextSize: 0` auto) unchanged; fixed user values still clamp to hardware/train caps in `initialize()`.
+
+---
+
+## 2026-05-04 — Stop accidental 8k context cap + optional Windows code signing
+
+### Problem
+1. `TEST_MAX_CONTEXT` in the environment forced `desiredMax` for **every** process that inherited it (including Electron), unrelated to saved settings — matched legacy server/dev “8000 context” workflows.
+2. Old `settings.json` values `8000` / `8192` persisted as fixed context instead of auto.
+3. CPU-only onboarding recommended `contextSize: 4096` instead of auto.
+4. Windows installers stayed unsigned unless CI wired certificates.
+
+### Changes
+1. `chatEngine.js`: apply `TEST_MAX_CONTEXT` only when `GUIDE_ALLOW_TEST_MAX_CONTEXT=1`; otherwise ignore so Electron/desktop launches use normal train/hardware/auto sizing.
+2. `settingsManager.js`: one-time migration — `contextSize` **8000** or **8192** → **0** (auto), persisted on load.
+3. `firstRunSetup.js`: CPU-only recommendation sets **contextSize 0** (auto).
+4. `.github/workflows/build.yml`: Windows CPU/CUDA jobs decode optional secret **`WINDOWS_CODESIGN_PFX`** (base64 `.pfx`) to a temp file, set **`CSC_LINK`** + **`WINDOWS_CODESIGN_PASSWORD`** → **`CSC_KEY_PASSWORD`** when present so **`electron-builder`** signs the exe/installer; if secrets are absent, behavior matches prior **`CSC_IDENTITY_AUTO_DISCOVERY=false`** unsigned builds.
+
+### Maintainer notes
+- Store extended-validation code-signing cert as **`WINDOWS_CODESIGN_PFX`** (GitHub Actions secret: base64 file contents of `.pfx`) and **`WINDOWS_CODESIGN_PASSWORD`**. Without these, releases behave as before.
+
+---
+
 ## 2026-04-20 — Install Playwright + fix browser loop + reduce inject cap
 
 ### Problem
