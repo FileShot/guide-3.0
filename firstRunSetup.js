@@ -87,10 +87,10 @@ class FirstRunSetup {
     let recommendation = '';
 
     if (info.vramMB === 0) {
-      // CPU-only
+      // CPU-only — context stays 0 (auto); runtime picks train/hardware caps like GPU mode
       gpuLayers = 0;
-      contextSize = 4096;
-      recommendation = 'No GPU detected. Using CPU inference with a smaller context window. A 0.6B-1.7B model is recommended.';
+      contextSize = 0;
+      recommendation = 'No GPU detected. Using CPU inference. Context defaults to auto (as large as the model and RAM allow). A 0.6B–1.7B model is recommended.';
     } else if (vramGB < 4) {
       recommendation = `${info.gpu} with ${Math.round(vramGB)}GB VRAM. A 0.6B-1.7B Q8 model fits well. Context defaults to auto (as large as the model and VRAM allow).`;
     } else if (vramGB < 8) {

@@ -140,6 +140,12 @@ class SettingsManager extends EventEmitter {
           this._settings.generationTimeoutSec = 0;
           this._scheduleSave(); // write corrected value back to disk immediately
         }
+        // Migration: fixed context used for server/dev testing (TEST_MAX_CONTEXT / manual 8k) → auto max
+        const legacyFixedCtx = new Set([8000, 8192]);
+        if (legacyFixedCtx.has(this._settings.contextSize)) {
+          this._settings.contextSize = 0;
+          this._scheduleSave();
+        }
       }
     } catch (e) {
       console.warn('[SettingsManager] Failed to load settings:', e.message);

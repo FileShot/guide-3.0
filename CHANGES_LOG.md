@@ -17,6 +17,10 @@ Aligned with **`NewGUIDE/app/.github/workflows/build.yml`**: **`CSC_LINK: ${{ se
 ### Version
 **3.0.17**
 
+### Also shipped on same release train (commit after initial v3.0.17 push)
+- `settingsManager.js`: migration **8000/8192 → auto (0)** on load.
+- `firstRunSetup.js`: CPU-only onboarding **contextSize 0** (auto), not a fixed 4096 window.
+
 ---
 
 ## 2026-05-03 — ChatTurn file logging + IPC user preview + context/compact fixes
