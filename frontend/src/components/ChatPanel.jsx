@@ -540,6 +540,17 @@ export default function ChatPanel() {
     };
 
     const attachmentsSnapshot = Array.isArray(chatAttachments) ? [...chatAttachments] : [];
+    const priorMessages = Array.isArray(useAppStore.getState().chatMessages)
+      ? [...useAppStore.getState().chatMessages]
+      : [];
+    const conversationHistory = priorMessages
+      .map((m) => {
+        const role = m?.role === 'assistant' ? 'assistant' : (m?.role === 'user' ? 'user' : null);
+        const content = typeof m?.content === 'string' ? m.content.trim() : '';
+        if (!role || !content) return null;
+        return { role, content };
+      })
+      .filter(Boolean);
     const serializedAttachments = await serializeAttachments(attachmentsSnapshot);
 
     setInput('');
@@ -557,7 +568,7 @@ export default function ChatPanel() {
         projectPath: store.projectPath,
         currentFile: (!fileContextDismissed && activeTab) ? { path: activeTab.path, content: activeTab.content } : null,
         selectedCode: null,
-        conversationHistory: [],
+        conversationHistory,
         attachments: serializedAttachments,
         cloudProvider: store.cloudProvider,
         cloudModel: store.cloudModel,

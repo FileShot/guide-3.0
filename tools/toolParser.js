@@ -240,56 +240,7 @@ function extractJsonObjects(text) {
     }
   }
 
-  // Handle truncated JSON (unclosed braces)
-  if (depth > 0 && start >= 0) {
-    const partial = text.slice(start);
-    const pathMatch = partial.match(/"(?:filePath|path)"\s*:\s*"([^"]+)"/);
-    const contentMatch = partial.match(/"content"\s*:\s*"([\s\S]{20,})$/);
-    if (pathMatch && contentMatch) {
-      let truncatedContent = contentMatch[1];
-      truncatedContent = truncatedContent
-        .replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r')
-        .replace(/\\'/g, "'").replace(/\\\\/g, '\\');
-      const toolMatch = partial.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
-      const recoveredTool = toolMatch ? (TOOL_NAME_ALIASES[toolMatch[1].toLowerCase()] || toolMatch[1].toLowerCase()) : 'write_file';
-      objects.push({
-        tool: VALID_TOOLS.has(recoveredTool) ? recoveredTool : 'write_file',
-        params: { filePath: pathMatch[1], content: truncatedContent },
-        _truncated: true,
-      });
-    }
-
-    // Fix 40A: General recovery for ANY tool call with malformed JSON (e.g. missing closing braces).
-    // Close unclosed braces and attempt JSON.parse. This handles write_todos, update_todo, run_command,
-    // etc. that the write_file-specific recovery above doesn't cover.
-    if (objects.length === 0) {
-      const toolNameMatch = partial.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
-      if (toolNameMatch) {
-        let repaired = partial;
-        // Close any unclosed brackets/braces
-        let bd = 0, ad = 0;
-        let inS = false, esc = false;
-        for (let i = 0; i < repaired.length; i++) {
-          const c = repaired[i];
-          if (esc) { esc = false; continue; }
-          if (c === '\\') { esc = true; continue; }
-          if (c === '"') { inS = !inS; continue; }
-          if (inS) continue;
-          if (c === '{') bd++;
-          else if (c === '}') bd--;
-          else if (c === '[') ad++;
-          else if (c === ']') ad--;
-        }
-        for (let i = 0; i < ad; i++) repaired += ']';
-        for (let i = 0; i < bd; i++) repaired += '}';
-        const parsed = tryParseJson(repaired);
-        if (parsed && typeof parsed === 'object') {
-          objects.push(parsed);
-          console.log(`[ToolParser] Recovered malformed tool call via brace-closing: ${toolNameMatch[1]}`);
-        }
-      }
-    }
-  }
+  // Strict mode: ignore truncated/malformed trailing JSON fragments.
 
   return objects;
 }
@@ -385,65 +336,8 @@ function parseToolCalls(text) {
       addCall(normalized);
     }
 
-    // Method 1.1 (Fix D): Regex fallback when JSON.parse fails on large fenced content
-    // If the fenced block clearly contains a tool call but extractJsonObjects failed,
-    // recover the tool call via regex extraction of tool name, filePath, and content.
-    if (objects.length === 0 && fenceContent.length > 50) {
-      const toolMatch = fenceContent.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
-      if (toolMatch) {
-        console.log(`[ToolParser] Method 1.1: JSON parse failed but found tool name "${toolMatch[1]}" — attempting regex recovery`);
-        const rawToolName = toolMatch[1].toLowerCase().replace(/-/g, '_');
-        const toolName = TOOL_NAME_ALIASES[rawToolName] || rawToolName;
-        if (VALID_TOOLS.has(toolName)) {
-          const call = { tool: toolName, params: {}, _regexRecovered: true };
-          // Extract filePath
-          const pathMatch = fenceContent.match(/"(?:filePath|file_path|path|filename)"\s*:\s*"([^"]+)"/i);
-          if (pathMatch) call.params.filePath = pathMatch[1];
-          // Extract content for write/append tools
-          if (toolName === 'write_file' || toolName === 'append_to_file' || toolName === 'edit_file') {
-            const contentIdx = fenceContent.indexOf('"content"');
-            if (contentIdx >= 0) {
-              const colonIdx = fenceContent.indexOf(':', contentIdx + 9);
-              if (colonIdx >= 0) {
-                const quoteIdx = fenceContent.indexOf('"', colonIdx + 1);
-                if (quoteIdx >= 0) {
-                  let rawContent = fenceContent.slice(quoteIdx + 1);
-                  // Strip trailing JSON closing structure
-                  rawContent = rawContent.replace(/"\s*\}\s*\}\s*\]?\s*$/, '');
-                  rawContent = rawContent.replace(/"\s*\}\s*$/, '');
-                  // Unescape JSON escape sequences
-                  try {
-                    rawContent = rawContent
-                      .replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r')
-                      .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-                  } catch (_) {}
-                  if (rawContent.trim().length > 10) {
-                    call.params.content = rawContent;
-                    console.log(`[ToolParser] Method 1.1: Recovered ${toolName} with content (${rawContent.length} chars)`);
-                  }
-                }
-              }
-            }
-          }
-          // Extract other common params via regex
-          const queryMatch = fenceContent.match(/"query"\s*:\s*"([^"]+)"/);
-          if (queryMatch) call.params.query = queryMatch[1];
-          const cmdMatch = fenceContent.match(/"command"\s*:\s*"([^"]+)"/);
-          if (cmdMatch) call.params.command = cmdMatch[1];
-          const urlMatch = fenceContent.match(/"url"\s*:\s*"([^"]+)"/);
-          if (urlMatch) call.params.url = urlMatch[1];
-          const dirMatch = fenceContent.match(/"dirPath"\s*:\s*"([^"]+)"/);
-          if (dirMatch) call.params.dirPath = dirMatch[1];
-
-          // Infer filePath from content if missing
-          if (!call.params.filePath && call.params.content) {
-            call.params.filePath = _inferFilePath(text, call.params.content);
-            console.log(`[ToolParser] Method 1.1: Inferred filePath: ${call.params.filePath}`);
-          }
-          addCall(call);
-        }
-      }
-    }
+    // Strict mode: do not recover tool calls via regex when fenced JSON failed to parse.
+    // This prevents accidental execution from malformed or partially emitted tool JSON.
   }
 
   // Method 1.5: Unclosed fence at end of response
@@ -456,66 +350,7 @@ function parseToolCalls(text) {
     }
   }
 
-  // Method 1.6: Truncated tool call recovery — handles incomplete JSON from maxTokens cutoff
-  // This catches cases where Method 1.5 fails because JSON is truncated mid-content
-  if (calls.length === 0) {
-    // Check for unclosed fence with tool name but incomplete JSON
-    const fenceStart = text.search(/```(?:tool_call|tool|json)/);
-    if (fenceStart !== -1) {
-      const afterFence = text.slice(fenceStart);
-      const hasClosingFence = /```(?:tool_call|tool|json)[^\n]*\n[\s\S]*?```/.test(afterFence);
-      
-      if (!hasClosingFence) {
-        // Found unclosed fence — try to extract truncated tool call
-        const toolNameMatch = afterFence.match(/\{\s*["']?(?:tool|name)["']?\s*:\s*["']([^"']+)["']/i);
-        if (toolNameMatch) {
-          const rawToolName = toolNameMatch[1].toLowerCase().replace(/-/g, '_');
-          const toolName = TOOL_NAME_ALIASES[rawToolName] || rawToolName;
-          
-          if (VALID_TOOLS.has(toolName)) {
-            const call = { tool: toolName, params: {}, _truncated: true };
-            
-            // Extract filePath if present
-            const pathMatch = afterFence.match(/"(?:filePath|file_path|path)"\s*:\s*"([^"]+)"/i);
-            if (pathMatch) call.params.filePath = pathMatch[1];
-            
-            // For write_file/append_to_file, extract partial content
-            if (toolName === 'write_file' || toolName === 'append_to_file') {
-              const contentMatch = afterFence.match(/"content"\s*:\s*"([\s\S]*)/);
-              if (contentMatch) {
-                let content = contentMatch[1];
-                // Find the actual content by removing trailing truncated chars
-                // Look for last complete line before truncation
-                const lines = content.split('\\n');
-                if (lines.length > 1) {
-                  // Remove last potentially truncated line
-                  lines.pop();
-                  content = lines.join('\\n');
-                }
-                // Unescape JSON encoding
-                content = content
-                  .replace(/\\n/g, '\n')
-                  .replace(/\\t/g, '\t')
-                  .replace(/\\r/g, '\r')
-                  .replace(/\\"/g, '"')
-                  .replace(/\\\\/g, '\\');
-                call.params.content = content;
-              }
-            }
-            
-            // For read_file, extract lineRange if present
-            if (toolName === 'read_file') {
-              const rangeMatch = afterFence.match(/"(?:lineRange|lines)"\s*:\s*\[(\d+)\s*,\s*(\d+)\]/i);
-              if (rangeMatch) call.params.lineRange = [parseInt(rangeMatch[1]), parseInt(rangeMatch[2])];
-            }
-            
-            console.log(`[ToolParser] Recovered truncated ${toolName} call`);
-            addCall(call);
-          }
-        }
-      }
-    }
-  }
+  // Strict mode: do not infer truncated tool calls from unclosed fences.
 
   if (calls.length > 0) return _postProcess(calls, text);
 

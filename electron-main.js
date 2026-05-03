@@ -170,6 +170,7 @@ for (const dir of [MODELS_DIR, userDataPath, path.join(userDataPath, 'sessions')
 
 const log = require('./logger');
 log.installConsoleIntercepts();
+console.log(`[Electron] Logger path: ${log.getLogPath()}`);
 
 const { ChatEngine, buildEngineLoadSettings } = require('./chatEngine');
 const { MCPToolServer } = require('./mcpToolServer');
@@ -324,6 +325,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       onToolCall: (data) => _send('tool-call', data),
       onStreamEvent: (eventName, data) => _send(eventName, data),
       attachments: Array.isArray(chatContext?.attachments) ? chatContext.attachments : [],
+      conversationHistory: Array.isArray(chatContext?.conversationHistory) ? chatContext.conversationHistory : [],
       functions,
       toolPrompt,
       executeToolFn: async (toolName, params) => {

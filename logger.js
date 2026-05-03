@@ -29,10 +29,18 @@ const MAX_SIZE = 10 * 1024 * 1024;
 
 let stream = null;
 let bytesWritten = 0;
+let startupPathLogged = false;
+
+function reportInternalLoggerError(context, err) {
+  try {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[Logger:${context}] ${msg}\n`);
+  } catch (_) {}
+}
 
 function ensureDir() {
   try { if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true }); }
-  catch (_) {}
+  catch (err) { reportInternalLoggerError('ensureDir', err); }
 }
 
 function getStream() {
@@ -41,9 +49,23 @@ function getStream() {
     ensureDir();
     try { bytesWritten = fs.statSync(LOG_FILE).size; } catch (_) { bytesWritten = 0; }
     stream = fs.createWriteStream(LOG_FILE, { flags: 'a' });
-    stream.on('error', () => { stream = null; });
+    stream.on('error', (err) => {
+      reportInternalLoggerError('stream', err);
+      stream = null;
+    });
+    if (!startupPathLogged) {
+      startupPathLogged = true;
+      try {
+        stream.write(`${new Date().toISOString()} INFO  [Logger] Log file path: ${LOG_FILE}\n`);
+      } catch (err) {
+        reportInternalLoggerError('startup-write', err);
+      }
+    }
     return stream;
-  } catch (_) { return null; }
+  } catch (err) {
+    reportInternalLoggerError('getStream', err);
+    return null;
+  }
 }
 
 function rotate() {
@@ -54,13 +76,24 @@ function rotate() {
     try { fs.unlinkSync(backup); } catch (_) {}
     fs.renameSync(LOG_FILE, backup);
     bytesWritten = 0;
-  } catch (_) {}
+  } catch (err) {
+    reportInternalLoggerError('rotate', err);
+  }
 }
 
 function writeLine(line) {
   rotate();
   const s = getStream();
-  if (s) { s.write(line + '\n'); bytesWritten += line.length + 1; }
+  if (s) {
+    try {
+      s.write(line + '\n');
+      bytesWritten += line.length + 1;
+      return;
+    } catch (err) {
+      reportInternalLoggerError('writeLine', err);
+    }
+  }
+  try { process.stderr.write(line + '\n'); } catch (_) {}
 }
 
 function fmtConsole(tag, args) {

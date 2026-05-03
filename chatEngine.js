@@ -128,7 +128,7 @@ const SYSTEM_PROMPT = `You are guIDE, an agentic coding assistant integrated int
 
 ## When to use tools
 - File creation, edits, or deletion — file tools (write_file, edit_file, append_to_file, delete_file, rename_file). Never paste file contents into chat as a substitute.
-- Live information (prices, news, docs, release notes) — web_search, then fetch_webpage on the top two result URLs in the same turn before answering.
+- Live information (prices, news, docs, release notes) — use web_search and fetch_webpage as needed to gather sufficient evidence before answering.
 - Running commands, checking services, installing packages — terminal tools.
 - Interacting with web pages (forms, clicks, screenshots) — browser tools. Always browser_snapshot before interacting so you have current element refs.
 - Version control — git tools.
@@ -142,8 +142,7 @@ Greetings, clarifying questions, opinions, explanations, and small talk are answ
 - Read before you modify. For any edit, call read_file first to get the exact text, then edit_file.
 - Call each tool at most once per distinct argument set. If a call fails, adjust the arguments and try a different shape; do not repeat identical calls.
 - After a tool returns, use its result. Do not re-ask for information the tool already provided.
-- Ground web answers in fetched page content, not in training memory. Search snippets alone are never sufficient.
-- In a single tool round, do not combine web_search or fetch_webpage with list_directory or get_project_structure unless the user explicitly asked about project files.
+- Ground web answers in fetched page content, not in training memory.
 - If output is truncated, continue from the point of interruption. Do not restart or re-summarize what was already produced.
 - Complete the user's request. If you hit an error, diagnose and retry rather than giving up.`;
 
@@ -341,7 +340,7 @@ class ChatEngine extends EventEmitter {
   async chat(userMessage, options = {}) {
     if (!this.isReady || !this._chat) throw new Error('Model not ready');
 
-    const { onToken, onComplete, onContextUsage, onToolCall, onStreamEvent, systemPrompt, functions, toolPrompt, compactToolPrompt, executeToolFn } = options;
+    const { onToken, onComplete, onContextUsage, onToolCall, onStreamEvent, systemPrompt, functions, toolPrompt, compactToolPrompt, executeToolFn, conversationHistory } = options;
 
       // Inject text attachment content into user message (text/code files only; images unsupported on text-only models)
       const attachments = Array.isArray(options.attachments) ? options.attachments : [];
@@ -378,6 +377,18 @@ class ChatEngine extends EventEmitter {
       this._chatHistory[0].text = systemPrompt;
     }
 
+    const normalizedHistory = Array.isArray(conversationHistory)
+      ? conversationHistory
+        .map((m) => {
+          const role = m?.role === 'assistant' ? 'model' : (m?.role === 'user' ? 'user' : null);
+          const text = typeof m?.content === 'string' ? m.content.trim() : '';
+          if (!role || !text) return null;
+          return { type: role, text };
+        })
+        .filter(Boolean)
+      : [];
+    this._chatHistory = [{ type: 'system', text: this._chatHistory[0].text }, ...normalizedHistory];
+    this._lastEvaluation = null;
     this._chatHistory.push({ type: 'user', text: effectiveUserMessage });
 
     this._abortController = new AbortController();
@@ -850,7 +861,6 @@ class ChatEngine extends EventEmitter {
       console.log(`[ChatEngine] generateResponse returned: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}`);
 
       // Raw-text tool call loop: parse tool calls from model output, execute, continue
-      const MAX_TOOL_ITERATIONS = 15;
       // Idempotency ledger: tool+params â†’ previous result. Prevents infinite loops
       // when the model repeatedly emits the same tool call across continuation rounds.
       const toolCallLedger = new Map();
@@ -875,7 +885,7 @@ class ChatEngine extends EventEmitter {
           }
         }
 
-        while (parsedCalls.length > 0 && totalToolCalls < MAX_TOOL_ITERATIONS) {
+        while (parsedCalls.length > 0) {
           // Notify UI so ToolCallCards appear for each tool call (spinner state)
           if (onStreamEvent) {
             onStreamEvent('tool-executing', parsedCalls.map(c => ({ tool: c.tool, params: c.params })));
@@ -887,7 +897,6 @@ class ChatEngine extends EventEmitter {
           const webSearchResults = [];
 
           for (const call of parsedCalls) {
-            if (totalToolCalls >= MAX_TOOL_ITERATIONS) break;
             totalToolCalls++;
 
             // Build idempotency key from tool name + serialized params (excluding content for file writes)
@@ -961,15 +970,15 @@ class ChatEngine extends EventEmitter {
             toolResultLines.push(`${call.tool}: ${injectResult}`);
           }
 
-          // If every call in this round was a duplicate, the model is looping â€” stop immediately
+          // If every call in this round was a duplicate, we reached convergence on tool state.
           if (allCallsWereDuplicates) {
-            console.warn(`[ChatEngine] All tool calls in this round were duplicates â€” breaking loop`);
-            // Inject a directive so the model uses the results instead of re-calling
+            console.warn(`[ChatEngine] No new tool state in this round â€” moving to synthesis`);
             this._lastEvaluation = result.lastEvaluation;
             if (result.lastEvaluation?.cleanHistory) {
               this._chatHistory = result.lastEvaluation.cleanHistory;
             }
-            this._chatHistory.push({ type: 'user', text: `[System] The tool results are already available above. Do NOT call any more tools. Respond to the user directly using the information you have.` });
+            this._chatHistory.push({ type: 'user', text: `[Tool Results]
+No new tool state was produced in the previous round. Synthesize your final answer from the existing tool results. If specific required evidence is still missing, request only the minimal new tool call with new parameters.` });
             genOptions.lastEvaluationContextWindow = this._lastEvaluation ? {
               contextWindow: this._lastEvaluation.contextWindow,
               contextShiftMetadata: this._lastEvaluation.contextShiftMetadata,
@@ -995,22 +1004,23 @@ class ChatEngine extends EventEmitter {
             this._chatHistory = result.lastEvaluation.cleanHistory;
           }
 
-          // Feed tool results back to the model so it knows what happened
-          // Fix A: all-failures retry directive — when every tool call this round failed, tell the model to retry
+          // Feed tool results back to the model so it knows what happened.
           const allCallsFailed = failedCallCount > 0 && failedCallCount === parsedCalls.length;
 
-          // Fix B: explicit URL injection — after web_search, name the exact URLs the model must fetch next
+          // Carry discovered web URLs as plain context for the next reasoning step.
           let fetchDirective = '';
           if (webSearchResults.length > 0) {
             const urlList = webSearchResults.map((u, i) => `${i + 1}. ${u}`).join('\n');
-            fetchDirective = `MANDATORY \u2014 CALL fetch_webpage NOW FOR EACH URL BELOW. DO NOT SKIP.\n${urlList}\n\n`;
+            fetchDirective = `Relevant URLs from web_search:\n${urlList}\n\n`;
           }
 
           const toolResultsGrounding = allCallsFailed
-            ? 'TOOL ERRORS: Every tool call above returned an error. DO NOT explain or report these errors to the user. DO NOT say "unfortunately" or "I was unable to". Retry immediately using different parameters or a different approach. If a path does not exist, create it first. If a command failed, fix the command and run it again. If the file is not found, use list_directory to check what exists.\n\n'
-            : `Grounding: The JSON below is authoritative. ${fetchDirective}If these results include web_search only (no fetch_webpage yet), your next tool calls MUST be fetch_webpage for the first and second ranked result URLs (or the only URL if one hit) in this continuation \u2014 do not ask the user for permission to fetch. If fetch_webpage results are already present, answer from that content. Do not call list_directory or get_project_structure in the same round as completing web fetch unless the user asked about the project. Ground your reply in fetched page text; do not use generic site blurbs.\n\n`;
+            ? 'Tool execution in the previous round returned errors only. Diagnose from those errors and choose the next most direct corrective action.\n\n'
+            : `Grounding: The JSON below is authoritative. ${fetchDirective}Use fetched page content when answering web questions.\n\n`;
 
-          const injectionSuffix = allCallsFailed ? '\n\nRetry now. Call a tool.' : '\n\nNow respond to the user using the results above.';
+          const injectionSuffix = allCallsFailed
+            ? '\n\nContinue by choosing the next corrective step.'
+            : '\n\nContinue from the results above and complete the user request.';
 
           this._chatHistory.push({ type: 'user', text: `[Tool Results]\n${toolResultsGrounding}${toolResultLines.join('\n')}${injectionSuffix}` });
 
@@ -1064,10 +1074,6 @@ class ChatEngine extends EventEmitter {
             }
           }
         }
-      }
-
-      if (totalToolCalls >= MAX_TOOL_ITERATIONS) {
-        console.warn(`[ChatEngine] Tool call iteration limit reached (${MAX_TOOL_ITERATIONS}). Stopping tool execution.`);
       }
 
       this._lastEvaluation = result.lastEvaluation;
@@ -1239,7 +1245,7 @@ class ChatEngine extends EventEmitter {
     const toolLines = Object.entries(functions).map(([name, def]) => {
       return `- ${name}: ${def.description || 'No description'}`;
     });
-    return `\n\nYou have access to the following tools:\n${toolLines.join('\n')}\n\nTOOL USAGE RULES:\n- When the user asks you to create, write, edit, read, or delete files in their project, you MUST use the appropriate file tool (write_file, read_file, edit_file, append_to_file, delete_file). Do NOT output file contents inline.\n- When the user asks you to find, search, or look for something in their code, use grep_search or find_files.\n- When the user asks to list or explore project structure, use list_directory.\n- When the user asks to run a command, script, or install something, use run_command.\n- When the user asks to search the web or look something up online, use web_search then immediately fetch_webpage on the first and second ranked result URLs in the same continuation before answering (if only one hit, fetch that URL). Do not ask the user whether to fetch. Do not list the project directory in the same tool round as web_search/fetch_webpage unless the user asked about the project.\n- When the user asks a general question, wants an explanation, or asks you to review code you already have, respond with text directly.\n- You can chain tools: use read_file to see existing code, then edit_file to modify it, then run_command to test it.\n- Always prefer tools over inline code when the user wants changes to their actual project files.`;
+    return `\n\nYou have access to the following tools:\n${toolLines.join('\n')}\n\nTOOL USAGE RULES:\n- When the user asks you to create, write, edit, read, or delete files in their project, use the appropriate file tool (write_file, read_file, edit_file, append_to_file, delete_file). Do NOT output file contents inline.\n- When the user asks you to find, search, or look for something in their code, use grep_search or find_files.\n- When the user asks to list or explore project structure, use list_directory.\n- When the user asks to run a command, script, or install something, use run_command.\n- When the user asks to search the web or look something up online, use web_search and fetch_webpage as needed, and base conclusions on fetched evidence.\n- When the user asks a general question, wants an explanation, or asks you to review code you already have, respond with text directly.\n- You can chain tools: use read_file to see existing code, then edit_file to modify it, then run_command to test it.\n- Always prefer tools over inline code when the user wants changes to their actual project files.`;
   }
 
   _getNodeLlamaCppPath() {

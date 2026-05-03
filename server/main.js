@@ -78,6 +78,7 @@ console.log('[Server] Loading modules...');
 
 const log = require(path.join(ROOT_DIR, 'logger'));
 log.installConsoleIntercepts();
+console.log(`[Server] Logger path: ${log.getLogPath()}`);
 
 const { ChatEngine, buildEngineLoadSettings } = require(path.join(ROOT_DIR, 'chatEngine'));
 const { MCPToolServer } = require(path.join(ROOT_DIR, 'mcpToolServer'));
@@ -234,6 +235,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         mainWindow.webContents.send(eventName, data);
       },
       attachments: Array.isArray(chatContext?.attachments) ? chatContext.attachments : [],
+      conversationHistory: Array.isArray(chatContext?.conversationHistory) ? chatContext.conversationHistory : [],
       functions,
       toolPrompt,
       executeToolFn: async (toolName, params) => {
