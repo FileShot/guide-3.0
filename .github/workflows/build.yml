@@ -89,6 +89,19 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
+      - name: Verify CPU installer Authenticode signature
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path dist-electron -Filter 'guIDE-*-cpu-x64-setup.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'CPU installer exe not found under dist-electron/' }
+          $sig = Get-AuthenticodeSignature -FilePath $exe.FullName
+          Write-Host "Subject:" $sig.SignerCertificate.Subject
+          Write-Host "Status:" $sig.Status
+          if ($sig.Status -ne 'Valid') {
+            Write-Host "::error::Installer is not Authenticode-signed ($($sig.Status)). Add repo secrets WIN_CSC_LINK + WIN_CSC_KEY_PASSWORD (see scripts/set-windows-signing-secrets.ps1)."
+            exit 1
+          }
+
       - name: Upload artifact
         continue-on-error: true
         uses: actions/upload-artifact@v4
@@ -137,6 +150,19 @@ jobs:
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Verify CUDA installer Authenticode signature
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path dist-electron -Filter 'guIDE-*-cuda-x64-setup.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'CUDA installer exe not found under dist-electron/' }
+          $sig = Get-AuthenticodeSignature -FilePath $exe.FullName
+          Write-Host "Subject:" $sig.SignerCertificate.Subject
+          Write-Host "Status:" $sig.Status
+          if ($sig.Status -ne 'Valid') {
+            Write-Host "::error::Installer is not Authenticode-signed ($($sig.Status)). Add repo secrets WIN_CSC_LINK + WIN_CSC_KEY_PASSWORD (see scripts/set-windows-signing-secrets.ps1)."
+            exit 1
+          }
 
       - name: Upload artifact
         continue-on-error: true

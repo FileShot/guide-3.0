@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-05-06 — Windows signing: fail-closed CI + secret upload script
+
+### Problem
+GitHub never returns secret values via API; `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` were **not present** on `FileShot/guide-3.0`, so CI produced **unsigned** installers while the YAML referenced signing — looked “fixed” but SmartScreen still showed unknown publisher.
+
+### Changes
+1. `.github/workflows/build.yml`: after each Windows NSIS build, **`Get-AuthenticodeSignature`** — **`Valid`** required or job **fails** (with message pointing to secrets script).
+2. `scripts/set-windows-signing-secrets.ps1`: uploads **`WIN_CSC_LINK`** (Base64 `.pfx` or use **`-SigningUrl`**) and **`WIN_CSC_KEY_PASSWORD`** via `gh secret set` for the chosen repo (documents ~48KB GitHub secret limit).
+
+---
+
 ## 2026-05-05 — Fuller ChatTurn diary + env limits + Windows signing matches legacy IDE repo
 
 ### Logging
