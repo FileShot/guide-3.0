@@ -317,8 +317,6 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     const toolDefs = mcpToolServer.getToolDefinitions();
     const functions = ChatEngine.convertToolDefs(toolDefs);
     const toolPrompt = mcpToolServer.getToolPrompt();
-    const compactHints = mcpToolServer.getCompactToolHint('full', { minimal: true });
-    const compactToolPrompt = Array.isArray(compactHints) ? compactHints.join('\n') : (compactHints || '');
 
     const result = await llmEngine.chat(userMessage, {
       onToken: (token) => _send('llm-token', token),
@@ -328,18 +326,15 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       attachments: Array.isArray(chatContext?.attachments) ? chatContext.attachments : [],
       functions,
       toolPrompt,
-      compactToolPrompt,
       executeToolFn: async (toolName, params) => {
         return await mcpToolServer.executeTool(toolName, params);
       },
-      systemPrompt: (settings.systemPrompt || '') + rulesManager.getRulesPrompt() || undefined,
+      systemPrompt: settings.systemPrompt || undefined,
       temperature: settings.temperature,
       maxTokens: settings.maxTokens || -1,
       topP: settings.topP,
       topK: settings.topK,
       repeatPenalty: settings.repeatPenalty,
-      thinkingBudget: settings.thinkingBudget ?? 2048,
-      generationTimeoutSec: settings.generationTimeoutSec ?? 0,
     });
     return { text: result.text, toolCallCount: result.toolCallCount };
   } catch (err) {
@@ -349,11 +344,13 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
 
 ipcMain.handle('cancel-generation', async () => {
   llmEngine.cancelGeneration('user');
+  try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
   return { success: true };
 });
 
 ipcMain.handle('agent-pause', async () => {
   llmEngine.cancelGeneration('user');
+  try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
   return { success: true };
 });
 
@@ -792,7 +789,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       return { success: true };
     }
     if (p === '/api/license/plans' && method === 'GET') {
-      return { plans: licenseManager.getPlans ? licenseManager.getPlans() : [] };
+      return { plans: licenseManager.getPlans() };
     }
     if (p === '/api/stripe/checkout' && method === 'POST') {
       const { plan } = body;
@@ -1015,6 +1012,10 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       try { llmEngine.cancelGeneration(); } catch (_) {}
       await new Promise(r => setTimeout(r, 100));
       await llmEngine.resetSession();
+      if (ctx.mcpToolServer) {
+        ctx.mcpToolServer._todos = [];
+        ctx.mcpToolServer._todoNextId = 1;
+      }
       agenticCancelled = false;
       ctx.agenticCancelled = false;
       console.log('[Main] session/clear: complete');
@@ -1025,7 +1026,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/health' && method === 'GET') {
       return {
         status: 'running',
-        version: '2.0.0',
+        version: '3.0.15',
         modelLoaded: llmEngine.isReady,
         modelInfo: llmEngine.modelInfo,
         projectPath: currentProjectPath,
@@ -1129,7 +1130,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       return { success: true };
     }
     if (p === '/api/updater/install' && method === 'POST') {
-      autoUpdater.installUpdate();
+      autoUpdater.quitAndInstall();
       return { success: true };
     }
 

@@ -83,6 +83,10 @@ class LicenseManager extends EventEmitter {
     return PLANS.free;
   }
 
+  getPlans() {
+    return PLANS;
+  }
+
   /** Check if a specific feature is available. */
   hasFeature(feature) {
     return this.getPlan().features.includes(feature);

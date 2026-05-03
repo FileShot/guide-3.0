@@ -1054,7 +1054,7 @@ app.post('/api/session/clear', async (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'running',
-    version: '2.0.0',
+    version: '3.0.15',
     modelLoaded: llmEngine.isReady,
     modelInfo: llmEngine.modelInfo,
     projectPath: ctx.currentProjectPath,
