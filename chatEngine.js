@@ -52,6 +52,56 @@ const MIN_CONTEXT_FLOOR = 2048;
 const MIN_CONTEXT_WHEN_GPU_REQUIRED = 4096;
 
 /**
+ * After weights load, optionally cap createContext.max from live **CPU RAM** when KV is RAM-backed.
+ *
+ * **GPU path:** We do **not** cap from `getVramState().free` after `loadModel`. That value often
+ * collapses toward zero once weights and scratch are resident, even when the runtime can still
+ * allocate KV for `preDesiredMax`. Feeding that into `min(preDesiredMax, liveTok)` — especially
+ * with an intermediate floor — incorrectly forced **~MIN_CONTEXT_FLOOR** for healthy GPUs.
+ *
+ * **CPU path:** Free RAM after load is still a useful bound when KV is not on VRAM.
+ */
+async function computeContextAllocMaxAfterModelLoad({
+  llama: _llamaIgnored,
+  gpuPreference,
+  kvBytesPerToken,
+  trainMaxContext,
+  preDesiredMax,
+}) {
+  void _llamaIgnored;
+  if (!kvBytesPerToken || !Number.isFinite(preDesiredMax)) return preDesiredMax;
+
+  if (gpuPreference !== 'cpu') {
+    let out = preDesiredMax;
+    if (trainMaxContext != null) out = Math.min(out, trainMaxContext);
+    return Math.max(MIN_CONTEXT_FLOOR, out);
+  }
+
+  try {
+    const freeB = os.freemem();
+    const reserve = 512 * 1024 * 1024;
+    const kvFrac = 0.48;
+    const budgetB = Math.max(0, freeB - reserve) * kvFrac;
+    if (budgetB <= 0) {
+      log.warn(
+        'ChatEngine',
+        `Post-load RAM budget non-positive (freemem=${freeB}); keeping preDesiredMax=${preDesiredMax} for CPU`,
+      );
+      let out = preDesiredMax;
+      if (trainMaxContext != null) out = Math.min(out, trainMaxContext);
+      return Math.max(MIN_CONTEXT_FLOOR, out);
+    }
+    const liveTok = Math.floor(budgetB / kvBytesPerToken);
+    let out = Math.min(preDesiredMax, liveTok);
+    if (trainMaxContext != null) out = Math.min(out, trainMaxContext);
+    return Math.max(MIN_CONTEXT_FLOOR, out);
+  } catch (e) {
+    log.warn('ChatEngine', `computeContextAllocMaxAfterModelLoad CPU: ${e.message}`);
+    return preDesiredMax;
+  }
+}
+
+/**
  * Normalize settings / IPC payload for model load. Matches settingsManager defaults when fields are missing.
  * @param {object} raw
  * @returns {{ gpuPreference: 'auto'|'cpu', gpuLayers: number, contextSize: number, requireMinContextForGpu: boolean }}
@@ -241,21 +291,34 @@ class ChatEngine extends EventEmitter {
             vramFree = vramState?.free || 0;
           } catch (_) {}
         }
-        // If free VRAM can hold the model weights plus at least MIN_CONTEXT_FLOOR of KV,
-        // budget KV from VRAM. Otherwise fall back to system RAM (CPU inference or offload).
+        // KV can draw from VRAM (GPU-resident cache) and from system RAM (mmap / CPU KV / offload).
+        // Use **both** pools in the sizing estimate instead of picking only one — matches unified
+        // memory and split-cache behavior better than "VRAM else RAM only".
         const minKvBudget = kvBytesPerToken * MIN_CONTEXT_FLOOR;
-        if (vramFree > modelStats.size + minKvBudget) {
-          availableBytes = vramFree - modelStats.size;
+        const ramAfterModel = Math.max(0, os.freemem() - modelStats.size);
+        const ramOsReserve = 512 * 1024 * 1024;
+        const ramKvBudget = Math.max(0, ramAfterModel - ramOsReserve) * 0.52;
+
+        let vramKvBudget = 0;
+        if (s.gpuPreference !== 'cpu') {
+          if (vramFree > modelStats.size + minKvBudget) {
+            vramKvBudget = (vramFree - modelStats.size) * 0.62;
+          } else {
+            const leftover = Math.max(0, vramFree - 64 * 1024 * 1024);
+            vramKvBudget = leftover * 0.4;
+          }
+        }
+
+        const kvBudgetBytes = vramKvBudget + ramKvBudget;
+        if (s.gpuPreference === 'cpu') {
+          kvSourceMem = 'ram';
+        } else if (vramKvBudget > 0 && ramKvBudget > 0) {
+          kvSourceMem = 'vram+ram';
+        } else if (vramKvBudget > 0) {
           kvSourceMem = 'vram';
         } else {
-          const freeRam = Math.max(0, os.freemem() - modelStats.size);
-          availableBytes = freeRam;
           kvSourceMem = 'ram';
         }
-        // Split the free pool: half to KV cache, half reserved for activations,
-        // compute buffers, and runtime overhead. This ratio is architecture-agnostic
-        // and applies identically to every model and every hardware configuration.
-        const kvBudgetBytes = availableBytes / 2;
         hardwareCap = Math.max(MIN_CONTEXT_FLOOR, Math.floor(kvBudgetBytes / kvBytesPerToken));
       }
 
@@ -330,11 +393,29 @@ class ChatEngine extends EventEmitter {
 
       this._model = await this._llama.loadModel(loadModelOpts);
 
+      let ctxAllocMax = desiredMax;
+      if (kvBytesPerToken) {
+        ctxAllocMax = await computeContextAllocMaxAfterModelLoad({
+          llama: this._llama,
+          gpuPreference: s.gpuPreference,
+          kvBytesPerToken,
+          trainMaxContext,
+          preDesiredMax: desiredMax,
+        });
+        if (ctxAllocMax < desiredMax) {
+          log.warn(
+            'ChatEngine',
+            `Context alloc capped after model load: desiredMax=${desiredMax} → createContext.max=${ctxAllocMax} (live memory / KV bytes per token; avoids shrink ladder to ~${MIN_CONTEXT_FLOOR})`,
+          );
+        }
+      }
+      const effContextMin = Math.min(contextMin, ctxAllocMax);
+
       this._context = await this._model.createContext({
-        contextSize: { min: contextMin, max: desiredMax },
+        contextSize: { min: effContextMin, max: ctxAllocMax },
         flashAttention: s.gpuPreference !== 'cpu',
         ignoreMemorySafetyChecks: true,
-        failedCreationRemedy: { retries: 6, autoContextSizeShrink: 0.16 },
+        failedCreationRemedy: { retries: 8, autoContextSizeShrink: 0.07 },
       });
 
       this._sequence = this._context.getSequence();
@@ -343,13 +424,20 @@ class ChatEngine extends EventEmitter {
       this._lastEvaluation = null;
 
       const actualCtx = this._context.contextSize || 0;
+      if (actualCtx > 0 && ctxAllocMax > 0 && actualCtx + 128 < ctxAllocMax) {
+        log.warn(
+          'ChatEngine',
+          `createContext settled below target: allocTarget=${ctxAllocMax} actual=${actualCtx} (runtime may have tightened further)`,
+        );
+      }
       this.modelInfo = {
         path: modelPath,
         name: path.basename(modelPath),
         size: modelStats.size,
         contextSize: actualCtx,
         contextSizeRequested: s.contextSize <= 0 ? 'auto' : s.contextSize,
-        contextSizeCap: desiredMax,
+        contextSizeCap: ctxAllocMax,
+        contextPreLoadDesiredMax: desiredMax,
         contextTrainMax: trainMaxContext,
         contextHardwareCap: hardwareCap,
         kvBytesPerToken: kvBytesPerToken,
@@ -364,7 +452,7 @@ class ChatEngine extends EventEmitter {
       this.isLoading = false;
 
       console.log(
-        `[ChatEngine] Model ready: ctx=${actualCtx} (${s.contextSize <= 0 ? 'auto' : `fixed ${s.contextSize}`}, cap ${desiredMax}${trainMaxContext != null ? `, train ${trainMaxContext}` : ''}), gpuLayers=${this.modelInfo.gpuLayers}`,
+        `[ChatEngine] Model ready: ctx=${actualCtx} (${s.contextSize <= 0 ? 'auto' : `fixed ${s.contextSize}`}, allocMax ${ctxAllocMax}${desiredMax !== ctxAllocMax ? `, preLoadDesired ${desiredMax}` : ''}${trainMaxContext != null ? `, train ${trainMaxContext}` : ''}), gpuLayers=${this.modelInfo.gpuLayers}`,
       );
 
       this.emit('status', { state: 'ready', message: `Model ready: ${this.modelInfo.name}`, modelInfo: this.modelInfo });
@@ -436,13 +524,15 @@ class ChatEngine extends EventEmitter {
       this._chatHistory[0].text = systemPrompt;
     }
 
+    // node-llama-cpp ChatHistoryItem: user/system use `text`; model uses `response` (string[]), not `text`.
     const normalizedHistory = Array.isArray(conversationHistory)
       ? conversationHistory
         .map((m) => {
           const role = m?.role === 'assistant' ? 'model' : (m?.role === 'user' ? 'user' : null);
           const text = typeof m?.content === 'string' ? m.content.trim() : '';
           if (!role || !text) return null;
-          return { type: role, text };
+          if (role === 'model') return { type: 'model', response: [text] };
+          return { type: 'user', text };
         })
         .filter(Boolean)
       : [];

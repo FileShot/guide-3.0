@@ -71,4 +71,4 @@ $plain | gh secret set WIN_CSC_KEY_PASSWORD --repo $Repo
 
 Write-Host ''
 Write-Host 'Secrets WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD are set on' $Repo
-Write-Host 'Trigger "Build & Release" — Windows jobs will fail if the installer is still unsigned.'
+Write-Host 'Trigger "Build & Release". CI verifies the NSIS *-setup.exe (what SmartScreen sees), not only win-unpacked/guIDE.exe.'

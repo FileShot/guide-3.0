@@ -4,6 +4,51 @@
 
 ---
 
+## 2026-05-03 — Context: hardware cap sums VRAM + RAM KV budgets (GPU)
+
+### Problem
+Pre-load sizing used **either** VRAM **or** RAM for `kvBudgetBytes`, not both — weak on systems where weights/KV split across GPU and system memory.
+
+### Change
+**`chatEngine.js`**: `hardwareCap` from **`vramKvBudget + ramKvBudget`** (GPU: full VRAM slice when the old threshold passes, else a conservative leftover-VRAM slice; always add RAM slice after OS reserve). **`kvMemSource`** logs as **`vram+ram`** when both contribute.
+
+---
+
+## 2026-05-03 — Chat: multi-turn crash `undefined (reading 'filter')`
+
+### Cause (`guide-main.log`)
+Second+ turns call `generateResponse` with `conversationHistory`. We normalized assistant rows as **`{ type: 'model', text }`**. **node-llama-cpp v3.5** `ChatModelResponse` requires **`{ type: 'model', response: string[] }`** (`package/dist/types.d.ts`). The runtime hits **`.response.filter`** → crash; first message worked because **history was empty**.
+
+### Change
+**`chatEngine.js`**: map assistant → **`{ type: 'model', response: [text] }`**; user rows unchanged.
+
+---
+
+## 2026-05-03 — Context: drop bogus GPU post-load VRAM cap (stuck ~2048)
+
+### Cause
+`computeContextAllocMaxAfterModelLoad` used **`getVramState().free` after `loadModel`**, then **`min(preDesiredMax, liveTok)`** with an intermediate **`max(MIN_CONTEXT_FLOOR, liveTok)`**. Post-load “free” VRAM is often **misleadingly tiny** while KV for the real **`desiredMax`** still fits → **`ctxAllocMax` collapsed to ~2048** on GPU despite large train caps.
+
+### Change
+**`chatEngine.js`**: On **`gpuPreference !== 'cpu'`**, post-load cap **no longer** reads VRAM; **`createContext.max`** follows **`preDesiredMax`** (still clamped by **`trainMaxContext`** and **`MIN_CONTEXT_FLOOR`**). **CPU-only** path still uses **`os.freemem()`** after load, with **`budgetB <= 0`** → keep **`preDesiredMax`**.
+
+---
+
+## 2026-05-03 — Windows SmartScreen: verify NSIS setup.exe + fail if signing secrets missing
+
+### Problem
+CI verified **`win-unpacked/guIDE.exe` first** when present; **`CHANGES_LOG`** already noted **`Get-AuthenticodeSignature` is unreliable on NSIS**. Users download **`guIDE-*-x64-setup.exe`** — that file can be **unsigned** while the inner exe passes verify → **unknown publisher** on SmartScreen.
+
+### Changes
+1. **`.github/workflows/build.yml`**: Before Windows builds, **fail** if **`WIN_CSC_LINK`** or **`WIN_CSC_KEY_PASSWORD`** is empty (clear error pointing to **`scripts/set-windows-signing-secrets.ps1`**). Pass **`WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`** env vars alongside **`CSC_*`** for electron-builder compatibility.
+2. **Verify order**: **`guIDE-*-cpu-x64-setup.exe`** and **`guIDE-*-cuda-x64-setup.exe`** first, then **`win-unpacked/guIDE.exe`**. **`signtool verify /pa`** first; **`Get-AuthenticodeSignature`** must be **`Valid`** (removed **UnknownError** “treat as signed” bypass for release gating).
+3. **`electron-builder.nosign.json`** / **`electron-builder.nosign.cuda.json`**: **`signDlls`**, **`rfc3161TimeStampServer`** + **`timeStampServer`** (DigiCert) for standard Authenticode timestamps.
+
+### Note
+**SmartScreen reputation** for a **new** publisher can still warn until enough installs; this change ensures the installer is **actually signed** and CI does not green-light a **misleading** check.
+
+---
+
 ## 2026-05-06 — PFX from IDE worktree → GitHub secrets; compact tool prompt; Authenticode verify fix
 
 ### Signing

@@ -80,6 +80,17 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
+      - name: Require Windows code signing secrets
+        shell: bash
+        env:
+          W_LINK: ${{ secrets.WIN_CSC_LINK }}
+          W_PW: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if [ -z "$W_LINK" ] || [ -z "$W_PW" ]; then
+            echo '::error::WIN_CSC_LINK and/or WIN_CSC_KEY_PASSWORD is empty. Run: pwsh scripts/set-windows-signing-secrets.ps1 -Repo FileShot/guide-3.0 -PfxPath <path-to-code-signing.pfx>'
+            exit 1
+          fi
+
       # Same signing variables as legacy NewGUIDE/app: WIN_CSC_LINK (HTTPS, file path, or Base64 .pfx) + WIN_CSC_KEY_PASSWORD
       - name: Build Windows CPU installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.json
@@ -87,40 +98,41 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      # Prefer signtool (matches OS trust store); PowerShell often reports UnknownError on signed CI artifacts.
+      # Verify the NSIS file users download first; then win-unpacked/guIDE.exe (both must pass).
       - name: Verify CPU installer Authenticode signature
         shell: pwsh
         run: |
-          $target = $null
+          function Test-SignedFile {
+            param([Parameter(Mandatory)][string]$Path)
+            if (-not (Test-Path $Path)) { throw "Missing file: $Path" }
+            Write-Host "Verifying: $Path"
+            $sigtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            if ($sigtool) {
+              & $sigtool.FullName verify /pa $Path
+              if ($LASTEXITCODE -eq 0) { return }
+              Write-Host "::warning::signtool verify exit $LASTEXITCODE — checking Authenticode status"
+            } else {
+              Write-Host '::warning::signtool.exe not found — using Get-AuthenticodeSignature only'
+            }
+            $sig = Get-AuthenticodeSignature -FilePath $Path
+            Write-Host "Subject:" $sig.SignerCertificate.Subject
+            Write-Host "Status:" $sig.Status
+            Write-Host "StatusMessage:" $sig.StatusMessage
+            if ($sig.Status -ne 'Valid') {
+              throw "Authenticode not Valid on $Path (status=$($sig.Status)). SmartScreen will show unknown publisher."
+            }
+          }
+          $setup = Get-ChildItem -Path dist-electron -Filter 'guIDE-*-cpu-x64-setup.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $setup) { throw 'NSIS guIDE-*-cpu-x64-setup.exe not found — cannot verify what users download' }
+          Test-SignedFile $setup.FullName
           $unpacked = Join-Path dist-electron 'win-unpacked/guIDE.exe'
-          if (Test-Path $unpacked) { $target = $unpacked }
-          else {
-            $exe = Get-ChildItem -Path dist-electron -Filter 'guIDE-*-cpu-x64-setup.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($exe) { $target = $exe.FullName }
-          }
-          if (-not $target) { throw 'No CPU exe found (win-unpacked/guIDE.exe or setup exe)' }
-          Write-Host "Verify target:" $target
-          $sigtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
-            Sort-Object FullName -Descending | Select-Object -First 1
-          if ($sigtool) {
-            & $sigtool.FullName verify /pa "$target"
-            if ($LASTEXITCODE -eq 0) { Write-Host 'signtool verify /pa: OK'; exit 0 }
-            Write-Host "::warning::signtool exit $LASTEXITCODE — falling back to signature inspection"
-          }
-          $sig = Get-AuthenticodeSignature -FilePath $target
-          Write-Host "Subject:" $sig.SignerCertificate.Subject
-          Write-Host "Status:" $sig.Status
-          Write-Host "StatusMessage:" $sig.StatusMessage
-          if ($sig.Status -eq 'Valid') { exit 0 }
-          if ($sig.SignerCertificate -and $sig.Status -eq 'UnknownError') {
-            Write-Host "::warning::Get-AuthenticodeSignature UnknownError but certificate embedded — treating as signed."
-            exit 0
-          }
-          Write-Host "::error::No trusted Authenticode signature on $target"
-          exit 1
+          if (Test-Path $unpacked) { Test-SignedFile $unpacked }
 
       - name: Upload artifact
         continue-on-error: true
@@ -163,45 +175,57 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
+      - name: Require Windows code signing secrets
+        shell: bash
+        env:
+          W_LINK: ${{ secrets.WIN_CSC_LINK }}
+          W_PW: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if [ -z "$W_LINK" ] || [ -z "$W_PW" ]; then
+            echo '::error::WIN_CSC_LINK and/or WIN_CSC_KEY_PASSWORD is empty. Run: pwsh scripts/set-windows-signing-secrets.ps1 -Repo FileShot/guide-3.0 -PfxPath <path-to-code-signing.pfx>'
+            exit 1
+          fi
+
       - name: Build Windows CUDA installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.cuda.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Verify CUDA installer Authenticode signature
         shell: pwsh
         run: |
-          $target = $null
+          function Test-SignedFile {
+            param([Parameter(Mandatory)][string]$Path)
+            if (-not (Test-Path $Path)) { throw "Missing file: $Path" }
+            Write-Host "Verifying: $Path"
+            $sigtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            if ($sigtool) {
+              & $sigtool.FullName verify /pa $Path
+              if ($LASTEXITCODE -eq 0) { return }
+              Write-Host "::warning::signtool verify exit $LASTEXITCODE — checking Authenticode status"
+            } else {
+              Write-Host '::warning::signtool.exe not found — using Get-AuthenticodeSignature only'
+            }
+            $sig = Get-AuthenticodeSignature -FilePath $Path
+            Write-Host "Subject:" $sig.SignerCertificate.Subject
+            Write-Host "Status:" $sig.Status
+            Write-Host "StatusMessage:" $sig.StatusMessage
+            if ($sig.Status -ne 'Valid') {
+              throw "Authenticode not Valid on $Path (status=$($sig.Status)). SmartScreen will show unknown publisher."
+            }
+          }
+          $setup = Get-ChildItem -Path dist-electron -Filter 'guIDE-*-cuda-x64-setup.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $setup) { throw 'NSIS guIDE-*-cuda-x64-setup.exe not found' }
+          Test-SignedFile $setup.FullName
           $unpacked = Join-Path dist-electron 'win-unpacked/guIDE.exe'
-          if (Test-Path $unpacked) { $target = $unpacked }
-          else {
-            $exe = Get-ChildItem -Path dist-electron -Filter 'guIDE-*-cuda-x64-setup.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($exe) { $target = $exe.FullName }
-          }
-          if (-not $target) { throw 'No CUDA exe found (win-unpacked/guIDE.exe or setup exe)' }
-          Write-Host "Verify target:" $target
-          $sigtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
-            Sort-Object FullName -Descending | Select-Object -First 1
-          if ($sigtool) {
-            & $sigtool.FullName verify /pa "$target"
-            if ($LASTEXITCODE -eq 0) { Write-Host 'signtool verify /pa: OK'; exit 0 }
-            Write-Host "::warning::signtool exit $LASTEXITCODE — falling back to signature inspection"
-          }
-          $sig = Get-AuthenticodeSignature -FilePath $target
-          Write-Host "Subject:" $sig.SignerCertificate.Subject
-          Write-Host "Status:" $sig.Status
-          Write-Host "StatusMessage:" $sig.StatusMessage
-          if ($sig.Status -eq 'Valid') { exit 0 }
-          if ($sig.SignerCertificate -and $sig.Status -eq 'UnknownError') {
-            Write-Host "::warning::Get-AuthenticodeSignature UnknownError but certificate embedded — treating as signed."
-            exit 0
-          }
-          Write-Host "::error::No trusted Authenticode signature on $target"
-          exit 1
+          if (Test-Path $unpacked) { Test-SignedFile $unpacked }
 
       - name: Upload artifact
         continue-on-error: true
