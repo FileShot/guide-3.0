@@ -323,7 +323,7 @@ export default function StatusBar() {
         )}
 
         {/* Version badge */}
-        <span className="statusbar-item text-vsc-text-dim/50 text-[10px] select-none" title="guIDE 3.0.15">v3.0.15</span>
+        <span className="statusbar-item text-vsc-text-dim/50 text-[10px] select-none" title="guIDE 3.0.16">v3.0.16</span>
       </div>
     </div>
   );

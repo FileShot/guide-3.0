@@ -1028,7 +1028,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/health' && method === 'GET') {
       return {
         status: 'running',
-        version: '3.0.15',
+        version: '3.0.16',
         modelLoaded: llmEngine.isReady,
         modelInfo: llmEngine.modelInfo,
         projectPath: currentProjectPath,
