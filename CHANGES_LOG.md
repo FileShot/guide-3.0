@@ -6,7 +6,7 @@
 
 ## 2026-05-03 — CI Windows: allow NSIS verify when PS reports UnknownError but cert present
 
-GitHub-hosted `windows-latest` often returns **`Get-AuthenticodeSignature` = UnknownError** and **`signtool verify /pa` ≠ 0** on signed NSIS while a **signer certificate is embedded**. Strict **Valid-only** gate blocked uploads/releases. **Fail** only on **NotSigned** / **HashMismatch**; **UnknownError + signer** → warn and pass.
+GitHub-hosted `windows-latest` often returns **`Get-AuthenticodeSignature` = UnknownError** and **`signtool verify /pa` ≠ 0** on signed NSIS while a **signer certificate is embedded**. Strict **Valid-only** gate blocked uploads/releases. **Fail** only on **NotSigned** / **HashMismatch**; **UnknownError + signer** → warn and pass. **Append `$global:LASTEXITCODE = 0`** so the job does not inherit **signtool** exit code **1** after a successful fallback.
 
 ---
 

@@ -140,6 +140,8 @@ jobs:
           Test-SignedFile $setup.FullName
           $unpacked = Join-Path dist-electron 'win-unpacked/guIDE.exe'
           if (Test-Path $unpacked) { Test-SignedFile $unpacked }
+          # signtool sets $LASTEXITCODE=1 on chain warnings; do not fail the step after we accepted the signature.
+          $global:LASTEXITCODE = 0
 
       - name: Upload artifact
         continue-on-error: true
@@ -240,6 +242,7 @@ jobs:
           Test-SignedFile $setup.FullName
           $unpacked = Join-Path dist-electron 'win-unpacked/guIDE.exe'
           if (Test-Path $unpacked) { Test-SignedFile $unpacked }
+          $global:LASTEXITCODE = 0
 
       - name: Upload artifact
         continue-on-error: true
