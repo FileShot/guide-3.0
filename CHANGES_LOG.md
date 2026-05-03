@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-05-03 — CI Windows: allow NSIS verify when PS reports UnknownError but cert present
+
+GitHub-hosted `windows-latest` often returns **`Get-AuthenticodeSignature` = UnknownError** and **`signtool verify /pa` ≠ 0** on signed NSIS while a **signer certificate is embedded**. Strict **Valid-only** gate blocked uploads/releases. **Fail** only on **NotSigned** / **HashMismatch**; **UnknownError + signer** → warn and pass.
+
+---
+
 ## 2026-05-03 — Context: hardware cap sums VRAM + RAM KV budgets (GPU)
 
 ### Problem
