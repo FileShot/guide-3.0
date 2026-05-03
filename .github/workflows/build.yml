@@ -89,16 +89,24 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
+      # NSIS append often makes Get-AuthenticodeSignature on setup.exe return UnknownError even when signed — verify unpacked exe.
       - name: Verify CPU installer Authenticode signature
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Path dist-electron -Filter 'guIDE-*-cpu-x64-setup.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $exe) { throw 'CPU installer exe not found under dist-electron/' }
-          $sig = Get-AuthenticodeSignature -FilePath $exe.FullName
+          $target = $null
+          $unpacked = Join-Path dist-electron 'win-unpacked/guIDE.exe'
+          if (Test-Path $unpacked) { $target = $unpacked }
+          else {
+            $exe = Get-ChildItem -Path dist-electron -Filter 'guIDE-*-cpu-x64-setup.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($exe) { $target = $exe.FullName }
+          }
+          if (-not $target) { throw 'No CPU exe found (win-unpacked/guIDE.exe or setup exe)' }
+          $sig = Get-AuthenticodeSignature -FilePath $target
+          Write-Host "Verified file:" $target
           Write-Host "Subject:" $sig.SignerCertificate.Subject
           Write-Host "Status:" $sig.Status
           if ($sig.Status -ne 'Valid') {
-            Write-Host "::error::Installer is not Authenticode-signed ($($sig.Status)). Add repo secrets WIN_CSC_LINK + WIN_CSC_KEY_PASSWORD (see scripts/set-windows-signing-secrets.ps1)."
+            Write-Host "::error::Authenticode not Valid on $target ($($sig.Status)). Check WIN_CSC_LINK + WIN_CSC_KEY_PASSWORD."
             exit 1
           }
 
@@ -154,13 +162,20 @@ jobs:
       - name: Verify CUDA installer Authenticode signature
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Path dist-electron -Filter 'guIDE-*-cuda-x64-setup.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $exe) { throw 'CUDA installer exe not found under dist-electron/' }
-          $sig = Get-AuthenticodeSignature -FilePath $exe.FullName
+          $target = $null
+          $unpacked = Join-Path dist-electron 'win-unpacked/guIDE.exe'
+          if (Test-Path $unpacked) { $target = $unpacked }
+          else {
+            $exe = Get-ChildItem -Path dist-electron -Filter 'guIDE-*-cuda-x64-setup.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($exe) { $target = $exe.FullName }
+          }
+          if (-not $target) { throw 'No CUDA exe found (win-unpacked/guIDE.exe or setup exe)' }
+          $sig = Get-AuthenticodeSignature -FilePath $target
+          Write-Host "Verified file:" $target
           Write-Host "Subject:" $sig.SignerCertificate.Subject
           Write-Host "Status:" $sig.Status
           if ($sig.Status -ne 'Valid') {
-            Write-Host "::error::Installer is not Authenticode-signed ($($sig.Status)). Add repo secrets WIN_CSC_LINK + WIN_CSC_KEY_PASSWORD (see scripts/set-windows-signing-secrets.ps1)."
+            Write-Host "::error::Authenticode not Valid on $target ($($sig.Status)). Check WIN_CSC_LINK + WIN_CSC_KEY_PASSWORD."
             exit 1
           }
 

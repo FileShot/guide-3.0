@@ -324,6 +324,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     const toolDefs = mcpToolServer.getToolDefinitions();
     const functions = ChatEngine.convertToolDefs(toolDefs);
     const toolPrompt = mcpToolServer.getToolPrompt();
+    const compactToolPrompt = mcpToolServer.getCompactToolPrompt();
 
     const result = await llmEngine.chat(userMessage, {
       onToken: (token) => _send('llm-token', token),
@@ -334,6 +335,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       conversationHistory: Array.isArray(chatContext?.conversationHistory) ? chatContext.conversationHistory : [],
       functions,
       toolPrompt,
+      compactToolPrompt,
       executeToolFn: async (toolName, params) => {
         return await mcpToolServer.executeTool(toolName, params);
       },
@@ -1034,7 +1036,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/health' && method === 'GET') {
       return {
         status: 'running',
-        version: '3.0.17',
+        version: '3.0.18',
         modelLoaded: llmEngine.isReady,
         modelInfo: llmEngine.modelInfo,
         projectPath: currentProjectPath,

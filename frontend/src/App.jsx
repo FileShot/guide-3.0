@@ -449,7 +449,7 @@ export default function App() {
           s.setActiveActivity('settings');
           return;
         case 'about':
-          s.addNotification({ type: 'info', message: 'guIDE 3.0.17 — Local-first AI IDE. Built for offline inference.', duration: 8000 });
+          s.addNotification({ type: 'info', message: 'guIDE 3.0.18 — Local-first AI IDE. Built for offline inference.', duration: 8000 });
           return;
         default:
           return;

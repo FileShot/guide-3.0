@@ -2860,6 +2860,12 @@ class MCPToolServer {
     return this._toolPromptCache;
   }
 
+  /** Short tool listing for low-token context (paired with chatEngine compactToolPrompt gate). */
+  getCompactToolPrompt() {
+    const parts = this.getCompactToolHint('chat', { compactChat: true });
+    return Array.isArray(parts) ? parts.join('\n') : '';
+  }
+
   getCompactToolHint(taskType, options) {
     // Build a clean, compact tool schema from actual definitions
     // Returns an ARRAY of strings — each element is independently appendable
@@ -2881,6 +2887,32 @@ class MCPToolServer {
       header += `Project: ${this.projectPath}\n\n`;
     }
     parts.push(header);
+
+    // Single-string compact prompt for small context windows (see chatEngine compactToolPrompt).
+    if (options && options.compactChat) {
+      const compactTools = [
+        'read_file', 'write_file', 'edit_file', 'append_to_file', 'delete_file', 'list_directory',
+        'find_files', 'grep_search', 'run_command', 'install_packages',
+        'web_search', 'fetch_webpage', 'http_request',
+        'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type',
+        'git_status', 'git_commit', 'git_diff',
+        'save_memory', 'get_memory', 'write_todos',
+      ];
+      let compactPart = '### Core tools (compact)\n';
+      for (const name of compactTools) {
+        const tool = toolMap[name];
+        if (!tool) continue;
+        const params = tool.parameters ? Object.entries(tool.parameters)
+          .filter(([, info]) => info.required)
+          .map(([n]) => n)
+          .join(', ') : '';
+        compactPart += `- **${name}**(${params}) — ${tool.description}\n`;
+      }
+      compactPart += '\n';
+      parts.push(compactPart);
+      parts.push('### Rules\n- read_file before edit_file.\n- web: web_search → fetch_webpage when you need page text.\n- browser: navigate → snapshot → click/type by ref.\n');
+      return parts;
+    }
 
     // Define categories — ALL tools must appear here or they are invisible to the model
     // FIX-H: Reordered so smallest/most-critical categories come first.

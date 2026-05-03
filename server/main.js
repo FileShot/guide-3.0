@@ -220,6 +220,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     const toolDefs = mcpToolServer.getToolDefinitions();
     const functions = ChatEngine.convertToolDefs(toolDefs);
     const toolPrompt = mcpToolServer.getToolPrompt();
+    const compactToolPrompt = mcpToolServer.getCompactToolPrompt();
 
     const u = String(userMessage ?? '');
     console.log(`[Chat] User: ${u.slice(0, 300)}`);
@@ -244,6 +245,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       conversationHistory: Array.isArray(chatContext?.conversationHistory) ? chatContext.conversationHistory : [],
       functions,
       toolPrompt,
+      compactToolPrompt,
       executeToolFn: async (toolName, params) => {
         return await mcpToolServer.executeTool(toolName, params);
       },
@@ -1062,7 +1064,7 @@ app.post('/api/session/clear', async (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'running',
-    version: '3.0.17',
+    version: '3.0.18',
     modelLoaded: llmEngine.isReady,
     modelInfo: llmEngine.modelInfo,
     projectPath: ctx.currentProjectPath,

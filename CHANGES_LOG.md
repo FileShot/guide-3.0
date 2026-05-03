@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-05-06 — PFX from IDE worktree → GitHub secrets; compact tool prompt; Authenticode verify fix
+
+### Signing
+- Located `code-signing.pfx` under `.cursor/worktrees/IDE/edx/` (password matched **current** `package.json` there — **not** the obsolete string in `AUDIT_FINDINGS.md`).
+- Set **`WIN_CSC_LINK`** / **`WIN_CSC_KEY_PASSWORD`** on **`FileShot/guide-3.0`** via `gh secret set`. CI showed **`Subject: CN=GraySoft LLC`**; **`Get-AuthenticodeSignature` on NSIS alone returns `UnknownError`** — workflow now verifies **`dist-electron/win-unpacked/guIDE.exe`** instead.
+
+### Critical chat bug (guide-main.log)
+- **`compactToolPrompt` was never passed** into `llmEngine.chat` → full ~13k tool prompt + ~15k system text on **`ctx=2048`** → node-llama-cpp context-shift **Failed to compress**.
+- **`getCompactToolPrompt()`** + **`compactChat`** branch in **`getCompactToolHint`**; **`electron-main`** / **`server/main`** pass **`compactToolPrompt`**.
+
+---
+
 ## 2026-05-06 — Windows signing: fail-closed CI + secret upload script
 
 ### Problem
