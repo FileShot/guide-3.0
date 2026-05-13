@@ -225,9 +225,9 @@ class MCPToolServer {
       }
       // Normalize numeric refs to strings
       if (typeof normalized.ref === 'number') normalized.ref = String(normalized.ref);
-      // Strip [ref=N] wrapper
+      // Strip [ref=N] wrapper and bare [N] format (models output [2] after seeing [ref=2] in snapshots)
       if (typeof normalized.ref === 'string') {
-        const m = normalized.ref.match(/\[ref\s*=\s*(\d+)\]/i) || normalized.ref.match(/^ref\s*=\s*(\d+)$/i);
+        const m = normalized.ref.match(/\[ref\s*=\s*(\d+)\]/i) || normalized.ref.match(/^ref\s*=\s*(\d+)$/i) || normalized.ref.match(/^\[(\d+)\]$/);
         if (m) normalized.ref = m[1];
       }
     }
@@ -2970,10 +2970,22 @@ class MCPToolServer {
    */
   async _askQuestion(params) {
     const question = params.question || '';
-    const options = Array.isArray(params.options) ? params.options.slice(0, 4) : [];
+    const rawOptions = Array.isArray(params.options) ? params.options.slice(0, 4) : [];
     const allowMultiple = !!params.allowMultiple;
 
     if (!question) return { success: false, error: 'Question text is required' };
+
+    // Normalize options: models may pass plain strings, objects without label, or proper {label, description}.
+    // Every option must become a {label, description?} object so the frontend never renders [object Object].
+    const options = rawOptions.map(opt => {
+      if (typeof opt === 'string') return { label: opt };
+      if (opt && typeof opt === 'object') {
+        const label = opt.label || opt.description || opt.text || opt.value || opt.name || String(opt);
+        const desc = (opt.label && opt.description) ? opt.description : (opt.detail || null);
+        return { label, ...(desc ? { description: desc } : {}) };
+      }
+      return { label: String(opt) };
+    });
 
     // Emit question to frontend via the onAskQuestion callback (wired in electron-main)
     if (typeof this.onAskQuestion === 'function') {

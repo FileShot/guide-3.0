@@ -873,11 +873,24 @@ class CloudLLMService extends EventEmitter {
       try {
         return await this._executeGeneration(provider, model, systemPrompt, prompt, options, onToken, conversationHistory, onThinkingToken, images, attemptKey);
       } catch (err) {
+        // Classify errors using actual HTTP status codes when available,
+        // falling back to string matching only when no status code is present
         const msg = err.message || '';
         const msgLower = msg.toLowerCase();
-        const is429 = msg.includes('429') || msg.includes('401') || msg.includes('413') || msgLower.includes('rate limit') || msgLower.includes('unauthorized') || msgLower.includes('too large') || msgLower.includes('tokens per minute');
-        const is403 = !is429 && (msg.includes('403') || msgLower.includes('forbidden'));
-        const is5xx = !is429 && !is403 && (msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('ECONNRESET') || msgLower.includes('timeout'));
+        const statusCode = err.status || err.statusCode || err.response?.status || 0;
+
+        let is429, is403, is5xx;
+        if (statusCode > 0) {
+          // Use the actual HTTP status code — no string matching needed
+          is429 = statusCode === 429 || statusCode === 401 || statusCode === 413;
+          is403 = !is429 && statusCode === 403;
+          is5xx = !is429 && !is403 && statusCode >= 500 && statusCode < 600;
+        } else {
+          // Fallback: string matching only when no status code is available
+          is429 = msg.includes('429') || msg.includes('401') || msg.includes('413') || msgLower.includes('rate limit') || msgLower.includes('unauthorized') || msgLower.includes('too large') || msgLower.includes('tokens per minute');
+          is403 = !is429 && (msg.includes('403') || msgLower.includes('forbidden'));
+          is5xx = !is429 && !is403 && (msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('ECONNRESET') || msgLower.includes('timeout'));
+        }
 
         if (is429) {
           this._recent429Timestamps.push(Date.now());

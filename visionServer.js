@@ -60,6 +60,7 @@ class VisionServer {
 
     console.log(`[VisionServer] Found mmproj: ${mmprojPath}`);
     this._mmprojPath = mmprojPath;
+    this._modelPath = modelPath; // store for _ensureRunning first start
     return { available: true, reason: 'mmproj found', mmprojPath };
   }
 
@@ -196,7 +197,8 @@ class VisionServer {
       this._process = null;
       this._ready = false;
       this._port = 0;
-      this._modelPath = null;
+      // NOTE: do NOT clear _modelPath or _mmprojPath here — they are persistent
+      // properties from checkAvailability() needed by _ensureRunning() for restart.
     }
   }
 
@@ -206,11 +208,19 @@ class VisionServer {
    */
   async _ensureRunning() {
     if (this._ready) return true;
+    // Restart from previous start args (server was stopped after caption)
     if (this._lastCaptionArgs) {
       console.log('[VisionServer] Restarting vision server on demand...');
       const port = await this.start(this._lastCaptionArgs.modelPath, this._lastCaptionArgs.options);
       return port > 0;
     }
+    // First start: use modelPath + mmprojPath stored during checkAvailability()
+    if (this._modelPath && this._mmprojPath) {
+      console.log(`[VisionServer] First start on demand — model: ${this._modelPath}, mmproj: ${this._mmprojPath}`);
+      const port = await this.start(this._modelPath, { mmprojPath: this._mmprojPath });
+      return port > 0;
+    }
+    console.log('[VisionServer] Cannot start — no model path or mmproj known');
     return false;
   }
 
@@ -222,11 +232,11 @@ class VisionServer {
    * @returns {string|null} text description, or null if vision unavailable
    */
   async captionImage(imageData, mimeType = 'image/png', prompt = 'Describe this screenshot in detail. List all visible text, buttons, links, and interactive elements.') {
-    // Auto-restart if stopped (e.g. after session clear)
+    // Load on demand: start vision server only when an image needs captioning
     if (!this._ready) {
-      const restarted = await this._ensureRunning();
-      if (!restarted) {
-        console.log('[VisionServer] Not ready and cannot restart — cannot caption image');
+      const started = await this._ensureRunning();
+      if (!started) {
+        console.log('[VisionServer] Cannot start — cannot caption image');
         return null;
       }
     }
@@ -275,6 +285,14 @@ class VisionServer {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       console.error(`[VisionServer] Caption request #${requestId} FAILED after ${elapsed}s: ${err.message}`);
       return null;
+    } finally {
+      // Unload immediately after captioning — free VRAM for the main model.
+      // Next image will trigger _ensureRunning() to reload on demand.
+      // Model weights are shared via mmap so reload is fast (~2s vs ~12s cold start).
+      if (this._ready) {
+        console.log('[VisionServer] Caption complete — unloading to free VRAM for main model');
+        this.stop().catch(() => {});
+      }
     }
   }
 

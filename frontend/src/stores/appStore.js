@@ -170,7 +170,21 @@ const useAppStore = create((set, get) => ({
 
     if (existing) {
 
-      set({ activeTabId: existing.id });
+      // If new content was provided, update the existing tab.
+      // This fixes the bug where clicking a file from the keep/undo area
+      // fetches fresh content via API but openFile() ignored it because
+      // the tab already existed (e.g. from a streaming file block with empty content).
+      if (fileInfo.content !== undefined && fileInfo.content !== existing.content) {
+        const updated = openTabs.map(t => t.path === fileInfo.path ? {
+          ...t,
+          content: fileInfo.content,
+          originalContent: fileInfo.content,
+          modified: false,
+        } : t);
+        set({ openTabs: updated, activeTabId: existing.id });
+      } else {
+        set({ activeTabId: existing.id });
+      }
 
       return;
 

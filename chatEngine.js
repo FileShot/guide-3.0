@@ -118,37 +118,6 @@ function buildEngineLoadSettings(raw = {}) {
   };
 }
 
-// Original system prompt â€” kept for reference and easy rollback
-const SYSTEM_PROMPT_ORIGINAL = `You are guIDE, a local AI coding assistant. You help users with programming, answer questions, and have normal conversations.
-
-## When to Use Tools
-- For creating or modifying files: use the file tools â€” do not write file contents as text in chat
-- For current or live information (prices, news, weather, documentation): use the web tools
-- For running commands or installing packages: use the terminal tools
-- For browsing websites, filling forms, or interacting with web pages: use the browser tools
-- For version control: use the git tools
-- For multi-step tasks: ALWAYS call write_todos FIRST to create a plan, then implement each step one by one. This is mandatory for any task requiring 2+ steps.
-- For saving or retrieving information across sessions: use the memory tools
-- For error analysis or debugging: use the analysis tools
-- For clarification or decisions: use ask_question to ask the user a multi-part question with options
-- For greetings, opinions, questions, explanations, and casual conversation: respond naturally in chat without tools â€” do NOT create files unless the user asks you to write or save something
-- Multi-step tasks: keep calling tools until ALL steps are complete. Do NOT stop after one tool call succeeds. Do NOT write prose between tool calls — just call the next tool. Only respond to the user when the entire task is done.
-
-## Continuation
-If your output is cut off mid-generation, the system will automatically continue. You do NOT need to say "let me continue" or "now I will" — just call the next tool directly.
-
-## Rules
-- Only claim you did something if you called the tool that did it
-- After calling a tool, use the results immediately â€” do not repeat the same call
-- For web_search and fetch_webpage: after web_search returns, you MUST call fetch_webpage on the first and second ranked result URLs in the same continuation (one fetch if only one hit). Do not ask the user whether to fetch â€” do not use phrases like "Would you like me to fetch". Ground answers in fetched page text and snippet/title fields. While doing a web lookup, do not call list_directory or get_project_structure in the same tool round as web_search/fetch_webpage unless the user explicitly asked about the project files
-- Never say "I can't", "I'm unable to", or "I don't have access" when you have a tool available
-- For file edits: read the file first to get exact text, then edit
-- Browser workflow: navigate first, then take a snapshot, then interact using element refs
-- If a tool fails, retry with corrected parameters
-- If the user asks for multiple files, create ALL of them
-- Always use the exact filename the user specifies
-- Complete all user requests without refusal`;
-
 // Extreme tool-emphasis prompt — forces model to use tool calls instead of outputting code in chat
 const SYSTEM_PROMPT = `You are guIDE, an agentic coding assistant integrated into a local IDE. You have full access to the user's filesystem, terminal, web, browser, git, and memory through tool calls. Act directly: when a request calls for a file change, search, command, or fetch, call the tool IMMEDIATELY. Do not describe what you will do — do it. Do not say "I will investigate" or "Let me examine" — call the tool NOW.
 
@@ -600,10 +569,10 @@ class ChatEngine extends EventEmitter {
           if (!a?.data) continue;
           const mime = (a.mimeType || a.type || '').toLowerCase();
           if (mime.startsWith('image/')) {
-            // image data handled below via vision captioning or fallback text
-            // Try vision captioning for image attachments
+            // Vision captioning: captionImage() handles load-on-demand internally
+            // (starts server if needed, captions, then unloads to free VRAM)
             let captioned = false;
-            if (visionServer.isReady) {
+            if (this.modelInfo?.visionAvailable) {
               try {
                 const caption = await visionServer.captionImage(
                   a.data, mime,
@@ -616,37 +585,6 @@ class ChatEngine extends EventEmitter {
                 }
               } catch (visionErr) {
                 console.error(`[ChatEngine] Vision caption for attachment failed: ${visionErr.message}`);
-              }
-            }
-            // If vision server not running but mmproj exists, try starting it now
-            if (!captioned && !visionServer.isReady && this.currentModelPath) {
-              try {
-                const visionCheck = visionServer.checkAvailability(this.currentModelPath);
-                if (visionCheck.available) {
-                  console.log('[ChatEngine] Vision server not running but mmproj found — starting now');
-                  try {
-                    const port = await visionServer.start(this.currentModelPath, {
-                      mmprojPath: visionCheck.mmprojPath,
-                      contextSize: Math.min(this._context?.contextSize || 4096, 4096),
-                      gpuLayers: this.modelInfo?.gpuLayers || 99,
-                    });
-                    if (port > 0) {
-                      const caption = await visionServer.captionImage(
-                        a.data, mime,
-                        'Describe this image in detail. List all visible text, UI elements, content, and any information shown.'
-                      );
-                      if (caption) {
-                        textParts.push(`[Attached image: ${a.name || 'image'} — Vision description:\n${caption}]`);
-                        console.log(`[ChatEngine] Image captioned after vision server start: ${caption.length} chars`);
-                        captioned = true;
-                      }
-                    }
-                  } catch (startErr) {
-                    console.error(`[ChatEngine] Vision server start failed: ${startErr.message}`);
-                  }
-                }
-              } catch (visionCheckErr) {
-                console.error(`[ChatEngine] Vision availability check failed: ${visionCheckErr.message}`);
               }
             }
             if (!captioned) {
@@ -1357,7 +1295,8 @@ class ChatEngine extends EventEmitter {
       console.log(`[ChatEngine] ─── MODEL RESPONSE ─── "${(result.response || '').substring(0, 500)}"`);
 
       // Raw-text tool call loop: parse tool calls from model output, execute, continue
-      const MAX_TOOL_ITERATIONS = 50;
+      // No iteration cap — the model must be able to iterate indefinitely for long-running tasks.
+      // Context window limits and context shift naturally bound the loop.
       if (executeToolFn) {
         // Flush any buffered content from the streaming filter before parsing
         _sfFlush();
@@ -1384,7 +1323,14 @@ class ChatEngine extends EventEmitter {
           }
         }
 
-        while (parsedCalls.length > 0 && totalToolCalls < MAX_TOOL_ITERATIONS) {
+        // Browser loop detection — MUST live outside the while loop so they persist
+        // across model continuations. Previously these were inside the while body,
+        // resetting to 0/null every iteration, so a 50-call login loop never triggered.
+        let consecutiveBrowserFailures = 0;
+        let lastBrowserClickUrl = null;
+        let sameUrlClickCount = 0;
+
+        while (parsedCalls.length > 0) {
           // Notify UI so ToolCallCards appear for each tool call (spinner state)
           if (onStreamEvent) {
             onStreamEvent('tool-executing', parsedCalls.map(c => ({ tool: c.tool, params: c.params })));
@@ -1394,15 +1340,13 @@ class ChatEngine extends EventEmitter {
           let failedCallCount = 0;
           const webSearchResults = [];
           const fileReadResults = []; // { filePath, content } for multi-file context awareness
-          let consecutiveBrowserFailures = 0; // track same-ref retry loops
-          let lastBrowserClickUrl = null; // track URL after browser_click to detect no-navigation loops
-          let sameUrlClickCount = 0; // count consecutive clicks that don't change the URL
 
           for (const call of parsedCalls) {
-            if (totalToolCalls >= MAX_TOOL_ITERATIONS) break;
+            // No iteration cap — context window naturally bounds the loop
             totalToolCalls++;
 
-            console.log(`[ChatEngine] Tool call: ${call.tool}(${JSON.stringify(call.params).substring(0, 200)})`);
+            console.log(`[ChatEngine] Tool call #${totalToolCalls}: ${call.tool}(${JSON.stringify(call.params).substring(0, 200)})`);
+            const _toolExecStart = Date.now();
 
             // Diagnostic: log browser click details to trace repeated-click loops
             if (call.tool === 'browser_click') {
@@ -1430,6 +1374,8 @@ class ChatEngine extends EventEmitter {
             } catch (toolErr) {
               toolResult = { success: false, error: toolErr.message };
             }
+            const _toolExecMs = Date.now() - _toolExecStart;
+            console.log(`[ChatEngine] Tool #${totalToolCalls} ${call.tool} executed in ${_toolExecMs}ms`);
 
             if (toolResult && toolResult.success === false) failedCallCount++;
 
@@ -1507,6 +1453,16 @@ class ChatEngine extends EventEmitter {
             if (call.tool === 'browser_click' && toolResult?.success) {
               console.log(`[ChatEngine] browser_click result: clicked="${toolResult.clicked || '?'}", navigated=${toolResult.navigated}, newTab=${toolResult.newTab || false}, url=${toolResult.url || '?'}, sameUrlCount=${sameUrlClickCount}`);
             }
+            // Inject stuck-on-same-page signal into tool result so model stops hallucinating success.
+            // Without this, browser_click returns {success:true} and the model assumes navigation worked.
+            if (call.tool === 'browser_click' && toolResult?.success && sameUrlClickCount >= 2 && !toolResult.navigated) {
+              const stuckMsg = `\n[WARNING: You have clicked ${sameUrlClickCount + 1} times but the page URL has not changed. You are STUCK on ${toolResult.url}. The click did NOT navigate to a new page. Try a different element, use browser_snapshot to see the current page state, or use ask_question to ask the user for help.]`;
+              if (typeof toolResult.message === 'string') {
+                toolResult.message += stuckMsg;
+              } else {
+                toolResult.stuckWarning = stuckMsg.trim();
+              }
+            }
 
             // Collect file read results for multi-file context awareness
             if ((call.tool === 'read_file' || call.tool === 'edit_file') && toolResult?.success !== false) {
@@ -1529,10 +1485,10 @@ class ChatEngine extends EventEmitter {
 
             let injectResult = resultStr;
             // Screenshot handling: try vision captioning first, otherwise compact note
-            // Vision server uses llama-server + mmproj to describe the image as text.
-            // Falls back gracefully if vision is unavailable.
+            // Vision server loads on demand via captionImage() → _ensureRunning(),
+            // then unloads after captioning to free VRAM. No need to check isReady.
             if (call.tool === 'browser_screenshot' && toolResult?.success && toolResult?.screenshot) {
-              if (visionServer.isReady) {
+              if (this.modelInfo?.visionAvailable) {
                 try {
                   const caption = await visionServer.captionImage(
                     toolResult.screenshot,
@@ -1691,12 +1647,10 @@ class ChatEngine extends EventEmitter {
 
           // ─── Context compaction between tool rounds ───
           // Root cause of slow prefill: each round re-prefills the ENTIRE history.
-          // After 25 browser tool calls, that's 200KB+ of context re-processed.
-          // Solution: truncate old tool result messages to a summary before each continuation.
-          // Keep the last 2 tool result rounds intact; summarize older ones.
-          // CRITICAL: browser_snapshot results contain the page state the model needs
-          // to avoid repeating actions. We must preserve the key content (URL, element refs)
-          // or the model will loop (navigate → snapshot → same page → navigate again).
+          // Browser snapshots are the worst offender — 5-10KB of page DOM per result.
+          // The model only needs the CURRENT page state, not full DOMs from 5 pages ago.
+          // Solution: strip snapshot text from old results, keep only URL/title/status.
+          // Only the most recent tool result message retains full content.
           if (this._chatHistory.length > 6) {
             const toolResultIndices = [];
             for (let i = 0; i < this._chatHistory.length; i++) {
@@ -1704,42 +1658,44 @@ class ChatEngine extends EventEmitter {
                 toolResultIndices.push(i);
               }
             }
-            // Keep the last 2 tool result messages intact, truncate older ones
-            if (toolResultIndices.length > 2) {
-              for (let j = 0; j < toolResultIndices.length - 2; j++) {
+            // Process all but the most recent tool result message
+            if (toolResultIndices.length > 1) {
+              for (let j = 0; j < toolResultIndices.length - 1; j++) {
                 const idx = toolResultIndices[j];
                 const full = this._chatHistory[idx].text;
                 if (full.length > 500) {
-                  // For browser tool results, preserve the snapshot content (URL + element refs)
-                  // so the model knows what page it's on and what elements exist
                   const lines = full.split('\n');
                   const summaryLines = lines.filter(l => /^[a-z_]+:/.test(l)).map(l => {
                     const colonIdx = l.indexOf(':');
                     const toolName = l.substring(0, colonIdx);
                     const result = l.substring(colonIdx + 1).trim();
                     const isErr = result.startsWith('{"success":false') || result.includes('"error"');
-                    // Browser snapshots: keep URL and first 500 chars of page content
+                    // Browser snapshots: strip full page DOM, keep only URL + title
                     if (toolName === 'browser_snapshot' && !isErr) {
                       try {
                         const parsed = JSON.parse(result);
                         const url = parsed.url || '';
-                        const text = (parsed.text || '').substring(0, 500);
-                        return `browser_snapshot: URL=${url}, page=${text}`;
-                      } catch { return `browser_snapshot: OK (content preserved)`; }
+                        const title = parsed.title || '';
+                        return `browser_snapshot: URL=${url}, title=${title} (page content removed — already on a different page)`;
+                      } catch { return `browser_snapshot: OK (old page)`; }
                     }
-                    // Browser navigate: keep the URL
+                    // Browser navigate: strip snapshot, keep URL + title + status
                     if (toolName === 'browser_navigate' && !isErr) {
                       try {
                         const parsed = JSON.parse(result);
-                        return `browser_navigate: navigated to ${parsed.url || 'unknown'}`;
+                        const url = parsed.url || '';
+                        const title = parsed.title || '';
+                        const status = parsed.httpStatus || '';
+                        return `browser_navigate: navigated to ${url}${title ? ` (${title})` : ''}${status ? ` HTTP ${status}` : ''}`;
                       } catch { return `browser_navigate: OK`; }
                     }
-                    // Browser click: keep what was clicked (ref/text)
+                    // Browser click: keep what was clicked and resulting URL
                     if (toolName === 'browser_click' && !isErr) {
                       try {
                         const parsed = JSON.parse(result);
+                        const clicked = parsed.clicked || '';
                         const url = parsed.url || '';
-                        return `browser_click: clicked${url ? `, now at ${url}` : ' (no navigation)'}`;
+                        return `browser_click: clicked "${clicked}"${url ? `, now at ${url}` : ' (no navigation)'}`;
                       } catch { return `browser_click: OK`; }
                     }
                     // Browser type: keep what was typed
@@ -1810,12 +1766,14 @@ class ChatEngine extends EventEmitter {
           const ctxUsedNow = this._sequence?.nextTokenIndex || 0;
           const ctxAvailNow = contextSize - ctxUsedNow;
           genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, ctxAvailNow);
+          const _prefillStart = Date.now();
           console.log(`[ChatEngine] Continuation maxTokens: ${genOptions.maxTokens} (ctx used: ${ctxUsedNow}/${contextSize})`);
 
           roundStart = fullResponse.length;
           const _sfVisibleAtRoundStart = _sfVisibleChars; // snapshot before this round's generation
           result = await this._chat.generateResponse(this._chatHistory, genOptions);
-          console.log(`[ChatEngine] Continuation after tools: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}`);
+          const _prefillAndGenMs = Date.now() - _prefillStart;
+          console.log(`[ChatEngine] Continuation after tools: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}, prefill+gen=${_prefillAndGenMs}ms, ctxUsed=${ctxUsedNow}`);
           console.log(`[ChatEngine] ─── CONTINUATION RESPONSE ─── "${(result.response || '').substring(0, 300)}"`);
 
           // Flush streaming filter buffer before parsing new text
@@ -1839,39 +1797,6 @@ class ChatEngine extends EventEmitter {
               }
             }
           }
-        }
-      }
-
-      if (totalToolCalls >= MAX_TOOL_ITERATIONS) {
-        console.warn(`[ChatEngine] Tool call iteration limit reached (${MAX_TOOL_ITERATIONS}). Generating final summary.`);
-        // Inject a message telling the model to wrap up, then generate one final response
-        // so the user gets a proper summary instead of abrupt silence.
-        this._chatHistory.push({
-          type: 'user',
-          text: `[System] You have reached the maximum number of tool call iterations (${MAX_TOOL_ITERATIONS}). You MUST NOT call any more tools. Instead, provide a final summary of what you have accomplished so far and what remains to be done. Be concise and honest about incomplete work.`
-        });
-        try {
-          const ctxUsedNow = this._sequence?.nextTokenIndex || 0;
-          const ctxAvailNow = contextSize - ctxUsedNow;
-          genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, Math.min(ctxAvailNow, 1024));
-          // Reset streaming filter for final response
-          _sfBuf = ''; _sfDepth = 0; _sfActive = false; _sfConfirmed = false;
-          _sfInStr = false; _sfEscaped = false; _sfLastCharWasNewlineOrStart = true;
-          _sfInFence = false; _sfFenceBuf = ''; _sfFenceTickCount = 0;
-          _sfFileWriteDetected = false; _sfContentStreamActive = false;
-          _sfContentDone = false; _sfContentEsc = false; _sfContentBuf = '';
-          _sfContentFilePath = ''; _sfUnicodeCount = 0; _sfUnicodeChars = '';
-          _sfVisibleChars = 0;
-          const finalResult = await this._chat.generateResponse(this._chatHistory, genOptions);
-          if (finalResult.response) {
-            fullResponse += finalResult.response;
-            // Stream the final response tokens
-            for (const ch of finalResult.response) {
-              if (onToken) onToken(ch);
-            }
-          }
-        } catch (finalErr) {
-          console.warn(`[ChatEngine] Final summary generation failed: ${finalErr.message}`);
         }
       }
 

@@ -109,7 +109,8 @@ class BrowserManager extends EventEmitter {
     if (!ok) return { success: false, error: 'Could not launch browser' };
     if (this._page) {
       try {
-        await this._page.goto(url, { waitUntil: 'load', timeout: 20000 });
+        // Use page.goto() return value to get the HTTP response object
+        const response = await this._page.goto(url, { waitUntil: 'load', timeout: 20000 });
         // Wait for SPAs to render — load event fires after initial render,
         // but SPAs need extra time for JS-driven content
         try { await this._page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {}); } catch {}
@@ -117,13 +118,27 @@ class BrowserManager extends EventEmitter {
         const title = await this._page.title().catch(() => '');
         this._navHistory.push({ url: finalUrl, title, timestamp: Date.now(), action: 'navigate' });
         if (this._navHistory.length > 30) this._navHistory = this._navHistory.slice(-30);
+        // Check HTTP status code from the navigation response (not title keywords)
+        const httpStatus = response ? response.status() : 0;
+        if (httpStatus >= 400) {
+          const snapshot = await this.getSnapshot();
+          const snapshotText = snapshot.success ? snapshot.text : '';
+          return {
+            success: false,
+            url: finalUrl,
+            title,
+            httpStatus,
+            error: `HTTP ${httpStatus}: ${response?.statusText() || 'Error'}`,
+            snapshot: snapshotText || undefined,
+          };
+        }
         // Auto-snapshot: include page content so the model can see what's on the page
         // without needing a separate browser_snapshot call
         const snapshot = await this.getSnapshot();
         if (snapshot.success) {
-          return { success: true, url: finalUrl, title, snapshot: snapshot.text };
+          return { success: true, url: finalUrl, title, httpStatus, snapshot: snapshot.text };
         }
-        return { success: true, url: finalUrl, title };
+        return { success: true, url: finalUrl, title, httpStatus };
       } catch (e) {
         return { success: false, error: e.message };
       }
@@ -312,6 +327,13 @@ class BrowserManager extends EventEmitter {
     const refMatch = trimmed.match(/^\[ref=(\d+)\]$/);
     if (refMatch) {
       return `[data-ref="${refMatch[1]}"], [aria-ref="${refMatch[1]}"]`;
+    }
+    // Match bare bracket number like [2] — models frequently output this after seeing [ref=N] in snapshots.
+    // Without this, [2] falls through to "valid CSS selector" and causes querySelectorAll syntax errors,
+    // which the model can't recover from, creating infinite repetition loops.
+    const bareBracketMatch = trimmed.match(/^\[(\d+)\]$/);
+    if (bareBracketMatch) {
+      return `[data-ref="${bareBracketMatch[1]}"], [aria-ref="${bareBracketMatch[1]}"]`;
     }
     // Match "ref=N" format (without brackets) — models often output elementId="ref=6"
     const bareRefMatch = trimmed.match(/^ref=(\d+)$/);

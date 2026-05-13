@@ -173,8 +173,13 @@ const TOOL_MAP = {
   ask_question: {
     Icon: Wrench,
     pending: 'Asking question',
-    done: 'Question asked',
-    detail: (p) => p?.question ? `"${p.question.slice(0, 30)}${p.question.length > 30 ? '…' : ''}"` : null,
+    done: 'Question answered',
+    detail: (p, r) => {
+      const q = p?.question ? `"${p.question.slice(0, 30)}${p.question.length > 30 ? '…' : ''}"` : null;
+      const a = typeof r === 'string' ? r : (r?.answer || r?.message || null);
+      if (a) return q ? `${q} → ${a}` : a;
+      return q;
+    },
   },
   save_memory: {
     Icon: Wrench,
@@ -273,7 +278,7 @@ export default function ToolCallCard({ toolCall, count }) {
   const isError = status === 'error';
 
   const verb = cfg ? (isPending || isGenerating ? cfg.pending : cfg.done) : functionName;
-  const detail = cfg?.detail ? cfg.detail(params || {}) : null;
+  const detail = cfg?.detail ? cfg.detail(params || {}, result) : null;
   const countSuffix = count > 1 ? ` ×${count}` : '';
   const lineText = isGenerating ? `Generating ${functionName}...` : (detail ? `${verb} • ${detail}${countSuffix}` : `${verb}${countSuffix}`);
 

@@ -9,25 +9,27 @@ dist-electron/
 models/
 *.gguf
 
-# Test project directories
-test-projects/
-test-project/
-test-tool-5/
-test-tool-7/
-test-tool-diag/
-test-kobold2/
-test-kobold3/
-test-kobold4/
-test-kobold5/
-test-1-project/
-test-1b-project/
+# Test project directories (any directory starting with "test-")
+test-*/
 
 # Playwright snapshots
 .playwright-mcp/
 
-# Logs
+# Test/debug screenshots at project root
+/*.png
+/*.jpg
+/*.gif
+/*.webp
+
+# Debug and temp logs
 *.log
+temp-log.txt
+tmp_logs.txt
+
+# Audit/debug scripts and artifacts
+server-vs-electron-*
+pipeline-*.log
+probe-out.log
 
 # User data
 .guide-ide/
-

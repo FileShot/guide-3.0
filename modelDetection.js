@@ -46,8 +46,9 @@ function detectParamSize(modelPath) {
   if (!modelPath) return 0;
   const base = path.basename(modelPath).toLowerCase();
 
-  // Standard pattern: 7b, 0.6B, 14B, 1.5B, 70b, 2.7b, etc.
-  const match = base.match(/(\d+\.?\d*)[bm]/i);
+  // Primary: parse parameter count from filename using regex
+  // Handles patterns like: 7b, 0.6B, 14B, 1.5B, 70b, 2.7b, 0.5b, 405b, etc.
+  const match = base.match(/(\d+\.?\d*)\s*[bm]/i);
   if (match) {
     const val = parseFloat(match[1]);
     // 'm' suffix means millions → convert to billions
@@ -55,13 +56,19 @@ function detectParamSize(modelPath) {
     return val;
   }
 
-  // Phi model fallbacks (version-based size inference)
-  if (base.includes('phi-4') && base.includes('mini')) return 3.8;
-  if (base.includes('phi-4')) return 14;
-  if (base.includes('phi-3') && base.includes('mini')) return 3.8;
-  if (base.includes('phi-3') && base.includes('medium')) return 14;
-  if (base.includes('phi-3') && base.includes('small')) return 7;
-  if (base.includes('phi-2')) return 2.7;
+  // Fallback: version-based size inference for models whose filenames
+  // don't include the parameter count (e.g. phi-4-mini without "3.8b")
+  const versionFallbacks = [
+    { pattern: 'phi-4-mini', size: 3.8 },
+    { pattern: 'phi-4', size: 14 },
+    { pattern: 'phi-3-mini', size: 3.8 },
+    { pattern: 'phi-3-medium', size: 14 },
+    { pattern: 'phi-3-small', size: 7 },
+    { pattern: 'phi-2', size: 2.7 },
+  ];
+  for (const { pattern, size } of versionFallbacks) {
+    if (base.includes(pattern)) return size;
+  }
 
   return 0;
 }

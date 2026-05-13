@@ -2874,8 +2874,6 @@ export default function ChatPanel() {
 
                             onClick={() => {
 
-                              addChatMessage({ role: 'system', content: '', questionAnswer: { question: pendingQuestion.question, answer: label } });
-
                               window.electronAPI?.answerQuestion(label);
 
                               clearPendingQuestion();
@@ -2912,8 +2910,6 @@ export default function ChatPanel() {
 
                         if (e.key === 'Enter' && e.target.value.trim()) {
 
-                          addChatMessage({ role: 'system', content: '', questionAnswer: { question: pendingQuestion.question, answer: e.target.value.trim() } });
-
                           window.electronAPI?.answerQuestion(e.target.value.trim());
 
                           clearPendingQuestion();
@@ -2936,8 +2932,6 @@ export default function ChatPanel() {
 
                         if (input?.value?.trim()) {
 
-                          addChatMessage({ role: 'system', content: '', questionAnswer: { question: pendingQuestion.question, answer: input.value.trim() } });
-
                           window.electronAPI?.answerQuestion(input.value.trim());
 
                           clearPendingQuestion();
@@ -2957,8 +2951,6 @@ export default function ChatPanel() {
                       className="p-1 text-vsc-text-dim hover:text-vsc-error rounded transition-colors"
 
                       onClick={() => {
-
-                        addChatMessage({ role: 'system', content: '', questionAnswer: { question: pendingQuestion.question, answer: '(skipped)' } });
 
                         window.electronAPI?.answerQuestion('(skipped)');
 
