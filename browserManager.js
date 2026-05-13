@@ -281,7 +281,39 @@ class BrowserManager extends EventEmitter {
         lines.push(desc);
       }
       const pageText = (document.body?.innerText || '').substring(0, 50000);
-      return { elementList: lines.join('\n'), pageText };
+
+      // Extract visible text from same-origin iframes.
+      // Many web apps (BrightSpace/D2L, LMS, enterprise portals) render their
+      // main content inside iframes. Without this, the snapshot only shows
+      // "<iframe>" elements and the model cannot see or interact with the content.
+      const iframeTexts = [];
+      try {
+        const iframes = document.querySelectorAll('iframe');
+        for (const iframe of iframes) {
+          try {
+            const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+            if (iframeDoc && iframeDoc.body) {
+              const src = iframe.src || iframe.getAttribute('src') || '';
+              const iframeText = (iframeDoc.body.innerText || '').trim();
+              if (iframeText.length > 0) {
+                const iframeInteractive = iframeDoc.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"]');
+                const iframeElCount = iframeInteractive.length;
+                iframeTexts.push(`--- iframe content (${iframeElCount} interactive elements, src="${src.substring(0, 120)}") ---\n${iframeText.substring(0, 20000)}`);
+              }
+            }
+          } catch (e) {
+            // Cross-origin iframe — cannot access content (CORS)
+            const src = iframe.src || iframe.getAttribute('src') || '';
+            if (src) iframeTexts.push(`--- iframe (cross-origin, cannot access content, src="${src.substring(0, 120)}") ---`);
+          }
+        }
+      } catch {}
+
+      const fullPageText = iframeTexts.length > 0
+        ? pageText + '\n\n' + iframeTexts.join('\n\n')
+        : pageText;
+
+      return { elementList: lines.join('\n'), pageText: fullPageText };
     });
   }
 

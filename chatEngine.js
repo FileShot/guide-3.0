@@ -588,7 +588,10 @@ class ChatEngine extends EventEmitter {
               }
             }
             if (!captioned) {
-              textParts.push(`[Attached image: ${a.name || 'image'}]`);
+              // Vision unavailable — tell the model explicitly that the image cannot be processed.
+              // Do NOT inject raw attachment metadata like "[Attached context] filename.png"
+              // because the model echoes it verbatim as its response instead of answering the user.
+              textParts.push(`[Image attachment "${a.name || 'image'}" could not be processed by vision engine. Tell the user you cannot see the image and ask them to describe its contents.]`);
             }
             continue;
           }
@@ -1292,7 +1295,13 @@ class ChatEngine extends EventEmitter {
       const ctxUsedAfter = this._sequence?.nextTokenIndex || 0;
       const currentGpuLayers = this._model?.gpuLayers ?? '?';
       console.log(`[ChatEngine] generateResponse returned: stopReason=${result.metadata?.stopReason}, tokens=${roundTokens}, time=${roundElapsed.toFixed(1)}s, tok/s=${roundTokPerSec}, ctxUsed=${ctxUsedAfter}/${contextSize}, gpuLayers=${currentGpuLayers}`);
-      console.log(`[ChatEngine] ─── MODEL RESPONSE ─── "${(result.response || '').substring(0, 500)}"`);
+      // Log thinking/reasoning tags separately for debugging model decision-making
+      const _rawResp = result.response || '';
+      const _thinkMatch = _rawResp.match(/<think>([\s\S]*?)<\/think>/) || _rawResp.match(/<reasoning>([\s\S]*?)<\/reasoning>/) || _rawResp.match(/<reflection>([\s\S]*?)<\/reflection>/);
+      if (_thinkMatch) {
+        console.log(`[ChatEngine] ─── MODEL THINKING ─── "${_thinkMatch[1].substring(0, 500)}"`);
+      }
+      console.log(`[ChatEngine] ─── MODEL RESPONSE ─── "${_rawResp.substring(0, 500)}"`);
 
       // Raw-text tool call loop: parse tool calls from model output, execute, continue
       // No iteration cap — the model must be able to iterate indefinitely for long-running tasks.
@@ -1435,9 +1444,14 @@ class ChatEngine extends EventEmitter {
               if (!toolResult.navigated && sameUrlClickCount >= 2) {
                 consecutiveBrowserFailures++;
               }
-            } else if (call.tool?.startsWith('browser_') && toolResult?.success) {
+            } else if (call.tool === 'browser_navigate' && toolResult?.success) {
+              // Navigate to a new page resets the stuck counter
               consecutiveBrowserFailures = 0;
               sameUrlClickCount = 0;
+            } else if (call.tool?.startsWith('browser_') && toolResult?.success && call.tool !== 'browser_snapshot') {
+              // Other browser tool successes (type, scroll, etc.) reset failure counter
+              // but NOT sameUrlClickCount — that only resets on actual navigation
+              consecutiveBrowserFailures = 0;
             }
             if (call.tool === 'web_search' && toolResult?.success && Array.isArray(toolResult.results)) {
               for (const r of toolResult.results.slice(0, 2)) {
@@ -1781,7 +1795,12 @@ class ChatEngine extends EventEmitter {
           result = await this._chat.generateResponse(this._chatHistory, genOptions);
           const _prefillAndGenMs = Date.now() - _prefillStart;
           console.log(`[ChatEngine] Continuation after tools: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}, prefill+gen=${_prefillAndGenMs}ms, ctxUsed=${ctxUsedNow}`);
-          console.log(`[ChatEngine] ─── CONTINUATION RESPONSE ─── "${(result.response || '').substring(0, 300)}"`);
+          const _contResp = result.response || '';
+          const _contThink = _contResp.match(/<think>([\s\S]*?)<\/think>/) || _contResp.match(/<reasoning>([\s\S]*?)<\/reasoning>/) || _contResp.match(/<reflection>([\s\S]*?)<\/reflection>/);
+          if (_contThink) {
+            console.log(`[ChatEngine] ─── CONTINUATION THINKING ─── "${_contThink[1].substring(0, 300)}"`);
+          }
+          console.log(`[ChatEngine] ─── CONTINUATION RESPONSE ─── "${_contResp.substring(0, 300)}"`);
 
           // Flush streaming filter buffer before parsing new text
           _sfFlush();

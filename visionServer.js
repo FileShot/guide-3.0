@@ -158,7 +158,17 @@ class VisionServer {
       '--no-warmup',  // skip warmup to start faster
     ];
 
-    if (gpuType) {
+    // When running on CPU only, also disable CUDA entirely.
+    // Even with -ngl 0, llama-server's CLIP module auto-allocates ~1GB CUDA compute buffer,
+    // stealing VRAM from the main model and degrading inference speed from 15-20 tok/s to 2 tok/s.
+    if (visionGpuLayers === 0 && gpuType) {
+      // Remove the GPU flag (e.g. --cuda) so llama-server runs entirely on CPU
+      // This prevents CLIP from allocating CUDA buffers
+      args.splice(args.indexOf(gpuType), 1);
+      console.log('[VisionServer] Removed GPU flag — running vision entirely on CPU to preserve VRAM');
+    }
+
+    if (gpuType && visionGpuLayers > 0) {
       args.unshift(gpuType);
     }
 
@@ -346,10 +356,102 @@ class VisionServer {
    * mmproj files are named like: mmproj-*.gguf, *mmproj*.gguf, or *vision*.gguf
    * They are ALWAYS in the same directory as the model GGUF file.
    */
+  /**
+   * Read the n_embd (embedding_length) value from a GGUF file's metadata.
+   * GGUF format: magic (4 bytes) + version (4 bytes) + tensor_count (8) + metadata_kv_count (8) + KV pairs.
+   * Each KV: key_length (u64) + key (string) + value_type (u32) + value.
+   * We scan for key "llama.embedding_length" or "qwen35.embedding_length" and read its value.
+   */
+  _readGgufEmbdLength(ggufPath) {
+    try {
+      const fd = fs.openSync(ggufPath, 'r');
+      const header = Buffer.alloc(64);
+      fs.readSync(fd, header, 0, 64, 0);
+      // GGUF magic: 0x46475547 ('GGUF')
+      if (header.readUInt32LE(0) !== 0x46475547) { fs.closeSync(fd); return null; }
+      const version = header.readUInt32LE(4);
+      if (version < 2 || version > 3) { fs.closeSync(fd); return null; }
+      const tensorCount = Number(header.readBigUInt64LE(8));
+      const metadataCount = Number(header.readBigUInt64LE(16));
+      // Scan metadata KV pairs starting at offset 24
+      let offset = 24;
+      for (let i = 0; i < metadataCount && offset < 102400; i++) {
+        const kvHeader = Buffer.alloc(12);
+        const bytesRead = fs.readSync(fd, kvHeader, 0, 12, offset);
+        if (bytesRead < 12) break;
+        const keyLen = Number(kvHeader.readBigUInt64LE(0));
+        const valueType = kvHeader.readUInt32LE(8);
+        if (keyLen > 512 || keyLen === 0) break; // sanity check
+        const keyBuf = Buffer.alloc(keyLen);
+        fs.readSync(fd, keyBuf, 0, keyLen, offset + 12);
+        const key = keyBuf.toString('utf8');
+        // Value types: 0=GGUF_TYPE_STRING, 1=UINT8, 2=INT8, 3=UINT16, 4=INT16,
+        //   5=UINT32, 6=INT32, 7=FLOAT32, 8=BOOL, 9=STRING, 10=ARRAY, 11=UINT64, 12=INT64, 13=FLOAT64
+        let valueSize = 0;
+        let embdValue = null;
+        switch (valueType) {
+          case 0: { // string
+            const strLenBuf = Buffer.alloc(8);
+            fs.readSync(fd, strLenBuf, 0, 8, offset + 12 + keyLen);
+            const strLen = Number(strLenBuf.readBigUInt64LE(0));
+            valueSize = 8 + strLen;
+            break;
+          }
+          case 5: { // uint32
+            const valBuf = Buffer.alloc(4);
+            fs.readSync(fd, valBuf, 0, 4, offset + 12 + keyLen);
+            embdValue = valBuf.readUInt32LE(0);
+            valueSize = 4;
+            break;
+          }
+          case 6: { // int32
+            const valBuf = Buffer.alloc(4);
+            fs.readSync(fd, valBuf, 0, 4, offset + 12 + keyLen);
+            embdValue = valBuf.readInt32LE(0);
+            valueSize = 4;
+            break;
+          }
+          case 11: { // uint64
+            const valBuf = Buffer.alloc(8);
+            fs.readSync(fd, valBuf, 0, 8, offset + 12 + keyLen);
+            embdValue = Number(valBuf.readBigUInt64LE(0));
+            valueSize = 8;
+            break;
+          }
+          case 12: { // int64
+            const valBuf = Buffer.alloc(8);
+            fs.readSync(fd, valBuf, 0, 8, offset + 12 + keyLen);
+            embdValue = Number(valBuf.readBigInt64LE(0));
+            valueSize = 8;
+            break;
+          }
+          default:
+            // Skip unknown types — can't determine size easily
+            fs.closeSync(fd);
+            return null;
+        }
+        // Check if this key is the embedding length
+        if (key.endsWith('.embedding_length') && embdValue !== null) {
+          fs.closeSync(fd);
+          return embdValue;
+        }
+        offset += 12 + keyLen + valueSize;
+      }
+      fs.closeSync(fd);
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   _findMmproj(modelPath) {
     if (!modelPath) return null;
     try {
       const modelDir = path.dirname(modelPath);
+
+      // Read the model's embedding dimension for mmproj compatibility validation
+      const modelEmbdLen = this._readGgufEmbdLength(modelPath);
+      console.log(`[VisionServer] Model embedding_length: ${modelEmbdLen || 'unknown'} (from ${path.basename(modelPath)})`);
 
       // Priority order: exact mmproj name patterns
       const patterns = [
@@ -381,14 +483,22 @@ class VisionServer {
             );
             if (match) {
               const fullPath = path.join(dir, match);
-              console.log(`[VisionServer] Found mmproj: ${fullPath}`);
+              // Validate mmproj embedding dimension matches model
+              if (modelEmbdLen) {
+                const mmprojEmbdLen = this._readGgufEmbdLength(fullPath);
+                if (mmprojEmbdLen && mmprojEmbdLen !== modelEmbdLen) {
+                  console.warn(`[VisionServer] mmproj ${path.basename(fullPath)} has n_embd=${mmprojEmbdLen} but model has n_embd=${modelEmbdLen} — SKIPPING (mismatch)`);
+                  continue; // skip this mmproj, try next pattern or directory
+                }
+              }
+              console.log(`[VisionServer] Found compatible mmproj: ${fullPath}`);
               return fullPath;
             }
           }
         } catch {}
       }
 
-      console.log(`[VisionServer] No mmproj file found in ${modelDir} or sibling directories`);
+      console.log(`[VisionServer] No compatible mmproj file found in ${modelDir} or sibling directories`);
       return null;
     } catch (err) {
       console.error(`[VisionServer] Error scanning for mmproj: ${err.message}`);
