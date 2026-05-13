@@ -45,6 +45,17 @@ function FileExplorer() {
   const addNotification = useAppStore(s => s.addNotification);
   const setGitBranch = useAppStore(s => s.setGitBranch);
   const setGitFileStatuses = useAppStore(s => s.setGitFileStatuses);
+  const taskScripts = useAppStore(s => s.taskScripts);
+  const loadTaskScripts = useAppStore(s => s.loadTaskScripts);
+  const runTaskScript = useAppStore(s => s.runTaskScript);
+  const symbolOutline = useAppStore(s => s.symbolOutline);
+  const [tasksExpanded, setTasksExpanded] = useState(true);
+  const [outlineExpanded, setOutlineExpanded] = useState(true);
+
+  // Load npm scripts when project opens
+  useEffect(() => {
+    if (projectPath) loadTaskScripts();
+  }, [projectPath, loadTaskScripts]);
 
   const fetchGitStatus = useCallback(() => {
     if (!projectPath) return;
@@ -134,6 +145,67 @@ function FileExplorer() {
           {fileTree.map((item, idx) => (
             <FileTreeItem key={item.path || idx} item={item} depth={0} />
           ))}
+          {taskScripts.length > 0 && (
+            <div className="mt-1">
+              <div
+                className="sidebar-section-header cursor-pointer shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]"
+                onClick={() => setTasksExpanded(!tasksExpanded)}
+              >
+                {tasksExpanded ? <ChevronDown size={12} className="mr-1 flex-shrink-0" /> : <ChevronRight size={12} className="mr-1 flex-shrink-0" />}
+                <Package size={12} className="mr-1 flex-shrink-0 text-vsc-text-dim" />
+                <span className="truncate">NPM Scripts</span>
+              </div>
+              {tasksExpanded && taskScripts.map(script => (
+                <div
+                  key={script.name}
+                  className="flex items-center gap-1 px-2 py-0.5 hover:bg-vsc-list-hover cursor-pointer group text-vsc-sm"
+                  style={{ paddingLeft: '28px' }}
+                  onClick={() => runTaskScript(script.name)}
+                  title={script.command}
+                >
+                  <Play size={11} className="flex-shrink-0 text-vsc-text-dim group-hover:text-green-400" />
+                  <span className="truncate text-vsc-text-dim group-hover:text-vsc-text">{script.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {/* Symbol Outline */}
+          {symbolOutline.length > 0 && (
+            <div className="mt-1">
+              <div
+                className="sidebar-section-header cursor-pointer shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]"
+                onClick={() => setOutlineExpanded(!outlineExpanded)}
+              >
+                {outlineExpanded ? <ChevronDown size={12} className="mr-1 flex-shrink-0" /> : <ChevronRight size={12} className="mr-1 flex-shrink-0" />}
+                <Type size={12} className="mr-1 flex-shrink-0 text-vsc-text-dim" />
+                <span className="truncate">Outline</span>
+                <span className="ml-auto text-[10px] text-vsc-text-dim">{symbolOutline.length}</span>
+              </div>
+              {outlineExpanded && symbolOutline.map((sym, i) => (
+                <div
+                  key={i}
+                  className="flex items-center gap-1 px-2 py-0.5 hover:bg-vsc-list-hover cursor-pointer group text-vsc-sm"
+                  style={{ paddingLeft: `${28 + Math.min(sym.indent, 24)}px` }}
+                  onClick={() => {
+                    // Dispatch a custom event that EditorArea listens for to jump to line
+                    window.dispatchEvent(new CustomEvent('guide-goto-line', { detail: { line: sym.line } }));
+                  }}
+                  title={`${sym.kind} — line ${sym.line}`}
+                >
+                  <span className={`flex-shrink-0 text-[10px] ${
+                    sym.kind === 'class' ? 'text-yellow-400' :
+                    sym.kind === 'function' ? 'text-blue-400' :
+                    sym.kind === 'method' ? 'text-purple-400' :
+                    'text-vsc-text-dim'
+                  }`}>
+                    {sym.kind === 'class' ? 'C' : sym.kind === 'function' ? 'F' : sym.kind === 'method' ? 'M' : 'V'}
+                  </span>
+                  <span className="truncate text-vsc-text-dim group-hover:text-vsc-text">{sym.name}</span>
+                  <span className="ml-auto text-[9px] text-vsc-text-dim/50">{sym.line}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -458,6 +530,7 @@ function SearchPanel() {
   const [loading, setLoading] = useState(false);
   const [replace, setReplace] = useState('');
   const [showReplace, setShowReplace] = useState(false);
+  const [semantic, setSemantic] = useState(true);
   const projectPath = useAppStore(s => s.projectPath);
   const openFile = useAppStore(s => s.openFile);
   const timerRef = useRef(null);
@@ -465,12 +538,13 @@ function SearchPanel() {
   const doSearch = useCallback((q) => {
     if (!q || !projectPath) { setResults([]); return; }
     setLoading(true);
-    fetch(`/api/files/search?path=${encodeURIComponent(projectPath)}&query=${encodeURIComponent(q)}`)
+    const semanticParam = semantic ? '&semantic=true' : '';
+    fetch(`/api/files/search?path=${encodeURIComponent(projectPath)}&query=${encodeURIComponent(q)}${semanticParam}`)
       .then(r => r.json())
       .then(d => setResults(d.results || []))
       .catch(() => setResults([]))
       .finally(() => setLoading(false));
-  }, [projectPath]);
+  }, [projectPath, semantic]);
 
   const handleChange = (e) => {
     const q = e.target.value;
@@ -503,14 +577,23 @@ function SearchPanel() {
         </button>
       </div>
       <div className="px-2 pb-2 space-y-1">
-        <input
-          type="text"
-          className="w-full h-[26px] px-2 bg-vsc-input border border-vsc-input-border rounded-sm text-vsc-sm"
-          placeholder="Search..."
-          value={query}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-        />
+        <div className="flex gap-1">
+          <input
+            type="text"
+            className="flex-1 h-[26px] px-2 bg-vsc-input border border-vsc-input-border rounded-sm text-vsc-sm"
+            placeholder="Search..."
+            value={query}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+          />
+          <button
+            className={`p-1 rounded transition-colors ${semantic ? 'text-vsc-accent bg-vsc-accent/10' : 'text-vsc-text-dim hover:bg-vsc-list-hover'}`}
+            onClick={() => setSemantic(!semantic)}
+            title={semantic ? 'Semantic search ON (ranks by relevance)' : 'Semantic search OFF (plain text match)'}
+          >
+            <Brain size={14} />
+          </button>
+        </div>
         {showReplace && (
           <input
             type="text"
@@ -1153,7 +1236,7 @@ function SettingsPanel() {
 
   const updateSettingWithReload = useCallback((key, value) => {
     updateSetting(key, value);
-    const requiresReload = key === 'contextSize' || key === 'gpuLayers' || key === 'gpuPreference' || key === 'requireMinContextForGpu';
+    const requiresReload = key === 'contextSize' || key === 'gpuLayers' || key === 'gpuPreference' || key === 'requireMinContextForGpu' || key === 'kvCacheType';
     if (requiresReload) triggerModelReload(key);
   }, [updateSetting, triggerModelReload]);
 
@@ -1206,7 +1289,7 @@ function SettingsPanel() {
       </div>
 
       {/* Theme */}
-      <SettingsSection title="Theme" icon={<Palette size={13} />} defaultOpen>
+      <SettingsSection title="Theme" icon={<Palette size={13} />}>
         <div className="space-y-0.5">
           {themeList.map(t => (
             <button
@@ -1362,6 +1445,26 @@ function SettingsPanel() {
         </div>
       </SettingsSection>
 
+      {/* Guide Instructions */}
+      <SettingsSection title="Guide Instructions" icon={<FileCode size={13} />}>
+        <div>
+          <label className="text-[11px] text-vsc-text-dim block mb-1">Instruction File Path</label>
+          <input value={settings.guideInstructionsPath}
+            onChange={e => updateSetting('guideInstructionsPath', e.target.value)}
+            placeholder=".guide-instructions.md"
+            className="w-full text-[12px] px-2 py-1.5 rounded font-mono bg-vsc-input border border-vsc-input-border text-vsc-text" />
+          <div className="text-[10px] text-vsc-text-dim mt-0.5">
+            Path to a markdown file (relative to project root or absolute) whose contents are injected into the model's context on every request. Use it to define project-specific rules, coding conventions, or behavioral instructions.
+          </div>
+          {settings.guideInstructionsPath && (
+            <button onClick={() => updateSetting('guideInstructionsPath', '')}
+              className="text-[10px] px-1.5 py-0.5 mt-1 rounded text-vsc-accent border border-vsc-accent/50 hover:bg-vsc-accent/10">
+              Clear
+            </button>
+          )}
+        </div>
+      </SettingsSection>
+
       {/* Hardware */}
       <SettingsSection title="Hardware" icon={<Monitor size={13} />}>
         <div className="mb-3">
@@ -1387,6 +1490,26 @@ function SettingsPanel() {
         <SettingToggle label="Require Min Context for GPU" value={settings.requireMinContextForGpu}
           onChange={v => updateSettingWithReload('requireMinContextForGpu', v)}
           hint="If GPU yields < 4096 ctx, retry on CPU for larger context" />
+        <div className="mb-3 mt-2">
+          <label className="text-[11px] text-vsc-text-dim block mb-1">KV Cache Quantization</label>
+          <div className="flex gap-1">
+            {[
+              { v: 'q3_0', l: 'Q3 (Max Context)' },
+              { v: 'q4_0', l: 'Q4 (Most Context)' },
+              { v: 'q8_0', l: 'Q8 (Balanced)' },
+              { v: 'f16', l: 'F16 (Best Quality)' },
+            ].map(opt => (
+              <button key={opt.v}
+                className={`flex-1 px-2 py-1 text-[10px] rounded border transition-colors ${
+                  settings.kvCacheType === opt.v
+                    ? 'bg-vsc-accent border-vsc-accent text-white'
+                    : 'bg-vsc-bg border-vsc-panel-border text-vsc-text-dim hover:border-vsc-accent/50'}`}
+                onClick={() => updateSettingWithReload('kvCacheType', opt.v)}
+              >{opt.l}</button>
+            ))}
+          </div>
+          <div className="text-[10px] text-vsc-text-dim mt-1">Lower quantization = more context fits in memory. Affects KV cache only, not model weights.</div>
+        </div>
       </SettingsSection>
 
       {/* Editor */}
@@ -1659,10 +1782,14 @@ const DEFAULT_ENABLED_TOOLS = new Set([
   'run_command', 'check_port', 'install_packages',
   // Web
   'web_search', 'fetch_webpage', 'http_request',
-  // Browser
+  // Browser (ALL tools)
   'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type',
   'browser_fill_form', 'browser_evaluate', 'browser_scroll', 'browser_back',
-  'browser_screenshot', 'browser_get_content',
+  'browser_screenshot', 'browser_get_content', 'browser_select_option',
+  'browser_wait', 'browser_wait_for', 'browser_press_key', 'browser_hover',
+  'browser_drag', 'browser_tabs', 'browser_handle_dialog', 'browser_console_messages',
+  'browser_file_upload', 'browser_resize', 'browser_get_url', 'browser_get_links',
+  'browser_close',
   // Git
   'git_status', 'git_commit', 'git_diff', 'git_log', 'git_branch',
   // Code Analysis
@@ -1673,8 +1800,12 @@ const DEFAULT_ENABLED_TOOLS = new Set([
   'save_memory', 'get_memory', 'list_memories',
   // Planning
   'write_todos', 'update_todo',
+  // Interaction
+  'ask_question',
   // Scratchpad
   'write_scratchpad', 'read_scratchpad',
+  // Rules
+  'save_rule', 'list_rules',
 ]);
 
 // Total tool count

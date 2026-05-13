@@ -59,11 +59,34 @@ export default function EditorArea() {
   const setEditorCursorPosition = useAppStore(s => s.setEditorCursorPosition);
   const setEditorDiagnostics = useAppStore(s => s.setEditorDiagnostics);
   const setEditorSelection = useAppStore(s => s.setEditorSelection);
+  const setSymbolOutline = useAppStore(s => s.setSymbolOutline);
   const minimapEnabled = useAppStore(s => s.settings.minimapEnabled);
   const editorIndentSize = useAppStore(s => s.editorIndentSize);
   const editorIndentType = useAppStore(s => s.editorIndentType);
   const diffState = useAppStore(s => s.diffState);
   const chatFilesChanged = useAppStore(s => s.chatFilesChanged);
+  const autoSaveTimersRef = useRef(new Map()); // per-tab timers
+
+  // Auto-save: debounced write to disk after content changes (1s delay)
+  const autoSaveTab = useCallback((tabId, content, filePath) => {
+    const timers = autoSaveTimersRef.current;
+    if (timers.has(tabId)) clearTimeout(timers.get(tabId));
+    timers.set(tabId, setTimeout(() => {
+      timers.delete(tabId);
+      const api = window.electronAPI;
+      if (api?.apiFetch && filePath) {
+        api.apiFetch('/api/files/write', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: filePath, content }),
+        }).then(() => {
+          useAppStore.getState().markTabSaved(tabId);
+        }).catch(err => {
+          console.error(`[AutoSave] Failed to save ${filePath}:`, err);
+        });
+      }
+    }, 1000));
+  }, []);
   const setChatFilesChanged = useAppStore(s => s.setChatFilesChanged);
   const openDiff = useAppStore(s => s.openDiff);
   const [tabContextMenu, setTabContextMenu] = useState(null);
@@ -111,6 +134,64 @@ export default function EditorArea() {
     return () => window.removeEventListener('keydown', handleKey);
   }, []);
 
+  // Symbol outline — parse functions/classes from active file content
+  useEffect(() => {
+    if (!activeTab?.content) { setSymbolOutline([]); return; }
+    const content = activeTab.content;
+    const lines = content.split('\n');
+    const symbols = [];
+    // Regex patterns for common language constructs
+    const patterns = [
+      // JS/TS: function declarations, class methods, arrow consts
+      { regex: /^(export\s+)?(default\s+)?(async\s+)?function\s+(\w+)/, kind: 'function' },
+      { regex: /^(export\s+)?(default\s+)?class\s+(\w+)/, kind: 'class' },
+      { regex: /^(export\s+)?(const|let|var)\s+(\w+)\s*=\s*(async\s+)?\(?/, kind: 'variable' },
+      { regex: /^\s+(async\s+)?(\w+)\s*\([^)]*\)\s*(\{|=>)/, kind: 'method' },
+      // Python: def, class
+      { regex: /^(async\s+)?def\s+(\w+)/, kind: 'function' },
+      { regex: /^class\s+(\w+)/, kind: 'class' },
+      // Rust: fn, struct, impl
+      { regex: /^(pub\s+)?(async\s+)?fn\s+(\w+)/, kind: 'function' },
+      { regex: /^(pub\s+)?struct\s+(\w+)/, kind: 'class' },
+      { regex: /^impl\s+(\w+)/, kind: 'class' },
+      // Go: func, type
+      { regex: /^func\s+(\w+)/, kind: 'function' },
+      { regex: /^type\s+(\w+)\s+struct/, kind: 'class' },
+      // Java/C#: class, interface, method
+      { regex: /^(public|private|protected)?\s*(static\s+)?(class|interface|enum)\s+(\w+)/, kind: 'class' },
+    ];
+    for (let i = 0; i < lines.length && symbols.length < 100; i++) {
+      const line = lines[i];
+      for (const { regex, kind } of patterns) {
+        const m = line.match(regex);
+        if (m) {
+          // Extract name — last capture group is the name
+          const name = m[m.length - 1];
+          if (name && /^[A-Za-z_]\w*$/.test(name)) {
+            const indent = line.match(/^(\s*)/)[1].length;
+            symbols.push({ name, kind, line: i + 1, indent });
+          }
+          break; // one match per line
+        }
+      }
+    }
+    setSymbolOutline(symbols);
+  }, [activeTab?.content, setSymbolOutline]);
+
+  // Listen for goto-line events from symbol outline sidebar
+  useEffect(() => {
+    const handler = (e) => {
+      const editor = editorRef.current;
+      if (!editor || !e.detail?.line) return;
+      const line = e.detail.line;
+      editor.revealLineInCenter(line);
+      editor.setPosition({ lineNumber: line, column: 1 });
+      editor.focus();
+    };
+    window.addEventListener('guide-goto-line', handler);
+    return () => window.removeEventListener('guide-goto-line', handler);
+  }, []);
+
   // Dirty diff — update gutter decorations when content changes
   useEffect(() => {
     const editor = editorRef.current;
@@ -139,8 +220,25 @@ export default function EditorArea() {
 
   const handleCloseTab = useCallback((tabId) => {
     const tab = openTabs.find(t => t.id === tabId);
-    if (tab?.modified) {
-      if (!confirm(`"${tab.name}" has unsaved changes. Close anyway?`)) return;
+    // Auto-save: flush any pending save timer and write to disk immediately
+    if (tab?.modified && tab.path) {
+      const timers = autoSaveTimersRef.current;
+      if (timers.has(tabId)) {
+        clearTimeout(timers.get(tabId));
+        timers.delete(tabId);
+      }
+      const api = window.electronAPI;
+      if (api?.apiFetch) {
+        api.apiFetch('/api/files/write', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: tab.path, content: tab.content }),
+        }).then(() => {
+          useAppStore.getState().markTabSaved(tabId);
+        }).catch(err => {
+          console.error(`[AutoSave] Failed to save ${tab.path} on close:`, err);
+        });
+      }
     }
     closeTab(tabId);
   }, [openTabs, closeTab]);
@@ -148,9 +246,19 @@ export default function EditorArea() {
   const handleCloseOtherTabs = useCallback((tabId) => {
     openTabs.forEach(t => {
       if (t.id !== tabId) {
-        if (!t.modified || confirm(`"${t.name}" has unsaved changes. Close anyway?`)) {
-          closeTab(t.id);
+        if (t.modified && t.path) {
+          const api = window.electronAPI;
+          if (api?.apiFetch) {
+            api.apiFetch('/api/files/write', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: t.path, content: t.content }),
+            }).then(() => {
+              useAppStore.getState().markTabSaved(t.id);
+            }).catch(() => {});
+          }
         }
+        closeTab(t.id);
       }
     });
     setTabContextMenu(null);
@@ -158,9 +266,19 @@ export default function EditorArea() {
 
   const handleCloseAllTabs = useCallback(() => {
     openTabs.forEach(t => {
-      if (!t.modified || confirm(`"${t.name}" has unsaved changes. Close anyway?`)) {
-        closeTab(t.id);
+      if (t.modified && t.path) {
+        const api = window.electronAPI;
+        if (api?.apiFetch) {
+          api.apiFetch('/api/files/write', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: t.path, content: t.content }),
+          }).then(() => {
+            useAppStore.getState().markTabSaved(t.id);
+          }).catch(() => {});
+        }
       }
+      closeTab(t.id);
     });
     setTabContextMenu(null);
   }, [openTabs, closeTab]);
@@ -337,11 +455,15 @@ export default function EditorArea() {
         </div>
       )}
 
-      {/* AI Edit Bar — shown when AI has changed the currently open file */}
+      {/* AI Edit Bar — shown when AI has changed the currently open file, auto-opens diff */}
       {activeTab && (() => {
         const fileChange = chatFilesChanged.find(f => f.path === activeTab.path);
         if (!fileChange) return null;
         const totalEdits = (fileChange.linesAdded || 0) + (fileChange.linesRemoved || 0);
+        // Auto-open diff when file has AI edits and diff isn't already open
+        if (totalEdits > 0 && activeTab?.originalContent != null && !diffState) {
+          openDiff(activeTab.originalContent, activeTab.content, activeTab.name);
+        }
         return (
           <div className="flex items-center gap-2 px-3 py-1 bg-vsc-accent/5 border-b border-vsc-accent/20 no-select">
             <span className="text-[11px] text-vsc-text font-medium">
@@ -426,16 +548,25 @@ export default function EditorArea() {
             value={activeTab.content}
             theme="vs-dark"
             onChange={(value) => {
-              if (value !== undefined) updateTabContent(activeTab.id, value);
+              if (value !== undefined) {
+                updateTabContent(activeTab.id, value);
+                autoSaveTab(activeTab.id, value, activeTab.path);
+              }
             }}
             onMount={(editor, monaco) => {
               editorRef.current = editor;
-              // Track cursor position
+              // Track cursor position + send editor context to backend for AI awareness
               editor.onDidChangeCursorPosition((e) => {
-                setEditorCursorPosition({
-                  line: e.position.lineNumber,
-                  column: e.position.column,
-                });
+                const pos = { line: e.position.lineNumber, column: e.position.column };
+                setEditorCursorPosition(pos);
+                // Push active file + cursor to main process
+                if (activeTab?.path && window.electronAPI?.sendEditorContext) {
+                  window.electronAPI.sendEditorContext({
+                    activeFilePath: activeTab.path,
+                    cursorLine: pos.line,
+                    cursorCol: pos.column,
+                  });
+                }
               });
               // Set initial position
               const pos = editor.getPosition();
@@ -452,15 +583,29 @@ export default function EditorArea() {
                   setEditorSelection({ chars: text.length, lines });
                 }
               });
-              // Track diagnostics (errors/warnings)
+              // Track diagnostics (errors/warnings) + push to backend for AI feedback loop
               monaco.editor.onDidChangeMarkers(([resource]) => {
                 const markers = monaco.editor.getModelMarkers({ resource });
                 let errors = 0, warnings = 0;
+                const details = [];
                 for (const m of markers) {
                   if (m.severity === monaco.MarkerSeverity.Error) errors++;
                   else if (m.severity === monaco.MarkerSeverity.Warning) warnings++;
+                  if (details.length < 20) {
+                    details.push({
+                      line: m.startLineNumber,
+                      message: m.message,
+                      severity: m.severity === monaco.MarkerSeverity.Error ? 'error' : 'warning',
+                    });
+                  }
                 }
                 setEditorDiagnostics({ errors, warnings });
+                // Push per-file diagnostics to main process for AI tool feedback
+                const model = monaco.editor.getModel(resource);
+                const filePath = model?.uri?.fsPath || activeTab?.path || '';
+                if (filePath && window.electronAPI?.sendDiagnostics) {
+                  window.electronAPI.sendDiagnostics({ filePath, errors, warnings, details });
+                }
               });
             }}
             options={{
@@ -507,12 +652,29 @@ export default function EditorArea() {
       {inlineChat && (
         <InlineChat
           position={{ top: inlineChat.top, left: inlineChat.left }}
-          onSubmit={(prompt) => {
-            const prefix = inlineChat.selectedText
-              ? `[Selected code]\n\`\`\`\n${inlineChat.selectedText}\n\`\`\`\n\n`
-              : '';
-            addChatMessage({ role: 'user', content: prefix + prompt });
-            setInlineChat(null);
+          selectedText={inlineChat.selectedText}
+          onApplyEdit={(newCode) => {
+            // Replace the selected text (or insert at cursor) with the accepted edit
+            const editor = editorRef.current;
+            if (!editor) return;
+            const sel = editor.getSelection();
+            const model = editor.getModel();
+            if (sel && !sel.isEmpty()) {
+              // Replace selection
+              editor.executeEdits('inline-chat-accept', [{
+                range: sel,
+                text: newCode,
+              }]);
+            } else {
+              // Insert at cursor position
+              const pos = editor.getPosition();
+              if (pos) {
+                editor.executeEdits('inline-chat-accept', [{
+                  range: { startLineNumber: pos.lineNumber, startColumn: pos.column, endLineNumber: pos.lineNumber, endColumn: pos.column },
+                  text: newCode,
+                }]);
+              }
+            }
           }}
           onClose={() => setInlineChat(null)}
         />

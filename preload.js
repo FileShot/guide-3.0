@@ -56,6 +56,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   aiChat: (message, context) => ipcRenderer.invoke('ai-chat', message, context),
   agentPause: () => ipcRenderer.invoke('agent-pause'),
   agentResume: () => ipcRenderer.invoke('agent-resume'),
+  injectUserMessage: (text) => ipcRenderer.invoke('inject-user-message', { text }),
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
 
   // ── Terminal ──────────────────────────────────────────
   terminal: {
@@ -75,6 +77,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getStatus: () => ipcRenderer.invoke('updater-status'),
     onStatus:  (callback) => _on('update-status', callback),
   },
+
+  // ── Diagnostics (editor → main process) ─────────────
+  sendDiagnostics: (data) => ipcRenderer.send('editor-diagnostics', data),
+
+  // ── Editor context (editor → main process) ──────────
+  sendEditorContext: (data) => ipcRenderer.send('editor-context', data),
 
   // ── Menu actions (from appMenu.js) ────────────────────
   onMenuAction: (callback) => _on('menu-action', callback),
@@ -98,9 +106,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onContextUsage:      (cb) => _on('context-usage', cb),
   onAgenticProgress:   (cb) => _on('agentic-progress', cb),
   onTokenStats:        (cb) => _on('token-stats', cb),
+  onGenerationError:   (cb) => _on('generation-error', cb),
+  onGenerationWarning: (cb) => _on('generation-warning', cb),
 
   // Tool events
   onToolExecuting:     (cb) => _on('tool-executing', cb),
+  onToolGenerating:    (cb) => _on('tool-generating', cb),
   onMcpToolResults:    (cb) => _on('mcp-tool-results', cb),
   onToolCheckpoint:    (cb) => _on('tool-checkpoint', cb),
 
@@ -120,6 +131,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Todo events
   onTodoUpdate:        (cb) => _on('todo-update', cb),
+
+  // Ask question events
+  onAskQuestion:       (cb) => _on('ask-question', cb),
+  answerQuestion:      (answer) => ipcRenderer.invoke('answer-question', answer),
 
   // Agent pause
   onAgentPaused:       (cb) => _on('agent-paused', cb),

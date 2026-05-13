@@ -22,12 +22,13 @@ async function _browserNavigate(url) {
     return { success: false, error: `Blocked scheme: ${scheme}` };
   }
 
-  // SSRF guard — block private/internal IPs
+  // SSRF guard — only block truly dangerous targets (metadata, link-local)
+  // Allow private IPs and localhost since user-initiated browsing needs school/work networks
   try {
     const urlObj = new URL(url);
     const host = urlObj.hostname;
-    if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.|0\.|localhost|169\.254\.)/.test(host)) {
-      return { success: false, error: 'Blocked: private/internal IP' };
+    if (/^169\.254\./.test(host)) {
+      return { success: false, error: 'Blocked: link-local metadata endpoint' };
     }
   } catch {}
 
@@ -36,11 +37,7 @@ async function _browserNavigate(url) {
     url = 'https://' + url;
   }
 
-  // Prefer Playwright
-  if (this.playwrightBrowser) {
-    if (!this.playwrightBrowser.isLaunched?.()) await this.playwrightBrowser.launch?.();
-    return this.playwrightBrowser.navigate(url);
-  }
+  // Use browserManager (has Playwright integration with auto-launch)
   if (this.browserManager) {
     if (this.browserManager.parentWindow) {
       this.browserManager.parentWindow.webContents.send('show-viewport-browser');
@@ -50,6 +47,11 @@ async function _browserNavigate(url) {
       await this.browserManager.launchPlaywright();
     }
     return this.browserManager.navigate(url);
+  }
+  // Legacy: external Playwright instance (if set)
+  if (this.playwrightBrowser) {
+    if (!this.playwrightBrowser.isLaunched?.()) await this.playwrightBrowser.launch?.();
+    return this.playwrightBrowser.navigate(url);
   }
   return { success: false, error: 'No browser available' };
 }
@@ -136,12 +138,13 @@ async function _browserType(refStr, text, options = {}) {
 }
 
 async function _browserFillForm(fields) {
-  if (!this.playwrightBrowser) return { success: false, error: 'Fill form requires Playwright' };
+  const browser = this._getBrowser();
+  if (!browser) return { success: false, error: 'No browser available' };
   // Normalize fields
   const normalized = Array.isArray(fields)
     ? fields.map(f => (typeof f === 'object' ? f : {}))
     : Object.entries(fields || {}).map(([ref, value]) => ({ ref, value }));
-  return this.playwrightBrowser.fillForm(normalized);
+  return browser.fillForm(normalized);
 }
 
 async function _browserSelectOption(refStr, values) {
@@ -159,8 +162,7 @@ async function _browserSnapshot() {
 async function _browserScreenshot(options = {}) {
   const browser = this._getBrowser();
   if (!browser) return { success: false, error: 'No browser available' };
-  if (this.playwrightBrowser) return this.playwrightBrowser.screenshot(options);
-  return browser.screenshot({ fullPage: true });
+  return browser.screenshot({ ...options, fullPage: options.fullPage ?? true });
 }
 
 async function _browserGetContent(selector, html = false) {
@@ -172,7 +174,6 @@ async function _browserGetContent(selector, html = false) {
 async function _browserEvaluate(code, ref) {
   const browser = this._getBrowser();
   if (!browser) return { success: false, error: 'No browser available' };
-  if (this.playwrightBrowser) return this.playwrightBrowser.evaluate(code, ref);
   return browser.evaluate(code);
 }
 
@@ -195,38 +196,47 @@ async function _browserHover(refStr) {
 }
 
 async function _browserDrag(startRef, endRef) {
-  if (!this.playwrightBrowser) return { success: false, error: 'Drag requires Playwright' };
-  return this.playwrightBrowser.drag(startRef, endRef);
+  const browser = this._getBrowser();
+  if (!browser) return { success: false, error: 'No browser available' };
+  return browser.drag(startRef, endRef);
 }
 
 async function _browserTabs(action, index) {
-  if (!this.playwrightBrowser) return { success: false, error: 'Tabs require Playwright' };
-  return this.playwrightBrowser.tabs(action, index);
+  const browser = this._getBrowser();
+  if (!browser) return { success: false, error: 'No browser available' };
+  return browser.tabs(action, index);
 }
 
 async function _browserHandleDialog(accept, promptText) {
-  if (!this.playwrightBrowser) return { success: false, error: 'Dialog handling requires Playwright' };
-  return this.playwrightBrowser.handleDialog(accept, promptText);
+  const browser = this._getBrowser();
+  if (!browser) return { success: false, error: 'No browser available' };
+  return browser.handleDialog(accept, promptText);
 }
 
 async function _browserConsoleMessages(level) {
-  if (!this.playwrightBrowser) return { success: false, error: 'Console messages require Playwright' };
-  return this.playwrightBrowser.consoleMessages(level);
+  const browser = this._getBrowser();
+  if (!browser) return { success: false, error: 'No browser available' };
+  return browser.consoleMessages(level);
 }
 
 async function _browserFileUpload(refStr, paths) {
-  if (!this.playwrightBrowser) return { success: false, error: 'File upload requires Playwright' };
-  return this.playwrightBrowser.fileUpload(refStr, paths);
+  const browser = this._getBrowser();
+  if (!browser) return { success: false, error: 'No browser available' };
+  return browser.fileUpload(refStr, paths);
 }
 
 async function _browserResize(width, height) {
-  if (!this.playwrightBrowser) return { success: false, error: 'Resize requires Playwright' };
-  return this.playwrightBrowser.resize(width, height);
+  const browser = this._getBrowser();
+  if (!browser) return { success: false, error: 'No browser available' };
+  return browser.resize(width, height);
 }
 
 async function _browserClose() {
   if (this.playwrightBrowser) {
     try { await this.playwrightBrowser.close(); } catch {}
+  }
+  if (this.browserManager) {
+    try { await this.browserManager.closePlaywright(); } catch {}
   }
   return { success: true };
 }
@@ -241,15 +251,14 @@ async function _browserWaitFor(options = {}) {
     return { success: true, waited: ms };
   }
 
-  if (this.playwrightBrowser) return this.playwrightBrowser.waitFor(options);
   if (options.selector && browser.waitForSelector) return browser.waitForSelector(options.selector);
-  return { success: true };
+  return browser.waitFor ? browser.waitFor(options) : { success: true };
 }
 
 async function _browserScroll(direction, amount) {
   const browser = this._getBrowser();
   if (!browser) return { success: false, error: 'No browser available' };
-  if (this.playwrightBrowser) return this.playwrightBrowser.scroll(direction, amount);
+  if (browser.scroll) return browser.scroll(direction, amount);
   const pixels = (amount || 3) * 300;
   const dy = direction === 'up' ? -pixels : pixels;
   return browser.evaluate(`window.scrollBy(0, ${dy})`);
@@ -262,25 +271,17 @@ async function _browserWait(ms = 2000) {
 }
 
 async function _browserGetUrl() {
-  if (this.playwrightBrowser) {
-    const info = await this.playwrightBrowser.getUrl?.();
-    if (info) return info;
-  }
-  if (this.browserManager?.webContents) {
-    return {
-      success: true,
-      url: this.browserManager.webContents.getURL(),
-      title: this.browserManager.webContents.getTitle(),
-    };
-  }
-  return { success: false, error: 'No browser available' };
+  const browser = this._getBrowser();
+  if (!browser) return { success: false, error: 'No browser available' };
+  if (browser.getUrl) return browser.getUrl();
+  return { success: false, error: 'Cannot get URL' };
 }
 
 async function _browserGetLinks(selector) {
   const browser = this._getBrowser();
   if (!browser) return { success: false, error: 'No browser available' };
 
-  if (this.playwrightBrowser?.getLinks) return this.playwrightBrowser.getLinks(selector);
+  if (browser.getLinks) return browser.getLinks(selector);
 
   // Fallback: evaluate to extract links
   if (browser.evaluate) {

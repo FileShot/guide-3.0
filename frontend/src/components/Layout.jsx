@@ -22,11 +22,20 @@ import TitleBar from './TitleBar';
 import ActivityBar from './ActivityBar';
 import Sidebar from './Sidebar';
 import EditorArea from './EditorArea';
-import BottomPanel from './BottomPanel';
-import ChatPanel from './ChatPanel';
 import StatusBar from './StatusBar';
-import CommandPalette from './CommandPalette';
 import Notifications from './Notifications';
+import { lazy, Suspense } from 'react';
+
+// Lazy-load heavy components that aren't needed on initial render
+const BottomPanel = lazy(() => import('./BottomPanel'));
+const ChatPanel = lazy(() => import('./ChatPanel'));
+const CommandPalette = lazy(() => import('./CommandPalette'));
+
+const LazyFallback = () => (
+  <div className="flex items-center justify-center h-full text-vsc-text-dim text-vsc-sm">
+    <div className="spinner mr-2" />Loading...
+  </div>
+);
 
 export default function Layout() {
   const sidebarVisible = useAppStore(s => s.sidebarVisible);
@@ -86,7 +95,7 @@ export default function Layout() {
                 onDoubleClick={() => useAppStore.getState().togglePanel()}
               />
               <div style={{ height: panelHeight }} className="flex-shrink-0 overflow-hidden border-t border-vsc-panel-border">
-                <BottomPanel />
+                <Suspense fallback={<LazyFallback />}><BottomPanel /></Suspense>
               </div>
             </>
           )}
@@ -101,7 +110,7 @@ export default function Layout() {
               onDoubleClick={() => useAppStore.getState().toggleChatPanel()}
             />
             <div style={{ width: chatPanelWidth, minWidth: 280 }} className="bg-vsc-sidebar overflow-hidden border-l border-vsc-panel-border">
-              <ChatPanel />
+              <Suspense fallback={<LazyFallback />}><ChatPanel /></Suspense>
             </div>
           </>
         )}
@@ -111,7 +120,7 @@ export default function Layout() {
       <StatusBar />
 
       {/* Overlays */}
-      {commandPaletteOpen && <CommandPalette />}
+      {commandPaletteOpen && <Suspense fallback={null}><CommandPalette /></Suspense>}
       <Notifications />
     </div>
   );

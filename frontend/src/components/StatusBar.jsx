@@ -13,6 +13,7 @@ export default function StatusBar() {
   const modelLoadProgress = useAppStore(s => s.modelLoadProgress);
   const chatContextUsage = useAppStore(s => s.chatContextUsage);
   const activeTabId = useAppStore(s => s.activeTabId);
+  const [appVersion, setAppVersion] = useState('...');
   const openTabs = useAppStore(s => s.openTabs);
   const projectPath = useAppStore(s => s.projectPath);
   const togglePanel = useAppStore(s => s.togglePanel);
@@ -40,6 +41,8 @@ export default function StatusBar() {
   const liveServerUrl = useAppStore(s => s.liveServerUrl);
   const setLiveServerStatus = useAppStore(s => s.setLiveServerStatus);
   const addNotification = useAppStore(s => s.addNotification);
+  const vramWarning = useAppStore(s => s.vramWarning);
+  const clearVramWarning = useAppStore(s => s.clearVramWarning);
 
   // Tokens per second tracking
   const [tokensPerSec, setTokensPerSec] = useState(0);
@@ -79,6 +82,18 @@ export default function StatusBar() {
     }, 1000);
     return () => clearInterval(interval);
   }, [chatStreaming]);
+
+  // Fetch app version from package.json on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const v = window.electronAPI?.getAppVersion
+          ? await window.electronAPI.getAppVersion()
+          : (await (await import('../api/websocket')).invoke('get-app-version'));
+        if (v) setAppVersion(v);
+      } catch {}
+    })();
+  }, []);
 
   // Poll GPU memory every 10s when model is loaded
   useEffect(() => {
@@ -245,14 +260,16 @@ export default function StatusBar() {
         {/* GPU memory + layers offloaded (nvidia-smi + modelInfo merged in /api/gpu; modelInfo fallback until first poll) */}
         {gpuMemory && gpuMemory.memoryUsed !== undefined && (
           <div
-            className="statusbar-item"
+            className={`statusbar-item ${vramWarning ? 'text-yellow-400' : ''}`}
             title={`GPU: ${gpuMemory.memoryUsed}MB / ${gpuMemory.memoryTotal}MB used${gpuMemory.name ? ` (${gpuMemory.name})` : ''}${
               gpuLayerOffload !== undefined
                 ? ` | ${gpuLayerOffload}${gpuTotalLayers != null ? `/${gpuTotalLayers}` : ''} layer(s) on GPU`
                 : ''
-            }`}
+            }${vramWarning ? ` | ${vramWarning}` : ''}`}
+            onClick={() => vramWarning && clearVramWarning()}
           >
-            <HardDrive size={12} className="mr-1" />
+            {vramWarning && <AlertTriangle size={12} className="mr-1 text-yellow-400" />}
+            {!vramWarning && <HardDrive size={12} className="mr-1" />}
             <span>{gpuMemory.memoryUsed}MB</span>
             {gpuLayerOffload !== undefined && (
               <span className="ml-1 text-vsc-text-dim/70">
@@ -323,7 +340,7 @@ export default function StatusBar() {
         )}
 
         {/* Version badge */}
-        <span className="statusbar-item text-vsc-text-dim/50 text-[10px] select-none" title="guIDE 3.0.18">v3.0.18</span>
+        <span className="statusbar-item text-vsc-text-dim/50 text-[10px] select-none" title={`guIDE ${appVersion}`}>v{appVersion}</span>
       </div>
     </div>
   );

@@ -1,0 +1,95 @@
+﻿SERVER_ROUTE_COUNT=77
+ELECTRON_ROUTE_COUNT=94
+ONLY_SERVER_ROUTES_BEGIN
+GET *
+GET /
+GET /api/cloud/models/:provider
+GET /api/cloud/pool/:provider
+GET /api/cloud/test/:provider
+GET /api/models/hf/files/:owner/:repo
+GET /api/system/homedir
+ONLY_SERVER_ROUTES_END
+ONLY_ELECTRON_ROUTES_BEGIN
+GET /api/account/status
+GET /api/cloud/models/*
+GET /api/cloud/pool/*
+GET /api/cloud/test/*
+GET /api/license/plans
+GET /api/models/hf/files/*
+GET /api/setup/status
+GET /api/stripe/subscription
+GET /api/templates
+GET /api/templates/*
+GET /api/updater/status
+POST /api/account/login
+POST /api/account/logout
+POST /api/account/oauth/callback
+POST /api/account/oauth/start
+POST /api/account/refresh
+POST /api/account/register
+POST /api/license/activate
+POST /api/setup/complete
+POST /api/stripe/checkout
+POST /api/templates/create
+POST /api/updater/check
+POST /api/updater/download
+POST /api/updater/install
+ONLY_ELECTRON_ROUTES_END
+SERVER_REQUIRE_COUNT=36
+ELECTRON_REQUIRE_COUNT=32
+ONLY_SERVER_REQUIRES_BEGIN
+'./ipcBridge'
+'./transport'
+'cors'
+'express'
+'module'
+path.join(__dirname, 'liveServer'
+path.join(__dirname, 'modelDownloader'
+path.join(__dirname, 'templateHandlers'
+path.join(ROOT_DIR, 'accountManager'
+path.join(ROOT_DIR, 'autoUpdater'
+path.join(ROOT_DIR, 'browserManager'
+path.join(ROOT_DIR, 'chatEngine'
+path.join(ROOT_DIR, 'cloudLLMService'
+path.join(ROOT_DIR, 'debugService'
+path.join(ROOT_DIR, 'extensionManager'
+path.join(ROOT_DIR, 'firstRunSetup'
+path.join(ROOT_DIR, 'gitManager'
+path.join(ROOT_DIR, 'licenseManager'
+path.join(ROOT_DIR, 'logger'
+path.join(ROOT_DIR, 'longTermMemory'
+path.join(ROOT_DIR, 'mcpToolServer'
+path.join(ROOT_DIR, 'memoryStore'
+path.join(ROOT_DIR, 'modelManager'
+path.join(ROOT_DIR, 'ragEngine'
+path.join(ROOT_DIR, 'sessionStore'
+path.join(ROOT_DIR, 'settingsManager'
+path.join(ROOT_DIR, 'webSearch'
+'ws'
+ONLY_SERVER_REQUIRES_END
+ONLY_ELECTRON_REQUIRES_BEGIN
+'./accountManager'
+'./appMenu'
+'./autoUpdater'
+'./browserManager'
+'./chatEngine'
+'./cloudLLMService'
+'./debugService'
+'./extensionManager'
+'./firstRunSetup'
+'./gitManager'
+'./licenseManager'
+'./logger'
+'./longTermMemory'
+'./mcpToolServer'
+'./memoryStore'
+'./modelManager'
+'./ragEngine'
+'./rulesManager'
+'./server/liveServer'
+'./server/modelDownloader'
+'./server/templateHandlers'
+'./sessionStore'
+'./settingsManager'
+'./webSearch'
+ONLY_ELECTRON_REQUIRES_END

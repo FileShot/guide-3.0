@@ -169,9 +169,7 @@ for (const dir of [MODELS_DIR, userDataPath, path.join(userDataPath, 'sessions')
 }
 
 const log = require('./logger');
-const { chatLogBodyLimit } = require('./chatLogLimits');
 log.installConsoleIntercepts();
-console.log(`[Electron] Logger path: ${log.getLogPath()}`);
 
 const { ChatEngine, buildEngineLoadSettings } = require('./chatEngine');
 const { MCPToolServer } = require('./mcpToolServer');
@@ -222,10 +220,18 @@ const browserManager = new BrowserManager({
 });
 
 // Wire service cross-references
-mcpToolServer.setBrowserManager({ parentWindow: { webContents: { send: (e, d) => _send(e, d) }, isDestroyed: () => !mainWindow } });
+mcpToolServer.setBrowserManager(browserManager);
 mcpToolServer.setGitManager(gitManager);
 mcpToolServer.rulesManager = rulesManager;
 mcpToolServer.onTodoUpdate = (todos) => _send('todo-update', todos);
+mcpToolServer.onAskQuestion = (questionData) => {
+  return new Promise((resolve) => {
+    // Send question to frontend
+    _send('ask-question', questionData);
+    // Store the resolver so the answer IPC can pick it up
+    mcpToolServer._pendingQuestionResolve = resolve;
+  });
+};
 cloudLLM.setLicenseManager(licenseManager);
 
 // Restore persisted API keys
@@ -308,31 +314,83 @@ ipcMain.handle('rules-delete', (_e, name) => rulesManager.deleteRule(name));
 
 // Register ai-chat handler for basic model chat
 ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
+  const cloudProvider = chatContext?.cloudProvider;
+  const cloudModel = chatContext?.cloudModel;
+
+  // ── Cloud provider path ──────────────────────────────────────────────
+  if (cloudProvider) {
+    try {
+      agenticCancelled = false;
+      const settings = chatContext?.params || chatContext?.settings || {};
+      const attachments = Array.isArray(chatContext?.attachments) ? chatContext.attachments : [];
+      const images = attachments.filter(a => (a.mimeType || a.type || '').startsWith('image/'));
+
+      // Build conversation history from chatMessages for context continuity
+      const conversationHistory = [];
+      const chatMsgs = chatContext?.chatMessages || [];
+      for (const m of chatMsgs) {
+        if (m.role === 'user' || m.role === 'assistant') {
+          conversationHistory.push({ role: m.role, content: m.content });
+        }
+      }
+
+      const result = await cloudLLM.generate(userMessage, {
+        provider: cloudProvider,
+        model: cloudModel,
+        systemPrompt: settings.systemPrompt || undefined,
+        temperature: settings.temperature,
+        maxTokens: settings.maxTokens || -1,
+        topP: settings.topP,
+        conversationHistory,
+        images,
+        onToken: (token) => _send('llm-token', token),
+        onThinkingToken: (token) => _send('llm-thinking-token', token),
+        stream: true,
+      });
+
+      if (result?.isQuotaError) {
+        return { isQuotaError: true, error: '__QUOTA_EXCEEDED__' };
+      }
+
+      return { text: result.text || '', toolCallCount: 0 };
+    } catch (err) {
+      if (err.isQuotaError) return { isQuotaError: true, error: '__QUOTA_EXCEEDED__' };
+      return { error: err.message };
+    }
+  }
+
+  // ── Local model path ─────────────────────────────────────────────────
   if (!llmEngine.isReady) {
     return { error: 'No model loaded. Please load a model first.' };
   }
   try {
     agenticCancelled = false;
     const settings = chatContext?.params || chatContext?.settings || {};
-    const u = String(userMessage ?? '');
-    const histN = Array.isArray(chatContext?.conversationHistory) ? chatContext.conversationHistory.length : 0;
-    const ipcLim = chatLogBodyLimit();
-    log.info('IPC', `[ai-chat] user_chars=${u.length} history_turns=${histN} attachments=${Array.isArray(chatContext?.attachments) ? chatContext.attachments.length : 0} preview_limit=${ipcLim}`);
-    log.info('IPC', `[ai-chat] user_message_preview=\n${u.length > ipcLim ? `${u.slice(0, ipcLim)}\n… [+${u.length - ipcLim} more chars]` : u}`);
 
     // Build tool functions from enabled tool definitions
     const toolDefs = mcpToolServer.getToolDefinitions();
     const functions = ChatEngine.convertToolDefs(toolDefs);
     const toolPrompt = mcpToolServer.getToolPrompt();
-    const compactToolPrompt = mcpToolServer.getCompactToolPrompt();
+    const compactToolPrompt = mcpToolServer.getCompactToolHint('default', { minimal: true }).join('');
 
-    const result = await llmEngine.chat(userMessage, {
+    // Inject current file context into the user message so the model can see the active file
+    // Truncate to avoid consuming all context — model can use read_file for the full content
+    const currentFile = chatContext?.currentFile;
+    let effectiveMessage = userMessage;
+    if (currentFile?.path && currentFile?.content != null) {
+      const MAX_FILE_CONTEXT = 4000;
+      const truncated = currentFile.content.length > MAX_FILE_CONTEXT
+        ? currentFile.content.slice(0, MAX_FILE_CONTEXT) + `\n… [truncated — use read_file to see the full file]`
+        : currentFile.content;
+      effectiveMessage = userMessage + `\n\n[Current file: ${currentFile.path}]\n${truncated}`;
+    }
+
+    const result = await llmEngine.chat(effectiveMessage, {
       onToken: (token) => _send('llm-token', token),
       onContextUsage: (data) => _send('context-usage', data),
       onToolCall: (data) => _send('tool-call', data),
       onStreamEvent: (eventName, data) => _send(eventName, data),
       attachments: Array.isArray(chatContext?.attachments) ? chatContext.attachments : [],
-      conversationHistory: Array.isArray(chatContext?.conversationHistory) ? chatContext.conversationHistory : [],
       functions,
       toolPrompt,
       compactToolPrompt,
@@ -340,16 +398,32 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         return await mcpToolServer.executeTool(toolName, params);
       },
       systemPrompt: settings.systemPrompt || undefined,
+      guideInstructionsPath: settings.guideInstructionsPath || undefined,
       temperature: settings.temperature,
       maxTokens: settings.maxTokens || -1,
       topP: settings.topP,
       topK: settings.topK,
       repeatPenalty: settings.repeatPenalty,
     });
+
+    // Sync guide instructions path to rulesManager so list_rules includes it
+    if (settings.guideInstructionsPath) {
+      rulesManager.setGuideInstructionsPath(settings.guideInstructionsPath);
+    }
     return { text: result.text, toolCallCount: result.toolCallCount };
   } catch (err) {
     return { error: err.message };
   }
+});
+
+// Handle answer from frontend for ask_question tool
+ipcMain.handle('answer-question', (_e, answer) => {
+  if (mcpToolServer._pendingQuestionResolve) {
+    const resolve = mcpToolServer._pendingQuestionResolve;
+    mcpToolServer._pendingQuestionResolve = null;
+    resolve({ success: true, answer });
+  }
+  return { received: true };
 });
 
 ipcMain.handle('cancel-generation', async () => {
@@ -578,6 +652,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/files/search' && method === 'GET') {
       const basePath = q.path || currentProjectPath;
       const query = q.query;
+      const semantic = q.semantic === 'true';
       if (!basePath || !query) return { results: [] };
       const results = [];
       const maxResults = 200;
@@ -599,9 +674,39 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
               const content = fs.readFileSync(fullPath, 'utf8');
               const lines = content.split('\n');
               const lowerQuery = query.toLowerCase();
-              for (let i = 0; i < lines.length && results.length < maxResults; i++) {
+              // Collect all matching lines with context
+              const matches = [];
+              for (let i = 0; i < lines.length && matches.length < 50; i++) {
                 if (lines[i].toLowerCase().includes(lowerQuery)) {
-                  results.push({ file: fullPath, line: i + 1, text: lines[i].trim().substring(0, 200) });
+                  matches.push({ line: i + 1, text: lines[i].trim().substring(0, 200), lineText: lines[i] });
+                }
+              }
+              if (matches.length > 0) {
+                // Compute semantic score for the file
+                let semanticScore = matches.length; // base: more matches = more relevant
+                if (semantic) {
+                  const lowerContent = content.toLowerCase();
+                  const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
+                  // TF-IDF-ish: boost if query terms appear in identifiers/definitions
+                  for (const term of queryTerms) {
+                    // Boost: function/class/method definitions containing the term
+                    const defPattern = new RegExp(`(?:function|class|def|const|let|var|interface|type|enum)\\s+\\w*${term}\\w*`, 'gi');
+                    const defMatches = lowerContent.match(defPattern);
+                    if (defMatches) semanticScore += defMatches.length * 3;
+                    // Boost: comments/docstrings containing the term
+                    const commentPattern = new RegExp(`(?:\\/\\/|#|\\/\\*|\\*|"""|''')\\s*.*${term}`, 'gi');
+                    const commentMatches = lowerContent.match(commentPattern);
+                    if (commentMatches) semanticScore += commentMatches.length * 1.5;
+                    // Boost: export/public API containing the term
+                    const exportPattern = new RegExp(`(?:export|public|module\\.exports)\\s+\\w*${term}\\w*`, 'gi');
+                    const exportMatches = lowerContent.match(exportPattern);
+                    if (exportMatches) semanticScore += exportMatches.length * 2;
+                  }
+                  // Penalize very large files (diluted relevance)
+                  if (lines.length > 500) semanticScore *= 0.7;
+                }
+                for (const m of matches) {
+                  results.push({ file: fullPath, line: m.line, text: m.text, score: semanticScore });
                 }
               }
             } catch (_) {}
@@ -609,7 +714,11 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         }
       };
       searchDir(basePath);
-      return { results };
+      // Sort by semantic score (descending) if semantic mode, otherwise keep file order
+      if (semantic) {
+        results.sort((a, b) => (b.score || 0) - (a.score || 0));
+      }
+      return { results: results.slice(0, maxResults) };
     }
 
     // ── Settings ────────────────────────────────────────
@@ -758,6 +867,27 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (!basePath) return { _status: 400, error: 'No project path' };
       if (!branch) return { _status: 400, error: 'Branch name required' };
       return gitManager.checkout(branch, { create: !!body.create }, basePath);
+    }
+    if (p === '/api/git/blame' && method === 'GET') {
+      const basePath = q.path || currentProjectPath;
+      if (!basePath) return { _status: 400, error: 'No project path' };
+      if (!q.file) return { _status: 400, error: 'File path required' };
+      try {
+        return gitManager.blame(q.file, basePath);
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    }
+    if (p === '/api/git/stage-all-commit' && method === 'POST') {
+      const basePath = body.path || currentProjectPath;
+      const message = body.message;
+      if (!basePath) return { _status: 400, error: 'No project path' };
+      if (!message || !message.trim()) return { _status: 400, error: 'Commit message required' };
+      try {
+        return gitManager.stageAllAndCommit(message, basePath);
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
     }
 
     // ── License ─────────────────────────────────────────
@@ -1036,7 +1166,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/health' && method === 'GET') {
       return {
         status: 'running',
-        version: '3.0.18',
+        version: '3.0.15',
         modelLoaded: llmEngine.isReady,
         modelInfo: llmEngine.modelInfo,
         projectPath: currentProjectPath,
@@ -1176,7 +1306,7 @@ ipcMain.handle('terminal-create', (_event, opts) => {
 
   const termId = opts?.terminalId || `pty-${Date.now()}`;
   const shell = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/bash');
-  const cwd = currentProjectPath || process.cwd();
+  const cwd = opts?.cwd || currentProjectPath || os.homedir();
 
   const ptyProcess = ptyModule.spawn(shell, [], {
     name: 'xterm-256color',

@@ -268,7 +268,8 @@ class RAGEngine {
       return;
     }
 
-    for (const entry of entries) {
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
       const relPath = relativePath ? relativePath + '/' + entry.name : entry.name;
 
       if (entry.name.startsWith('.') && entry.name !== '.env.example') continue;
@@ -281,6 +282,9 @@ class RAGEngine {
         if (this._isIgnored(relPath, ignorePatterns)) continue;
         this._readFile(path.join(fullPath, entry.name), relPath);
       }
+
+      // Yield to event loop every 100 entries so UI doesn't freeze
+      if (i % 100 === 99) await new Promise(r => setImmediate(r));
     }
   }
 
@@ -301,28 +305,83 @@ class RAGEngine {
   }
 
   _buildIndex() {
-    // Split all files into overlapping chunks
+    // Split files into AST-aware chunks at function/class/method boundaries
+    // plus file-level summary chunks for "what does this file do" queries
     const docFreq = {}; // token → number of chunks containing it
 
     for (const [relativePath, content] of Object.entries(this._fileCache)) {
       const lines = content.split('\n');
-      for (let i = 0; i < lines.length; i += CHUNK_SIZE - CHUNK_OVERLAP) {
-        const chunkLines = lines.slice(i, i + CHUNK_SIZE);
-        const chunkContent = chunkLines.join('\n');
-        const tokens = tokenize(chunkContent);
 
+      // ── File-level summary chunk ──
+      // Extract the first comment block or JSDoc as a summary of what the file does
+      const summary = this._extractFileSummary(lines, relativePath);
+      if (summary) {
+        const tokens = tokenize(summary);
         this._chunks.push({
           relativePath,
-          startLine: i,
-          endLine: Math.min(i + CHUNK_SIZE, lines.length),
+          startLine: 0,
+          endLine: 0, // 0 = file summary (not a line range)
+          content: summary,
+          tokens,
+          isSummary: true,
+        });
+        const seen = new Set(tokens);
+        for (const t of seen) docFreq[t] = (docFreq[t] || 0) + 1;
+      }
+
+      // ── AST-aware boundary chunking ──
+      // Find function/class/method boundaries using regex heuristics
+      const boundaries = this._findChunkBoundaries(lines);
+
+      if (boundaries.length <= 1) {
+        // Small file or no boundaries found — chunk as a single unit
+        const chunkContent = lines.join('\n');
+        const tokens = tokenize(chunkContent);
+        this._chunks.push({
+          relativePath,
+          startLine: 0,
+          endLine: lines.length,
           content: chunkContent,
           tokens,
         });
-
-        // Track document frequency (unique tokens per chunk)
         const seen = new Set(tokens);
-        for (const t of seen) {
-          docFreq[t] = (docFreq[t] || 0) + 1;
+        for (const t of seen) docFreq[t] = (docFreq[t] || 0) + 1;
+      } else {
+        // Chunk at boundaries with overlap
+        for (let i = 0; i < boundaries.length; i++) {
+          const startLine = boundaries[i];
+          const endLine = i + 1 < boundaries.length ? boundaries[i + 1] : lines.length;
+          const chunkLines = lines.slice(startLine, endLine);
+
+          // If chunk is too large (>80 lines), sub-chunk it
+          if (chunkLines.length > 80) {
+            for (let j = 0; j < chunkLines.length; j += 60) {
+              const subLines = chunkLines.slice(j, j + 60);
+              const subContent = subLines.join('\n');
+              const tokens = tokenize(subContent);
+              this._chunks.push({
+                relativePath,
+                startLine: startLine + j,
+                endLine: startLine + j + subLines.length,
+                content: subContent,
+                tokens,
+              });
+              const seen = new Set(tokens);
+              for (const t of seen) docFreq[t] = (docFreq[t] || 0) + 1;
+            }
+          } else {
+            const chunkContent = chunkLines.join('\n');
+            const tokens = tokenize(chunkContent);
+            this._chunks.push({
+              relativePath,
+              startLine,
+              endLine,
+              content: chunkContent,
+              tokens,
+            });
+            const seen = new Set(tokens);
+            for (const t of seen) docFreq[t] = (docFreq[t] || 0) + 1;
+          }
         }
       }
     }
@@ -360,6 +419,122 @@ class RAGEngine {
     }
 
     return refs;
+  }
+
+  /**
+   * Find chunk boundaries at function/class/method declarations using regex heuristics.
+   * Works for JS/TS, Python, Java, C/C++, Go, Rust, Ruby — covers the most common languages.
+   * Returns an array of line indices where new top-level constructs begin.
+   */
+  _findChunkBoundaries(lines) {
+    const boundaries = [0]; // Always start with line 0
+
+    // Patterns for top-level declarations (not indented or minimally indented)
+    const topLevelPatterns = [
+      // JS/TS: function, class, const/let/var with arrow function, export
+      /^ {0,2}(?:export\s+)?(?:async\s+)?function\s+/,
+      /^ {0,2}(?:export\s+)?(?:default\s+)?class\s+/,
+      /^ {0,2}(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?(?:function|\()/,
+      /^ {0,2}(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:\(|{)/,
+      // Python: def, class, async def (at column 0)
+      /^(?:async\s+)?def\s+/,
+      /^class\s+/,
+      // Java/C#/C++: public/private/protected class/function
+      /^\s*(?:public|private|protected|static)\s+(?:class|void|int|String|boolean|async)/,
+      // Go: func, type
+      /^func\s+/,
+      /^type\s+\w+\s+struct/,
+      // Rust: fn, pub fn, impl, struct
+      /^(?:pub\s+)?fn\s+/,
+      /^(?:pub\s+)?struct\s+/,
+      /^impl\s+/,
+      // Ruby: def, class, module
+      /^(?:def|class|module)\s+/,
+    ];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      // Skip blank lines and comments
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('#') || trimmed.startsWith('/*') || trimmed.startsWith('*')) continue;
+
+      for (const pattern of topLevelPatterns) {
+        if (pattern.test(line)) {
+          // Don't add duplicate boundaries or ones too close together (<5 lines)
+          const lastBoundary = boundaries[boundaries.length - 1];
+          if (i - lastBoundary >= 5) {
+            boundaries.push(i);
+          }
+          break;
+        }
+      }
+    }
+
+    return boundaries;
+  }
+
+  /**
+   * Extract a file-level summary from the first comment block or JSDoc.
+   * This creates a "what does this file do" chunk that helps semantic search
+   * find files by purpose, not just by keyword matches.
+   */
+  _extractFileSummary(lines, relativePath) {
+    const ext = path.extname(relativePath).toLowerCase();
+    const isCommentLang = ['.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.cpp', '.go', '.rs', '.css', '.scss'].includes(ext);
+    const isHashLang = ['.py', '.rb', '.sh', '.yml', '.yaml', '.toml'].includes(ext);
+
+    let summaryLines = [];
+    let inBlockComment = false;
+
+    for (let i = 0; i < Math.min(lines.length, 30); i++) {
+      const line = lines[i].trim();
+
+      if (isCommentLang) {
+        // Block comment: /* ... */ or /** ... */
+        if (!inBlockComment && (line.startsWith('/*') || line.startsWith('/**'))) {
+          inBlockComment = true;
+          const content = line.replace(/^\/\*{1,2}\s?/, '').replace(/\*\//, '').trim();
+          if (content && !content.startsWith('Copyright') && !content.startsWith('@')) summaryLines.push(content);
+          if (line.includes('*/')) { inBlockComment = false; break; }
+          continue;
+        }
+        if (inBlockComment) {
+          const content = line.replace(/^\*\s?/, '').replace(/\*\//, '').trim();
+          if (!content) { if (summaryLines.length > 0) { inBlockComment = false; break; } continue; }
+          if (content.startsWith('@')) { inBlockComment = false; break; } // Hit JSDoc tags, stop
+          summaryLines.push(content);
+          if (line.includes('*/')) { inBlockComment = false; break; }
+          continue;
+        }
+        // Line comment at top of file
+        if (line.startsWith('//') && i < 10) {
+          const content = line.replace(/^\/\/\s?/, '').trim();
+          if (content && !content.startsWith('!') && !content.startsWith('#')) summaryLines.push(content);
+          continue;
+        }
+        // Hit code — stop
+        if (summaryLines.length > 0) break;
+        if (line && !line.startsWith('//')) break;
+      } else if (isHashLang) {
+        if (line.startsWith('#') || line.startsWith('"""') || line.startsWith("'''")) {
+          const content = line.replace(/^[#'"']+\s?/, '').replace(/["']+$/, '').trim();
+          if (content && !content.startsWith('!') && !content.startsWith(' -*-')) summaryLines.push(content);
+          continue;
+        }
+        if (summaryLines.length > 0) break;
+        if (line) break;
+      } else {
+        // Unknown language — just take first 5 non-blank lines
+        if (line) {
+          summaryLines.push(line);
+          if (summaryLines.length >= 5) break;
+        }
+      }
+    }
+
+    if (summaryLines.length === 0) return null;
+    const summary = `[${relativePath}] ${summaryLines.join(' ').substring(0, 500)}`;
+    return summary;
   }
 }
 

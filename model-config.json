@@ -7,6 +7,8 @@
     "D:\\models\\tiny\\gemma-3-1b-it-Q8_0.gguf",
     "D:\\models\\StaffPix\\llama-3.2-1b-instruct-q8_0.gguf",
     "D:\\models\\tiny\\EXAONE-4.0-1.2B-Q8_0.gguf",
-    "D:\\models\\tiny\\LFM2.5-1.2B-Instruct-Q6_K.gguf"
+    "D:\\models\\tiny\\LFM2.5-1.2B-Instruct-Q6_K.gguf",
+    "D:\\\\models\\\\Phi-4-mini-instruct.Q4_K_M.gguf",
+    "D:\\models\\StaffPix\\Phi-4-mini-instruct.Q4_K_M.gguf"
   ]
 }

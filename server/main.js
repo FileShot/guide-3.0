@@ -77,9 +77,7 @@ global.__guideApp = appBridge;
 console.log('[Server] Loading modules...');
 
 const log = require(path.join(ROOT_DIR, 'logger'));
-const { chatLogBodyLimit } = require(path.join(ROOT_DIR, 'chatLogLimits'));
 log.installConsoleIntercepts();
-console.log(`[Server] Logger path: ${log.getLogPath()}`);
 
 const { ChatEngine, buildEngineLoadSettings } = require(path.join(ROOT_DIR, 'chatEngine'));
 const { MCPToolServer } = require(path.join(ROOT_DIR, 'mcpToolServer'));
@@ -209,6 +207,55 @@ cloudLLM.setLicenseManager(ctx.licenseManager);
 
 // Register the ai-chat handler for basic model chat
 ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
+  const cloudProvider = chatContext?.cloudProvider;
+  const cloudModel = chatContext?.cloudModel;
+
+  // ── Cloud provider path ──────────────────────────────────────────────
+  if (cloudProvider) {
+    try {
+      ctx.agenticCancelled = false;
+      const settings = chatContext?.params || chatContext?.settings || {};
+      const attachments = Array.isArray(chatContext?.attachments) ? chatContext.attachments : [];
+      const images = attachments.filter(a => (a.mimeType || a.type || '').startsWith('image/'));
+
+      const conversationHistory = [];
+      const chatMsgs = chatContext?.chatMessages || [];
+      for (const m of chatMsgs) {
+        if (m.role === 'user' || m.role === 'assistant') {
+          conversationHistory.push({ role: m.role, content: m.content });
+        }
+      }
+
+      const result = await ctx.cloudLLM.generate(userMessage, {
+        provider: cloudProvider,
+        model: cloudModel,
+        systemPrompt: settings.systemPrompt || undefined,
+        temperature: settings.temperature,
+        maxTokens: settings.maxTokens || -1,
+        topP: settings.topP,
+        conversationHistory,
+        images,
+        onToken: (token) => {
+          mainWindow.webContents.send('llm-token', token);
+        },
+        onThinkingToken: (token) => {
+          mainWindow.webContents.send('llm-thinking-token', token);
+        },
+        stream: true,
+      });
+
+      if (result?.isQuotaError) {
+        return { isQuotaError: true, error: '__QUOTA_EXCEEDED__' };
+      }
+
+      return { text: result.text || '', toolCallCount: 0 };
+    } catch (err) {
+      if (err.isQuotaError) return { isQuotaError: true, error: '__QUOTA_EXCEEDED__' };
+      return { error: err.message };
+    }
+  }
+
+  // ── Local model path ─────────────────────────────────────────────────
   if (!llmEngine.isReady) {
     return { error: 'No model loaded. Please load a model first.' };
   }
@@ -220,15 +267,25 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     const toolDefs = mcpToolServer.getToolDefinitions();
     const functions = ChatEngine.convertToolDefs(toolDefs);
     const toolPrompt = mcpToolServer.getToolPrompt();
-    const compactToolPrompt = mcpToolServer.getCompactToolPrompt();
+    const compactToolPrompt = mcpToolServer.getCompactToolHint('default', { minimal: true }).join('');
 
-    const u = String(userMessage ?? '');
-    console.log(`[Chat] User: ${u.slice(0, 300)}`);
-    const histN = Array.isArray(chatContext?.conversationHistory) ? chatContext.conversationHistory.length : 0;
-    const ipcLim = chatLogBodyLimit();
-    log.info('IPC', `[ai-chat] user_chars=${u.length} history_turns=${histN} attachments=${Array.isArray(chatContext?.attachments) ? chatContext.attachments.length : 0} preview_limit=${ipcLim}`);
-    log.info('IPC', `[ai-chat] user_message_preview=\n${u.length > ipcLim ? `${u.slice(0, ipcLim)}\n… [+${u.length - ipcLim} more chars]` : u}`);
-    const result = await llmEngine.chat(userMessage, {
+    console.log(`[Chat] User: ${String(userMessage).slice(0, 300)}`);
+    llmEngine._projectPath = ctx.currentProjectPath || null;
+    llmEngine._ctx = ctx; // Pass ctx for editor context + diagnostics access
+
+    // Inject current file context into the user message so the model can see the active file
+    // Truncate to avoid consuming all context — model can use read_file for the full content
+    const currentFile = chatContext?.currentFile;
+    let effectiveMessage = userMessage;
+    if (currentFile?.path && currentFile?.content != null) {
+      const MAX_FILE_CONTEXT = 4000;
+      const truncated = currentFile.content.length > MAX_FILE_CONTEXT
+        ? currentFile.content.slice(0, MAX_FILE_CONTEXT) + `\n… [truncated — use read_file to see the full file]`
+        : currentFile.content;
+      effectiveMessage = userMessage + `\n\n[Current file: ${currentFile.path}]\n${truncated}`;
+    }
+
+    const result = await llmEngine.chat(effectiveMessage, {
       onToken: (token) => {
         mainWindow.webContents.send('llm-token', token);
       },
@@ -242,7 +299,6 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         mainWindow.webContents.send(eventName, data);
       },
       attachments: Array.isArray(chatContext?.attachments) ? chatContext.attachments : [],
-      conversationHistory: Array.isArray(chatContext?.conversationHistory) ? chatContext.conversationHistory : [],
       functions,
       toolPrompt,
       compactToolPrompt,
@@ -266,6 +322,53 @@ ipcMain.handle('cancel-generation', async () => {
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
   return { success: true };
+});
+
+// Inject a user message into the ongoing tool call loop without stopping generation.
+// The model will see this message in its next continuation and can adjust its behavior.
+ipcMain.handle('inject-user-message', async (event, { text }) => {
+  if (!text) return { success: false, error: 'No text provided' };
+  llmEngine.injectUserMessage(text);
+  return { success: true };
+});
+
+// Expose app version from package.json to the frontend
+ipcMain.handle('get-app-version', async () => {
+  try {
+    const pkg = require('../package.json');
+    return pkg.version || '0.0.0';
+  } catch { return '0.0.0'; }
+});
+
+// Receive per-file diagnostics from Monaco editor (pushed on every marker change)
+// Stored in ctx so the AI can see linter/compiler feedback after edits
+ctx.editorDiagnostics = {}; // { normalizedFilePath: { errors, warnings, details[] } }
+ipcMain.on('editor-diagnostics', (_event, data) => {
+  if (!data?.filePath) return;
+  const norm = data.filePath.replace(/\\/g, '/').toLowerCase();
+  ctx.editorDiagnostics[norm] = {
+    errors: data.errors || 0,
+    warnings: data.warnings || 0,
+    details: data.details || [],
+    updatedAt: Date.now(),
+  };
+});
+
+// Receive editor context (active file, cursor position, recent saves) from renderer
+// Injected into AI generation context so model knows what user is looking at
+ctx.editorContext = { activeFilePath: null, cursorLine: null, cursorCol: null, recentSaves: [] };
+ipcMain.on('editor-context', (_event, data) => {
+  if (!data) return;
+  if (data.activeFilePath !== undefined) {
+    ctx.editorContext.activeFilePath = data.activeFilePath || null;
+    ctx.editorContext.cursorLine = data.cursorLine || null;
+    ctx.editorContext.cursorCol = data.cursorCol || null;
+  }
+  if (data.recentSave) {
+    const saves = ctx.editorContext.recentSaves || [];
+    saves.unshift({ filePath: data.recentSave, time: Date.now() });
+    ctx.editorContext.recentSaves = saves.slice(0, 5);
+  }
 });
 
 // Alias: the frontend Stop button invokes 'agent-pause'. Route to the same
@@ -335,6 +438,13 @@ app.post('/api/models/load', async (req, res) => {
     // Persist last-used model so it auto-loads on next startup
     settingsManager.set('lastModelPath', modelPath);
     mainWindow.webContents.send('model-loaded', info);
+    // Report initial context usage so the context ring isn't 0% on load
+    const seq = llmEngine._sequence;
+    if (seq && llmEngine._context) {
+      const used = seq.nextTokenIndex || 0;
+      const total = llmEngine._context.contextSize || 0;
+      if (total > 0) mainWindow.webContents.send('context-usage', { used, total });
+    }
     res.json({ success: true, modelInfo: info });
   } catch (e) {
     mainWindow.webContents.send('model-error', { error: e.message });
@@ -1064,7 +1174,7 @@ app.post('/api/session/clear', async (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'running',
-    version: '3.0.18',
+    version: '3.0.15',
     modelLoaded: llmEngine.isReady,
     modelInfo: llmEngine.modelInfo,
     projectPath: ctx.currentProjectPath,
@@ -1442,7 +1552,7 @@ ptyWss.on('connection', (ws) => {
       const ptyModule = _loadPty(); // lazy-load native module on first terminal open
       if (ptyModule) {
         const shell = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/bash');
-        const cwd = ctx.currentProjectPath || process.cwd();
+        const cwd = msg.cwd || ctx.currentProjectPath || os.homedir();
         ptyProcess = ptyModule.spawn(shell, [], {
           name: 'xterm-256color',
           cols: msg.cols || 80,

@@ -131,6 +131,20 @@ function XTermPanel() {
   const [loaded, setLoaded] = useState(false);
   const activeTerminalTab = useAppStore(s => s.activeTerminalTab);
 
+  const projectPath = useAppStore(s => s.projectPath);
+
+  // When project path changes, cd the terminal into it
+  useEffect(() => {
+    if (projectPath && xtermRef.current && termIdRef.current && modeRef.current === 'pty') {
+      const api = window.electronAPI;
+      if (api?.terminal) {
+        // PowerShell on Windows, bash elsewhere — both accept double-quoted paths
+        const escaped = projectPath.replace(/"/g, '\\"');
+        api.terminal.write(termIdRef.current, `cd "${escaped}"\r`);
+      }
+    }
+  }, [projectPath]);
+
   // Initialize xterm.js + IPC PTY
   useEffect(() => {
     let term = null;
@@ -221,10 +235,12 @@ function XTermPanel() {
           });
 
           // Create the PTY process
+          const projectPath = useAppStore.getState().projectPath;
           const result = await api.terminal.create({
             terminalId: termId,
             cols: term.cols,
             rows: term.rows,
+            cwd: projectPath || undefined,
           });
 
           if (result?.success) {
@@ -251,7 +267,7 @@ function XTermPanel() {
           const ws = new WebSocket(wsUrl);
 
           ws.onopen = () => {
-            ws.send(JSON.stringify({ type: 'create', terminalId: activeTerminalTab, cols: term.cols, rows: term.rows }));
+            ws.send(JSON.stringify({ type: 'create', terminalId: activeTerminalTab, cols: term.cols, rows: term.rows, cwd: useAppStore.getState().projectPath || undefined }));
           };
           ws.onmessage = (event) => {
             let msg;

@@ -301,6 +301,71 @@ class GitManager {
       { cwd: dir, encoding: 'utf8', timeout: 5000 });
     return { success: true, output };
   }
+
+  /* ── Blame ──────────────────────────────────────────────── */
+
+  /**
+   * Get per-line blame annotation for a file.
+   * @param {string} file — relative file path
+   * @param {string} [cwd]
+   */
+  blame(file, cwd) {
+    const dir = cwd || this._projectPath;
+    if (!dir) throw new Error('No project path set');
+    if (!file) throw new Error('File path required');
+    const output = execFileSync('git',
+      ['blame', '--porcelain', '--', file],
+      { cwd: dir, encoding: 'utf8', timeout: 15000, maxBuffer: 5 * 1024 * 1024 });
+    // Parse porcelain output into structured lines
+    const lines = [];
+    const chunks = output.split(/^([0-9a-f]{40}) /m);
+    let currentHash = null;
+    let currentAuthor = '';
+    let currentDate = '';
+    let currentSummary = '';
+    for (let i = 1; i < chunks.length; i += 2) {
+      currentHash = chunks[i];
+      const body = chunks[i + 1] || '';
+      const authorMatch = body.match(/^author (.+)$/m);
+      const dateMatch = body.match(/^author-time (.+)$/m);
+      const summaryMatch = body.match(/^summary (.+)$/m);
+      if (authorMatch) currentAuthor = authorMatch[1];
+      if (dateMatch) {
+        try { currentDate = new Date(parseInt(dateMatch[1]) * 1000).toLocaleDateString(); }
+        catch (_) { currentDate = dateMatch[1]; }
+      }
+      if (summaryMatch) currentSummary = summaryMatch[1];
+      // Extract the actual content line (after the header block)
+      const contentLines = body.split('\n').filter(l => !l.startsWith('author') && !l.startsWith('committer') && !l.startsWith('summary') && !l.startsWith('filename') && !l.startsWith('previous') && !l.startsWith('boundary') && l.trim().length > 0 && !l.match(/^\s/));
+      for (const cl of contentLines) {
+        lines.push({
+          hash: currentHash.substring(0, 7),
+          author: currentAuthor,
+          date: currentDate,
+          summary: currentSummary,
+          content: cl,
+        });
+      }
+    }
+    return { success: true, lines };
+  }
+
+  /* ── Stage All & Commit ─────────────────────────────────── */
+
+  /**
+   * Stage all changes and commit in one operation.
+   * @param {string} message
+   * @param {string} [cwd]
+   */
+  stageAllAndCommit(message, cwd) {
+    const dir = cwd || this._projectPath;
+    if (!dir) throw new Error('No project path set');
+    if (!message || !message.trim()) throw new Error('Commit message required');
+    execFileSync('git', ['add', '-A'], { cwd: dir, encoding: 'utf8', timeout: 10000 });
+    const output = execFileSync('git', ['commit', '-m', message.trim()],
+      { cwd: dir, encoding: 'utf8', timeout: 15000 });
+    return { success: true, output };
+  }
 }
 
 module.exports = { GitManager };

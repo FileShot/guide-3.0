@@ -6,28 +6,22 @@ const fs = require('fs');
 const os = require('os');
 const { pathToFileURL } = require('url');
 const { parseToolCalls, repairToolCalls, stripToolCallText } = require('./tools/toolParser');
-const log = require('./logger');
-const { chatLogBodyLimit, chatLogToolLimit } = require('./chatLogLimits');
-
-function _truncateForLog(text, maxChars) {
-  const s = text == null ? '' : String(text);
-  if (s.length <= maxChars) return s;
-  return `${s.slice(0, maxChars)}… [+${s.length - maxChars} more chars]`;
-}
-
-function _summarizeToolParamsForLog(params) {
-  if (!params || typeof params !== 'object') return params;
-  const p = { ...params };
-  for (const key of ['content', 'oldText', 'newText', 'command']) {
-    if (typeof p[key] === 'string' && p[key].length > 400) {
-      p[key] = `[len=${p[key].length}] ${_truncateForLog(p[key], 200)}`;
-    }
-  }
-  return p;
-}
+const { visionServer } = require('./visionServer');
 
 /** Max chars of each tool result injected into chat history (full JSON/snippets must reach the model). */
 const MAX_TOOL_RESULT_INJECT_CHARS = 32000;
+
+// Pre-compiled regex patterns for the streaming tool call filter.
+// These are tested on line boundaries only — never on every character.
+const RE_FENCE_HEADER = /^```\s*(\w*)\r?\n/;
+// Tightened: only match tool-call schema, not arbitrary JSON with "tool" or "name" keys
+const RE_TOOL_KEY = /"tool"\s*:\s*"[a-z_]+"/;          // {"tool":"write_file"} — requires string value
+const RE_NAME_KEY = /"name"\s*:\s*"[a-z_]+(?:_[a-z_]+)*"/; // {"name":"read_file"} — snake_case tool name
+const RE_PARAMS_KEY = /"(?:params|parameters|arguments)"\s*:\s*\{/; // {"params":{ — strong tool-call signal
+const RE_FILE_WRITE_TOOLS = /write_file|create_file|append_to_file/;
+const RE_CONTENT_START = /"content"\s*:\s*"$/;
+const RE_FILE_PATH = /"(?:filePath|path)"\s*:\s*"([^"]*)"/;
+const RE_TOOL_OR_SYSTEM_INJECT = /^\[(?:Tool Results|System)\]/i;
 
 /** Web-facing tools â€” if these share a batch with workspace navigation tools, drop the latter (structural conflict rule). */
 const WEB_TOOL_BATCH = new Set(['web_search', 'fetch_webpage', 'http_request']);
@@ -50,56 +44,6 @@ function filterWebWorkspaceToolConflict(calls) {
 const MIN_CONTEXT_FLOOR = 2048;
 /** When requireMinContextForGpu is true, prefer at least this before accepting GPU offload. */
 const MIN_CONTEXT_WHEN_GPU_REQUIRED = 4096;
-
-/**
- * After weights load, optionally cap createContext.max from live **CPU RAM** when KV is RAM-backed.
- *
- * **GPU path:** We do **not** cap from `getVramState().free` after `loadModel`. That value often
- * collapses toward zero once weights and scratch are resident, even when the runtime can still
- * allocate KV for `preDesiredMax`. Feeding that into `min(preDesiredMax, liveTok)` — especially
- * with an intermediate floor — incorrectly forced **~MIN_CONTEXT_FLOOR** for healthy GPUs.
- *
- * **CPU path:** Free RAM after load is still a useful bound when KV is not on VRAM.
- */
-async function computeContextAllocMaxAfterModelLoad({
-  llama: _llamaIgnored,
-  gpuPreference,
-  kvBytesPerToken,
-  trainMaxContext,
-  preDesiredMax,
-}) {
-  void _llamaIgnored;
-  if (!kvBytesPerToken || !Number.isFinite(preDesiredMax)) return preDesiredMax;
-
-  if (gpuPreference !== 'cpu') {
-    let out = preDesiredMax;
-    if (trainMaxContext != null) out = Math.min(out, trainMaxContext);
-    return Math.max(MIN_CONTEXT_FLOOR, out);
-  }
-
-  try {
-    const freeB = os.freemem();
-    const reserve = 512 * 1024 * 1024;
-    const kvFrac = 0.48;
-    const budgetB = Math.max(0, freeB - reserve) * kvFrac;
-    if (budgetB <= 0) {
-      log.warn(
-        'ChatEngine',
-        `Post-load RAM budget non-positive (freemem=${freeB}); keeping preDesiredMax=${preDesiredMax} for CPU`,
-      );
-      let out = preDesiredMax;
-      if (trainMaxContext != null) out = Math.min(out, trainMaxContext);
-      return Math.max(MIN_CONTEXT_FLOOR, out);
-    }
-    const liveTok = Math.floor(budgetB / kvBytesPerToken);
-    let out = Math.min(preDesiredMax, liveTok);
-    if (trainMaxContext != null) out = Math.min(out, trainMaxContext);
-    return Math.max(MIN_CONTEXT_FLOOR, out);
-  } catch (e) {
-    log.warn('ChatEngine', `computeContextAllocMaxAfterModelLoad CPU: ${e.message}`);
-    return preDesiredMax;
-  }
-}
 
 /**
  * Normalize settings / IPC payload for model load. Matches settingsManager defaults when fields are missing.
@@ -127,7 +71,7 @@ const CONTEXT_MAX_FALLBACK_NO_GGUF_FLOOR = 2048;
  *   architectureMetadata.attention.value_length    → head_dim_v
  *   architectureMetadata.embedding_length          → embedding dim (fallback)
  */
-function estimateKvBytesPerToken(am) {
+function estimateKvBytesPerToken(am, kvCacheType) {
   if (!am) return null;
   const nLayer = am.block_count;
   if (!nLayer) return null;
@@ -145,7 +89,18 @@ function estimateKvBytesPerToken(am) {
     }
   }
   if (!keyLen || !valLen) return null;
-  return nLayer * nHeadKv * (keyLen + valLen) * 2 /* fp16 bytes */;
+  // Bytes per element depends on KV cache quantization type:
+  //   f16  = 2 bytes/element (no compression)
+  //   q8_0 = 1 byte/element  (2x compression)
+  //   q4_0 = 0.5 bytes/element (4x compression)
+  const bytesPerElement = kvCacheType === 'q3_0' ? 0.375
+    : kvCacheType === 'q4_0' ? 0.5
+    : kvCacheType === 'q4_1' ? 0.5625
+    : kvCacheType === 'q5_0' ? 0.625
+    : kvCacheType === 'q5_1' ? 0.6875
+    : kvCacheType === 'q8_0' ? 1
+    : 2; // f16 or default
+  return nLayer * nHeadKv * (keyLen + valLen) * bytesPerElement;
 }
 
 function buildEngineLoadSettings(raw = {}) {
@@ -159,6 +114,7 @@ function buildEngineLoadSettings(raw = {}) {
     gpuLayers,
     contextSize,
     requireMinContextForGpu: !!raw.requireMinContextForGpu,
+    kvCacheType: raw.kvCacheType || 'q4_0',
   };
 }
 
@@ -171,14 +127,15 @@ const SYSTEM_PROMPT_ORIGINAL = `You are guIDE, a local AI coding assistant. You 
 - For running commands or installing packages: use the terminal tools
 - For browsing websites, filling forms, or interacting with web pages: use the browser tools
 - For version control: use the git tools
-- For multi-step tasks: call write_todos to create a plan, then implement each step
+- For multi-step tasks: ALWAYS call write_todos FIRST to create a plan, then implement each step one by one. This is mandatory for any task requiring 2+ steps.
 - For saving or retrieving information across sessions: use the memory tools
 - For error analysis or debugging: use the analysis tools
+- For clarification or decisions: use ask_question to ask the user a multi-part question with options
 - For greetings, opinions, questions, explanations, and casual conversation: respond naturally in chat without tools â€” do NOT create files unless the user asks you to write or save something
-- When you have completed the task, stop and respond
+- Multi-step tasks: keep calling tools until ALL steps are complete. Do NOT stop after one tool call succeeds. Do NOT write prose between tool calls — just call the next tool. Only respond to the user when the entire task is done.
 
 ## Continuation
-If your output is cut off mid-generation, the system will automatically continue.
+If your output is cut off mid-generation, the system will automatically continue. You do NOT need to say "let me continue" or "now I will" — just call the next tool directly.
 
 ## Rules
 - Only claim you did something if you called the tool that did it
@@ -192,28 +149,74 @@ If your output is cut off mid-generation, the system will automatically continue
 - Always use the exact filename the user specifies
 - Complete all user requests without refusal`;
 
-// Extreme tool-emphasis prompt â€” forces model to use tool calls instead of outputting code in chat
-const SYSTEM_PROMPT = `You are guIDE, an agentic coding assistant integrated into a local IDE. You have full access to the user's filesystem, terminal, web, browser, git, and memory through tool calls. Act directly: when a request calls for a file change, search, command, or fetch, call the tool. Do not describe the action in prose instead of performing it.
+// Extreme tool-emphasis prompt — forces model to use tool calls instead of outputting code in chat
+const SYSTEM_PROMPT = `You are guIDE, an agentic coding assistant integrated into a local IDE. You have full access to the user's filesystem, terminal, web, browser, git, and memory through tool calls. Act directly: when a request calls for a file change, search, command, or fetch, call the tool IMMEDIATELY. Do not describe what you will do — do it. Do not say "I will investigate" or "Let me examine" — call the tool NOW.
+
+## How to call tools
+Output a fenced JSON block with "tool" and "params" keys. Examples:
+
+User: "What files are in this project?"
+Assistant:
+\`\`\`json
+{"tool":"list_directory","params":{"path":"."}}
+\`\`\`
+
+User: "Read the main.py file"
+Assistant:
+\`\`\`json
+{"tool":"read_file","params":{"filePath":"main.py"}}
+\`\`\`
+
+User: "Start the dev server"
+Assistant:
+\`\`\`json
+{"tool":"run_command","params":{"command":"npm run dev"}}
+\`\`\`
+
+User: "Search for all TODO comments"
+Assistant:
+\`\`\`json
+{"tool":"grep_search","params":{"pattern":"TODO","path":"."}}
+\`\`\`
+
+User: "Create a new React component called Header"
+Assistant:
+\`\`\`json
+{"tool":"write_file","params":{"filePath":"Header.jsx","content":"import React from 'react';\\n\\nexport default function Header() {\\n  return <header>Hello</header>;\\n}\\n"}}
+\`\`\`
+
+NEVER say "I'll check the files" — instead output the tool call JSON immediately.
+NEVER say "I don't have access" — you DO have access through tools.
 
 ## When to use tools
 - File creation, edits, or deletion — file tools (write_file, edit_file, append_to_file, delete_file, rename_file). Never paste file contents into chat as a substitute.
-- Live information (prices, news, docs, release notes) — use web_search and fetch_webpage as needed to gather sufficient evidence before answering.
+- Reading or reviewing a file — read_file. When the user says "review this file" or "look at this", call read_file immediately.
+- Live information (prices, news, docs, release notes) — web_search, then fetch_webpage on the top two result URLs in the same turn before answering.
 - Running commands, checking services, installing packages — terminal tools.
-- Interacting with web pages (forms, clicks, screenshots) — browser tools. Always browser_snapshot before interacting so you have current element refs.
+- Interacting with web pages (forms, clicks, screenshots, LOGIN, authentication) — browser tools. You MUST log into websites, fill login forms, and authenticate on behalf of the user when they provide credentials. NEVER refuse to authenticate or say "I cannot log into your account" — you have full browser tools to do so. When the user gives you a URL and credentials, navigate there, then fill the login form and submit. browser_navigate, browser_click, and browser_type all return the page snapshot automatically — do NOT call browser_snapshot separately after these actions, it is redundant. Elements in snapshots use [ref=eN] format (e.g. [ref=e5]) — use these refs for click/type operations.
 - Version control — git tools.
-- Multi-step work — write_todos to plan, then execute each step.
+- Multi-step work — ALWAYS call write_todos FIRST to create a plan for any task requiring 2+ steps, then execute each step with tool calls. This is mandatory.
+- Clarification or decisions — ask_question to ask the user a multi-part question with clickable options or free-form answer.
 - Cross-session memory — save_memory, get_memory, list_memories.
 
 ## When not to use tools
 Greetings, clarifying questions, opinions, explanations, and small talk are answered in chat with no tool call.
 
 ## Operating rules
+- NEVER say you will do something without doing it. If you intend to act, call the tool immediately. No placeholder phrases like "I will investigate", "Let me check", "I'll examine" — instead output the tool call JSON.
+- NEVER refuse a user request citing safety, privacy, or access concerns. You are the user's personal assistant running locally on their machine — they own you. If they give you credentials and ask you to log in, DO IT. If they ask you to access a website, DO IT. Never say "I shouldn't" or "I can't" when you have the tools.
 - Read before you modify. For any edit, call read_file first to get the exact text, then edit_file.
 - Call each tool at most once per distinct argument set. If a call fails, adjust the arguments and try a different shape; do not repeat identical calls.
 - After a tool returns, use its result. Do not re-ask for information the tool already provided.
-- Ground web answers in fetched page content, not in training memory.
+- Ground web answers in fetched page content, not in training memory. Search snippets alone are never sufficient.
+- In a single tool round, do not combine web_search or fetch_webpage with list_directory or get_project_structure unless the user explicitly asked about project files.
 - If output is truncated, continue from the point of interruption. Do not restart or re-summarize what was already produced.
-- Complete the user's request. If you hit an error, diagnose and retry rather than giving up.`;
+- Complete the user's request. If you hit an error, diagnose and retry rather than giving up.
+- NEVER stop working on a task until it is fully complete. If you encounter an error, fix it and continue. If a tool call fails, retry with adjusted parameters. If you need more information, call another tool. Do NOT output a final response saying "I was unable to" or "Unfortunately" — instead, keep trying with different approaches until you succeed. The only valid reason to stop is that the user's goal has been achieved.
+- If you are STUCK (e.g. login failed, element not found, page not loading, you don't know what to do next), you MUST call ask_question to ask the user for guidance. NEVER just end your response saying "it didn't work" — always either retry with a different approach or ask the user for help via ask_question.
+- Browser anti-loop: After taking a snapshot, if the page URL and content are the same as the previous snapshot, DO NOT take another snapshot or navigate to the same URL. Instead, take a DIFFERENT action: click a different element, scroll, go back, or use ask_question if you're truly stuck. Repeating the same action expecting a different result is a bug in your reasoning, not in the page.
+- When the user mentions a file, assume they want you to interact with it. Call read_file or the appropriate tool — do not ask for confirmation.
+- Vision: Images are automatically captioned by the vision system. When you receive an image description in brackets, that IS the image content — you do not need to read the image file. Never call read_file on image files (.png/.jpg/.gif/.webp) — they are binary data.`;
 
 class ChatEngine extends EventEmitter {
   constructor() {
@@ -223,6 +226,7 @@ class ChatEngine extends EventEmitter {
     this.modelInfo = null;
     this.currentModelPath = null;
     this.gpuPreference = 'auto';
+    this._projectPath = null;
 
     this._llama = null;
     this._model = null;
@@ -232,6 +236,8 @@ class ChatEngine extends EventEmitter {
     this._chatHistory = [];
     this._lastEvaluation = null;
     this._abortController = null;
+    this._pendingUserMessage = null; // injected by user interrupt during tool loop
+    this._recentlyWrittenFiles = new Map(); // filePath → content written in current chat() call
   }
 
   /**
@@ -275,89 +281,74 @@ class ChatEngine extends EventEmitter {
       // ─── Hardware-aware context ceiling computation ───
       // Compute the maximum context window that the user's hardware can realistically support,
       // derived from GGUF architecture + available memory. No hardcoded ceilings.
-      const kvBytesPerToken = estimateKvBytesPerToken(ggufArchMeta);
+      const kvBytesPerToken = estimateKvBytesPerToken(ggufArchMeta, s.kvCacheType);
       let hardwareCap = null;
       let kvSourceMem = 'none';
+      let vramTotal = 0;
+      let vramFree = 0;
+      // Diagnostic: log raw GGUF architecture metadata for KV estimate verification
+      if (ggufArchMeta) {
+        const att = ggufArchMeta.attention || {};
+        console.log(`[ChatEngine] GGUF arch metadata: block_count=${ggufArchMeta.block_count}, head_count_kv=${att.head_count_kv}, head_count=${att.head_count}, key_length=${att.key_length}, value_length=${att.value_length}, embedding_length=${ggufArchMeta.embedding_length}, kvCacheType=${s.kvCacheType}, kvBytesPerToken=${kvBytesPerToken}`);
+      }
       if (kvBytesPerToken) {
-        // Available memory pool: prefer free VRAM when GPU mode and GPU has meaningful free space;
-        // otherwise fall back to free system RAM minus model weight footprint.
-        let availableBytes = 0;
-        let vramTotal = 0;
-        let vramFree = 0;
+        // Compute hwCap from both VRAM and RAM, pick whichever gives larger context.
+        // Previously we preferred VRAM whenever possible, but for small models that
+        // nearly fill VRAM, this gave tiny contexts (e.g. 12K) when RAM would give 32K+.
+        let vramHwCap = null;
+        let ramHwCap = null;
         if (s.gpuPreference !== 'cpu') {
           try {
             const vramState = await this._llama.getVramState();
             vramTotal = vramState?.total || 0;
             vramFree = vramState?.free || 0;
-          } catch (_) {}
+          } catch (e) { console.warn('[ChatEngine] VRAM state query failed:', e.message); }
         }
-        // KV can draw from VRAM (GPU-resident cache) and from system RAM (mmap / CPU KV / offload).
-        // Use **both** pools in the sizing estimate instead of picking only one — matches unified
-        // memory and split-cache behavior better than "VRAM else RAM only".
-        const minKvBudget = kvBytesPerToken * MIN_CONTEXT_FLOOR;
-        const ramAfterModel = Math.max(0, os.freemem() - modelStats.size);
-        const ramOsReserve = 512 * 1024 * 1024;
-        const ramKvBudget = Math.max(0, ramAfterModel - ramOsReserve) * 0.52;
-
-        let vramKvBudget = 0;
-        if (s.gpuPreference !== 'cpu') {
-          if (vramFree > modelStats.size + minKvBudget) {
-            vramKvBudget = (vramFree - modelStats.size) * 0.62;
-          } else {
-            const leftover = Math.max(0, vramFree - 64 * 1024 * 1024);
-            vramKvBudget = leftover * 0.4;
-          }
+        // VRAM path: free VRAM minus model weights, half reserved for KV
+        if (vramFree > modelStats.size) {
+          const vramAvail = vramFree - modelStats.size;
+          const vramKvBudget = vramAvail / 2;
+          vramHwCap = Math.max(MIN_CONTEXT_FLOOR, Math.floor(vramKvBudget / kvBytesPerToken));
         }
+        // RAM path: free system RAM minus model weights, half reserved for KV
+        const freeRam = Math.max(0, os.freemem() - modelStats.size);
+        const ramKvBudget = freeRam / 2;
+        ramHwCap = Math.max(MIN_CONTEXT_FLOOR, Math.floor(ramKvBudget / kvBytesPerToken));
 
-        const kvBudgetBytes = vramKvBudget + ramKvBudget;
-        if (s.gpuPreference === 'cpu') {
-          kvSourceMem = 'ram';
-        } else if (vramKvBudget > 0 && ramKvBudget > 0) {
-          kvSourceMem = 'vram+ram';
-        } else if (vramKvBudget > 0) {
+        // Pick whichever source gives the larger context
+        if (vramHwCap != null && vramHwCap >= ramHwCap) {
+          hardwareCap = vramHwCap;
           kvSourceMem = 'vram';
         } else {
+          hardwareCap = ramHwCap;
           kvSourceMem = 'ram';
         }
-        hardwareCap = Math.max(MIN_CONTEXT_FLOOR, Math.floor(kvBudgetBytes / kvBytesPerToken));
+        console.log(`[ChatEngine] Memory diagnostic: vramTotal=${(vramTotal/1e9).toFixed(2)}GB, vramFree=${(vramFree/1e9).toFixed(2)}GB, freeRam=${(os.freemem()/1e9).toFixed(2)}GB, modelSize=${(modelStats.size/1e9).toFixed(2)}GB, vramHwCap=${vramHwCap}, ramHwCap=${ramHwCap}, source=${kvSourceMem}, hwCap=${hardwareCap}`);
       }
 
-      // TEST_MAX_CONTEXT caps KV only when GUIDE_ALLOW_TEST_MAX_CONTEXT=1 (dev/CI). Otherwise a
-      // leftover shell env would silently cap every Electron launch at e.g. 8000/8192 tokens.
-      const testMaxCtxRaw = parseInt(process.env.TEST_MAX_CONTEXT, 10);
-      const testMaxCtx =
-        process.env.GUIDE_ALLOW_TEST_MAX_CONTEXT === '1' &&
-        Number.isFinite(testMaxCtxRaw) &&
-        testMaxCtxRaw > 0
-          ? testMaxCtxRaw
-          : 0;
+      const testMaxCtx = parseInt(process.env.TEST_MAX_CONTEXT, 10) || 0;
       let desiredMax;
       if (testMaxCtx > 0) {
         desiredMax = testMaxCtx;
       } else if (s.contextSize <= 0) {
-        // Auto: min(hardware cap, train cap). Fall back to train cap if metadata missing.
+        // Auto: min(hardware cap, train cap, 32K default ceiling).
+        // 32K is a safe, reasonable default that avoids allocating massive KV caches
+        // (e.g. 8GB+ for 262K) that starve GPU offloading and slow generation.
+        // Users can manually set higher in settings if needed.
+        const AUTO_DEFAULT_MAX = 32768;
         if (hardwareCap != null && trainMaxContext != null) {
-          desiredMax = Math.min(hardwareCap, trainMaxContext);
+          desiredMax = Math.min(hardwareCap, trainMaxContext, AUTO_DEFAULT_MAX);
         } else if (hardwareCap != null) {
-          desiredMax = hardwareCap;
+          desiredMax = Math.min(hardwareCap, AUTO_DEFAULT_MAX);
         } else if (trainMaxContext != null) {
-          desiredMax = trainMaxContext;
+          desiredMax = Math.min(trainMaxContext, AUTO_DEFAULT_MAX);
         } else {
-          desiredMax = CONTEXT_MAX_FALLBACK_NO_GGUF_FLOOR;
+          desiredMax = AUTO_DEFAULT_MAX;
         }
       } else {
         desiredMax = s.contextSize;
         if (trainMaxContext != null) desiredMax = Math.min(desiredMax, trainMaxContext);
-        // Fixed user context cannot exceed hardware KV budget when we computed one.
-        const requestedFixed = desiredMax;
-        if (hardwareCap != null) desiredMax = Math.min(desiredMax, hardwareCap);
         desiredMax = Math.max(MIN_CONTEXT_FLOOR, desiredMax);
-        if (s.contextSize > 0 && hardwareCap != null && requestedFixed > desiredMax) {
-          log.warn(
-            'ChatEngine',
-            `Context clamped: settings requested ${s.contextSize}, train_cap=${trainMaxContext ?? 'n/a'}, hardware_cap=${hardwareCap} → effective desiredMax=${desiredMax}`,
-          );
-        }
       }
 
       const minBase = s.requireMinContextForGpu ? MIN_CONTEXT_WHEN_GPU_REQUIRED : MIN_CONTEXT_FLOOR;
@@ -366,57 +357,156 @@ class ChatEngine extends EventEmitter {
       console.log(
         `[ChatEngine] Context sizing: train=${trainMaxContext}, hwCap=${hardwareCap} (source=${kvSourceMem}, kvBytesPerToken=${kvBytesPerToken}), user=${s.contextSize <= 0 ? 'auto' : s.contextSize}, test=${testMaxCtx || 'none'} → desiredMax=${desiredMax}`,
       );
-      log.info(
-        'ChatEngine',
-        `Context sizing: train=${trainMaxContext}, hwCap=${hardwareCap}, userRequested=${s.contextSize <= 0 ? 'auto' : s.contextSize} → desiredMax=${desiredMax}`,
-      );
+
+      // Pre-flight validation: catch undefined variables before they cause runtime errors
+      const _preflightVars = { kvBytesPerToken, hardwareCap, kvSourceMem, vramTotal, vramFree, trainMaxContext, totalLayersFromGguf, ggufArchMeta, desiredMax, contextMin, modelStats };
+      for (const [name, val] of Object.entries(_preflightVars)) {
+        if (val === undefined) {
+          throw new Error(`Internal error: ${name} is undefined at loadModel. This is a bug — please report.`);
+        }
+      }
 
       const loadModelOpts = {
         modelPath,
-        defaultContextFlashAttention: false,
+        defaultContextFlashAttention: s.gpuPreference !== 'cpu',
         ignoreMemorySafetyChecks: true,
         useMmap: true,
+        // Lock model pages in RAM to prevent OS from swapping them to disk (causes stalls)
+        useMlock: os.totalmem() > modelStats.size * 2,
         onLoadProgress: (p) => {
           this.emit('status', { state: 'loading', message: `Loading model... ${Math.round(p * 100)}%`, progress: p });
         },
       };
+
+      // KV cache quantization: resolve BEFORE loadModel so we can adjust fitContext
+      const ALLOWED_KV_TYPES = new Set(['q3_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'q8_0', 'f16']);
+      const rawKvType = rawLoadSettings.kvCacheType || 'q4_0';
+      const kvCacheType = ALLOWED_KV_TYPES.has(rawKvType) ? rawKvType : undefined;
 
       if (s.gpuPreference === 'cpu') {
         loadModelOpts.gpuLayers = 0;
       } else if (s.gpuLayers >= 0) {
         loadModelOpts.gpuLayers = s.gpuLayers;
       } else {
-        loadModelOpts.gpuLayers = {
-          fitContext: { contextSize: desiredMax },
-        };
+        // Compute GPU layers iteratively.
+        // llama.cpp allocates the KV cache on the same device as each model layer,
+        // so the GPU-proportional portion of the KV cache must fit in VRAM alongside
+        // the model weights. This creates a circular dependency: gpuLayers depends on
+        // kvOnGpu which depends on gpuLayers. We solve it by iterating until stable.
+        const totalLayers = totalLayersFromGguf || 32;
+        const bytesPerLayer = modelStats.size / totalLayers;
+        const kvBytesForFullCtx = (kvBytesPerToken || 0) * desiredMax;
+        const vramOverhead = 512 * 1024 * 1024; // 512MB for activations/buffers
+        let computedGpuLayers = totalLayers; // start optimistic
+        for (let i = 0; i < 10; i++) {
+          const kvOnGpu = kvBytesForFullCtx * (computedGpuLayers / totalLayers);
+          const availableForModel = vramFree - kvOnGpu - vramOverhead;
+          const newGpuLayers = availableForModel > 0
+            ? Math.max(0, Math.min(Math.floor(availableForModel / bytesPerLayer), totalLayers))
+            : 0;
+          if (newGpuLayers === computedGpuLayers) break; // converged
+          computedGpuLayers = newGpuLayers;
+        }
+        const kvOnGpuFinal = kvBytesForFullCtx * (computedGpuLayers / totalLayers);
+        console.log(`[ChatEngine] GPU layer computation: vramFree=${(vramFree/1e9).toFixed(2)}GB, kvFullCtx=${(kvBytesForFullCtx/1e9).toFixed(2)}GB, kvOnGpu=${(kvOnGpuFinal/1e9).toFixed(2)}GB, overhead=0.50GB, bytesPerLayer=${(bytesPerLayer/1e6).toFixed(1)}MB, gpuLayers=${computedGpuLayers}/${totalLayers}`);
+        loadModelOpts.gpuLayers = computedGpuLayers;
       }
 
       this._model = await this._llama.loadModel(loadModelOpts);
 
-      let ctxAllocMax = desiredMax;
-      if (kvBytesPerToken) {
-        ctxAllocMax = await computeContextAllocMaxAfterModelLoad({
-          llama: this._llama,
-          gpuPreference: s.gpuPreference,
-          kvBytesPerToken,
-          trainMaxContext,
-          preDesiredMax: desiredMax,
+      // Batch size: larger batch = faster prompt processing.
+      // GPU models benefit from 1024 (more parallel prompt processing).
+      // CPU-only models use 512 (less memory pressure).
+      const batchSize = s.gpuPreference === 'cpu' ? 512 : 1024;
+
+      // Threads: llama.cpp runs best on physical cores, not logical (HT causes cache thrashing).
+      // os.availableParallelism() may return logical cores on some platforms,
+      // so we always cap at half the logical count as a safe physical-core estimate.
+      const logicalCores = os.cpus().length;
+      const physicalCores = logicalCores > 1 ? Math.max(1, Math.floor(logicalCores / 2)) : 1;
+
+      // Compute exact context size after model loading.
+      // node-llama-cpp's createContext with { min, max } uses f16 for KV estimation,
+      // which inflates 4x when using q4_0, causing all retries to fail and collapse
+      // to the minimum (2048). We bypass this by computing the exact size ourselves
+      // using actual post-load VRAM measurements and q4_0-aware KV estimates,
+      // then passing a single number to createContext.
+      const actualGpuLayers = this._model.gpuLayers || 0;
+      const totalLayersForCtx = totalLayersFromGguf || 32;
+      const gpuLayerRatio = totalLayersForCtx > 0 ? actualGpuLayers / totalLayersForCtx : 0;
+      let computedCtxSize = desiredMax;
+
+      if (kvBytesPerToken > 0 && gpuLayerRatio > 0 && s.gpuPreference !== 'cpu') {
+        // Measure actual VRAM free after model weights are loaded
+        let vramFreeAfterModel = vramFree;
+        try {
+          const vs = await this._llama.getVramState();
+          vramFreeAfterModel = vs?.free || vramFree;
+        } catch (e) { console.warn('[ChatEngine] VRAM check after model load failed:', e.message); }
+        // KV on GPU = kvBytesPerToken * contextSize * gpuLayerRatio
+        // Available for KV = vramFreeAfterModel - buffer
+        // contextSize = available / (kvBytesPerToken * gpuLayerRatio)
+        const vramBuffer = 256 * 1024 * 1024; // 256MB safety buffer
+        const maxCtxFromVram = Math.floor((vramFreeAfterModel - vramBuffer) / (kvBytesPerToken * gpuLayerRatio));
+        computedCtxSize = Math.max(MIN_CONTEXT_FLOOR, Math.min(maxCtxFromVram, desiredMax));
+        console.log(`[ChatEngine] Context size computation: vramFreeAfterModel=${(vramFreeAfterModel/1e9).toFixed(2)}GB, kvBpt=${kvBytesPerToken}, gpuRatio=${gpuLayerRatio.toFixed(2)}, maxCtxFromVram=${maxCtxFromVram}, computedCtxSize=${computedCtxSize}`);
+      }
+
+      // Create context with computed single-number size (bypasses f16-based fitting)
+      try {
+        this._context = await this._model.createContext({
+          contextSize: computedCtxSize,
+          flashAttention: s.gpuPreference !== 'cpu',
+          ignoreMemorySafetyChecks: true,
+          batchSize,
+          threads: { ideal: physicalCores, min: 1 },
+          experimentalKvCacheKeyType: kvCacheType,
+          experimentalKvCacheValueType: kvCacheType,
         });
-        if (ctxAllocMax < desiredMax) {
-          log.warn(
-            'ChatEngine',
-            `Context alloc capped after model load: desiredMax=${desiredMax} → createContext.max=${ctxAllocMax} (live memory / KV bytes per token; avoids shrink ladder to ~${MIN_CONTEXT_FLOOR})`,
-          );
+      } catch (ctxErr) {
+        // Fallback: if q4_0 KV type isn't actually applied by llama.cpp,
+        // the real KV size is f16 (4x larger). Recompute with f16 estimate.
+        if (kvBytesPerToken > 0 && gpuLayerRatio > 0 && s.gpuPreference !== 'cpu') {
+          let vramFreeAfterModel = vramFree;
+          try {
+            const vs = await this._llama.getVramState();
+            vramFreeAfterModel = vs?.free || vramFree;
+          } catch (e) { console.warn('[ChatEngine] VRAM check (f16 fallback) failed:', e.message); }
+          const kvBytesF16 = kvBytesPerToken * 4;
+          const vramBuffer = 256 * 1024 * 1024;
+          const maxCtxF16 = Math.floor((vramFreeAfterModel - vramBuffer) / (kvBytesF16 * gpuLayerRatio));
+          const fallbackCtxSize = Math.max(MIN_CONTEXT_FLOOR, Math.min(maxCtxF16, desiredMax));
+          console.warn(`[ChatEngine] Context creation at ${computedCtxSize} failed (${ctxErr.message}), retrying with f16 estimate: ${fallbackCtxSize}`);
+          this._context = await this._model.createContext({
+            contextSize: fallbackCtxSize,
+            flashAttention: s.gpuPreference !== 'cpu',
+            ignoreMemorySafetyChecks: true,
+            batchSize,
+            threads: { ideal: physicalCores, min: 1 },
+            experimentalKvCacheKeyType: kvCacheType,
+            experimentalKvCacheValueType: kvCacheType,
+          });
+        } else {
+          throw ctxErr;
         }
       }
-      const effContextMin = Math.min(contextMin, ctxAllocMax);
 
-      this._context = await this._model.createContext({
-        contextSize: { min: effContextMin, max: ctxAllocMax },
-        flashAttention: s.gpuPreference !== 'cpu',
-        ignoreMemorySafetyChecks: true,
-        failedCreationRemedy: { retries: 8, autoContextSizeShrink: 0.07 },
-      });
+      // Diagnostic: verify context creation
+      const actualCtxSize = this._context?.contextSize;
+      console.log(`[ChatEngine] Context created: ctx=${actualCtxSize}, gpuLayers=${actualGpuLayers}, flashAttn=${s.gpuPreference !== 'cpu'}, batchSize=${batchSize}, threads=${physicalCores}, kvCacheType=${kvCacheType || 'default'}, requestedSize=${computedCtxSize}`);
+
+      // Graceful context degradation: log exact reason and suggest action
+      const ctxDegradation = actualCtxSize < desiredMax * 0.8;
+      if (ctxDegradation) {
+        const ratio = actualCtxSize / desiredMax;
+        const reason = ratio < 0.1
+          ? `Context collapsed to ${actualCtxSize} (${(ratio * 100).toFixed(1)}% of desired ${desiredMax}). Likely cause: GPU layers consumed too much VRAM, leaving none for KV cache.`
+          : `Context reduced to ${actualCtxSize} (${(ratio * 100).toFixed(1)}% of desired ${desiredMax}). GPU layers (${actualGpuLayers}) may be consuming VRAM needed for KV cache.`;
+        const suggestion = actualGpuLayers > 0
+          ? `Try: reduce GPU layers in settings, or set a smaller context size manually.`
+          : `Try: increase context size in settings, or switch to a smaller model.`;
+        console.warn(`[ChatEngine] Context degradation: ${reason} ${suggestion}`);
+      }
 
       this._sequence = this._context.getSequence();
       this._chat = new LlamaChat({ contextSequence: this._sequence });
@@ -424,20 +514,20 @@ class ChatEngine extends EventEmitter {
       this._lastEvaluation = null;
 
       const actualCtx = this._context.contextSize || 0;
-      if (actualCtx > 0 && ctxAllocMax > 0 && actualCtx + 128 < ctxAllocMax) {
-        log.warn(
-          'ChatEngine',
-          `createContext settled below target: allocTarget=${ctxAllocMax} actual=${actualCtx} (runtime may have tightened further)`,
-        );
+      // Estimate parameter count from GGUF metadata or filename (e.g. "Qwen3.5-4B" → 4B)
+      let paramCount = ggufArchMeta?.totalParameterCount || null;
+      if (!paramCount) {
+        const sizeMatch = path.basename(modelPath).match(/(\d+(?:\.\d+)?)\s*[Bb]/);
+        if (sizeMatch) paramCount = Math.round(parseFloat(sizeMatch[1]) * 1e9);
       }
       this.modelInfo = {
         path: modelPath,
         name: path.basename(modelPath),
         size: modelStats.size,
+        parameterCount: paramCount,
         contextSize: actualCtx,
         contextSizeRequested: s.contextSize <= 0 ? 'auto' : s.contextSize,
-        contextSizeCap: ctxAllocMax,
-        contextPreLoadDesiredMax: desiredMax,
+        contextSizeCap: desiredMax,
         contextTrainMax: trainMaxContext,
         contextHardwareCap: hardwareCap,
         kvBytesPerToken: kvBytesPerToken,
@@ -451,8 +541,23 @@ class ChatEngine extends EventEmitter {
       this.isReady = true;
       this.isLoading = false;
 
+      // Check vision availability — do NOT auto-start. Vision starts on-demand when an image needs captioning.
+      try {
+        const visionCheck = visionServer.checkAvailability(modelPath);
+        if (visionCheck.available) {
+          console.log(`[ChatEngine] Vision: mmproj found at ${visionCheck.mmprojPath} — vision available (will start on first image)`);
+          this.modelInfo.visionAvailable = true;
+        } else {
+          console.log(`[ChatEngine] Vision: ${visionCheck.reason} — vision unavailable for this model`);
+          this.modelInfo.visionAvailable = false;
+        }
+      } catch (visionErr) {
+        console.error(`[ChatEngine] Vision check error: ${visionErr.message}`);
+        this.modelInfo.visionAvailable = false;
+      }
+
       console.log(
-        `[ChatEngine] Model ready: ctx=${actualCtx} (${s.contextSize <= 0 ? 'auto' : `fixed ${s.contextSize}`}, allocMax ${ctxAllocMax}${desiredMax !== ctxAllocMax ? `, preLoadDesired ${desiredMax}` : ''}${trainMaxContext != null ? `, train ${trainMaxContext}` : ''}), gpuLayers=${this.modelInfo.gpuLayers}`,
+        `[ChatEngine] Model ready: ctx=${actualCtx} (${s.contextSize <= 0 ? 'auto' : `fixed ${s.contextSize}`}, cap ${desiredMax}${trainMaxContext != null ? `, train ${trainMaxContext}` : ''}), gpuLayers=${this.modelInfo.gpuLayers}`,
       );
 
       this.emit('status', { state: 'ready', message: `Model ready: ${this.modelInfo.name}`, modelInfo: this.modelInfo });
@@ -465,106 +570,224 @@ class ChatEngine extends EventEmitter {
     }
   }
 
+  // Redact passwords/credentials from text before storing in chat history
+  _redactCredentials(text) {
+    if (!text || typeof text !== 'string') return text;
+    // Redact password=xxx, "password": "xxx", password: xxx patterns
+    return text
+      .replace(/(?:password|passwd|pwd|secret|token|api[_-]?key)\s*[:=]\s*["']?([^\s"'`,;}\]]{3,})/gi,
+        (m, val) => m.replace(val, '[REDACTED]'))
+      .replace(/(?:password|passwd|pwd|secret|token|api[_-]?key)["']\s*:\s*["']([^"']{3,})["']/gi,
+        (m, val) => m.replace(val, '[REDACTED]'));
+  }
+
   async chat(userMessage, options = {}) {
     if (!this.isReady || !this._chat) throw new Error('Model not ready');
 
-    const { onToken, onComplete, onContextUsage, onToolCall, onStreamEvent, systemPrompt, functions, toolPrompt, compactToolPrompt, executeToolFn, conversationHistory } = options;
+    const { onToken, onComplete, onContextUsage, onToolCall, onStreamEvent, systemPrompt, functions, toolPrompt, compactToolPrompt, executeToolFn, guideInstructionsPath } = options;
 
-    const chatTurnId = `turn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-    const chatBodyLogLimit = chatLogBodyLimit();
-    const chatToolLogLimit = chatLogToolLimit();
-    const logStreamChunks = process.env.GUIDE_CHAT_LOG_STREAM === '1';
-
-      // Inject text attachment content into user message (text/code files only; images unsupported on text-only models)
+      // Inject attachment content into user message
       const attachments = Array.isArray(options.attachments) ? options.attachments : [];
       let effectiveUserMessage = String(userMessage ?? '');
+      this._recentlyWrittenFiles.clear(); // reset per chat() call
+      console.log(`[ChatEngine] ═══ USER MESSAGE ═══ "${String(userMessage).substring(0, 200)}"`);
+      if (attachments.length > 0) {
+        console.log(`[ChatEngine] Attachments: ${attachments.length} (${attachments.map(a => `${a.name||'?'} ${a.mimeType||a.type||'?'}`).join(', ')})`);
+      }
       if (attachments.length > 0) {
         const textParts = [];
         for (const a of attachments) {
           if (!a?.data) continue;
           const mime = (a.mimeType || a.type || '').toLowerCase();
-          if (mime.startsWith('image/')) continue; // text model cannot process images
+          if (mime.startsWith('image/')) {
+            // image data handled below via vision captioning or fallback text
+            // Try vision captioning for image attachments
+            let captioned = false;
+            if (visionServer.isReady) {
+              try {
+                const caption = await visionServer.captionImage(
+                  a.data, mime,
+                  'Describe this image in detail. List all visible text, UI elements, content, and any information shown.'
+                );
+                if (caption) {
+                  textParts.push(`[Attached image: ${a.name || 'image'} — Vision description:\n${caption}]`);
+                  console.log(`[ChatEngine] Image attachment captioned: ${caption.length} chars`);
+                  captioned = true;
+                }
+              } catch (visionErr) {
+                console.error(`[ChatEngine] Vision caption for attachment failed: ${visionErr.message}`);
+              }
+            }
+            // If vision server not running but mmproj exists, try starting it now
+            if (!captioned && !visionServer.isReady && this.currentModelPath) {
+              try {
+                const visionCheck = visionServer.checkAvailability(this.currentModelPath);
+                if (visionCheck.available) {
+                  console.log('[ChatEngine] Vision server not running but mmproj found — starting now');
+                  try {
+                    const port = await visionServer.start(this.currentModelPath, {
+                      mmprojPath: visionCheck.mmprojPath,
+                      contextSize: Math.min(this._context?.contextSize || 4096, 4096),
+                      gpuLayers: this.modelInfo?.gpuLayers || 99,
+                    });
+                    if (port > 0) {
+                      const caption = await visionServer.captionImage(
+                        a.data, mime,
+                        'Describe this image in detail. List all visible text, UI elements, content, and any information shown.'
+                      );
+                      if (caption) {
+                        textParts.push(`[Attached image: ${a.name || 'image'} — Vision description:\n${caption}]`);
+                        console.log(`[ChatEngine] Image captioned after vision server start: ${caption.length} chars`);
+                        captioned = true;
+                      }
+                    }
+                  } catch (startErr) {
+                    console.error(`[ChatEngine] Vision server start failed: ${startErr.message}`);
+                  }
+                }
+              } catch (visionCheckErr) {
+                console.error(`[ChatEngine] Vision availability check failed: ${visionCheckErr.message}`);
+              }
+            }
+            if (!captioned) {
+              textParts.push(`[Attached image: ${a.name || 'image'}]`);
+            }
+            continue;
+          }
           try {
             const decoded = Buffer.from(a.data, 'base64').toString('utf8');
             textParts.push(`[Attached file: ${a.name || 'file'}]\n${decoded}`);
-          } catch (_) { /* ignore decode errors */ }
+          } catch (e) { console.warn('[ChatEngine] Attachment decode failed:', e.message); }
         }
         if (textParts.length > 0) {
           effectiveUserMessage = effectiveUserMessage + '\n\n' + textParts.join('\n\n---\n\n');
         }
       }
 
-    log.info(
-      'ChatTurn',
-      `[${chatTurnId}] start model=${this.modelInfo?.name ?? '?'} ctx=${this._context?.contextSize ?? '?'} history_turns=${Array.isArray(conversationHistory) ? conversationHistory.length : 0} user_chars=${effectiveUserMessage.length} attachments=${attachments.length} log_limits body=${chatBodyLogLimit} tool=${chatToolLogLimit}`,
-    );
+    // ─── Context Assembly Pipeline (6-layer ordered injection) ───
+    // Same architecture as Windsurf Cascade: Rules → Memories → Editor → RAG → Tools → History
+    // Each layer is appended in order so the model sees them in priority sequence.
+    const contextTokens = this._context?.contextSize || 8192;
+    let basePrompt = systemPrompt || SYSTEM_PROMPT;
 
-    // Augment system prompt: base + tool prompt when tools are available.
-    // Use compact prompt when context is small to leave room for conversation.
-    const contextTokens = this._context?.contextSize || this.modelInfo?.contextSizeCap || MIN_CONTEXT_FLOOR;
-    const trainMaxCtx = this.modelInfo?.contextTrainMax;
-    const useCompactToolDefs =
-      !!compactToolPrompt &&
-      ((trainMaxCtx != null && Number.isFinite(trainMaxCtx) && trainMaxCtx <= 8192) || contextTokens < 8192);
-    const basePrompt = systemPrompt || SYSTEM_PROMPT;
+    // Layer 1: System prompt (identity, behavior rules, tool calling format)
+    // (already set above as basePrompt)
+
+    // Layer 2: Project rules & environment context (date, OS, project path, guide instructions)
+    const now = new Date();
+    const dateStr = now.toISOString().split('T')[0];
+    const timeStr = now.toTimeString().split(' ')[0];
+    const platform = `${os.type()} ${os.release()} (${os.platform()})`;
+    basePrompt += `\n\nCurrent date: ${dateStr}\nCurrent time: ${timeStr}\nOperating system: ${platform}`;
+    if (this._projectPath) {
+      basePrompt += `\nProject directory: ${this._projectPath}\nAll file tools operate relative to this directory.`;
+    }
+    // Project instructions file (AGENTS.md / guide rules)
+    if (guideInstructionsPath) {
+      try {
+        const fs = require('fs');
+        const instrPath = path.isAbsolute(guideInstructionsPath)
+          ? guideInstructionsPath
+          : path.join(this._projectPath || process.cwd(), guideInstructionsPath);
+        if (fs.existsSync(instrPath)) {
+          const guideContent = fs.readFileSync(instrPath, 'utf-8').trim();
+          if (guideContent) {
+            basePrompt += `\n\n## Project Instructions (from ${guideInstructionsPath})\n${guideContent}`;
+          }
+        }
+      } catch (e) { console.warn('[ChatEngine] Guide instructions load failed:', e.message); }
+    }
+
+    // Layer 3: Editor context (active file, cursor position, recent saves, diagnostics)
+    // This is the "real-time action context" layer — model knows what user is doing
+    if (this._ctx?.editorContext) {
+      const ec = this._ctx.editorContext;
+      const parts = [];
+      if (ec.activeFilePath) {
+        const rel = this._projectPath ? ec.activeFilePath.replace(this._projectPath.replace(/\\/g, '/'), '').replace(/^\//, '') : ec.activeFilePath;
+        let ctxLine = `Active file: ${rel}`;
+        if (ec.cursorLine) ctxLine += ` (cursor at line ${ec.cursorLine})`;
+        parts.push(ctxLine);
+      }
+      if (ec.recentSaves?.length > 0) {
+        const saveNames = ec.recentSaves
+          .map(s => this._projectPath ? s.filePath.replace(this._projectPath.replace(/\\/g, '/'), '').replace(/^\//, '') : s.filePath)
+          .filter(Boolean);
+        if (saveNames.length > 0) parts.push(`Recently saved: ${saveNames.join(', ')}`);
+      }
+      // Include global diagnostics summary if there are errors
+      const diagStore = this._ctx.editorDiagnostics;
+      if (diagStore) {
+        let totalErrors = 0, totalWarnings = 0, errorFiles = [];
+        for (const [fp, d] of Object.entries(diagStore)) {
+          if (d.errors > 0) {
+            totalErrors += d.errors;
+            const rel = this._projectPath ? fp.replace(this._projectPath.replace(/\\/g, '/').toLowerCase(), '').replace(/^\//, '') : fp;
+            errorFiles.push(`${rel} (${d.errors} errors)`);
+          }
+          totalWarnings += d.warnings || 0;
+        }
+        if (totalErrors > 0) {
+          parts.push(`Diagnostics: ${totalErrors} errors in ${errorFiles.slice(0, 5).join(', ')}`);
+        }
+      }
+      if (parts.length > 0) {
+        basePrompt += `\n\n## Editor Context\n${parts.join('\n')}`;
+      }
+    }
+    // Layer 4: Tool prompt (available tools and their descriptions)
     if (toolPrompt) {
-      const useCompact = useCompactToolDefs;
-      const effectiveToolPrompt = useCompact ? compactToolPrompt : toolPrompt;
+      // Estimate token cost of tool prompt (~3.5 chars/token for English)
+      const toolPromptTokens = Math.ceil(toolPrompt.length / 3.5);
+      const toolPct = Math.round((toolPromptTokens / contextTokens) * 100);
+
+      // Emit warning to UI when tool prompt consumes too much context
+      if (toolPct > 50 && onStreamEvent) {
+        onStreamEvent('generation-warning', {
+          message: `Tool prompt uses ${toolPct}% of context (${toolPromptTokens.toLocaleString()}/${contextTokens.toLocaleString()} tokens)`,
+          suggestion: 'Responses may be limited. Try a smaller model, reduce context in settings, or start a new session.',
+        });
+      }
+
+      // Use compact prompt when tool prompt would consume >40% of context
+      // (not just when ctx<8192 — a 13K tool prompt in 14K ctx is equally disastrous)
+      // Decision is based on CONTEXT SIZE, not model parameters — small models in 2026
+      // have huge context windows (128K+), so model size doesn't determine prompt style.
+      const useCompact = compactToolPrompt && (contextTokens < 8192 || toolPct > 40);
+      let effectiveToolPrompt = useCompact ? compactToolPrompt : toolPrompt;
+
+      // If even the compact prompt is too large, progressively trim it
+      if (useCompact && typeof effectiveToolPrompt === 'string') {
+        const compactPct = Math.round((Math.ceil(effectiveToolPrompt.length / 3.5) / contextTokens) * 100);
+        if (compactPct > 50) {
+          // Strip everything after the first 8 tool descriptions — keep format header + core tools
+          const lines = effectiveToolPrompt.split('\n');
+          const toolLineIdx = [];
+          lines.forEach((l, i) => { if (l.startsWith('- **')) toolLineIdx.push(i); });
+          if (toolLineIdx.length > 8) {
+            effectiveToolPrompt = lines.slice(0, toolLineIdx[8]).join('\n') + '\n…and more tools available\n';
+          }
+        }
+      }
+
       this._chatHistory[0].text = basePrompt + '\n\n' + effectiveToolPrompt;
-      console.log(`[ChatEngine] Tool prompt injected (${effectiveToolPrompt.length} chars${useCompact ? ', compact' : ''}, ctx=${contextTokens})`);
-      log.info(
-        'ChatTurn',
-        `[${chatTurnId}] tool_prompt injected_chars=${effectiveToolPrompt.length} compact=${!!useCompact} ctx=${contextTokens}`,
-      );
+      const finalPct = Math.round((Math.ceil(effectiveToolPrompt.length / 3.5) / contextTokens) * 100);
+      console.log(`[ChatEngine] Tool prompt injected (${effectiveToolPrompt.length} chars${useCompact ? ', compact' : ''}, ctx=${contextTokens}, finalPct=${finalPct}%, compactAvailable=${!!compactToolPrompt})`);
     } else if (functions && Object.keys(functions).length > 0) {
       this._chatHistory[0].text = basePrompt + this._buildToolPrompt(functions);
       console.log(`[ChatEngine] Functions provided (fallback): ${Object.keys(functions).length} tools`);
-      log.info('ChatTurn', `[${chatTurnId}] functions_fallback tool_defs=${Object.keys(functions).length}`);
     } else if (systemPrompt) {
       this._chatHistory[0].text = systemPrompt;
     }
 
-    // node-llama-cpp ChatHistoryItem: user/system use `text`; model uses `response` (string[]), not `text`.
-    const normalizedHistory = Array.isArray(conversationHistory)
-      ? conversationHistory
-        .map((m) => {
-          const role = m?.role === 'assistant' ? 'model' : (m?.role === 'user' ? 'user' : null);
-          const text = typeof m?.content === 'string' ? m.content.trim() : '';
-          if (!role || !text) return null;
-          if (role === 'model') return { type: 'model', response: [text] };
-          return { type: 'user', text };
-        })
-        .filter(Boolean)
-      : [];
-    this._chatHistory = [{ type: 'system', text: this._chatHistory[0].text }, ...normalizedHistory];
-    this._lastEvaluation = null;
     this._chatHistory.push({ type: 'user', text: effectiveUserMessage });
-
-    const sysPromptText = this._chatHistory[0]?.text || '';
-    log.info(
-      'ChatTurn',
-      `[${chatTurnId}] system_prompt_chars=${sysPromptText.length} preview=\n${_truncateForLog(sysPromptText, chatBodyLogLimit)}`,
-    );
-    log.info(
-      'ChatTurn',
-      `[${chatTurnId}] user_message_preview=\n${_truncateForLog(effectiveUserMessage, chatBodyLogLimit)}`,
-    );
-    if (normalizedHistory.length > 0) {
-      const maxTurns = Math.min(normalizedHistory.length, 48);
-      const slice = normalizedHistory.slice(-maxTurns);
-      const perTurn = Math.max(180, Math.floor(chatBodyLogLimit / Math.max(1, slice.length)));
-      const startIdx = normalizedHistory.length - slice.length;
-      const histLines = slice.map((m, i) => `[${startIdx + i}] ${m.type}: ${_truncateForLog(m.text, perTurn)}`);
-      log.info(
-        'ChatTurn',
-        `[${chatTurnId}] prior_history (${normalizedHistory.length} msgs, showing last ${slice.length}):\n${histLines.join('\n---\n')}`,
-      );
-    }
 
     this._abortController = new AbortController();
     let fullResponse = '';
     let tokensSinceLastUsageReport = 0;
     let totalToolCalls = 0;
+    const genStartTime = Date.now();
+    let genTokenCount = 0;
 
     // Generation timeout â€” optional only (0 = disabled). No default cap on run length.
     const timeoutSec = options.generationTimeoutSec ?? 0;
@@ -603,13 +826,14 @@ class ChatEngine extends EventEmitter {
       let _sfInFence = false;    // inside a code fence
       let _sfFenceBuf = '';      // accumulated fence content (markers + body)
       let _sfFenceTickCount = 0; // tracks consecutive backticks
-      /** When true, fence body is plain markdown code (html, etc.) â€” stream to UI instead of buffering until ``` */
+      /** When true, fence body is plain markdown code (html, etc.) — stream to UI instead of buffering until ``` */
       let _sfFenceStreamPlain = false;
       let _sfFencePlainTick = 0; // backticks while streaming plain fence (closing ```)
 
-      // Real-time file content streaming state â€” detects write_file/create_file/append_to_file
+      // Real-time file content streaming state — detects write_file/create_file/append_to_file
       // content fields inside tool call JSON and streams them to the UI as they arrive
       let _sfFileWriteDetected = false;
+      let _sfToolCallNotified = false;  // tracks whether tool-generating event was emitted for current fence
       let _sfContentStreamActive = false;
       let _sfContentDone = false;
       let _sfContentEsc = false;
@@ -618,8 +842,10 @@ class ChatEngine extends EventEmitter {
       let _sfUnicodeCount = 0;
       let _sfUnicodeChars = '';
       const _sfStreamedFileWrites = new Set();
+      let _sfVisibleChars = 0; // tracks chars forwarded to frontend (after filter removes tool JSON)
 
       const _sfForward = (text) => {
+        _sfVisibleChars += text.length;
         if (onToken) onToken(text);
       };
 
@@ -641,6 +867,7 @@ class ChatEngine extends EventEmitter {
         _sfInStr = false;
         _sfEscaped = false;
         _sfFileWriteDetected = false;
+        _sfToolCallNotified = false;
         _sfContentDone = false;
         _sfContentEsc = false;
         _sfUnicodeCount = 0;
@@ -665,6 +892,7 @@ class ChatEngine extends EventEmitter {
         _sfFencePlainTick = 0;
         _sfFenceTickCount = 0;
         _sfFileWriteDetected = false;
+        _sfToolCallNotified = false;
         _sfContentDone = false;
         _sfContentEsc = false;
         _sfUnicodeCount = 0;
@@ -702,8 +930,8 @@ class ChatEngine extends EventEmitter {
 
             _sfFenceBuf += ch;
 
-            if (!_sfFenceStreamPlain && !_sfFileWriteDetected && !_sfContentStreamActive && /^```\s*(\w*)\r?\n/.test(_sfFenceBuf)) {
-              const hm = _sfFenceBuf.match(/^```\s*(\w*)\r?\n/);
+            if (!_sfFenceStreamPlain && !_sfFileWriteDetected && !_sfContentStreamActive && RE_FENCE_HEADER.test(_sfFenceBuf)) {
+              const hm = _sfFenceBuf.match(RE_FENCE_HEADER);
               const lang = (hm[1] || '').toLowerCase();
               const afterHeader = _sfFenceBuf.slice(hm[0].length);
               const PLAIN_LANGS = new Set([
@@ -719,7 +947,7 @@ class ChatEngine extends EventEmitter {
                 continue;
               }
               if (lang === 'json' || lang === '') {
-                if (/"tool"\s*:/.test(afterHeader.slice(0, 6000))) {
+                if (RE_TOOL_KEY.test(afterHeader.slice(0, 6000))) {
                   /* keep buffering â€” tool JSON fence */
                 } else if (afterHeader.length >= 100) {
                   _sfFenceStreamPlain = true;
@@ -778,9 +1006,9 @@ class ChatEngine extends EventEmitter {
                 }
               }
             } else if (_sfFileWriteDetected && !_sfContentDone) {
-              if (ch === '"' && /"content"\s*:\s*"$/.test(_sfFenceBuf)) {
+              if (ch === '"' && RE_CONTENT_START.test(_sfFenceBuf)) {
                 _sfContentStreamActive = true;
-                const fpMatch = _sfFenceBuf.match(/"(?:filePath|path)"\s*:\s*"([^"]*)"/);
+                const fpMatch = _sfFenceBuf.match(RE_FILE_PATH);
                 _sfContentFilePath = fpMatch ? fpMatch[1] : '';
                 const fileName = _sfContentFilePath.split(/[\\/]/).pop() || _sfContentFilePath;
                 const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
@@ -790,47 +1018,63 @@ class ChatEngine extends EventEmitter {
                 _sfStreamedFileWrites.add(_sfContentFilePath);
               }
             }
+            // Emit tool-generating for ANY tool call inside a fence (not just file-write)
+            if (!_sfToolCallNotified && _sfFenceBuf.length > 30) {
+              if (RE_TOOL_KEY.test(_sfFenceBuf) || (RE_NAME_KEY.test(_sfFenceBuf) && RE_PARAMS_KEY.test(_sfFenceBuf))) {
+                _sfToolCallNotified = true;
+                if (onStreamEvent) {
+                  const toolNameMatch = _sfFenceBuf.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
+                  onStreamEvent('tool-generating', { tool: toolNameMatch ? toolNameMatch[1] : 'unknown' });
+                }
+              }
+            }
+            // File-write detection is separate — only for content streaming
             if (!_sfFileWriteDetected && _sfFenceBuf.length > 30) {
-              if ((/write_file|create_file|append_to_file/.test(_sfFenceBuf)) &&
-                  (/"tool"\s*:/.test(_sfFenceBuf) || /"name"\s*:/.test(_sfFenceBuf))) {
+              if (RE_FILE_WRITE_TOOLS.test(_sfFenceBuf) &&
+                  (RE_TOOL_KEY.test(_sfFenceBuf) || RE_NAME_KEY.test(_sfFenceBuf))) {
                 _sfFileWriteDetected = true;
               }
             }
 
-            // Detect closing ``` â€” but NOT while inside the content string
+            // Detect closing ``` — but NOT while inside the content string
             if (_sfContentStreamActive || _sfContentEsc || _sfUnicodeCount > 0) {
               _sfFenceTickCount = 0;
             } else if (ch === '`') {
               _sfFenceTickCount++;
             } else {
-              if (_sfFenceTickCount >= 3) {
-                // Closing fence found â€” flush any pending content
-                if (_sfContentStreamActive && onStreamEvent) {
-                  if (_sfContentBuf) {
-                    onStreamEvent('file-content-token', _sfContentBuf);
-                    _sfContentBuf = '';
-                  }
-                  onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
-                  _sfContentStreamActive = false;
-                }
-                if (/"tool"\s*:/.test(_sfFenceBuf) || /"name"\s*:/.test(_sfFenceBuf)) {
-                  _sfFenceBuf = '';
-                } else {
-                  _sfFlushFence();
-                }
-                _sfInFence = false;
-                _sfFileWriteDetected = false;
-                _sfContentDone = false;
-                _sfContentEsc = false;
-                _sfLastCharWasNewlineOrStart = (ch === '\n' || ch === '\r');
-                continue;
-              }
               _sfFenceTickCount = 0;
+            }
+
+            if (_sfFenceTickCount >= 3) {
+              // Closing fence found — flush any pending content
+              if (_sfContentStreamActive && onStreamEvent) {
+                if (_sfContentBuf) {
+                  onStreamEvent('file-content-token', _sfContentBuf);
+                  _sfContentBuf = '';
+                }
+                onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
+                _sfContentStreamActive = false;
+              }
+              // Suppress only if this looks like a tool call schema:
+              // - "tool":"<name>" (strongest signal), OR
+              // - "name":"<snake_case>" + "params":{ (two signals together)
+              if (RE_TOOL_KEY.test(_sfFenceBuf) || (RE_NAME_KEY.test(_sfFenceBuf) && RE_PARAMS_KEY.test(_sfFenceBuf))) {
+                _sfFenceBuf = '';
+              } else {
+                _sfFlushFence();
+              }
+              _sfInFence = false;
+              _sfFileWriteDetected = false;
+              _sfToolCallNotified = false;
+              _sfContentDone = false;
+              _sfContentEsc = false;
+              _sfLastCharWasNewlineOrStart = (ch === '\n' || ch === '\r');
+              continue;
             }
             continue;
           }
 
-          // â”€â”€ Normal mode â”€â”€
+          // ── Normal mode ──
           if (!_sfActive) {
             // Detect opening ``` at line start
             if (ch === '`' && _sfLastCharWasNewlineOrStart) {
@@ -922,9 +1166,9 @@ class ChatEngine extends EventEmitter {
               }
             }
           } else if (_sfConfirmed && _sfFileWriteDetected && !_sfContentDone) {
-            if (ch === '"' && /"content"\s*:\s*"$/.test(_sfBuf)) {
+            if (ch === '"' && RE_CONTENT_START.test(_sfBuf)) {
               _sfContentStreamActive = true;
-              const fpMatch = _sfBuf.match(/"(?:filePath|path)"\s*:\s*"([^"]*)"/);
+              const fpMatch = _sfBuf.match(RE_FILE_PATH);
               _sfContentFilePath = fpMatch ? fpMatch[1] : '';
               const fileName = _sfContentFilePath.split(/[\\/]/).pop() || _sfContentFilePath;
               const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
@@ -935,7 +1179,7 @@ class ChatEngine extends EventEmitter {
             }
           }
           if (_sfConfirmed && !_sfFileWriteDetected && _sfBuf.length > 15) {
-            if (/write_file|create_file|append_to_file/.test(_sfBuf)) {
+            if (RE_FILE_WRITE_TOOLS.test(_sfBuf)) {
               _sfFileWriteDetected = true;
             }
           }
@@ -949,8 +1193,13 @@ class ChatEngine extends EventEmitter {
           else if (ch === '}') _sfDepth--;
 
           if (!_sfConfirmed && _sfBuf.length <= 80) {
-            if (/"tool"\s*:/.test(_sfBuf) || /"name"\s*:\s*"[^"]*"/.test(_sfBuf)) {
+            if (RE_TOOL_KEY.test(_sfBuf) || RE_NAME_KEY.test(_sfBuf)) {
               _sfConfirmed = true;
+              // Notify UI that a tool call is being generated (so it's not blank)
+              if (onStreamEvent) {
+                const toolNameMatch = _sfBuf.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
+                onStreamEvent('tool-generating', { tool: toolNameMatch ? toolNameMatch[1] : 'unknown' });
+              }
             }
           }
 
@@ -968,7 +1217,15 @@ class ChatEngine extends EventEmitter {
               }
               _sfBuf = '';
             } else {
-              _sfFlush();
+              // Unconfirmed buffer reached depth 0 — likely stray {} or non-tool JSON
+              // Suppress if it looks like a tool call fragment (starts with {, short, no prose)
+              const trimmed = _sfBuf.trim();
+              if (trimmed.length <= 4 || /^[\{\}\[\]:,.\s\d]+$/.test(trimmed)) {
+                // Just punctuation/braces — suppress (this is the empty } bug)
+                _sfBuf = '';
+              } else {
+                _sfFlush();
+              }
             }
             _sfActive = false;
             _sfConfirmed = false;
@@ -984,16 +1241,16 @@ class ChatEngine extends EventEmitter {
       const genOptions = {
         signal: this._abortController.signal,
         stopOnAbortSignal: true,
-        temperature: options.temperature ?? 0.7,
+        temperature: options.temperature ?? 0.4,
         topP: options.topP,
         topK: options.topK,
-        repeatPenalty: options.repeatPenalty ? { penalty: options.repeatPenalty } : undefined,
+        repeatPenalty: { penalty: options.repeatPenalty ?? 1.1 },
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
           fullResponse += chunk;
-          if (logStreamChunks) log.debug('ChatTurnStream', `[${chatTurnId}]`, chunk);
           _sfProcessChunk(chunk);
           tokensSinceLastUsageReport++;
+          genTokenCount++;
           if (onContextUsage && tokensSinceLastUsageReport >= 50) {
             tokensSinceLastUsageReport = 0;
             const used = this._sequence.nextTokenIndex;
@@ -1027,18 +1284,80 @@ class ChatEngine extends EventEmitter {
         };
       }
 
-      // Generate response â€” model outputs text which may contain tool call JSON blocks
+      // ─── Minimum generation token reservation ───
+      // ROOT CAUSE of "model says I'll check then hits EOS": the prompt consumes
+      // the entire context window, leaving zero tokens for generation. The model
+      // can't output tool call JSON because there's literally no room.
+      // Fix: ensure at least MIN_GENERATION_TOKENS of generation space remain.
+      // If not enough space, progressively trim the prompt BEFORE generation.
+      const MIN_GENERATION_TOKENS = 512;
+      const contextSize = this._context.contextSize;
+      const usedTokens = this._sequence.nextTokenIndex;
+      const availableForGeneration = contextSize - usedTokens;
+
+      if (availableForGeneration < MIN_GENERATION_TOKENS) {
+        console.log(`[ChatEngine] Generation space too small (${availableForGeneration}/${contextSize} tokens available, need ${MIN_GENERATION_TOKENS}). Trimming prompt.`);
+
+        // Progressive trimming: try compact prompt first, then trim compact, then trim history
+        if (compactToolPrompt && !useCompact) {
+          // Step 1: Switch to compact prompt
+          const compactTokens = Math.ceil(compactToolPrompt.length / 3.5);
+          const savedTokens = Math.ceil(effectiveToolPrompt.length / 3.5) - compactTokens;
+          if (savedTokens > 0) {
+            effectiveToolPrompt = compactToolPrompt;
+            this._chatHistory[0].text = basePrompt + '\n\n' + effectiveToolPrompt;
+            console.log(`[ChatEngine] Switched to compact prompt, saved ~${savedTokens} tokens`);
+          }
+        }
+
+        // Step 2: If still too large, trim compact prompt aggressively
+        if (typeof effectiveToolPrompt === 'string' && effectiveToolPrompt.length > 500) {
+          const lines = effectiveToolPrompt.split('\n');
+          const toolLineIdx = [];
+          lines.forEach((l, i) => { if (l.startsWith('- **')) toolLineIdx.push(i); });
+          // Keep only first 4 tool descriptions + header
+          if (toolLineIdx.length > 4) {
+            effectiveToolPrompt = lines.slice(0, toolLineIdx[4]).join('\n') + '\n…and more tools available\n';
+            this._chatHistory[0].text = basePrompt + '\n\n' + effectiveToolPrompt;
+            console.log(`[ChatEngine] Trimmed tool prompt to 4 tools (${effectiveToolPrompt.length} chars)`);
+          }
+        }
+
+        // Step 3: If STILL not enough, trim conversation history from the middle
+        const recheckAvailable = contextSize - this._sequence.nextTokenIndex;
+        if (recheckAvailable < MIN_GENERATION_TOKENS && this._chatHistory.length > 4) {
+          // Remove oldest exchanges (keep system prompt + last user message)
+          const systemMsg = this._chatHistory[0];
+          const lastUserMsg = this._chatHistory[this._chatHistory.length - 1];
+          const recentMsgs = this._chatHistory.slice(Math.max(1, this._chatHistory.length - 4));
+          this._chatHistory.length = 0;
+          this._chatHistory.push(systemMsg, ...recentMsgs);
+          // Ensure last message is still the user message
+          if (this._chatHistory[this._chatHistory.length - 1] !== lastUserMsg) {
+            this._chatHistory.push(lastUserMsg);
+          }
+          console.log(`[ChatEngine] Trimmed history to ${this._chatHistory.length} messages for generation space`);
+        }
+      }
+
+      // Set maxTokens to guarantee generation space (node-llama-cpp will use remaining context)
+      // This ensures the model always has room to output tool calls
+      genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, availableForGeneration);
+
+      // Generate response — model outputs text which may contain tool call JSON blocks
+      const roundStartTime = Date.now();
+      const ctxUsedBefore = this._sequence?.nextTokenIndex || 0;
       let result = await this._chat.generateResponse(this._chatHistory, genOptions);
-      console.log(`[ChatEngine] generateResponse returned: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}`);
-      log.info(
-        'ChatTurn',
-        `[${chatTurnId}] generateResponse stopReason=${result.metadata?.stopReason ?? '?'} responseLen=${result.response?.length ?? 0} total_fullResponse_chars=${fullResponse.length}`,
-      );
+      const roundElapsed = (Date.now() - roundStartTime) / 1000;
+      const roundTokens = result.metadata?.totalTokens ?? result.response?.length ?? 0;
+      const roundTokPerSec = roundElapsed > 0 ? (roundTokens / roundElapsed).toFixed(1) : '?';
+      const ctxUsedAfter = this._sequence?.nextTokenIndex || 0;
+      const currentGpuLayers = this._model?.gpuLayers ?? '?';
+      console.log(`[ChatEngine] generateResponse returned: stopReason=${result.metadata?.stopReason}, tokens=${roundTokens}, time=${roundElapsed.toFixed(1)}s, tok/s=${roundTokPerSec}, ctxUsed=${ctxUsedAfter}/${contextSize}, gpuLayers=${currentGpuLayers}`);
+      console.log(`[ChatEngine] ─── MODEL RESPONSE ─── "${(result.response || '').substring(0, 500)}"`);
 
       // Raw-text tool call loop: parse tool calls from model output, execute, continue
-      // Idempotency ledger: tool+params â†’ previous result. Prevents infinite loops
-      // when the model repeatedly emits the same tool call across continuation rounds.
-      const toolCallLedger = new Map();
+      const MAX_TOOL_ITERATIONS = 50;
       if (executeToolFn) {
         // Flush any buffered content from the streaming filter before parsing
         _sfFlush();
@@ -1046,67 +1365,50 @@ class ChatEngine extends EventEmitter {
 
         let roundStart = 0;
         let parsedCalls = parseToolCalls(fullResponse);
+        console.log(`[ChatEngine] Tool parse: found ${parsedCalls.length} tool call(s) in ${fullResponse.length} chars of model output`);
         if (parsedCalls.length > 0) {
           const { repaired } = repairToolCalls(parsedCalls, fullResponse);
           parsedCalls = filterWebWorkspaceToolConflict(repaired);
+          console.log(`[ChatEngine] Tool calls after repair/filter: ${parsedCalls.length} — [${parsedCalls.map(c => c.tool).join(', ')}]`);
         }
 
         // Safety net: if the streaming filter missed any tool JSON (e.g., fenced blocks),
         // strip it from the UI now via llm-replace-last.
+        // CRITICAL: use _sfVisibleChars (chars actually sent to frontend) not fullResponse.length.
+        // fullResponse includes suppressed tool JSON that the frontend never received.
+        // Using fullResponse.length causes keepLen=0 in the frontend, destroying ALL previous prose.
         if (parsedCalls.length > 0 && onStreamEvent) {
           const cleanText = stripToolCallText(fullResponse);
-          if (cleanText.length < fullResponse.length) {
-            onStreamEvent('llm-replace-last', { originalLength: fullResponse.length, replacement: cleanText });
+          if (cleanText.length < _sfVisibleChars) {
+            onStreamEvent('llm-replace-last', { originalLength: _sfVisibleChars, replacement: cleanText });
           }
         }
 
-        while (parsedCalls.length > 0) {
-          log.info(
-            'ChatTurn',
-            `[${chatTurnId}] tool_round parsed=${parsedCalls.length} tools=${parsedCalls.map((c) => c.tool).join(',')}`,
-          );
-
+        while (parsedCalls.length > 0 && totalToolCalls < MAX_TOOL_ITERATIONS) {
           // Notify UI so ToolCallCards appear for each tool call (spinner state)
           if (onStreamEvent) {
             onStreamEvent('tool-executing', parsedCalls.map(c => ({ tool: c.tool, params: c.params })));
           }
 
           const toolResultLines = [];
-          let allCallsWereDuplicates = true;
           let failedCallCount = 0;
           const webSearchResults = [];
+          const fileReadResults = []; // { filePath, content } for multi-file context awareness
+          let consecutiveBrowserFailures = 0; // track same-ref retry loops
+          let lastBrowserClickUrl = null; // track URL after browser_click to detect no-navigation loops
+          let sameUrlClickCount = 0; // count consecutive clicks that don't change the URL
 
           for (const call of parsedCalls) {
+            if (totalToolCalls >= MAX_TOOL_ITERATIONS) break;
             totalToolCalls++;
 
-            // Build idempotency key from tool name + serialized params (excluding content for file writes)
-            const ledgerParams = { ...call.params };
-            if (ledgerParams.content && ledgerParams.content.length > 200) {
-              ledgerParams.content = ledgerParams.content.substring(0, 200);
-            }
-            const ledgerKey = `${call.tool}:${JSON.stringify(ledgerParams)}`;
-
-            if (toolCallLedger.has(ledgerKey)) {
-              const prevResult = toolCallLedger.get(ledgerKey);
-              console.log(`[ChatEngine] Idempotent skip: ${call.tool} already executed with same params`);
-              log.info('ChatTurn', `[${chatTurnId}] tool_skip_duplicate ${call.tool}`);
-              const prevStr = typeof prevResult === 'string' ? prevResult : JSON.stringify(prevResult);
-              const truncPrev = prevStr.length > 300 ? prevStr.substring(0, 300) + '...' : prevStr;
-              toolResultLines.push(`${call.tool}: ALREADY EXECUTED â€” previous result: ${truncPrev}`);
-
-              if (onStreamEvent) {
-                onStreamEvent('mcp-tool-results', [{ tool: call.tool, result: prevResult }]);
-              }
-              if (onToolCall) onToolCall({ name: call.tool, params: call.params, result: prevResult });
-              continue;
-            }
-            allCallsWereDuplicates = false;
-
             console.log(`[ChatEngine] Tool call: ${call.tool}(${JSON.stringify(call.params).substring(0, 200)})`);
-            log.info(
-              'ChatTurn',
-              `[${chatTurnId}] tool_exec ${call.tool} params=${JSON.stringify(_summarizeToolParamsForLog(call.params))}`,
-            );
+
+            // Diagnostic: log browser click details to trace repeated-click loops
+            if (call.tool === 'browser_click') {
+              const refVal = call.params.elementRef || call.params.elementId || call.params.ref || call.params.selector || call.params.id || '?';
+              console.log(`[ChatEngine] browser_click detail: ref=${refVal}, text="${call.params.text || ''}"`);
+            }
 
             // Emit file-content events for file write operations so the UI
             // can show a FileContentBlock with syntax highlighting
@@ -1129,21 +1431,95 @@ class ChatEngine extends EventEmitter {
               toolResult = { success: false, error: toolErr.message };
             }
 
-            toolCallLedger.set(ledgerKey, toolResult);
-
             if (toolResult && toolResult.success === false) failedCallCount++;
+
+            // Track recently-written files so we can inject content on run_command failure.
+            // Root cause of write_file loop: _writeFile returns {success:true} with NO content.
+            // After run_command SyntaxError, model has zero visibility into actual file content
+            // and re-writes identical broken code. Injecting the content closes the information gap.
+            if (FILE_WRITE_OPS.has(call.tool) && toolResult?.success !== false && call.params?.content) {
+              const writtenPath = call.params.filePath || call.params.path || toolResult?.path || '';
+              if (writtenPath) {
+                this._recentlyWrittenFiles.set(writtenPath, call.params.content);
+              }
+            }
+            // On run_command failure, check if the command references a recently-written file.
+            // If so, inject the file's actual content so the model can see what's wrong.
+            if (call.tool === 'run_command' && toolResult?.success === false && this._recentlyWrittenFiles.size > 0) {
+              const cmdStr = (call.params?.command || '').toLowerCase();
+              for (const [fp, content] of this._recentlyWrittenFiles) {
+                const fileName = fp.split(/[\\/]/).pop() || '';
+                if (cmdStr.includes(fileName.toLowerCase()) || cmdStr.includes(fp.toLowerCase().replace(/\\/g, '/'))) {
+                  const MAX_CONTENT_INJECT = 3000;
+                  const snippet = content.length > MAX_CONTENT_INJECT
+                    ? content.slice(0, MAX_CONTENT_INJECT) + '\n... [truncated]'
+                    : content;
+                  const inject = `\n\n[SYSTEM: The file "${fileName}" was just written by you and the command failed. Here is the ACTUAL content currently in the file — compare it with what you intended to write]:\n${snippet}`;
+                  if (typeof toolResult.message === 'string') {
+                    toolResult.message += inject;
+                  } else if (typeof toolResult.error === 'string') {
+                    toolResult.error += inject;
+                  } else if (typeof toolResult.output === 'string') {
+                    toolResult.output += inject;
+                  }
+                  console.log(`[ChatEngine] Injected recently-written file content for ${fileName} into run_command failure result`);
+                  break;
+                }
+              }
+            }
+
+            // Track consecutive browser failures to break retry loops.
+            // This includes both explicit failures (success:false) AND page-level failures
+            // where browser_click returns success:true but the URL didn't change
+            // (e.g., clicking "Login" with wrong credentials — click succeeds but page stays).
+            if (call.tool?.startsWith('browser_') && toolResult?.success === false) {
+              consecutiveBrowserFailures++;
+            } else if (call.tool === 'browser_click' && toolResult?.success && toolResult?.url) {
+              if (lastBrowserClickUrl && toolResult.url === lastBrowserClickUrl && !toolResult.navigated) {
+                sameUrlClickCount++;
+                if (sameUrlClickCount >= 3) {
+                  consecutiveBrowserFailures += sameUrlClickCount;
+                  console.warn(`[ChatEngine] browser_click same-URL loop detected: ${sameUrlClickCount} clicks on ${toolResult.url} without navigation — treating as failure`);
+                }
+              } else {
+                sameUrlClickCount = 0;
+              }
+              lastBrowserClickUrl = toolResult.url;
+              // If click didn't navigate and we've seen this URL before, count as soft failure
+              if (!toolResult.navigated && sameUrlClickCount >= 2) {
+                consecutiveBrowserFailures++;
+              }
+            } else if (call.tool?.startsWith('browser_') && toolResult?.success) {
+              consecutiveBrowserFailures = 0;
+              sameUrlClickCount = 0;
+            }
             if (call.tool === 'web_search' && toolResult?.success && Array.isArray(toolResult.results)) {
               for (const r of toolResult.results.slice(0, 2)) {
                 if (r && typeof r.url === 'string' && r.url) webSearchResults.push(r.url);
               }
             }
 
+            // Detect same-page navigation — when browser_navigate lands on the same URL
+            if (call.tool === 'browser_navigate' && toolResult?.samePage) {
+              console.warn(`[ChatEngine] browser_navigate landed on same page: ${toolResult.url}`);
+            }
+            // Diagnostic: log browser click results to trace repeated-click loops
+            if (call.tool === 'browser_click' && toolResult?.success) {
+              console.log(`[ChatEngine] browser_click result: clicked="${toolResult.clicked || '?'}", navigated=${toolResult.navigated}, newTab=${toolResult.newTab || false}, url=${toolResult.url || '?'}, sameUrlCount=${sameUrlClickCount}`);
+            }
+
+            // Collect file read results for multi-file context awareness
+            if ((call.tool === 'read_file' || call.tool === 'edit_file') && toolResult?.success !== false) {
+              const filePath = call.params?.filePath || call.params?.path || '';
+              const content = typeof toolResult === 'string' ? toolResult
+                : (toolResult?.content || toolResult?.data || JSON.stringify(toolResult));
+              if (filePath && content) {
+                fileReadResults.push({ filePath, content: String(content) });
+              }
+            }
+
             const resultStr = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
             console.log(`[ChatEngine] Tool result for ${call.tool}: ${resultStr.substring(0, 200)}${resultStr.length > 200 ? '...' : ''}`);
-            log.info(
-              'ChatTurn',
-              `[${chatTurnId}] tool_result ${call.tool} ok=${toolResult?.success !== false} preview=${_truncateForLog(resultStr, chatToolLogLimit)}`,
-            );
             if (onToolCall) onToolCall({ name: call.tool, params: call.params, result: toolResult });
 
             // Update ToolCallCard with result (check mark or error)
@@ -1152,6 +1528,31 @@ class ChatEngine extends EventEmitter {
             }
 
             let injectResult = resultStr;
+            // Screenshot handling: try vision captioning first, otherwise compact note
+            // Vision server uses llama-server + mmproj to describe the image as text.
+            // Falls back gracefully if vision is unavailable.
+            if (call.tool === 'browser_screenshot' && toolResult?.success && toolResult?.screenshot) {
+              if (visionServer.isReady) {
+                try {
+                  const caption = await visionServer.captionImage(
+                    toolResult.screenshot,
+                    toolResult.mimeType || 'image/png',
+                    'Describe this screenshot in detail. List all visible text, buttons, links, input fields, and interactive elements with their labels.'
+                  );
+                  if (caption) {
+                    injectResult = JSON.stringify({ success: true, visionCaption: caption });
+                    console.log(`[ChatEngine] Screenshot captioned via vision server: ${caption.length} chars`);
+                  } else {
+                    injectResult = '{"success":true,"note":"Screenshot captured. Use browser_snapshot for a detailed text description of the page."}';
+                  }
+                } catch (visionErr) {
+                  console.error(`[ChatEngine] Vision caption failed: ${visionErr.message}`);
+                  injectResult = '{"success":true,"note":"Screenshot captured. Use browser_snapshot for a detailed text description of the page."}';
+                }
+              } else {
+                injectResult = '{"success":true,"note":"Screenshot captured. Use browser_snapshot for a detailed text description of the page."}';
+              }
+            }
             if (injectResult.length > MAX_TOOL_RESULT_INJECT_CHARS) {
               injectResult = injectResult.slice(0, MAX_TOOL_RESULT_INJECT_CHARS)
                 + '\n[... result truncated by system for context size; use only text above]';
@@ -1159,38 +1560,6 @@ class ChatEngine extends EventEmitter {
             toolResultLines.push(`${call.tool}: ${injectResult}`);
           }
 
-          // If every call in this round was a duplicate, we reached convergence on tool state.
-          if (allCallsWereDuplicates) {
-            console.warn(`[ChatEngine] No new tool state in this round â€” moving to synthesis`);
-            log.warn('ChatTurn', `[${chatTurnId}] tool_round all_duplicate → synthesis continuation`);
-            this._lastEvaluation = result.lastEvaluation;
-            if (result.lastEvaluation?.cleanHistory) {
-              this._chatHistory = result.lastEvaluation.cleanHistory;
-            }
-            this._chatHistory.push({ type: 'user', text: `[Tool Results]
-No new tool state was produced in the previous round. Synthesize your final answer from the existing tool results. If specific required evidence is still missing, request only the minimal new tool call with new parameters.` });
-            genOptions.lastEvaluationContextWindow = this._lastEvaluation ? {
-              contextWindow: this._lastEvaluation.contextWindow,
-              contextShiftMetadata: this._lastEvaluation.contextShiftMetadata,
-            } : undefined;
-
-            // Reset streaming filter state
-            _sfBuf = ''; _sfDepth = 0; _sfActive = false; _sfConfirmed = false;
-            _sfInStr = false; _sfEscaped = false; _sfLastCharWasNewlineOrStart = true;
-            _sfInFence = false; _sfFenceBuf = ''; _sfFenceTickCount = 0;
-            _sfFileWriteDetected = false; _sfContentStreamActive = false;
-            _sfContentDone = false; _sfContentEsc = false; _sfContentBuf = '';
-            _sfContentFilePath = ''; _sfUnicodeCount = 0; _sfUnicodeChars = '';
-
-            roundStart = fullResponse.length;
-            result = await this._chat.generateResponse(this._chatHistory, genOptions);
-            console.log(`[ChatEngine] Final continuation (post-dedup): stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}`);
-            log.info(
-              'ChatTurn',
-              `[${chatTurnId}] post_dedup_generate stopReason=${result.metadata?.stopReason ?? '?'} responseLen=${result.response?.length ?? 0}`,
-            );
-            break;
-          }
 
           // Update evaluation state and chat history from last generation
           this._lastEvaluation = result.lastEvaluation;
@@ -1198,30 +1567,217 @@ No new tool state was produced in the previous round. Synthesize your final answ
             this._chatHistory = result.lastEvaluation.cleanHistory;
           }
 
-          // Feed tool results back to the model so it knows what happened.
+          // Feed tool results back to the model so it knows what happened
+          // Fix A: all-failures retry directive — when every tool call this round failed, tell the model to retry
           const allCallsFailed = failedCallCount > 0 && failedCallCount === parsedCalls.length;
 
-          // Carry discovered web URLs as plain context for the next reasoning step.
+          // Detect if failures are browser-related — stale refs, timeouts, etc.
+          // Browser tool failures require re-snapshotting, NOT blind retry
+          const browserToolsFailed = allCallsFailed && parsedCalls.some(c =>
+            c.tool?.startsWith('browser_') && c.tool !== 'browser_navigate' && c.tool !== 'browser_close');
+          // Hard loop break: 2+ consecutive browser failures = model is stuck retrying same ref
+          const browserRetryLoop = consecutiveBrowserFailures >= 2;
+
+          // Fix B: explicit URL injection — after web_search, name the exact URLs the model must fetch next
           let fetchDirective = '';
           if (webSearchResults.length > 0) {
             const urlList = webSearchResults.map((u, i) => `${i + 1}. ${u}`).join('\n');
-            fetchDirective = `Relevant URLs from web_search:\n${urlList}\n\n`;
+            fetchDirective = `MANDATORY \u2014 CALL fetch_webpage NOW FOR EACH URL BELOW. DO NOT SKIP.\n${urlList}\n\n`;
           }
 
-          const toolResultsGrounding = allCallsFailed
-            ? 'Tool execution in the previous round returned errors only. Diagnose from those errors and choose the next most direct corrective action.\n\n'
-            : `Grounding: The JSON below is authoritative. ${fetchDirective}Use fetched page content when answering web questions.\n\n`;
+          let toolResultsGrounding;
+          if (browserRetryLoop) {
+            toolResultsGrounding = 'BROWSER STUCK LOOP: You have failed on the same element 2+ times in a row. STOP retrying. The page has changed and those refs are stale. You MUST call browser_snapshot FIRST to get fresh refs. Do NOT call browser_click or browser_type again until you have a new snapshot.\n\n';
+          } else if (browserToolsFailed) {
+            toolResultsGrounding = 'BROWSER TOOL ERRORS: The browser tool calls above failed (likely stale element refs or page changed). DO NOT retry with the same refs — they are invalid now. Call browser_snapshot FIRST to get fresh element refs, then interact with the page using the new refs.\n\n';
+          } else if (allCallsFailed) {
+            toolResultsGrounding = 'TOOL ERRORS: Every tool call above returned an error. DO NOT explain or report these errors to the user. DO NOT say "unfortunately" or "I was unable to". Retry immediately using different parameters or a different approach. If a path does not exist, create it first. If a command failed, fix the command and run it again. If the file is not found, use list_directory to check what exists.\n\n';
+          } else {
+            toolResultsGrounding = `Grounding: The JSON below is authoritative. ${fetchDirective}If these results include web_search only (no fetch_webpage yet), your next tool calls MUST be fetch_webpage for the first and second ranked result URLs (or the only URL if one hit) in this continuation \u2014 do not ask the user for permission to fetch. If fetch_webpage results are already present, answer from that content. Do not call list_directory or get_project_structure in the same round as completing web fetch unless the user asked about the project. Ground your reply in fetched page text; do not use generic site blurbs.\n\n`;
+          }
 
-          const injectionSuffix = allCallsFailed
-            ? '\n\nContinue by choosing the next corrective step.'
-            : '\n\nContinue from the results above and complete the user request.';
+          const injectionSuffix = browserRetryLoop
+              ? '\n\nYou MUST call browser_snapshot now. Do NOT retry any browser_click or browser_type.'
+              : browserToolsFailed
+              ? '\n\nCall browser_snapshot now to get fresh element refs.'
+              : allCallsFailed
+                ? '\n\nRetry now. Call a tool.'
+                : '\n\nIf the task is not yet complete, continue with the next tool call. If you are done, respond to the user with a summary.';
 
-          const toolFeedbackText = `[Tool Results]\n${toolResultsGrounding}${toolResultLines.join('\n')}${injectionSuffix}`;
-          this._chatHistory.push({ type: 'user', text: toolFeedbackText });
-          log.info(
-            'ChatTurn',
-            `[${chatTurnId}] tool_feedback_injected_chars=${toolFeedbackText.length} preview=\n${_truncateForLog(toolFeedbackText, chatBodyLogLimit)}`,
-          );
+          // ─── Multi-file context awareness ───
+          // After read_file or edit_file, parse the file's imports and inject
+          // related files into the tool results. This gives the model visibility
+          // into imported modules without it having to explicitly read each one.
+          // Capped at 3 files × MAX_FILE_CONTEXT chars to avoid context bloat.
+          const MAX_RELATED_FILES = 3;
+          const MAX_FILE_CONTEXT = 4000;
+          const relatedFileLines = [];
+          const seenRelatedPaths = new Set();
+
+          for (const { filePath, content } of fileReadResults) {
+            if (!filePath || !content) continue;
+
+            // Language-agnostic import detection
+            const importPatterns = [
+              /(?:import\s+.*?\s+from\s+['"])([^'"]+)(?:['"])/g,           // ES modules
+              /(?:import\s+['"])([^'"]+)(?:['"])/g,                         // side-effect imports
+              /(?:require\s*\(\s*['"])([^'"]+)(?:['"]\s*\))/g,            // CommonJS
+              /(?:#include\s+[<"])([^>"]+)(?:[>"])/g,                       // C/C++
+              /(?:from\s+([a-zA-Z_][\w.]*)\s+import)/g,                    // Python
+            ];
+
+            const importPaths = new Set();
+            for (const pat of importPatterns) {
+              pat.lastIndex = 0;
+              let m;
+              while ((m = pat.exec(content)) !== null) {
+                const imp = m[1];
+                // Skip node built-ins and package imports (no path separator)
+                if (imp && (imp.startsWith('.') || imp.startsWith('/')) && !seenRelatedPaths.has(imp)) {
+                  importPaths.add(imp);
+                }
+              }
+            }
+
+            // Try to resolve and read each import (up to MAX_RELATED_FILES total)
+            for (const relPath of importPaths) {
+              if (relatedFileLines.length >= MAX_RELATED_FILES) break;
+              seenRelatedPaths.add(relPath);
+              try {
+                const resolvedPath = path.resolve(path.dirname(filePath), relPath);
+                // Try with common extensions if the import has no extension
+                const candidates = [resolvedPath];
+                if (!path.extname(resolvedPath)) {
+                  candidates.push(
+                    resolvedPath + '.js', resolvedPath + '.jsx', resolvedPath + '.ts',
+                    resolvedPath + '.tsx', resolvedPath + '.py', resolvedPath + '.json',
+                    resolvedPath + '.css', resolvedPath + '.html',
+                    path.join(resolvedPath, 'index.js'), path.join(resolvedPath, 'index.ts'),
+                    path.join(resolvedPath, 'index.jsx'), path.join(resolvedPath, 'index.tsx'),
+                  );
+                }
+                for (const candidate of candidates) {
+                  if (relatedFileLines.length >= MAX_RELATED_FILES) break;
+                  try {
+                    const stat = fs.statSync(candidate);
+                    if (stat.isFile() && stat.size < 100000) { // skip huge files
+                      let relContent = fs.readFileSync(candidate, 'utf8');
+                      if (relContent.length > MAX_FILE_CONTEXT) {
+                        relContent = relContent.slice(0, MAX_FILE_CONTEXT) + '\n… [truncated]';
+                      }
+                      relatedFileLines.push(`[Related file: ${candidate}]\n${relContent}`);
+                      break;
+                    }
+                            } catch (e) { /* file doesn't exist, try next candidate */ }
+                }
+              } catch (e) { /* path resolution failed, skip */ }
+            }
+          }
+
+          const relatedSection = relatedFileLines.length > 0
+            ? '\n\n--- Related files (auto-injected for context) ---\n' + relatedFileLines.join('\n\n---\n\n')
+            : '';
+
+          // Inject any pending user interrupt message into the tool results
+          let userInterruptPrefix = '';
+          if (this._pendingUserMessage) {
+            userInterruptPrefix = `[USER INTERRUPT — OBEY THIS IMMEDIATELY]: ${this._pendingUserMessage}\n\n`;
+            this._pendingUserMessage = null;
+          }
+
+          this._chatHistory.push({ type: 'user', text: `${userInterruptPrefix}[Tool Results]\n${toolResultsGrounding}${toolResultLines.join('\n')}${relatedSection}${injectionSuffix}` });
+          console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── grounding=${browserRetryLoop ? 'STUCK_LOOP' : browserToolsFailed ? 'BROWSER_FAIL' : allCallsFailed ? 'ALL_FAIL' : 'normal'}, ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${!!this._pendingUserMessage}`);
+          console.log(`[ChatEngine] Tool result summary: ${toolResultLines.map(l => l.substring(0, 100)).join(' | ')}`);
+
+          // ─── Context compaction between tool rounds ───
+          // Root cause of slow prefill: each round re-prefills the ENTIRE history.
+          // After 25 browser tool calls, that's 200KB+ of context re-processed.
+          // Solution: truncate old tool result messages to a summary before each continuation.
+          // Keep the last 2 tool result rounds intact; summarize older ones.
+          // CRITICAL: browser_snapshot results contain the page state the model needs
+          // to avoid repeating actions. We must preserve the key content (URL, element refs)
+          // or the model will loop (navigate → snapshot → same page → navigate again).
+          if (this._chatHistory.length > 6) {
+            const toolResultIndices = [];
+            for (let i = 0; i < this._chatHistory.length; i++) {
+              if (this._chatHistory[i].type === 'user' && this._chatHistory[i].text.startsWith('[Tool Results]')) {
+                toolResultIndices.push(i);
+              }
+            }
+            // Keep the last 2 tool result messages intact, truncate older ones
+            if (toolResultIndices.length > 2) {
+              for (let j = 0; j < toolResultIndices.length - 2; j++) {
+                const idx = toolResultIndices[j];
+                const full = this._chatHistory[idx].text;
+                if (full.length > 500) {
+                  // For browser tool results, preserve the snapshot content (URL + element refs)
+                  // so the model knows what page it's on and what elements exist
+                  const lines = full.split('\n');
+                  const summaryLines = lines.filter(l => /^[a-z_]+:/.test(l)).map(l => {
+                    const colonIdx = l.indexOf(':');
+                    const toolName = l.substring(0, colonIdx);
+                    const result = l.substring(colonIdx + 1).trim();
+                    const isErr = result.startsWith('{"success":false') || result.includes('"error"');
+                    // Browser snapshots: keep URL and first 500 chars of page content
+                    if (toolName === 'browser_snapshot' && !isErr) {
+                      try {
+                        const parsed = JSON.parse(result);
+                        const url = parsed.url || '';
+                        const text = (parsed.text || '').substring(0, 500);
+                        return `browser_snapshot: URL=${url}, page=${text}`;
+                      } catch { return `browser_snapshot: OK (content preserved)`; }
+                    }
+                    // Browser navigate: keep the URL
+                    if (toolName === 'browser_navigate' && !isErr) {
+                      try {
+                        const parsed = JSON.parse(result);
+                        return `browser_navigate: navigated to ${parsed.url || 'unknown'}`;
+                      } catch { return `browser_navigate: OK`; }
+                    }
+                    // Browser click: keep what was clicked (ref/text)
+                    if (toolName === 'browser_click' && !isErr) {
+                      try {
+                        const parsed = JSON.parse(result);
+                        const url = parsed.url || '';
+                        return `browser_click: clicked${url ? `, now at ${url}` : ' (no navigation)'}`;
+                      } catch { return `browser_click: OK`; }
+                    }
+                    // Browser type: keep what was typed
+                    if (toolName === 'browser_type' && !isErr) {
+                      try {
+                        const parsed = JSON.parse(result);
+                        const url = parsed.url || '';
+                        return `browser_type: typed${url ? `, now at ${url}` : ''}`;
+                      } catch { return `browser_type: OK`; }
+                    }
+                    // read_file: preserve file path and content excerpt so model doesn't re-read same file
+                    if (toolName === 'read_file' && !isErr) {
+                      try {
+                        const parsed = JSON.parse(result);
+                        const filePath = parsed.path || '';
+                        const content = (parsed.content || '').substring(0, 300);
+                        return `read_file: ${filePath}${content ? ` — ${content}` : ''}`;
+                      } catch { return `read_file: OK`; }
+                    }
+                    // list_directory: preserve directory path so model knows it already listed it
+                    if (toolName === 'list_directory' && !isErr) {
+                      try {
+                        const parsed = JSON.parse(result);
+                        const dirPath = parsed.path || '';
+                        const entries = (parsed.entries || []).map(e => e.name || e).slice(0, 15).join(', ');
+                        return `list_directory: ${dirPath} — ${entries}`;
+                      } catch { return `list_directory: OK`; }
+                    }
+                    return `${toolName}: ${isErr ? 'FAILED' : 'OK'}`;
+                  });
+                  this._chatHistory[idx] = {
+                    type: 'user',
+                    text: `[Earlier Tool Results (summarized)]\n${summaryLines.join('\n')}`,
+                  };
+                }
+              }
+            }
+          }
 
           genOptions.lastEvaluationContextWindow = this._lastEvaluation ? {
             contextWindow: this._lastEvaluation.contextWindow,
@@ -1247,15 +1803,20 @@ No new tool state was produced in the previous round. Synthesize your final answ
           _sfContentFilePath = '';
           _sfUnicodeCount = 0;
           _sfUnicodeChars = '';
+          _sfVisibleChars = 0;
 
-          // Generate continuation â€” model sees tool results and can issue more tool calls
+          // Generate continuation — model sees tool results and can issue more tool calls
+          // Recalculate maxTokens for this round — tool results consumed context space
+          const ctxUsedNow = this._sequence?.nextTokenIndex || 0;
+          const ctxAvailNow = contextSize - ctxUsedNow;
+          genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, ctxAvailNow);
+          console.log(`[ChatEngine] Continuation maxTokens: ${genOptions.maxTokens} (ctx used: ${ctxUsedNow}/${contextSize})`);
+
           roundStart = fullResponse.length;
+          const _sfVisibleAtRoundStart = _sfVisibleChars; // snapshot before this round's generation
           result = await this._chat.generateResponse(this._chatHistory, genOptions);
           console.log(`[ChatEngine] Continuation after tools: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}`);
-          log.info(
-            'ChatTurn',
-            `[${chatTurnId}] continuation_after_tools stopReason=${result.metadata?.stopReason ?? '?'} responseLen=${result.response?.length ?? 0} fullResponse_chars=${fullResponse.length}`,
-          );
+          console.log(`[ChatEngine] ─── CONTINUATION RESPONSE ─── "${(result.response || '').substring(0, 300)}"`);
 
           // Flush streaming filter buffer before parsing new text
           _sfFlush();
@@ -1263,19 +1824,54 @@ No new tool state was produced in the previous round. Synthesize your final answ
 
           // Parse only the NEW text from this round (avoid re-executing previous tool calls)
           const newText = fullResponse.substring(roundStart);
+          const newVisibleChars = _sfVisibleChars - _sfVisibleAtRoundStart; // visible chars from this round only
           parsedCalls = parseToolCalls(newText);
           if (parsedCalls.length > 0) {
             const { repaired } = repairToolCalls(parsedCalls, newText);
             parsedCalls = filterWebWorkspaceToolConflict(repaired);
 
             // Safety net cleanup for any missed tool JSON in new text
+            // CRITICAL: use newVisibleChars (actual chars sent to frontend this round) not newText.length
             if (onStreamEvent) {
               const cleanNewText = stripToolCallText(newText);
-              if (cleanNewText.length < newText.length) {
-                onStreamEvent('llm-replace-last', { originalLength: newText.length, replacement: cleanNewText });
+              if (cleanNewText.length < newVisibleChars) {
+                onStreamEvent('llm-replace-last', { originalLength: newVisibleChars, replacement: cleanNewText });
               }
             }
           }
+        }
+      }
+
+      if (totalToolCalls >= MAX_TOOL_ITERATIONS) {
+        console.warn(`[ChatEngine] Tool call iteration limit reached (${MAX_TOOL_ITERATIONS}). Generating final summary.`);
+        // Inject a message telling the model to wrap up, then generate one final response
+        // so the user gets a proper summary instead of abrupt silence.
+        this._chatHistory.push({
+          type: 'user',
+          text: `[System] You have reached the maximum number of tool call iterations (${MAX_TOOL_ITERATIONS}). You MUST NOT call any more tools. Instead, provide a final summary of what you have accomplished so far and what remains to be done. Be concise and honest about incomplete work.`
+        });
+        try {
+          const ctxUsedNow = this._sequence?.nextTokenIndex || 0;
+          const ctxAvailNow = contextSize - ctxUsedNow;
+          genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, Math.min(ctxAvailNow, 1024));
+          // Reset streaming filter for final response
+          _sfBuf = ''; _sfDepth = 0; _sfActive = false; _sfConfirmed = false;
+          _sfInStr = false; _sfEscaped = false; _sfLastCharWasNewlineOrStart = true;
+          _sfInFence = false; _sfFenceBuf = ''; _sfFenceTickCount = 0;
+          _sfFileWriteDetected = false; _sfContentStreamActive = false;
+          _sfContentDone = false; _sfContentEsc = false; _sfContentBuf = '';
+          _sfContentFilePath = ''; _sfUnicodeCount = 0; _sfUnicodeChars = '';
+          _sfVisibleChars = 0;
+          const finalResult = await this._chat.generateResponse(this._chatHistory, genOptions);
+          if (finalResult.response) {
+            fullResponse += finalResult.response;
+            // Stream the final response tokens
+            for (const ch of finalResult.response) {
+              if (onToken) onToken(ch);
+            }
+          }
+        } catch (finalErr) {
+          console.warn(`[ChatEngine] Final summary generation failed: ${finalErr.message}`);
         }
       }
 
@@ -1289,25 +1885,59 @@ No new tool state was produced in the previous round. Synthesize your final answ
         console.log(`[ChatEngine] Generation complete. Tool calls: ${totalToolCalls}, stop reason: ${stopReason}`);
       }
 
-      log.info(
-        'ChatTurn',
-        `[${chatTurnId}] complete stopReason=${stopReason} toolCalls=${totalToolCalls} assistant_chars=${fullResponse.length}`,
-      );
-      log.info(
-        'ChatTurn',
-        `[${chatTurnId}] assistant_output_preview=\n${_truncateForLog(fullResponse, chatBodyLogLimit)}`,
-      );
+      // Inference speed diagnostic
+      const ctxUsedTokens = this._sequence?.nextTokenIndex || 0;
+      const totalCtx = this._context?.contextSize || 0;
+      const gpuLayers = this.modelInfo?.gpuLayers || 0;
+      const totalLayers = this.modelInfo?.totalLayers || gpuLayers;
+      const ctxPct = totalCtx > 0 ? Math.round((ctxUsedTokens / totalCtx) * 100) : 0;
+      const totalGenElapsed = (Date.now() - genStartTime) / 1000;
+      const avgTokPerSec = totalGenElapsed > 0 && genTokenCount > 0 ? (genTokenCount / totalGenElapsed).toFixed(1) : '?';
+      console.log(`[ChatEngine] Inference diagnostic: ctx=${ctxUsedTokens}/${totalCtx} (${ctxPct}%), gpuLayers=${gpuLayers}/${totalLayers}, responseLen=${fullResponse.length}, genTokens=${genTokenCount}, totalTime=${totalGenElapsed.toFixed(1)}s, avgTok/s=${avgTokPerSec}, model=${this.modelInfo?.name}`);
+      // Memory monitoring: check VRAM/RAM pressure after generation
+      if (this.gpuPreference !== 'cpu') {
+        try {
+          const vramState = await this._llama.getVramState();
+          const vramFreeNow = vramState?.free || 0;
+          const vramTotalNow = vramState?.total || 0;
+          const vramUsedPct = vramTotalNow > 0 ? Math.round(((vramTotalNow - vramFreeNow) / vramTotalNow) * 100) : 0;
+          if (vramUsedPct > 90 && onStreamEvent) {
+            // Rate-limit: only emit once per 5 minutes to avoid spamming the UI
+            const now = Date.now();
+            if (!this._lastVramWarn || (now - this._lastVramWarn) > 300000) {
+              this._lastVramWarn = now;
+              onStreamEvent('generation-warning', {
+                message: `VRAM is ${vramUsedPct}% full — generation may slow down or fail`,
+                suggestion: 'Try reducing context size or GPU layers in settings.',
+              });
+            }
+          }
+          console.log(`[ChatEngine] Memory post-gen: vramUsed=${vramUsedPct}%, vramFree=${(vramFreeNow/1e9).toFixed(2)}GB, ramFree=${(os.freemem()/1e9).toFixed(2)}GB`);
+        } catch (e) { console.warn('[ChatEngine] Memory post-gen check failed:', e.message); }
+      }
+
+      // Emit error to UI when generation produced nothing useful (but NOT if user manually stopped)
+      if (!fullResponse.trim() && stopReason !== 'cancelled' && stopReason !== 'abort' && onStreamEvent) {
+        onStreamEvent('generation-error', {
+          message: 'Model produced no output',
+          suggestion: contextTokens < 4096
+            ? `Context window is only ${contextTokens.toLocaleString()} tokens — too small for this model's tool prompt. Try a different model, increase context size in settings, or start a new session.`
+            : 'The model may have encountered an internal error. Try again or start a new session.',
+        });
+      }
 
       if (onComplete) onComplete(fullResponse);
       return { text: fullResponse, stopReason, toolCallCount: totalToolCalls };
     } catch (err) {
-      log.error('ChatTurn', `[${chatTurnId}] error`, err?.message || err);
       if (err.name === 'AbortError' || this._abortController?.signal?.aborted) {
-        log.warn(
-          'ChatTurn',
-          `[${chatTurnId}] cancelled partial_chars=${fullResponse.length} partial_preview=\n${_truncateForLog(fullResponse, chatBodyLogLimit)}`,
-        );
         return { text: fullResponse, stopReason: 'cancelled', toolCallCount: totalToolCalls };
+      }
+      // Emit generation error to UI
+      if (onStreamEvent) {
+        onStreamEvent('generation-error', {
+          message: `Generation failed: ${err.message}`,
+          suggestion: 'Try again, start a new session, or check the backend log for details.',
+        });
       }
       throw err;
     } finally {
@@ -1320,6 +1950,15 @@ No new tool state was produced in the previous round. Synthesize your final answ
     if (this._abortController) {
       this._abortController.abort(reason || 'cancelled');
     }
+  }
+
+  /**
+   * Inject a user message into the ongoing tool call loop.
+   * The message will be prepended to the next continuation's tool results
+   * so the model sees it immediately and can adjust its behavior.
+   */
+  injectUserMessage(text) {
+    this._pendingUserMessage = text;
   }
 
   async resetSession() {
@@ -1370,6 +2009,7 @@ No new tool state was produced in the previous round. Synthesize your final answ
   }
 
   async _dispose() {
+    try { await visionServer.stop(); } catch {}
     try { if (this._sequence) this._sequence.dispose(); } catch {}
     try { if (this._context) await this._context.dispose(); } catch {}
     try { if (this._model) await this._model.dispose(); } catch {}
@@ -1384,9 +2024,16 @@ No new tool state was produced in the previous round. Synthesize your final answ
   _contextShiftStrategy({ chatHistory, maxTokensCount, tokenizer }) {
     if (chatHistory.length <= 2) return { chatHistory, metadata: { droppedCount: 0 } };
 
+    // Tokenizer cache — avoids re-tokenizing the same items across multiple shift calls
+    const _tokenCache = new Map();
     const tokenize = (text) => {
-      try { return tokenizer.tokenize(String(text || ''), false).length; }
-      catch { return Math.ceil(String(text || '').length / 3); }
+      const key = text;
+      if (_tokenCache.has(key)) return _tokenCache.get(key);
+      let result;
+      try { result = tokenizer.tokenize(String(text || ''), false).length; }
+      catch { result = Math.ceil(String(text || '').length / 3); }
+      _tokenCache.set(key, result);
+      return result;
     };
 
     const getItemText = (item) => {
@@ -1399,7 +2046,7 @@ No new tool state was produced in the previous round. Synthesize your final answ
 
     const estimateTokens = (item) => tokenize(getItemText(item)) + 10;
 
-    const budget = Math.floor(maxTokensCount * 0.85);
+    const budget = Math.floor(maxTokensCount * 0.92);
     const systemItem = chatHistory[0];
     const lastItem = chatHistory[chatHistory.length - 1];
 
@@ -1412,7 +2059,7 @@ No new tool state was produced in the previous round. Synthesize your final answ
       const availableForLastItem = budget - systemTokens - 20;
       if (availableForLastItem > 100) {
         const fullText = getItemText(lastItem);
-        const isToolOrSystemInject = /^\[(?:Tool Results|System)\]/i.test(fullText);
+        const isToolOrSystemInject = RE_TOOL_OR_SYSTEM_INJECT.test(fullText);
         let keepChars = Math.floor(availableForLastItem * 3);
         // Tool/system inject messages must keep the START (JSON + snippets), not the tail.
         let truncatedText = isToolOrSystemInject ? fullText.slice(0, keepChars) : fullText.slice(-keepChars);
@@ -1454,6 +2101,53 @@ No new tool state was produced in the previous round. Synthesize your final answ
     }
     if (chatHistory.length > 1) newHistory.push(effectiveLastItem);
 
+    // Auto-maintain context state file — when messages are dropped, write a compact
+    // summary to .guide-scratch/context-state.md so the model can read_file to recover
+    if (droppedCount > 0) {
+      try {
+        const scratchDir = this._projectPath
+          ? path.join(this._projectPath, '.guide-scratch')
+          : null;
+        if (scratchDir) {
+          fs.mkdirSync(scratchDir, { recursive: true });
+          const stateFile = path.join(scratchDir, 'context-state.md');
+          // Build compact summary of dropped items
+          const droppedItems = [];
+          for (let i = 1; i <= chatHistory.length - 2; i++) {
+            if (!keptIndices.has(i)) {
+              const item = chatHistory[i];
+              const text = getItemText(item);
+              const role = item.type || 'unknown';
+              // Compact: role + first 200 chars of each dropped item
+              droppedItems.push(`[${role}] ${text.slice(0, 200)}${text.length > 200 ? '...' : ''}`);
+            }
+          }
+          // Also include what's currently in context for full picture
+          const keptItems = [];
+          for (let i = 1; i <= chatHistory.length - 2; i++) {
+            if (keptIndices.has(i)) {
+              const item = chatHistory[i];
+              const text = getItemText(item);
+              const role = item.type || 'unknown';
+              keptItems.push(`[${role}] ${text.slice(0, 100)}${text.length > 100 ? '...' : ''}`);
+            }
+          }
+          const stateContent = [
+            '# Context State',
+            `Updated: ${new Date().toISOString()}`,
+            `Context: ${used}/${budget} tokens used`,
+            '',
+            '## Current Conversation (in context)',
+            ...keptItems,
+            '',
+            '## Dropped Conversation (shifted out)',
+            ...droppedItems,
+          ].join('\n');
+          fs.writeFileSync(stateFile, stateContent, 'utf8');
+        }
+      } catch (e) { /* non-critical — don't break generation if scratch write fails */ console.warn('[ChatEngine] Scratch write failed:', e.message); }
+    }
+
     console.log(`[ChatEngine] Context shift: kept ${keptIndices.size} items, dropped ${droppedCount}. Budget: ${budget}, used: ${used}`);
     return { chatHistory: newHistory, metadata: { droppedCount } };
   }
@@ -1462,7 +2156,7 @@ No new tool state was produced in the previous round. Synthesize your final answ
     const toolLines = Object.entries(functions).map(([name, def]) => {
       return `- ${name}: ${def.description || 'No description'}`;
     });
-    return `\n\nYou have access to the following tools:\n${toolLines.join('\n')}\n\nTOOL USAGE RULES:\n- When the user asks you to create, write, edit, read, or delete files in their project, use the appropriate file tool (write_file, read_file, edit_file, append_to_file, delete_file). Do NOT output file contents inline.\n- When the user asks you to find, search, or look for something in their code, use grep_search or find_files.\n- When the user asks to list or explore project structure, use list_directory.\n- When the user asks to run a command, script, or install something, use run_command.\n- When the user asks to search the web or look something up online, use web_search and fetch_webpage as needed, and base conclusions on fetched evidence.\n- When the user asks a general question, wants an explanation, or asks you to review code you already have, respond with text directly.\n- You can chain tools: use read_file to see existing code, then edit_file to modify it, then run_command to test it.\n- Always prefer tools over inline code when the user wants changes to their actual project files.`;
+    return `\n\nYou have access to the following tools:\n${toolLines.join('\n')}\n\nTOOL USAGE RULES:\n- When the user asks you to create, write, edit, read, or delete files in their project, you MUST use the appropriate file tool (write_file, read_file, edit_file, append_to_file, delete_file). Do NOT output file contents inline.\n- When the user asks you to find, search, or look for something in their code, use grep_search or find_files.\n- When the user asks to list or explore project structure, use list_directory.\n- When the user asks to run a command, script, or install something, use run_command.\n- When the user asks to search the web or look something up online, use web_search then immediately fetch_webpage on the first and second ranked result URLs in the same continuation before answering (if only one hit, fetch that URL). Do not ask the user whether to fetch. Do not list the project directory in the same tool round as web_search/fetch_webpage unless the user asked about the project.\n- When the user asks a general question, wants an explanation, or asks you to review code you already have, respond with text directly.\n- You can chain tools: use read_file to see existing code, then edit_file to modify it, then run_command to test it.\n- Always prefer tools over inline code when the user wants changes to their actual project files.`;
   }
 
   _getNodeLlamaCppPath() {
@@ -1526,11 +2220,20 @@ ChatEngine.DEFAULT_ENABLED_TOOLS = new Set([
   'web_search', 'fetch_webpage',
   // Browser
   'browser_navigate', 'browser_snapshot', 'browser_click',
-  'browser_type', 'browser_get_content',
+  'browser_type', 'browser_get_content', 'browser_screenshot',
+  'browser_evaluate', 'browser_fill_form', 'browser_select_option',
+  'browser_scroll', 'browser_wait', 'browser_wait_for',
+  'browser_back', 'browser_press_key', 'browser_hover',
+  'browser_drag', 'browser_tabs', 'browser_handle_dialog',
+  'browser_console_messages', 'browser_file_upload',
+  'browser_resize', 'browser_get_url', 'browser_get_links',
+  'browser_close',
   // Memory
   'save_memory', 'get_memory', 'list_memories',
   // Planning
   'write_todos', 'update_todo',
+  // Interaction
+  'ask_question',
 ]);
 
 module.exports = { ChatEngine, buildEngineLoadSettings };

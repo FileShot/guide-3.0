@@ -98,6 +98,10 @@ class ExtensionManager extends EventEmitter {
           enabled: state.enabled,
           path: extPath,
           builtin: !!builtin,
+          // Runtime hooks — extensions declare tools and panels in manifest
+          tools: manifest.tools || [],       // [{name, description, handler}]
+          panels: manifest.panels || [],     // [{id, title, icon, component}]
+          chatHooks: manifest.chatHooks || [], // [{event, handler}] — pre/post generation
         });
       } catch (err) {
         log.warn(`[ExtensionManager] Failed to read manifest for ${entry.name}: ${err.message}`);
@@ -284,6 +288,67 @@ class ExtensionManager extends EventEmitter {
     } catch {
       return null;
     }
+  }
+
+  /* ── Runtime Hooks ─────────────────────────────────────────── */
+
+  /**
+   * Get all tool definitions from enabled extensions.
+   * Returns [{extensionId, name, description, handler}]
+   */
+  getExtensionTools() {
+    const tools = [];
+    for (const ext of this.extensions) {
+      if (!ext.enabled || !ext.tools || ext.tools.length === 0) continue;
+      for (const tool of ext.tools) {
+        tools.push({
+          extensionId: ext.id,
+          name: tool.name,
+          description: tool.description || '',
+          handler: tool.handler || null,
+        });
+      }
+    }
+    return tools;
+  }
+
+  /**
+   * Get all panel definitions from enabled extensions.
+   * Returns [{extensionId, id, title, icon, component}]
+   */
+  getExtensionPanels() {
+    const panels = [];
+    for (const ext of this.extensions) {
+      if (!ext.enabled || !ext.panels || ext.panels.length === 0) continue;
+      for (const panel of ext.panels) {
+        panels.push({
+          extensionId: ext.id,
+          id: panel.id,
+          title: panel.title || panel.id,
+          icon: panel.icon || null,
+          component: panel.component || null,
+        });
+      }
+    }
+    return panels;
+  }
+
+  /**
+   * Get chat hooks from enabled extensions for a given event.
+   * Events: 'pre-generate', 'post-generate', 'pre-tool', 'post-tool'
+   * Returns [{extensionId, handler}]
+   */
+  getChatHooks(event) {
+    const hooks = [];
+    for (const ext of this.extensions) {
+      if (!ext.enabled || !ext.chatHooks || ext.chatHooks.length === 0) continue;
+      for (const hook of ext.chatHooks) {
+        if (hook.event === event) {
+          hooks.push({ extensionId: ext.id, handler: hook.handler });
+        }
+      }
+    }
+    return hooks;
   }
 }
 

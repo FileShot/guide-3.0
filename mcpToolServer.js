@@ -70,6 +70,18 @@ class MCPToolServer {
       'git_commit', 'git_push', 'git_reset', 'git_branch_delete',
     ]);
 
+    // Rate limiting: max calls per tool type within the rate window
+    this._rateLimits = {
+      write_file: { max: 10, window: 10000 },
+      edit_file: { max: 10, window: 10000 },
+      delete_file: { max: 5, window: 10000 },
+      run_command: { max: 8, window: 10000 },
+      web_search: { max: 4, window: 30000 },
+      fetch_webpage: { max: 6, window: 30000 },
+      http_request: { max: 6, window: 30000 },
+    };
+    this._rateCounters = new Map(); // tool -> [{timestamp}]
+
     // Active child processes from run_command, keyed by childId. Killed on
     // cancelGeneration() so Stop actually stops.
     this._activeChildren = new Map();
@@ -139,7 +151,7 @@ class MCPToolServer {
     if (!params || typeof params !== 'object') return params;
     const normalized = { ...params };
 
-    if (toolName === 'browser_click' || toolName === 'browser_type' || toolName === 'browser_hover') {
+    if (toolName === 'browser_click' || toolName === 'browser_type' || toolName === 'browser_hover' || toolName === 'browser_select_option') {
       // Common small-model schema drift: selector/element_ref/elementRef → ref
       if (normalized.ref == null && normalized.selector != null) {
         normalized.ref = normalized.selector;
@@ -152,6 +164,55 @@ class MCPToolServer {
       if (normalized.ref == null && normalized.elementRef != null) {
         normalized.ref = normalized.elementRef;
         delete normalized.elementRef;
+      }
+      if (normalized.ref == null && normalized.elementId != null) {
+        normalized.ref = normalized.elementId;
+        delete normalized.elementId;
+      }
+      if (normalized.ref == null && normalized.id != null) {
+        normalized.ref = normalized.id;
+        delete normalized.id;
+      }
+      // More aliases small models use for element references
+      if (normalized.ref == null && normalized.input != null) {
+        normalized.ref = normalized.input;
+        delete normalized.input;
+      }
+      if (normalized.ref == null && normalized.field != null) {
+        normalized.ref = normalized.field;
+        delete normalized.field;
+      }
+      if (normalized.ref == null && normalized.element != null) {
+        normalized.ref = normalized.element;
+        delete normalized.element;
+      }
+      if (normalized.ref == null && normalized.index != null) {
+        normalized.ref = String(normalized.index);
+        delete normalized.index;
+      }
+      if (normalized.ref == null && normalized.elementIndex != null) {
+        normalized.ref = String(normalized.elementIndex);
+        delete normalized.elementIndex;
+      }
+      if (normalized.ref == null && normalized.element_idx != null) {
+        normalized.ref = String(normalized.element_idx);
+        delete normalized.element_idx;
+      }
+      if (normalized.ref == null && normalized.elemIndex != null) {
+        normalized.ref = String(normalized.elemIndex);
+        delete normalized.elemIndex;
+      }
+      if (normalized.ref == null && normalized.target != null) {
+        normalized.ref = String(normalized.target);
+        delete normalized.target;
+      }
+      if (normalized.ref == null && normalized.locator != null) {
+        normalized.ref = String(normalized.locator);
+        delete normalized.locator;
+      }
+      if (normalized.ref == null && normalized.num != null) {
+        normalized.ref = String(normalized.num);
+        delete normalized.num;
       }
       // For clicks: accept visible text as ref
       if (toolName === 'browser_click' && normalized.ref == null && typeof normalized.element_text === 'string') {
@@ -176,6 +237,22 @@ class MCPToolServer {
         normalized.text = normalized.value;
         delete normalized.value;
       }
+      if (normalized.text == null && normalized.input != null) {
+        normalized.text = normalized.input;
+        delete normalized.input;
+      }
+      if (normalized.text == null && normalized.content != null) {
+        normalized.text = normalized.content;
+        delete normalized.content;
+      }
+      if (normalized.text == null && normalized.data != null) {
+        normalized.text = normalized.data;
+        delete normalized.data;
+      }
+      if (normalized.text == null && normalized.string != null) {
+        normalized.text = normalized.string;
+        delete normalized.string;
+      }
     }
 
     if (toolName === 'browser_navigate') {
@@ -185,6 +262,11 @@ class MCPToolServer {
       if (normalized.url == null && typeof normalized.src === 'string') normalized.url = normalized.src;
       if (normalized.url == null && typeof normalized.page === 'string') normalized.url = normalized.page;
       if (normalized.url == null && typeof normalized.target === 'string') normalized.url = normalized.target;
+      if (normalized.url == null && typeof normalized.address === 'string') normalized.url = normalized.address;
+      if (normalized.url == null && typeof normalized.site === 'string') normalized.url = normalized.site;
+      if (normalized.url == null && typeof normalized.page_url === 'string') normalized.url = normalized.page_url;
+      if (normalized.url == null && typeof normalized.location === 'string') normalized.url = normalized.location;
+      if (normalized.url == null && typeof normalized.goto === 'string') normalized.url = normalized.goto;
     }
 
     return normalized;
@@ -272,6 +354,23 @@ class MCPToolServer {
     ]);
   }
 
+  // ─── Rate Limiting ──────────────────────────────────────────────────────
+
+  _checkRateLimit(toolName) {
+    const limit = this._rateLimits[toolName];
+    if (!limit) return { allowed: true };
+    const now = Date.now();
+    let timestamps = this._rateCounters.get(toolName) || [];
+    // Prune timestamps outside the window
+    timestamps = timestamps.filter(t => (now - t) < limit.window);
+    if (timestamps.length >= limit.max) {
+      return { allowed: false, count: timestamps.length, max: limit.max, window: limit.window };
+    }
+    timestamps.push(now);
+    this._rateCounters.set(toolName, timestamps);
+    return { allowed: true };
+  }
+
   // ─── Path Sanitization ───────────────────────────────────────────────────
 
   _sanitizeFilePath(filePath) {
@@ -346,7 +445,7 @@ class MCPToolServer {
     this._allToolDefsCache = [
       {
         name: 'web_search',
-        description: 'Search the web (DuckDuckGo and fallbacks). Returns title, url, and short snippet per hit — not full page text. Use fetch_webpage on relevant result URLs when full page evidence is needed for the answer.',
+        description: 'Search the web (DuckDuckGo and fallbacks). Returns title, url, and short snippet per hit — not full page text. After every web_search, in the same continuation, you MUST call fetch_webpage on the first and second ranked result URLs (or each URL if fewer than two) before your final answer. Do not ask the user whether to fetch. Ground answers in fetched page text; do not substitute generic descriptions of sites or brands.',
         parameters: {
           query: { type: 'string', description: 'Search query', required: true },
           maxResults: { type: 'number', description: 'Max results (default 5)', required: false },
@@ -354,7 +453,7 @@ class MCPToolServer {
       },
       {
         name: 'fetch_webpage',
-        description: 'Fetch a URL and return extracted page text (HTML stripped). Use this to gather full-page evidence after web_search when snippets are insufficient. For interactive browsing, use browser_navigate instead.',
+        description: 'Fetch a URL and return extracted page text (HTML stripped). Required immediately after web_search in the same continuation: call for the first and second ranked result URLs from the search results (or the only URL if one hit) before answering. Do not ask the user for permission to fetch. For interactive browsing, use browser_navigate instead.',
         parameters: {
           url: { type: 'string', description: 'URL to fetch', required: true },
         },
@@ -366,6 +465,7 @@ class MCPToolServer {
           filePath: { type: 'string', description: 'Relative or absolute file path', required: true },
           startLine: { type: 'number', description: 'Start line (1-based, optional)', required: false },
           endLine: { type: 'number', description: 'End line (inclusive, optional)', required: false },
+          reason: { type: 'string', description: 'One sentence explaining why you are reading this file', required: false },
         },
       },
       {
@@ -374,6 +474,7 @@ class MCPToolServer {
         parameters: {
           filePath: { type: 'string', description: 'File path', required: true },
           content: { type: 'string', description: 'File content', required: true },
+          reason: { type: 'string', description: 'One sentence explaining why you are writing this file', required: false },
         },
       },
       {
@@ -382,6 +483,7 @@ class MCPToolServer {
         parameters: {
           query: { type: 'string', description: 'Search query', required: true },
           maxResults: { type: 'number', description: 'Max results', required: false },
+          reason: { type: 'string', description: 'One sentence explaining what you are looking for in the codebase', required: false },
         },
       },
       {
@@ -391,6 +493,7 @@ class MCPToolServer {
           command: { type: 'string', description: 'Command to execute', required: true },
           cwd: { type: 'string', description: 'Working directory', required: false },
           timeout: { type: 'number', description: 'Timeout in ms (default 60000)', required: false },
+          reason: { type: 'string', description: 'One sentence explaining why this command needs to be run', required: false },
         },
       },
       {
@@ -419,21 +522,23 @@ class MCPToolServer {
       // ── Browser Tools ──
       {
         name: 'browser_navigate',
-        description: 'Navigate to a URL in a Playwright-controlled Chrome browser. Auto-launches the browser if needed. Call browser_snapshot after navigation to inspect the page.',
+        description: 'Navigate to a URL in a Playwright-controlled Chrome browser. Auto-launches the browser if needed. Returns the page snapshot automatically — no need to call browser_snapshot separately after navigating.',
         parameters: {
           url: { type: 'string', description: 'Full URL to navigate to (must include https:// or http://)', required: true },
+          reason: { type: 'string', description: 'One sentence explaining why you are navigating to this URL', required: false },
         },
       },
       {
         name: 'browser_snapshot',
-        description: 'Get an accessibility snapshot of the current browser page with numbered element refs. Returns interactive elements and text content. Call before clicking or typing to discover element refs. Re-snapshot after page changes since refs are invalidated.',
+        description: 'Get an accessibility snapshot of the current browser page with [ref=eN] element refs. Returns the accessibility tree (roles, names, interactive elements) and page text. Call before clicking or typing to discover element refs. Re-snapshot after page changes since refs are invalidated.',
         parameters: {},
       },
       {
         name: 'browser_click',
-        description: 'Click an element by its ref number from browser_snapshot. Handles scrolling and overlays automatically. Auto-retries with a fresh snapshot if the ref is stale.',
+        description: 'Click an element by its ref number. Returns the page snapshot automatically after clicking — no need to call browser_snapshot separately. Handles scrolling and overlays automatically. Auto-retries with a fresh snapshot if the ref is stale.',
         parameters: {
-          ref: { type: 'string', description: 'Element ref number from snapshot (e.g. "5"), OR visible text of the element (e.g. "Sign In")', required: true },
+          ref: { type: 'string', description: 'Element reference from snapshot [ref=eN] (e.g. "e5"), OR visible text of the element (e.g. "Sign In"). Also accepts: elementIndex, index, selector', required: true },
+          reason: { type: 'string', description: 'One sentence explaining why you are clicking this element', required: false },
           button: { type: 'string', description: "Mouse button: 'left', 'right', or 'middle' (default 'left')", required: false },
           doubleClick: { type: 'boolean', description: 'Double click instead of single click', required: false },
           element: { type: 'string', description: 'Human-readable element description (used as fallback if ref fails)', required: false },
@@ -441,10 +546,11 @@ class MCPToolServer {
       },
       {
         name: 'browser_type',
-        description: 'Type text into an input field by ref number. Clears the field first, then types the new text. Auto-retries with fresh snapshot if ref is stale.',
+        description: 'Type text into an input field by ref number. Returns the page snapshot automatically after typing — no need to call browser_snapshot separately. Clears the field first, then types the new text. Auto-retries with fresh snapshot if ref is stale.',
         parameters: {
-          ref: { type: 'string', description: 'Element ref number from snapshot (e.g. "3")', required: true },
+          ref: { type: 'string', description: 'Element reference from snapshot [ref=eN] (e.g. "e3"). Also accepts: elementIndex, index, selector', required: true },
           text: { type: 'string', description: 'Text to type', required: true },
+          reason: { type: 'string', description: 'One sentence explaining what you are typing and why', required: false },
           slowly: { type: 'boolean', description: 'Type one character at a time (triggers key handlers). Default: fast fill.', required: false },
           submit: { type: 'boolean', description: 'Press Enter after typing', required: false },
         },
@@ -476,7 +582,7 @@ class MCPToolServer {
       },
       {
         name: 'browser_screenshot',
-        description: 'Take a screenshot of the current browser page or a specific element.',
+        description: 'Take a screenshot of the current browser page. If the vision system is available, the screenshot is automatically captioned with a detailed text description of visible elements. Use this when you need visual context (canvas apps, charts, image-heavy layouts) alongside the accessibility snapshot.',
         parameters: {
           fullPage: { type: 'boolean', description: 'Capture full scrollable page (default false)', required: false },
           ref: { type: 'string', description: 'Element ref to screenshot (optional, screenshots viewport by default)', required: false },
@@ -639,6 +745,7 @@ class MCPToolServer {
         description: 'Replace specific text in a file by finding oldText and replacing it with newText. More efficient than rewriting the entire file. Use read_file first to get the exact text for replacement.',
         parameters: {
           filePath: { type: 'string', description: 'File to edit', required: true },
+          reason: { type: 'string', description: 'One sentence explaining what this edit accomplishes', required: false },
           oldText: { type: 'string', description: 'Exact text to find and replace (must match exactly)', required: true },
           newText: { type: 'string', description: 'Replacement text', required: true },
         },
@@ -879,6 +986,15 @@ class MCPToolServer {
         description: 'List all saved project rules and skills.',
         parameters: {},
       },
+      {
+        name: 'ask_question',
+        description: 'Ask the user a multi-part question and wait for their response. Use this when you need clarification, a decision, or user input before proceeding. The question appears in the chat input area with options the user can click or type a free-form answer.',
+        parameters: {
+          question: { type: 'string', description: 'The main question to ask the user', required: true },
+          options: { type: 'array', description: 'Array of {label, description} option objects (max 4). Include a free-form option if the user should be able to type their own answer.', required: false },
+          allowMultiple: { type: 'boolean', description: 'If true, the user can select multiple options', required: false },
+        },
+      },
 
     ];
     return this._allToolDefsCache;
@@ -927,6 +1043,12 @@ class MCPToolServer {
         console.log('[MCPToolServer] Absolute path outside project for ' + toolName + ': ' + params.filePath);
         return { success: false, error: 'Path outside project. Use relative path ' + JSON.stringify(sug) + ' instead of ' + JSON.stringify(params.filePath) + '.' };
       }
+    }
+
+    // Rate limit check
+    const rateResult = this._checkRateLimit(toolName);
+    if (!rateResult.allowed) {
+      return { success: false, error: `Rate limit: too many ${toolName} calls. Wait a moment and try again. (${rateResult.count}/${rateResult.max} in last ${Math.round(rateResult.window/1000)}s)` };
     }
 
     // Sanitize all file path params
@@ -985,9 +1107,12 @@ class MCPToolServer {
           result = await this._withTimeout(this._browserSnapshot(), 30000, 'browser_snapshot');
           break;
         case 'browser_click':
+          if (!params.ref) return { success: false, error: 'Missing "ref" parameter. Use the [ref=eN] from browser_snapshot, e.g. {"ref":"e5"}' };
           result = await this._withTimeout(this._browserClick(params.ref, params), 30000, 'browser_click');
           break;
         case 'browser_type':
+          if (!params.ref) return { success: false, error: 'Missing "ref" parameter. Use the [ref=eN] from browser_snapshot, e.g. {"ref":"e3","text":"hello"}' };
+          if (params.text == null) return { success: false, error: 'Missing "text" parameter for browser_type.' };
           result = await this._withTimeout(this._browserType(params.ref, params.text, params), 30000, 'browser_type');
           break;
         case 'browser_fill_form':
@@ -1175,6 +1300,9 @@ class MCPToolServer {
           break;
         case 'list_rules':
           result = this._listRules();
+          break;
+        case 'ask_question':
+          result = await this._askQuestion(params);
           break;
         default:
           result = { success: false, error: `Unknown tool: ${toolName}` };
@@ -1370,11 +1498,19 @@ class MCPToolServer {
     if (!filePath || typeof filePath !== 'string' || filePath.trim() === '') {
       return { success: false, error: 'Missing required parameter: filePath (string). Provide the path of the file to read. Example: {"filePath":"src/app.js"}' };
     }
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(this.projectPath || '', filePath);
+    const fullPath = this._sanitizeFilePath(path.isAbsolute(filePath) ? filePath : path.join(this.projectPath || '', filePath));
     try {
       const stats = await fs.stat(fullPath);
       if (stats.size > 10 * 1024 * 1024) {
         return { success: false, error: `File too large (${Math.round(stats.size / 1024 / 1024)}MB). Max 10MB for read_file.` };
+      }
+      // Reject binary/image files — reading them as utf8 produces garbage
+      const ext = path.extname(fullPath).toLowerCase();
+      const binaryExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.ico', '.svg', '.tiff', '.tif', '.heic', '.heif',
+        '.zip', '.tar', '.gz', '.rar', '.7z', '.exe', '.dll', '.so', '.dylib', '.node', '.wasm',
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.mp3', '.mp4', '.wav', '.avi', '.mkv']);
+      if (binaryExts.has(ext)) {
+        return { success: false, error: `Cannot read binary file (${ext}). read_file only works on text files. Image files cannot be viewed as text — ask the user to describe the image content instead.` };
       }
       let content = await fs.readFile(fullPath, 'utf8');
       const totalLines = content.split('\n').length;
@@ -1412,7 +1548,7 @@ class MCPToolServer {
       // Emit files-changed so frontend file explorer picks it up
       if (this._send) this._send('files-changed', { projectPath: tempDir });
     }
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(this.projectPath, filePath);
+    const fullPath = this._sanitizeFilePath(path.isAbsolute(filePath) ? filePath : path.join(this.projectPath, filePath));
     try {
       let isNew = true;
       let existingContent = null;
@@ -1472,14 +1608,18 @@ class MCPToolServer {
         });
       }
 
-      return { success: true, path: fullPath, isNew };
+      const result = { success: true, path: fullPath, isNew };
+      // Attach linter/diagnostic feedback after a brief delay for Monaco to process
+      const diagFeedback = await this._getDiagnosticFeedback(fullPath, 600);
+      if (diagFeedback) result.diagnostics = diagFeedback;
+      return result;
     } catch (error) {
       return { success: false, error: error.message };
     }
   }
 
   async _editFile(filePath, oldText, newText) {
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(this.projectPath || '', filePath);
+    const fullPath = this._sanitizeFilePath(path.isAbsolute(filePath) ? filePath : path.join(this.projectPath || '', filePath));
     try {
       let content = await fs.readFile(fullPath, 'utf8');
       const originalContent = content;
@@ -1530,6 +1670,19 @@ class MCPToolServer {
             matched = true;
             console.log(`[MCPToolServer] edit_file: whitespace-collapsed match at lines ${startLine + 1}-${endLine + 1}`);
           }
+        }
+      }
+
+      if (!matched) {
+        // Level 5: Fuzzy match via Levenshtein sliding window (allows ~15% character differences)
+        const fuzzy = this._fuzzyMatchText(normLF(content), normLF(oldText), 0.85);
+        if (fuzzy) {
+          const contentLines = normLF(content).split('\n');
+          const before = contentLines.slice(0, fuzzy.startLine).join('\n');
+          const after = contentLines.slice(fuzzy.endLine + 1).join('\n');
+          content = before + (before ? '\n' : '') + newText + (after ? '\n' : '') + after;
+          matched = true;
+          console.log(`[MCPToolServer] edit_file: fuzzy match at lines ${fuzzy.startLine + 1}-${fuzzy.endLine + 1} (similarity: ${fuzzy.similarity})`);
         }
       }
 
@@ -1606,14 +1759,18 @@ class MCPToolServer {
       const editMsg = totalOccurrences > 1
         ? `Edited ${path.basename(fullPath)}: replaced 1 of ${totalOccurrences} occurrences (use replace_in_files for bulk replace)`
         : `Edited ${path.basename(fullPath)}: 1 replacement made`;
-      return { success: true, path: fullPath, message: editMsg, replacements: 1 };
+      const result = { success: true, path: fullPath, message: editMsg, replacements: 1 };
+      // Attach linter/diagnostic feedback after a brief delay for Monaco to process
+      const diagFeedback = await this._getDiagnosticFeedback(fullPath, 600);
+      if (diagFeedback) result.diagnostics = diagFeedback;
+      return result;
     } catch (error) {
       return { success: false, error: error.message };
     }
   }
 
   async _deleteFile(filePath) {
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(this.projectPath || '', filePath);
+    const fullPath = this._sanitizeFilePath(path.isAbsolute(filePath) ? filePath : path.join(this.projectPath || '', filePath));
     try {
       const stats = await fs.stat(fullPath);
       if (stats.isDirectory()) {
@@ -1632,8 +1789,8 @@ class MCPToolServer {
   }
 
   async _renameFile(oldPath, newPath) {
-    const fullOld = path.isAbsolute(oldPath) ? oldPath : path.join(this.projectPath || '', oldPath);
-    const fullNew = path.isAbsolute(newPath) ? newPath : path.join(this.projectPath || '', newPath);
+    const fullOld = this._sanitizeFilePath(path.isAbsolute(oldPath) ? oldPath : path.join(this.projectPath || '', oldPath));
+    const fullNew = this._sanitizeFilePath(path.isAbsolute(newPath) ? newPath : path.join(this.projectPath || '', newPath));
     try {
       await fs.mkdir(path.dirname(fullNew), { recursive: true });
       await fs.rename(fullOld, fullNew);
@@ -1647,7 +1804,7 @@ class MCPToolServer {
   }
 
   async _getFileInfo(filePath) {
-    const fullPath = path.isAbsolute(filePath) ? filePath : path.join(this.projectPath || '', filePath);
+    const fullPath = this._sanitizeFilePath(path.isAbsolute(filePath) ? filePath : path.join(this.projectPath || '', filePath));
     try {
       const stats = await fs.stat(fullPath);
       return {
@@ -1671,7 +1828,7 @@ class MCPToolServer {
     if (!this.projectPath) {
       return { success: false, error: 'No project folder is open. Please open a folder first.' };
     }
-    const fullPath = path.isAbsolute(dirPath) ? dirPath : path.join(this.projectPath, dirPath);
+    const fullPath = this._sanitizeFilePath(path.isAbsolute(dirPath) ? dirPath : path.join(this.projectPath, dirPath));
     try {
       await fs.mkdir(fullPath, { recursive: true });
       if (this.browserManager?.parentWindow) {
@@ -2080,6 +2237,121 @@ class MCPToolServer {
     } catch (error) {
       return { success: false, error: error.message };
     }
+  }
+
+  /**
+   * Get diagnostic/linter feedback for a file after a brief delay.
+   * Waits for Monaco to process the edit, then looks up stored diagnostics.
+   * Returns null if no errors/warnings, or { errors, warnings, details[] } if issues found.
+   */
+  async _getDiagnosticFeedback(fullPath, delayMs = 500) {
+    // Wait for Monaco to process the file change and update markers
+    await new Promise(r => setTimeout(r, delayMs));
+    const diagStore = this.ctx?.editorDiagnostics;
+    if (!diagStore) return null;
+    // Normalize path for lookup (Monaco uses URI format on Windows: /C:/...)
+    const norm = fullPath.replace(/\\/g, '/').toLowerCase();
+    // Try direct match, then strip leading slash (Monaco /C:/ vs C:/)
+    let diag = diagStore[norm] || diagStore[norm.replace(/^\//, '')];
+    if (!diag) {
+      // Try matching just the filename portion
+      const base = path.basename(fullPath).toLowerCase();
+      for (const [key, val] of Object.entries(diagStore)) {
+        if (key.endsWith('/' + base) || key.endsWith(base)) { diag = val; break; }
+      }
+    }
+    if (!diag || (diag.errors === 0 && diag.warnings === 0)) return null;
+    // Only include if diagnostics are recent (within last 5 seconds)
+    if (Date.now() - diag.updatedAt > 5000) return null;
+    const feedback = { errors: diag.errors, warnings: diag.warnings };
+    if (diag.details?.length > 0) {
+      feedback.details = diag.details.slice(0, 10).map(d =>
+        `Line ${d.line}: [${d.severity}] ${d.message}`
+      );
+    }
+    return feedback;
+  }
+
+  /**
+   * Compute Levenshtein distance between two strings.
+   * Used for fuzzy matching in edit_file when exact match fails.
+   */
+  _levenshtein(a, b) {
+    if (a.length === 0) return b.length;
+    if (b.length === 0) return a.length;
+    const matrix = [];
+    for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+    for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+    for (let i = 1; i <= b.length; i++) {
+      for (let j = 1; j <= a.length; j++) {
+        const cost = b[i - 1] === a[j - 1] ? 0 : 1;
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j] + 1,      // deletion
+          matrix[i][j - 1] + 1,      // insertion
+          matrix[i - 1][j - 1] + cost // substitution
+        );
+      }
+    }
+    return matrix[b.length][a.length];
+  }
+
+  /**
+   * Fuzzy-match oldText against content using sliding window + Levenshtein ratio.
+   * Returns { startLine, endLine, similarity } or null if no good match found.
+   * Threshold: 0.85 similarity ratio (allows ~15% character differences).
+   */
+  _fuzzyMatchText(content, oldText, threshold = 0.85) {
+    const contentLines = content.split('\n');
+    const oldLines = oldText.split('\n');
+    if (oldLines.length === 0 || contentLines.length === 0) return null;
+
+    // Strategy: slide a window of oldLines.length over contentLines,
+    // compute line-level similarity, then character-level Levenshtein on the best window.
+    const windowSize = oldLines.length;
+    let bestStart = -1, bestScore = 0;
+
+    for (let i = 0; i <= contentLines.length - windowSize; i++) {
+      const window = contentLines.slice(i, i + windowSize);
+      // Quick line-level check: how many lines have high similarity?
+      let lineMatches = 0;
+      for (let j = 0; j < windowSize; j++) {
+        const wTrim = window[j].trim();
+        const oTrim = oldLines[j].trim();
+        if (wTrim === oTrim) {
+          lineMatches++;
+        } else if (wTrim.length > 5 && oTrim.length > 5) {
+          const maxLen = Math.max(wTrim.length, oTrim.length);
+          const dist = this._levenshtein(wTrim, oTrim);
+          if (1 - dist / maxLen > 0.7) lineMatches++;
+        }
+      }
+      const lineScore = lineMatches / windowSize;
+      if (lineScore > bestScore) {
+        bestScore = lineScore;
+        bestStart = i;
+      }
+    }
+
+    if (bestStart < 0 || bestScore < 0.5) return null;
+
+    // Character-level Levenshtein on the best window region
+    const candidateText = contentLines.slice(bestStart, bestStart + windowSize).join('\n');
+    const normCandidate = candidateText.replace(/\s+/g, ' ').trim();
+    const normOld = oldText.replace(/\s+/g, ' ').trim();
+    const maxLen = Math.max(normCandidate.length, normOld.length);
+    if (maxLen === 0) return null;
+    const dist = this._levenshtein(normCandidate, normOld);
+    const similarity = 1 - dist / maxLen;
+
+    if (similarity >= threshold) {
+      return {
+        startLine: bestStart,
+        endLine: bestStart + windowSize - 1,
+        similarity: Math.round(similarity * 100) / 100,
+        matchedText: candidateText,
+      };
+    }
+    return null;
   }
 
   async _copyDirRecursive(src, dst) {
@@ -2587,7 +2859,7 @@ class MCPToolServer {
   _writeTodos(params) {
     const { items } = params;
     if (!Array.isArray(items) || items.length === 0) {
-      return { success: false, error: 'items must be a non-empty array of strings or {text, status} objects' };
+      return { success: false, error: 'items must be a non-empty array of strings or {text, status} objects. Example: ["Step 1: do thing", "Step 2: do other thing"]. Retry with a valid items array.' };
     }
     // Replace entire list (idempotent) — prevents duplicate accumulation across context rotations
     this._todos = [];
@@ -2627,8 +2899,12 @@ class MCPToolServer {
     const { id, status, text } = params;
     const todo = this._todos.find(t => t.id === id);
     if (!todo) return { success: false, error: `TODO #${id} not found` };
-    if (status && ['pending', 'in-progress', 'done'].includes(status)) {
-      todo.status = status;
+    if (status) {
+      // Normalize: accept 'completed' as alias for 'done'
+      const normalized = status === 'completed' ? 'done' : status;
+      if (['pending', 'in-progress', 'done'].includes(normalized)) {
+        todo.status = normalized;
+      }
     }
     if (typeof text === 'string' && text.trim()) {
       todo.text = text.trim();
@@ -2684,6 +2960,28 @@ class MCPToolServer {
     if (!this.rulesManager) return { success: false, error: 'Rules system not initialized' };
     const rules = this.rulesManager.listRules();
     return { success: true, rules, count: rules.length };
+  }
+
+  // ─── Ask Question Tool ──────────────────────────────────────────────────
+
+  /**
+   * Ask the user a question and wait for their response.
+   * Sends the question to the frontend via IPC and waits for the answer.
+   */
+  async _askQuestion(params) {
+    const question = params.question || '';
+    const options = Array.isArray(params.options) ? params.options.slice(0, 4) : [];
+    const allowMultiple = !!params.allowMultiple;
+
+    if (!question) return { success: false, error: 'Question text is required' };
+
+    // Emit question to frontend via the onAskQuestion callback (wired in electron-main)
+    if (typeof this.onAskQuestion === 'function') {
+      return await this.onAskQuestion({ question, options, allowMultiple });
+    }
+
+    // Fallback: no UI wired — return the question text so the model can ask in chat
+    return { success: true, answer: '(User could not be reached — ask in chat instead)', asked: question };
   }
 
   // ─── Response Processing (parseToolCalls + processResponse) ──────────────
@@ -2806,28 +3104,9 @@ class MCPToolServer {
       return { hasToolCalls: false, results: [], formalCallCount: 0, droppedFilePaths: _repairDropped };
     }
 
-    // Browser Tool Capping
-    const BROWSER_STATE_CHANGERS = new Set([
-      'browser_navigate', 'browser_click', 'browser_type', 'browser_select',
-      'browser_select_option', 'browser_press_key', 'browser_back',
-      'browser_fill_form', 'browser_drag', 'browser_file_upload',
-    ]);
-    const MAX_BROWSER_STATE_CHANGES = 2;
-    let browserStateChanges = 0;
-    let browserCapped = false;
-    let browserSkipped = 0;
-
     console.log('[MCP] Executing', toolCalls.length, 'tool calls...', toolPaceMs ? `(${toolPaceMs}ms pace)` : '');
     const results = [];
     for (const call of toolCalls) {
-      if (call && typeof call.tool === 'string' && BROWSER_STATE_CHANGERS.has(call.tool)) {
-        if (browserStateChanges >= MAX_BROWSER_STATE_CHANGES) {
-          browserSkipped++;
-          browserCapped = true;
-          console.log(`[MCP] Browser cap: skipping ${call.tool} (${browserStateChanges} state changes already, refs are stale)`);
-          continue;
-        }
-      }
 
       if (toolPaceMs > 0 && results.length > 0) {
         await new Promise(r => setTimeout(r, toolPaceMs));
@@ -2839,17 +3118,9 @@ class MCPToolServer {
       const result = await this.executeTool(call.tool, call.params || {});
       console.log('[MCP] Executed tool:', call.tool, 'result:', result.success ? 'success' : 'failed');
       results.push({ tool: call.tool, params: call.params, result });
-
-      if (call && typeof call.tool === 'string' && BROWSER_STATE_CHANGERS.has(call.tool)) {
-        browserStateChanges++;
-      }
     }
 
-    if (browserCapped) {
-      console.log(`[MCP] Browser cap enforced: executed ${browserStateChanges} state-changing actions, skipped ${browserSkipped}`);
-    }
-
-    return { hasToolCalls: true, results, capped: capped || browserCapped, skippedToolCalls: skippedCount + browserSkipped, formalCallCount: toolCalls.length, droppedFilePaths: _repairDropped };
+    return { hasToolCalls: true, results, capped: capped || false, skippedToolCalls: skippedCount, formalCallCount: toolCalls.length, droppedFilePaths: _repairDropped };
   }
 
   // ─── Tool Prompt Building ────────────────────────────────────────────────
@@ -2858,12 +3129,6 @@ class MCPToolServer {
     if (this._toolPromptCache) return this._toolPromptCache;
     this._toolPromptCache = this._buildToolPrompt(this.getToolDefinitions());
     return this._toolPromptCache;
-  }
-
-  /** Short tool listing for low-token context (paired with chatEngine compactToolPrompt gate). */
-  getCompactToolPrompt() {
-    const parts = this.getCompactToolHint('chat', { compactChat: true });
-    return Array.isArray(parts) ? parts.join('\n') : '';
   }
 
   getCompactToolHint(taskType, options) {
@@ -2888,32 +3153,6 @@ class MCPToolServer {
     }
     parts.push(header);
 
-    // Single-string compact prompt for small context windows (see chatEngine compactToolPrompt).
-    if (options && options.compactChat) {
-      const compactTools = [
-        'read_file', 'write_file', 'edit_file', 'append_to_file', 'delete_file', 'list_directory',
-        'find_files', 'grep_search', 'run_command', 'install_packages',
-        'web_search', 'fetch_webpage', 'http_request',
-        'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type',
-        'git_status', 'git_commit', 'git_diff',
-        'save_memory', 'get_memory', 'write_todos',
-      ];
-      let compactPart = '### Core tools (compact)\n';
-      for (const name of compactTools) {
-        const tool = toolMap[name];
-        if (!tool) continue;
-        const params = tool.parameters ? Object.entries(tool.parameters)
-          .filter(([, info]) => info.required)
-          .map(([n]) => n)
-          .join(', ') : '';
-        compactPart += `- **${name}**(${params}) — ${tool.description}\n`;
-      }
-      compactPart += '\n';
-      parts.push(compactPart);
-      parts.push('### Rules\n- read_file before edit_file.\n- web: web_search → fetch_webpage when you need page text.\n- browser: navigate → snapshot → click/type by ref.\n');
-      return parts;
-    }
-
     // Define categories — ALL tools must appear here or they are invisible to the model
     // FIX-H: Reordered so smallest/most-critical categories come first.
     // promptAssembler adds categories one-by-one via appendIfBudget until budget is exhausted.
@@ -2930,10 +3169,10 @@ class MCPToolServer {
       'Scratchpad': ['write_scratchpad', 'read_scratchpad'],
       'Code Analysis': ['analyze_error'],
       'Undo': ['undo_edit', 'list_undoable'],
-      'Browser': ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type'],
+      'Browser': ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_screenshot'],
       'Git': ['git_status', 'git_commit', 'git_diff', 'git_log', 'git_branch', 'git_stash', 'git_reset'],
       'Image Generation': ['generate_image'],
-      'Browser Extended': ['browser_fill_form', 'browser_select_option', 'browser_evaluate', 'browser_scroll', 'browser_back', 'browser_press_key', 'browser_hover', 'browser_drag', 'browser_screenshot', 'browser_get_content', 'browser_get_url', 'browser_get_links', 'browser_tabs', 'browser_handle_dialog', 'browser_console_messages', 'browser_file_upload', 'browser_resize', 'browser_wait', 'browser_wait_for', 'browser_close'],
+      'Browser Extended': ['browser_fill_form', 'browser_select_option', 'browser_evaluate', 'browser_scroll', 'browser_back', 'browser_press_key', 'browser_hover', 'browser_drag', 'browser_get_content', 'browser_get_url', 'browser_get_links', 'browser_tabs', 'browser_handle_dialog', 'browser_console_messages', 'browser_file_upload', 'browser_resize', 'browser_wait', 'browser_wait_for', 'browser_close'],
     };
 
     // For minimal mode, build a single part with just core tools
@@ -2975,8 +3214,8 @@ class MCPToolServer {
     rules += '- Use write_file to create new files, append_to_file to add to existing files\n';
     rules += '- For edits: read_file first, then edit_file with exact oldText\n';
     rules += '- For large files: write_file for first section, then append_to_file for remaining sections\n';
-    rules += '- Web: use web_search to discover URLs, then fetch_webpage for the pages you need as evidence before finalizing your answer\n';
-    rules += '- Browser workflow: browser_navigate → browser_snapshot → interact using [ref=N] IDs\n';
+    rules += '- Web: after web_search, in the same continuation, call fetch_webpage on the first and second ranked result URLs before answering (or each returned URL if fewer than two). Do not ask the user to confirm fetching. Do not call list_directory in the same tool round as web_search/fetch_webpage unless the user asked about the project\n';
+    rules += '- Browser workflow: browser_navigate (auto-returns snapshot) → interact using [ref=N] IDs with browser_click/browser_type (auto-return snapshot after action). Only call browser_snapshot explicitly if you need to refresh refs without navigating or clicking.\n';
     parts.push(rules);
 
     return parts;
@@ -3076,15 +3315,16 @@ class MCPToolServer {
     }
 
     prompt += `### Common Patterns
-- **Web lookup**: web_search → fetch_webpage on relevant URLs → answer from fetched evidence
-- **Web research (interactive UI)**: browser_navigate → browser_snapshot → browser_click/type using [ref=N]
+- **Web lookup (mandatory)**: web_search → fetch_webpage(1st result url) → fetch_webpage(2nd result url) if two or more hits → answer from fetched text — same continuation, no asking the user to fetch, do not stop at snippets alone, do not interleave list_directory with this chain unless the user asked about project files
+- **Web research (interactive UI)**: browser_navigate (returns snapshot) → browser_click/type using [ref=N] (returns snapshot) → continue interacting. No need for separate browser_snapshot calls.
 - **Create & verify**: write_file → browser_navigate("file:///abs/path")
 - **Edit existing file**: read_file → edit_file (oldText/newText)
-- **Form filling**: browser_navigate → browser_snapshot → browser_type/click each field → submit
+- **Form filling**: browser_navigate (returns snapshot with form refs) → browser_type each field → browser_click submit button. Each action returns the updated page.
 
 ### Important Rules
 - Your browser is REAL Chromium — no CAPTCHA restrictions
-- After web_search, fetch relevant pages when needed to ground your answer
+- browser_navigate, browser_click, and browser_type all return the page snapshot automatically. Do NOT call browser_snapshot after these — it's redundant and wastes context.
+- After web_search, fetch required URLs in the same continuation — NEVER ask "Would you like me to fetch"
 - If an error occurs, retry with a different approach — do NOT give up
 - NEVER output file contents, configuration, or any substantive artifact as a code block in chat — use the appropriate tool to create or modify it
 `;

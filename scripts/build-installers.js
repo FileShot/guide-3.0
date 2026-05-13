@@ -33,7 +33,15 @@ const BACKUP_DIR = path.join(ROOT, '.build-backup', '@node-llama-cpp');
 const CUDA_KEEP   = ['win-x64-cuda', 'win-x64-cuda-ext', 'win-x64'];
 const CPU_KEEP    = ['win-x64', 'win-x64-vulkan'];
 
-const VERSION = '3.0.18';
+// Read version from package.json and auto-bump patch for each build
+const pkgPath = path.join(ROOT, 'package.json');
+const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+const parts = pkg.version.split('.');
+const bumpedVersion = `${parts[0]}.${parts[1]}.${parseInt(parts[2] || 0) + 1}`;
+pkg.version = bumpedVersion;
+fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+const VERSION = bumpedVersion;
+log(`Version bumped: ${pkg.version} → ${bumpedVersion}`);
 
 // ─── Util ─────────────────────────────────────────────────────────────────────
 

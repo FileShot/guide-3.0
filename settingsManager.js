@@ -21,7 +21,7 @@ const SETTINGS_DEFAULTS = {
   // LLM / Inference
   temperature: 0.4,
   maxResponseTokens: 2048,
-  contextSize: 0, // 0 = auto (maximize to model train cap + available VRAM; reload model after change)
+  contextSize: 0, // 0 = auto (hardware-aware ceiling); fixed values like 16000 also work
   topP: 0.95,
   topK: 40,
   repeatPenalty: 1.1,
@@ -42,6 +42,7 @@ const SETTINGS_DEFAULTS = {
   gpuPreference: 'auto',
   gpuLayers: -1,
   requireMinContextForGpu: false,
+  kvCacheType: 'q4_0', // KV cache quantization — q4_0 balances speed and quality; q3_0 is smaller but lower quality
   // Editor
   fontSize: 14,
   fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
@@ -140,10 +141,15 @@ class SettingsManager extends EventEmitter {
           this._settings.generationTimeoutSec = 0;
           this._scheduleSave(); // write corrected value back to disk immediately
         }
-        // Migration: fixed context used for server/dev testing (TEST_MAX_CONTEXT / manual 8k) → auto max
+        // Migration: fixed context used for server/dev testing (TEST_MAX_CONTEXT / manual 8k) → auto
         const legacyFixedCtx = new Set([8000, 8192]);
         if (legacyFixedCtx.has(this._settings.contextSize)) {
           this._settings.contextSize = 0;
+          this._scheduleSave();
+        }
+        // Migration: kvCacheType=q3_0 → q4_0 (better attention quality, negligible VRAM difference)
+        if (this._settings.kvCacheType === 'q3_0') {
+          this._settings.kvCacheType = 'q4_0';
           this._scheduleSave();
         }
       }

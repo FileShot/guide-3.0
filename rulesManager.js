@@ -18,6 +18,7 @@ class RulesManager {
   constructor() {
     this._projectPath = null;
     this._rulesDir = null;
+    this._guideInstructionsPath = null; // from settings
     this._cache = null;
     this._cacheTime = 0;
   }
@@ -27,6 +28,12 @@ class RulesManager {
     this._rulesDir = projectPath ? path.join(projectPath, '.guide', 'rules') : null;
     this._cache = null;
     this._cacheTime = 0;
+  }
+
+  /** Set the guide instructions path from settings. Invalidates cache. */
+  setGuideInstructionsPath(p) {
+    this._guideInstructionsPath = p || null;
+    this._cache = null;
   }
 
   /**
@@ -71,6 +78,23 @@ class RulesManager {
         }
       } catch (e) {
         log.warn('Rules', `Failed to scan rules directory: ${e.message}`);
+      }
+    }
+
+    // 3. Read guide instructions file (from settings)
+    if (this._guideInstructionsPath) {
+      try {
+        const instrPath = path.isAbsolute(this._guideInstructionsPath)
+          ? this._guideInstructionsPath
+          : path.join(this._projectPath || process.cwd(), this._guideInstructionsPath);
+        if (fs.existsSync(instrPath)) {
+          const content = fs.readFileSync(instrPath, 'utf-8').trim();
+          if (content) {
+            sections.push(`## Guide Instructions (${this._guideInstructionsPath})\n${content}`);
+          }
+        }
+      } catch (e) {
+        log.warn('Rules', `Failed to read guide instructions: ${e.message}`);
       }
     }
 
@@ -146,6 +170,18 @@ class RulesManager {
         const files = fs.readdirSync(this._rulesDir).filter(f => f.endsWith('.md')).sort();
         for (const f of files) {
           rules.push({ name: f.replace(/\.md$/, ''), type: 'rule', path: path.join(this._rulesDir, f) });
+        }
+      } catch { /* ignore */ }
+    }
+
+    // Include guide instructions file if configured
+    if (this._guideInstructionsPath) {
+      try {
+        const instrPath = path.isAbsolute(this._guideInstructionsPath)
+          ? this._guideInstructionsPath
+          : path.join(this._projectPath, this._guideInstructionsPath);
+        if (fs.existsSync(instrPath)) {
+          rules.push({ name: this._guideInstructionsPath, type: 'guide-instructions', path: instrPath });
         }
       } catch { /* ignore */ }
     }
