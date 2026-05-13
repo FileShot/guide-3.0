@@ -225,9 +225,24 @@ class MCPToolServer {
       }
       // Normalize numeric refs to strings
       if (typeof normalized.ref === 'number') normalized.ref = String(normalized.ref);
-      // Strip [ref=N] wrapper and bare [N] format (models output [2] after seeing [ref=2] in snapshots)
+      // Strip ALL known ref format wrappers — models output many variants after seeing [ref=N] in snapshots.
+      // All normalize to bare digit string which _resolveRef then resolves to [data-ref="N"].
       if (typeof normalized.ref === 'string') {
-        const m = normalized.ref.match(/\[ref\s*=\s*(\d+)\]/i) || normalized.ref.match(/^ref\s*=\s*(\d+)$/i) || normalized.ref.match(/^\[(\d+)\]$/);
+        const r = normalized.ref.trim();
+        let m;
+        // [ref=N] or [ref = N] — with optional spaces
+        m = r.match(/^\[ref\s*=\s*(\d+)\]$/i);
+        // [ref="N"] or [ref='N'] — quoted value
+        if (!m) m = r.match(/^\[ref\s*=\s*["'](\d+)["']\]$/i);
+        // [N] — bare bracket number (most common drift)
+        if (!m) m = r.match(/^\[(\d+)\]$/);
+        // ref=N — without brackets
+        if (!m) m = r.match(/^ref=(\d+)$/i);
+        // element[N] — some models wrap in "element"
+        if (!m) m = r.match(/^element\[(\d+)\]$/i);
+        // #ref-N or #N — hash-prefixed
+        if (!m) m = r.match(/^#ref-(\d+)$/i);
+        if (!m) m = r.match(/^#(\d+)$/);
         if (m) normalized.ref = m[1];
       }
     }

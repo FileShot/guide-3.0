@@ -294,7 +294,7 @@ class BrowserManager extends EventEmitter {
       // Inject data-ref attributes and build a numbered element list
       const snapshotData = await this._ensureRefs();
 
-      const result = `Page: ${title}\nURL: ${url}\n\nInteractive elements:\n${snapshotData.elementList}\n\nPage text:\n${snapshotData.pageText}`;
+      const result = `Page: ${title}\nURL: ${url}\n\nInteractive elements (use the [ref=N] number as the "ref" param, e.g. {"ref":"2"} or {"ref":"[ref=2]"}):\n${snapshotData.elementList}\n\nPage text:\n${snapshotData.pageText}`;
       // Include navigation history so the model knows what it already did
       let historySection = '';
       if (this._navHistory.length > 0) {
@@ -319,40 +319,73 @@ class BrowserManager extends EventEmitter {
    */
   _resolveRef(ref) {
     if (!ref || typeof ref !== 'string' || !ref.trim()) {
-      // Return a sentinel that will fail with a clear message instead of a cryptic CSS parser error
       return null;
     }
     const trimmed = ref.trim();
-    // Match [ref=N] format from accessibility snapshots
-    const refMatch = trimmed.match(/^\[ref=(\d+)\]$/);
-    if (refMatch) {
-      return `[data-ref="${refMatch[1]}"], [aria-ref="${refMatch[1]}"]`;
-    }
-    // Match bare bracket number like [2] — models frequently output this after seeing [ref=N] in snapshots.
-    // Without this, [2] falls through to "valid CSS selector" and causes querySelectorAll syntax errors,
-    // which the model can't recover from, creating infinite repetition loops.
-    const bareBracketMatch = trimmed.match(/^\[(\d+)\]$/);
-    if (bareBracketMatch) {
-      return `[data-ref="${bareBracketMatch[1]}"], [aria-ref="${bareBracketMatch[1]}"]`;
-    }
-    // Match "ref=N" format (without brackets) — models often output elementId="ref=6"
-    const bareRefMatch = trimmed.match(/^ref=(\d+)$/);
-    if (bareRefMatch) {
-      return `[data-ref="${bareRefMatch[1]}"], [aria-ref="${bareRefMatch[1]}"]`;
-    }
-    // Bare number like "1" — treat as index-based selector
+
+    // ─── All known ref formats that models output after seeing [ref=N] in snapshots ───
+    // Every format resolves to [data-ref="N"] or [aria-ref="N"] which maps to the
+    // data-ref attribute injected by _ensureRefs(). If a format isn't recognized,
+    // it falls through to CSS selector validation below.
+
+    // [ref=N] — exact format from snapshot output
+    let m = trimmed.match(/^\[ref\s*=\s*(\d+)\]$/);
+    if (m) return `[data-ref="${m[1]}"], [aria-ref="${m[1]}"]`;
+    // [ref="N"] or [ref='N'] — quoted value variant
+    m = trimmed.match(/^\[ref\s*=\s*["'](\d+)["']\]$/);
+    if (m) return `[data-ref="${m[1]}"], [aria-ref="${m[1]}"]`;
+    // [N] — bare bracket number (most common model drift from [ref=N])
+    m = trimmed.match(/^\[(\d+)\]$/);
+    if (m) return `[data-ref="${m[1]}"], [aria-ref="${m[1]}"]`;
+    // ref=N — without brackets
+    m = trimmed.match(/^ref=(\d+)$/);
+    if (m) return `[data-ref="${m[1]}"], [aria-ref="${m[1]}"]`;
+    // element[N] — some models wrap in "element"
+    m = trimmed.match(/^element\[(\d+)\]$/i);
+    if (m) return `[data-ref="${m[1]}"], [aria-ref="${m[1]}"]`;
+    // #ref-N or #N — hash-prefixed
+    m = trimmed.match(/^#ref-(\d+)$/i);
+    if (m) return `[data-ref="${m[1]}"], [aria-ref="${m[1]}"]`;
+    m = trimmed.match(/^#(\d+)$/);
+    if (m) return `[data-ref="${m[1]}"], [aria-ref="${m[1]}"]`;
+    // Bare number like "2"
     if (/^\d+$/.test(trimmed)) {
-      const idx = parseInt(trimmed);
-      return `[data-ref="${idx}"], [aria-ref="${idx}"]`;
+      return `[data-ref="${trimmed}"], [aria-ref="${trimmed}"]`;
     }
-    // Non-numeric string like "username" — resolve as name/id/placeholder attribute.
-    // Models often pass elementId="username" which gets normalized to ref="username".
-    // Treating "username" as a CSS tag selector (<username>) always fails.
-    // Instead, look up by name, id, or placeholder attributes.
+    // Non-numeric identifier like "username" — resolve as name/id/placeholder
     if (/^[a-zA-Z_][a-zA-Z0-9_\-]*$/.test(trimmed)) {
       return `[name="${trimmed}"], [id="${trimmed}"], [data-ref="${trimmed}"], [placeholder="${trimmed}"]`;
     }
-    // Already a valid CSS selector (contains brackets, dots, hash, etc.) — return as-is
+
+    // ─── Fallback: treat as CSS selector, but validate first ───
+    // If the selector is not valid CSS, returning it as-is causes querySelectorAll
+    // syntax errors that the model cannot recover from, creating infinite loops.
+    // We can't use document.querySelector in Node.js, so check for known-invalid patterns.
+    // Valid CSS selectors: .class, #id, tag, [attr=val], :pseudo, tag.class, tag > child, etc.
+    // Invalid: //xpath, >>> combinator, bare [N] (handled above), unbalanced brackets, etc.
+    if (trimmed.startsWith('//') || trimmed.startsWith('..')) {
+      // XPath — not supported by Playwright's CSS selector engine
+      return null;
+    }
+    if (trimmed.includes('>>>')) {
+      // Deprecated deep pierce combinator — not valid
+      return null;
+    }
+    // Check for unbalanced brackets (e.g. "[2" or "ref=2]" without matching pair)
+    const opens = (trimmed.match(/\[/g) || []).length;
+    const closes = (trimmed.match(/\]/g) || []).length;
+    if (opens !== closes) {
+      return null;
+    }
+    // Check for unbalanced quotes
+    const singleQuotes = (trimmed.match(/'/g) || []).length;
+    const doubleQuotes = (trimmed.match(/"/g) || []).length;
+    if (singleQuotes % 2 !== 0 || doubleQuotes % 2 !== 0) {
+      return null;
+    }
+    // Looks like a valid CSS selector — pass through.
+    // Playwright's try/catch in the calling method will handle any remaining edge cases
+    // and the error message will be caught and returned to the model.
     return ref;
   }
 
@@ -420,7 +453,7 @@ class BrowserManager extends EventEmitter {
     } catch (e) {
       // If ref-based selector failed, try JS click fallback by element index
       // Uses the SAME selector list and visibility filter as _ensureRefs() so indices match the snapshot
-      const refMatch = selector?.match?.(/^\[ref=(\d+)\]$/) || (typeof selector === 'string' && /^\d+$/.test(selector.trim()) && [null, selector.trim()]);
+      const refMatch = selector?.match?.(/^\[ref\s*=\s*(\d+)\]$/) || selector?.match?.(/^\[(\d+)\]$/) || (typeof selector === 'string' && /^\d+$/.test(selector.trim()) && [null, selector.trim()]);
       if (refMatch) {
         try {
           const idx = parseInt(refMatch[1]);
@@ -498,7 +531,7 @@ class BrowserManager extends EventEmitter {
       return { success: true };
     } catch (e) {
       // JS fallback: find visible input by index
-      const refMatch = ref?.match?.(/^\[ref=(\d+)\]$/) || (typeof ref === 'string' && /^\d+$/.test(ref.trim()) && [null, ref.trim()]);
+      const refMatch = ref?.match?.(/^\[ref\s*=\s*(\d+)\]$/) || ref?.match?.(/^\[(\d+)\]$/) || (typeof ref === 'string' && /^\d+$/.test(ref.trim()) && [null, ref.trim()]);
       if (refMatch) {
         try {
           const idx = parseInt(refMatch[1]);
@@ -625,24 +658,38 @@ class BrowserManager extends EventEmitter {
   async fillForm(fields) {
     if (!(await this._ensurePage())) return { success: false, error: 'No browser page open' };
     await this._ensureRefs();
+    const failed = [];
     try {
       for (const field of fields) {
         const refVal = field.ref || field.selector;
         const resolved = this._resolveRef(refVal);
-        if (!resolved) continue;
-        const locator = this._page.locator(resolved).first();
-        const type = field.type || 'textbox';
-        if (type === 'checkbox') {
-          const checked = field.value === 'true' || field.value === true;
-          if (checked) await locator.check({ timeout: 5000 });
-          else await locator.uncheck({ timeout: 5000 });
-        } else if (type === 'radio') {
-          await locator.check({ timeout: 5000 });
-        } else if (type === 'combobox' || type === 'select') {
-          await locator.selectOption(field.value, { timeout: 5000 });
-        } else {
-          await locator.fill(String(field.value), { timeout: 5000 });
+        if (!resolved) {
+          failed.push(`ref "${refVal}" could not be resolved — call browser_snapshot first`);
+          continue;
         }
+        try {
+          const locator = this._page.locator(resolved).first();
+          const type = field.type || 'textbox';
+          if (type === 'checkbox') {
+            const checked = field.value === 'true' || field.value === true;
+            if (checked) await locator.check({ timeout: 5000 });
+            else await locator.uncheck({ timeout: 5000 });
+          } else if (type === 'radio') {
+            await locator.check({ timeout: 5000 });
+          } else if (type === 'combobox' || type === 'select') {
+            await locator.selectOption(field.value, { timeout: 5000 });
+          } else {
+            await locator.fill(String(field.value), { timeout: 5000 });
+          }
+        } catch (e) {
+          failed.push(`ref "${refVal}": ${e.message}`);
+        }
+      }
+      if (failed.length > 0 && failed.length === fields.length) {
+        return { success: false, error: `All fields failed: ${failed.join('; ')}` };
+      }
+      if (failed.length > 0) {
+        return { success: true, warnings: failed };
       }
       return { success: true };
     } catch (e) {
