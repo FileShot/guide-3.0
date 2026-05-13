@@ -162,7 +162,7 @@ NEVER say "I don't have access" — you DO have access through tools.
 - Reading or reviewing a file — read_file. When the user says "review this file" or "look at this", call read_file immediately.
 - Live information (prices, news, docs, release notes) — web_search, then fetch_webpage on the top two result URLs in the same turn before answering.
 - Running commands, checking services, installing packages — terminal tools.
-- Interacting with web pages (forms, clicks, screenshots, LOGIN, authentication) — browser tools. You MUST log into websites, fill login forms, and authenticate on behalf of the user when they provide credentials. NEVER refuse to authenticate or say "I cannot log into your account" — you have full browser tools to do so. When the user gives you a URL and credentials, navigate there, then fill the login form and submit. browser_navigate, browser_click, and browser_type all return the page snapshot automatically — do NOT call browser_snapshot separately after these actions, it is redundant. Elements in snapshots use [ref=eN] format (e.g. [ref=e5]) — use these refs for click/type operations.
+- Interacting with web pages (forms, clicks, screenshots, LOGIN, authentication) — browser tools. You MUST log into websites, fill login forms, and authenticate on behalf of the user when they provide credentials. NEVER refuse to authenticate or say "I cannot log into your account" — you have full browser tools to do so. When the user gives you a URL and credentials, navigate there, then fill the login form and submit. After calling browser_navigate to a new page, you MUST call browser_snapshot to see the current page state and obtain accurate element refs. Do NOT reuse refs from a previous snapshot — refs reset after any navigation or page load. Obtain refs from the CURRENT snapshot before every browser_type or browser_click call. On login form retries, do NOT re-navigate to the login URL (re-navigating destroys session tokens and resets the form) — instead, call browser_snapshot to see current refs, then clear fields and re-fill. Elements in snapshots use [ref=eN] format (e.g. [ref=e5]) — use these exact refs.
 - Version control — git tools.
 - Multi-step work — ALWAYS call write_todos FIRST to create a plan for any task requiring 2+ steps, then execute each step with tool calls. This is mandatory.
 - Clarification or decisions — ask_question to ask the user a multi-part question with clickable options or free-form answer.
@@ -676,8 +676,21 @@ class ChatEngine extends EventEmitter {
         basePrompt += `\n\n## Editor Context\n${parts.join('\n')}`;
       }
     }
+    // Mode overrides: inject behavioral instructions before tool prompt
+    if (options.planMode) {
+      basePrompt += '\n\n## PLAN MODE ACTIVE\nBefore modifying or creating any files, you MUST:\n1. Use read_file, list_directory, grep_search, and git_status to fully understand scope.\n2. Write a complete, numbered implementation plan to a file called "GUIDE_PLAN.md" using write_file.\n3. STOP after writing the plan file. Do NOT modify source files in this turn.\n4. The user will review the plan and say "proceed" when ready for execution.\nIn Plan Mode: read-only tools and write_file (for GUIDE_PLAN.md only) are permitted. Do NOT run commands, modify source code, or install packages.';
+      console.log('[ChatEngine] Plan mode — model will write GUIDE_PLAN.md before executing');
+    }
+    if (options.askOnly) {
+      basePrompt += '\n\n## ASK MODE ACTIVE\nYou are in Q&A mode. Answer the user\'s question directly in text. Do NOT call any tools or make any file or system changes.';
+      console.log('[ChatEngine] Ask mode — tool prompt suppressed, model responds conversationally');
+    }
+
     // Layer 4: Tool prompt (available tools and their descriptions)
-    if (toolPrompt) {
+    if (options.askOnly) {
+      // Ask mode: no tools available — just set the base prompt with mode instruction
+      this._chatHistory[0].text = basePrompt;
+    } else if (toolPrompt) {
       // Estimate token cost of tool prompt (~3.5 chars/token for English)
       const toolPromptTokens = Math.ceil(toolPrompt.length / 3.5);
       const toolPct = Math.round((toolPromptTokens / contextTokens) * 100);
@@ -719,6 +732,9 @@ class ChatEngine extends EventEmitter {
       console.log(`[ChatEngine] Functions provided (fallback): ${Object.keys(functions).length} tools`);
     } else if (systemPrompt) {
       this._chatHistory[0].text = systemPrompt;
+    } else {
+      // No tool prompt, functions, or custom systemPrompt — set basePrompt directly
+      this._chatHistory[0].text = basePrompt;
     }
 
     this._chatHistory.push({ type: 'user', text: effectiveUserMessage });
@@ -822,6 +838,8 @@ class ChatEngine extends EventEmitter {
         _sfUnicodeCount = 0;
         _sfUnicodeChars = '';
         _sfThinkTagMatch = '';
+        _sfInThink = false;     // ensure think-state never bleeds into the next generation
+        _sfThinkBuf = '';
       };
 
       const _sfFlushFence = () => {
@@ -847,6 +865,8 @@ class ChatEngine extends EventEmitter {
         _sfContentEsc = false;
         _sfUnicodeCount = 0;
         _sfUnicodeChars = '';
+        _sfInThink = false;     // ensure think-state never bleeds into the next generation
+        _sfThinkBuf = '';
       };
 
       const _sfProcessChunk = (chunk) => {
@@ -865,16 +885,22 @@ class ChatEngine extends EventEmitter {
               if (thinkContent && onStreamEvent) {
                 onStreamEvent('llm-thinking-token', thinkContent);
               }
+              console.log(`[ChatEngine] </think> closed — thinking block: ${(thinkContent || '').length} chars`);
               _sfInThink = false;
               _sfThinkBuf = '';
               continue;
             }
-            // Flush periodically to avoid unbounded buffer
+            // Flush periodically to avoid unbounded buffer.
+            // B7-Fix: preserve the last 7 chars (len('</think>')-1) so a close tag
+            // that starts near the 200-char boundary is never split across two flushes.
             if (_sfThinkBuf.length > 200) {
-              if (onStreamEvent) {
-                onStreamEvent('llm-thinking-token', _sfThinkBuf);
+              const CLOSE_TAG_TAIL = 7; // '</think>'.length - 1
+              const toEmit = _sfThinkBuf.slice(0, -CLOSE_TAG_TAIL);
+              const toKeep = _sfThinkBuf.slice(-CLOSE_TAG_TAIL);
+              if (toEmit && onStreamEvent) {
+                onStreamEvent('llm-thinking-token', toEmit);
               }
-              _sfThinkBuf = '';
+              _sfThinkBuf = toKeep;
             }
             continue;
           }
@@ -888,6 +914,7 @@ class ChatEngine extends EventEmitter {
               _sfInThink = true;
               _sfThinkBuf = '';
               _sfThinkTagMatch = '';
+              console.log('[ChatEngine] ✓ <think> tag detected — routing thinking to llm-thinking-token (raw text path)');
               continue;
             } else if (!OPEN_TAG.startsWith(_sfThinkTagMatch)) {
               // Not a match — flush buffered chars to normal processing
@@ -1260,15 +1287,24 @@ class ChatEngine extends EventEmitter {
         onResponseChunk: (chunk) => {
           if (chunk.type === 'segment' && chunk.text && onStreamEvent) {
             onStreamEvent('llm-thinking-token', chunk.text);
+            // Diagnostic: log first native thinking segment so we can confirm this path fires
+            if (!this._nativeThinkLogged) {
+              this._nativeThinkLogged = true;
+              console.log('[ChatEngine] ✓ Thinking via native onResponseChunk segment API (QWOPUS/distilled path)');
+            }
           }
         },
       };
+      this._nativeThinkLogged = false; // reset per generation
 
       // Thinking budget: -1 = unlimited, 0 = auto (node-llama-cpp default), >0 = exact cap
       if (thinkBudget != null && thinkBudget !== 0) {
         genOptions.budgets = {
           thoughtTokens: thinkBudget === -1 ? Infinity : thinkBudget,
         };
+        console.log(`[ChatEngine] Thinking budget: ${thinkBudget === -1 ? 'unlimited' : thinkBudget + ' tokens'}`);
+      } else {
+        console.log('[ChatEngine] Thinking budget: 0 (auto) — native thinking NOT explicitly enabled');
       }
 
       // GBNF grammar-based function calling removed â€” small models (under ~4B)
@@ -1396,6 +1432,15 @@ class ChatEngine extends EventEmitter {
         let consecutiveBrowserFailures = 0;
         let lastBrowserClickUrl = null;
         let sameUrlClickCount = 0;
+
+        // Hoisted outside while loop — avoids reallocating a new Set on every tool-call iteration
+        const FILE_MODIFY_OPS_SET = new Set(['write_file', 'create_file', 'append_to_file', 'edit_file', 'replace_in_file']);
+
+        // Ask mode: discard any tool calls — model should only be responding conversationally
+        if (options.askOnly && parsedCalls.length > 0) {
+          console.log(`[ChatEngine] Ask mode — discarding ${parsedCalls.length} tool call(s) from model output`);
+          parsedCalls = [];
+        }
 
         while (parsedCalls.length > 0) {
           // Notify UI so ToolCallCards appear for each tool call (spinner state)
@@ -1575,6 +1620,21 @@ class ChatEngine extends EventEmitter {
             }
 
             let injectResult = resultStr;
+            // Plan F: Lint auto-fix — if any file-modification tool returned diagnostic errors,
+            // inject a human-readable correction instruction AND emit a frontend event for the UI pill.
+            if (FILE_MODIFY_OPS_SET.has(call.tool) && toolResult?.diagnostics?.errors > 0 && options.autoLintFix !== false) {
+              const { errors, details } = toolResult.diagnostics;
+              const detailStr = details?.length ? details.join('; ') : `${errors} error(s)`;
+              const filePath = call.params?.filePath || call.params?.path || 'file';
+              injectResult += `\n[LINT ERRORS IN ${filePath} — MUST FIX IMMEDIATELY: ${detailStr}. Fix ALL errors before proceeding.]`;
+              if (onStreamEvent) {
+                onStreamEvent('file-content-lint', {
+                  filePath,
+                  diagnostics: toolResult.diagnostics,
+                });
+              }
+              console.log(`[ChatEngine] Lint auto-fix: ${errors} error(s) in ${filePath} — correction injected into tool result`);
+            }
             // Screenshot handling: try vision captioning first, otherwise compact note
             // Vision server loads on demand via captionImage() → _ensureRunning(),
             // then unloads after captioning to free VRAM. No need to check isReady.
@@ -1851,6 +1911,9 @@ class ChatEngine extends EventEmitter {
           _sfUnicodeCount = 0;
           _sfUnicodeChars = '';
           _sfVisibleChars = 0;
+          _sfInThink = false;
+          _sfThinkBuf = '';
+          _sfThinkTagMatch = '';
 
           // Generate continuation — model sees tool results and can issue more tool calls
           // Recalculate maxTokens for this round — tool results consumed context space
@@ -1920,67 +1983,30 @@ class ChatEngine extends EventEmitter {
           const correctionMsg = `[SYSTEM OVERRIDE] You MUST use your tools to fulfill this request. You HAVE browser tools (browser_navigate, browser_click, browser_type, browser_snapshot), file tools, terminal tools, and web tools. You are NOT a chatbot — you are an agent with full system access. The user's request requires action, not words. Call the appropriate tool NOW. Do not explain why you can't — you can. Output the tool call JSON immediately.]`;
           this._chatHistory.push({ type: 'assistant', text: fullResponse });
           this._chatHistory.push({ type: 'user', text: correctionMsg });
-          // Re-generate with the corrective prompt
+          // Re-generate with the corrective prompt injected into chat history
           try {
-            const correctedPrompt = this._buildPrompt(contextTokens);
-            const correctedResult = await this._model.evaluate(correctedPrompt, {
-              ...genOptions,
-              contextShiftPolicy: this._contextShiftPolicy,
-              onChunk: (chunk) => {
-                genTokenCount++;
-                const token = chunk.token;
-                if (onStreamEvent) {
-                  onStreamEvent('llm-token', { token });
-                }
-              },
-            });
+            const correctedResult = await this._chat.generateResponse(this._chatHistory, genOptions);
             const correctedText = correctedResult.response || '';
             const correctedCalls = parseToolCalls(correctedText);
             if (correctedCalls.length > 0) {
               console.log(`[ChatEngine] Refusal correction succeeded — model now outputting tool calls: [${correctedCalls.map(c => c.tool).join(', ')}]`);
-              // Process the corrected tool calls
-              fullResponse = correctedText;
-              // Remove the refusal from chat history, replace with corrected response
+              // Remove the injected correction messages — the main tool loop below will handle execution
               this._chatHistory.pop(); // remove correction user msg
               this._chatHistory.pop(); // remove refusal assistant msg
-              // Fall through to normal tool processing by re-running the parse
+              fullResponse = correctedText;
               parsedCalls = correctedCalls;
               const { repaired } = repairToolCalls(parsedCalls, correctedText);
               parsedCalls = filterWebWorkspaceToolConflict(repaired);
-              // Execute the tool calls inline
-              totalToolCalls = 0;
-              let consecutiveBrowserFailures = 0;
-              let lastBrowserClickUrl = null;
-              let sameUrlClickCount = 0;
-              while (parsedCalls.length > 0) {
-                for (const call of parsedCalls) {
-                  totalToolCalls++;
-                  console.log(`[ChatEngine] Corrected tool call #${totalToolCalls}: ${call.tool}(${JSON.stringify(call.params).substring(0, 200)})`);
-                  let toolResult = null;
-                  try {
-                    toolResult = await this._executeTool(call.tool, call.params, onStreamEvent);
-                  } catch (toolErr) {
-                    toolResult = { success: false, error: toolErr.message };
-                  }
-                  // Add tool result to chat history for context
-                  this._chatHistory.push({ type: 'tool', toolName: call.tool, text: JSON.stringify(toolResult).substring(0, 2000) });
-                }
-                // Check for more tool calls in continuation
-                const contPrompt = this._buildPrompt(contextTokens);
-                const contResult = await this._model.evaluate(contPrompt, {
-                  ...genOptions,
-                  contextShiftPolicy: this._contextShiftPolicy,
-                  onChunk: (chunk) => { genTokenCount++; },
-                });
-                const contCalls = parseToolCalls(contResult.response || '');
-                if (contCalls.length === 0) break;
-                parsedCalls = contCalls;
-              }
+              // parsedCalls is now set — the outer while (parsedCalls.length > 0) loop will execute them
             } else {
               console.warn(`[ChatEngine] Refusal correction failed — model still refusing. Giving up.`);
+              this._chatHistory.pop(); // remove correction user msg
+              this._chatHistory.pop(); // remove refusal assistant msg
             }
           } catch (correctionErr) {
             console.warn(`[ChatEngine] Refusal correction error: ${correctionErr.message}`);
+            this._chatHistory.pop(); // remove correction user msg
+            this._chatHistory.pop(); // remove refusal assistant msg
           }
         }
       }
@@ -2053,6 +2079,83 @@ class ChatEngine extends EventEmitter {
   }
 
   /**
+   * Plan B: Revert the backend context to match a truncated frontend message array.
+   * Called when the user clicks the pencil edit submit or a checkpoint restore button.
+   * Rebuilds _chatHistory from the provided messages, preserving the system prompt entry.
+   * @param {Array<{role:string, content:string}>} messages - truncated chatMessages from frontend
+   */
+  revertContext(messages) {
+    if (!this._chatHistory?.length) return;
+    // Cancel any in-flight generation before mutating history
+    if (this._abortController) {
+      this._abortController.abort('context_revert');
+    }
+    const systemEntry = this._chatHistory[0]; // preserve system prompt + tool definitions
+    const newHistory = systemEntry ? [{ ...systemEntry }] : [{ type: 'system', text: SYSTEM_PROMPT }];
+    for (const msg of (messages || [])) {
+      if (!msg?.role || msg.content == null) continue;
+      if (msg.role === 'user') {
+        newHistory.push({ type: 'user', text: String(msg.content) });
+      } else if (msg.role === 'assistant') {
+        newHistory.push({ type: 'model', text: String(msg.content) });
+      }
+    }
+    this._chatHistory = newHistory;
+    this._lastEvaluation = null; // force full context rebuild on next generation
+    // Clear the sequence's KV cache so stale tokens don't contaminate the rebuilt history.
+    // resetSession() does the same thing — revertContext must match that behaviour.
+    if (this._sequence) {
+      try { this._sequence.clearHistory(); } catch (_) {}
+    }
+    console.log(`[ChatEngine] Context reverted: rebuilt from ${messages?.length || 0} messages → ${newHistory.length - 1} history entries (system entry preserved, KV cache cleared)`);
+  }
+
+  /**
+   * Plan G: Spawn a focused sub-agent using the same loaded model with a fresh context.
+   * Sub-agents run SEQUENTIALLY (local hardware can't run two models in parallel).
+   * The sub-context is disposed immediately after the task completes to free VRAM.
+   * @param {string} task - the sub-task description
+   * @param {object} [opts] - { contextSize, temperature, maxTokens, toolPrompt, executeToolFn }
+   */
+  async spawnSubAgent(task, opts = {}) {
+    if (!this._model) throw new Error('No model loaded — cannot spawn sub-agent');
+    console.log(`[ChatEngine] Sub-agent spawning: "${String(task).substring(0, 120)}"`);
+    const llamaCppPath = this._getNodeLlamaCppPath();
+    const { LlamaChat } = await import(pathToFileURL(llamaCppPath).href);
+    // Use at most half the main context size to leave room for the main model
+    const subCtxSize = Math.max(2048, Math.min(opts.contextSize || 4096, Math.floor((this._context?.contextSize || 8192) / 2)));
+    let subContext = null;
+    try {
+      subContext = await this._model.createContext({ contextSize: subCtxSize });
+      const subSequence = subContext.getSequence();
+      const subChat = new LlamaChat({ contextSequence: subSequence });
+      const subHistory = [
+        { type: 'system', text: `You are a focused sub-agent. Complete the task below fully and return your results in clear text.\n\nTask: ${task}` },
+        { type: 'user', text: task },
+      ];
+      let subResponse = '';
+      const subGenOptions = {
+        temperature: opts.temperature ?? 0.3,
+        signal: this._abortController?.signal,   // cancel sub-agent when main cancel fires
+        stopOnAbortSignal: true,
+        onTextChunk: (chunk) => { subResponse += chunk; },
+      };
+      if (opts.toolPrompt && opts.executeToolFn) {
+        subHistory[0].text += `\n\n${opts.toolPrompt}`;
+      }
+      const result = await subChat.generateResponse(subHistory, subGenOptions);
+      subResponse = result?.response || subResponse;
+      console.log(`[ChatEngine] Sub-agent completed: ${subResponse.length} chars`);
+      return { success: true, result: subResponse };
+    } catch (err) {
+      console.error(`[ChatEngine] Sub-agent failed: ${err.message}`);
+      return { success: false, error: err.message };
+    } finally {
+      try { subContext?.dispose(); } catch (_) {}
+    }
+  }
+
+  /**
    * Inject a user message into the ongoing tool call loop.
    * The message will be prepended to the next continuation's tool results
    * so the model sees it immediately and can adjust its behavior.
@@ -2081,12 +2184,15 @@ class ChatEngine extends EventEmitter {
 
   async getGPUInfo() {
     try {
-      const { execSync } = require('child_process');
-      const csv = execSync(
-        'nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu --format=csv,noheader,nounits',
+      const { execFile } = require('child_process');
+      const { promisify } = require('util');
+      const execFileAsync = promisify(execFile);
+      const { stdout } = await execFileAsync(
+        'nvidia-smi',
+        ['--query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu', '--format=csv,noheader,nounits'],
         { timeout: 5000 },
-      ).toString().trim();
-      const [name, memTotal, memUsed, memFree, utilGpu, temp] = csv.split(',').map(s => s.trim());
+      );
+      const [name, memTotal, memUsed, memFree, utilGpu, temp] = stdout.trim().split(',').map(s => s.trim());
       return {
         name,
         memoryTotal: parseFloat(memTotal),

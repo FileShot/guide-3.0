@@ -158,14 +158,15 @@ class VisionServer {
       '--no-warmup',  // skip warmup to start faster
     ];
 
-    // When running on CPU only, explicitly force CPU device to prevent CUDA allocation.
+    // When running on CPU only, explicitly force --device none to prevent CUDA allocation.
     // Even with -ngl 0 and no GPU flag, llama-server auto-detects CUDA and allocates
     // ~1GB CUDA compute buffer for CLIP, stealing VRAM from the main model and
     // degrading inference speed from 15-20 tok/s to 2 tok/s.
-    // --device cpu is the ONLY way to prevent this.
+    // --device none is the documented way to disable GPU offloading entirely.
+    // ('cpu' is NOT a valid device name — causes "invalid device: cpu" error on startup)
     if (visionGpuLayers === 0) {
-      args.push('--device', 'cpu');
-      console.log('[VisionServer] Forced --device cpu — prevents CLIP CUDA buffer allocation to preserve VRAM');
+      args.push('--device', 'none');
+      console.log('[VisionServer] Forced --device none — prevents CLIP CUDA buffer allocation to preserve VRAM');
     }
 
     if (gpuType && visionGpuLayers > 0) {
@@ -379,12 +380,12 @@ class VisionServer {
       // GGUF magic: 0x46475547 ('GGUF')
       if (header.readUInt32LE(0) !== 0x46475547) { fs.closeSync(fd); return null; }
       const version = header.readUInt32LE(4);
-      if (version < 2 || version > 3) { fs.closeSync(fd); return null; }
+      if (version < 2 || version > 6) { fs.closeSync(fd); return null; }
       const tensorCount = Number(header.readBigUInt64LE(8));
       const metadataCount = Number(header.readBigUInt64LE(16));
       // Scan metadata KV pairs starting at offset 24
       let offset = 24;
-      for (let i = 0; i < metadataCount && offset < 102400; i++) {
+      for (let i = 0; i < metadataCount && offset < 262144; i++) {
         const kvHeader = Buffer.alloc(12);
         const bytesRead = fs.readSync(fd, kvHeader, 0, 12, offset);
         if (bytesRead < 12) break;
@@ -452,10 +453,28 @@ class VisionServer {
             if (arrRead < 12) { fs.closeSync(fd); return null; }
             const elemType = arrHeader.readUInt32LE(0);
             const arrLen = Number(arrHeader.readBigUInt64LE(4));
-            // Determine size per element based on type
+            if (elemType === 0 || elemType === 9) {
+              // String array — compute size by reading all element length-prefixes.
+              // tokenizer.ggml.tokens has ~150K entries (~2MB); read in one large buffer
+              // to avoid 150K separate fs.readSync calls.
+              const ESTIMATE = Math.min(arrLen * 24 + 4096, 16 * 1024 * 1024); // generous per-elem estimate
+              const strBuf = Buffer.allocUnsafe(ESTIMATE);
+              const strDataStart = offset + 12 + keyLen + 12; // past KV header + key + array header
+              const bytesAvail = fs.readSync(fd, strBuf, 0, ESTIMATE, strDataStart);
+              let pos = 0;
+              let strOk = true;
+              for (let s = 0; s < arrLen; s++) {
+                if (pos + 8 > bytesAvail) { strOk = false; break; }
+                const sLen = Number(strBuf.readBigUInt64LE(pos));
+                if (sLen > 1e6) { strOk = false; break; } // sanity: no single token > 1MB
+                pos += 8 + Number(sLen);
+              }
+              if (!strOk) { fs.closeSync(fd); return null; }
+              valueSize = 12 + pos; // array header (12) + total string element bytes
+              break;
+            }
             let elemSize = 0;
             switch (elemType) {
-              case 0: case 9: elemSize = -1; break; // string elements — can't skip, abort scan
               case 1: elemSize = 1; break;  // uint8
               case 2: elemSize = 1; break;  // int8
               case 3: elemSize = 2; break;  // uint16
@@ -467,12 +486,11 @@ class VisionServer {
               case 11: elemSize = 8; break; // uint64
               case 12: elemSize = 8; break; // int64
               case 13: elemSize = 8; break; // float64
-              default: elemSize = -1; break; // unknown
+              default: elemSize = -1; break; // unknown element type
             }
             if (elemSize < 0) {
-              // Can't determine array size — skip remaining metadata by closing
-              // but DON'T return null — just break out of the loop
-              break;
+              offset = 262144; // force loop exit — can't determine array element size
+              continue;
             }
             valueSize = 12 + (elemSize * arrLen);
             break;
@@ -480,7 +498,7 @@ class VisionServer {
           default:
             // Unknown type — can't determine size, stop scanning
             // But DON'T return null — just break, we may have already found what we need
-            offset = 102400; // force loop exit
+            offset = 262144; // force loop exit (matches loop limit)
             continue;
         }
         // Check if this key is the embedding length

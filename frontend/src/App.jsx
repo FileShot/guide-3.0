@@ -120,6 +120,12 @@ export default function App() {
 
         break;
 
+      case 'file-content-lint':
+
+        if (data?.filePath && data?.diagnostics) s.setFileLintErrors(data.filePath, data.diagnostics);
+
+        break;
+
       case 'llm-thinking-token':
 
         s.appendThinkingToken(data);
@@ -653,6 +659,8 @@ export default function App() {
       api.onOpenFile?.((d) => handleEvent('open-file', d)),
 
       api.onAgentFileModified?.((d) => handleEvent('agent-file-modified', d)),
+
+      api.onFileContentLint?.((d) => handleEvent('file-content-lint', d)),
 
       api.onModelLoaded?.((d) => handleEvent('model-loaded', d)),
 

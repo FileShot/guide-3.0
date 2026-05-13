@@ -966,6 +966,18 @@ const useAppStore = create((set, get) => ({
 
   })),
 
+  // Plan F: per-file lint errors emitted by backend after write_file/edit_file
+
+  fileLintErrors: {},
+
+  setFileLintErrors: (filePath, data) => set(s => ({
+
+    fileLintErrors: { ...s.fileLintErrors, [filePath]: data }
+
+  })),
+
+  clearFileLintErrors: () => set({ fileLintErrors: {} }),
+
 
 
   clearFileContentBlocks: () => {
@@ -1698,6 +1710,10 @@ const useAppStore = create((set, get) => ({
 
       enableGrammar: false,
 
+      autoLintFix: true,       // Plan F: auto-inject lint correction after file writes
+
+      enableSubAgents: false,  // Plan G: allow model to spawn isolated sub-agents
+
       // System Prompt
 
       systemPrompt: '',
@@ -1795,6 +1811,8 @@ const useAppStore = create((set, get) => ({
       maxIterations: 25, generationTimeoutSec: 0, snapshotMaxChars: 8000,
 
       enableThinkingFilter: false, enableGrammar: false,
+
+      autoLintFix: true, enableSubAgents: false,
 
       kvCacheType: 'q3_0',
 

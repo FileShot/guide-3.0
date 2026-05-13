@@ -1413,6 +1413,12 @@ function SettingsPanel() {
         <SettingToggle label="Grammar-Constrained Tool Calls" value={settings.enableGrammar}
           onChange={v => updateSetting('enableGrammar', v)}
           hint="Forces valid tool calls. May cause hangs on small models." />
+        <SettingToggle label="Auto Lint Fix" value={settings.autoLintFix !== false}
+          onChange={v => updateSetting('autoLintFix', v)}
+          hint="Auto-inject lint correction into model context after file writes detect errors." />
+        <SettingToggle label="Sub-Agents (Experimental)" value={!!settings.enableSubAgents}
+          onChange={v => updateSetting('enableSubAgents', v)}
+          hint="Allow model to spawn focused sub-agents using a fresh context window. Off by default — uses extra VRAM." />
       </SettingsSection>
 
       {/* System Prompt */}

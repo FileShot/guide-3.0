@@ -1137,6 +1137,8 @@ export default function ChatPanel() {
 
     store.setChatStreaming(true);
 
+    store.clearFileLintErrors(); // Plan F: clear stale lint pills from previous generation
+
 
 
     try {
@@ -1196,6 +1198,10 @@ export default function ChatPanel() {
           enableThinkingFilter: s.enableThinkingFilter,
 
           enableGrammar: s.enableGrammar,
+
+          autoLintFix: s.autoLintFix !== false,
+
+          enableSubAgents: !!s.enableSubAgents,
 
           systemPrompt: s.systemPrompt,
 
@@ -2117,6 +2123,8 @@ export default function ChatPanel() {
 
                       const truncated = chatMessages.slice(0, idx);
 
+                      window.electronAPI?.revertContext?.(truncated.map(m => ({ role: m.role, content: m.content || '' })));
+
                       useAppStore.setState({ chatMessages: truncated });
 
                       // Clear streaming state in case it's active
@@ -2385,6 +2393,12 @@ export default function ChatPanel() {
 
                                 if (editText.trim()) {
 
+                                  const kbMsgIdx = chatMessages.findIndex(m => m.id === msg.id);
+
+                                  const kbPrior = kbMsgIdx > 0 ? chatMessages.slice(0, kbMsgIdx) : [];
+
+                                  window.electronAPI?.revertContext?.(kbPrior.map(m => ({ role: m.role, content: m.content || '' })));
+
                                   editChatMessage(msg.id, editText.trim());
 
                                   setEditingMessageId(null);
@@ -2416,6 +2430,12 @@ export default function ChatPanel() {
                               onClick={() => {
 
                                 if (editText.trim()) {
+
+                                  const msgIdx2 = chatMessages.findIndex(m => m.id === msg.id);
+
+                                  const priorMsgs2 = msgIdx2 > 0 ? chatMessages.slice(0, msgIdx2) : [];
+
+                                  window.electronAPI?.revertContext?.(priorMsgs2.map(m => ({ role: m.role, content: m.content || '' })));
 
                                   editChatMessage(msg.id, editText.trim());
 
@@ -3101,9 +3121,11 @@ export default function ChatPanel() {
 
             <button
 
-              className="p-1.5 hover:bg-vsc-list-hover rounded-md transition-colors text-vsc-text-dim hover:text-vsc-text"
+              className="p-1.5 rounded-md text-vsc-text-dim/40 opacity-40 cursor-not-allowed"
 
-              title="Voice input"
+              title="Voice input (coming soon)"
+
+              disabled
 
             >
 

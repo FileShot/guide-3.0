@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   agentPause: () => ipcRenderer.invoke('agent-pause'),
   agentResume: () => ipcRenderer.invoke('agent-resume'),
   injectUserMessage: (text) => ipcRenderer.invoke('inject-user-message', { text }),
+  revertContext: (messages) => ipcRenderer.invoke('revert-context', messages),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
 
   // ── Terminal ──────────────────────────────────────────
@@ -119,6 +120,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onFilesChanged:      (cb) => _on('files-changed', cb),
   onOpenFile:          (cb) => _on('open-file', cb),
   onAgentFileModified: (cb) => _on('agent-file-modified', cb),
+  onFileContentLint:   (cb) => _on('file-content-lint', cb),
 
   // Model events
   onModelLoaded:       (cb) => _on('model-loaded', cb),

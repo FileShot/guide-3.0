@@ -9,7 +9,7 @@
  *            above the gradient overlay instead of being hidden under it.
  */
 import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
-import { Copy, Check, Download, ChevronDown, ChevronRight, FileCode, Loader, Play, Code } from 'lucide-react';
+import { Copy, Check, Download, ChevronDown, ChevronRight, FileCode, Loader, Play, Code, Wrench, AlertTriangle } from 'lucide-react';
 import useAppStore from '../../stores/appStore';
 
 const COLLAPSE_THRESHOLD = 15;
@@ -19,6 +19,12 @@ const RENDERABLE_EXTENSIONS = new Set(['html', 'htm', 'svg', 'css', 'js', 'jsx']
 const FileContentBlock = React.memo(function FileContentBlock({ filePath, language, fileName, content, complete }) {
   const [copied, setCopied] = useState(false);
   const [rendering, setRendering] = useState(false);
+
+  // Plan F: read lint errors emitted by backend after this file was written
+  const lintErrors = useAppStore(s => s.fileLintErrors[filePath]);
+  // Auto-fix toggle is the real global setting — toggling it here changes backend behaviour for ALL future file writes
+  const autoFixEnabled = useAppStore(s => s.settings.autoLintFix !== false);
+  const updateSetting = useAppStore(s => s.updateSetting);
   const scrollContainerRef = useRef(null);
   const contentRef = useRef(null);
 
@@ -107,7 +113,7 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
   const preStyle = (isCollapsed && !complete) ? { paddingBottom: '80px' } : undefined;
 
   return (
-    <div className="code-block-container group relative my-2 rounded-md overflow-hidden border border-vsc-panel-border/40">
+    <div className="code-block-container group relative my-2 rounded-md overflow-hidden border border-vsc-panel-border/40 flex flex-col">
       {/* Header */}
       <div className="code-block-header flex items-center justify-between px-3 py-1 bg-vsc-sidebar/80 border-b border-vsc-panel-border/30">
         <div className="flex items-center gap-1.5">
@@ -147,6 +153,28 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
           </button>
         </div>
       </div>
+
+      {/* Plan F: Lint auto-fix pill — shown when backend detected errors after writing this file */}
+      {complete && lintErrors && lintErrors.errors > 0 && (
+        <div className="flex items-center justify-between px-3 py-1 bg-yellow-500/10 border-t border-yellow-400/30">
+          <div className="flex items-center gap-1.5 text-yellow-300/90 text-[10px]">
+            <AlertTriangle size={10} className="flex-shrink-0" />
+            <span>{lintErrors.errors} lint error{lintErrors.errors !== 1 ? 's' : ''} detected</span>
+          </div>
+          <button
+            className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] border transition-colors ${
+              autoFixEnabled
+                ? 'bg-green-500/20 border-green-400/50 text-green-300'
+                : 'bg-vsc-panel-border/20 border-vsc-panel-border/40 text-vsc-text-dim'
+            }`}
+            onClick={() => updateSetting('autoLintFix', !autoFixEnabled)}
+            title={autoFixEnabled ? 'Auto-fix is ON — model will fix errors automatically' : 'Auto-fix is OFF — errors will not be auto-fixed'}
+          >
+            <Wrench size={9} />
+            Auto-fix {autoFixEnabled ? 'ON' : 'OFF'}
+          </button>
+        </div>
+      )}
 
       {/* Content or preview */}
       {rendering ? (

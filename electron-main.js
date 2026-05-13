@@ -367,11 +367,23 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     agenticCancelled = false;
     const settings = chatContext?.params || chatContext?.settings || {};
 
+    const askOnly = !!(settings.askOnly);
+    const planMode = !!(settings.planMode);
+    const enableSubAgents = !!(settings.enableSubAgents);
+    const autoLintFix = settings.autoLintFix !== false; // default true
+
     // Build tool functions from enabled tool definitions
     const toolDefs = mcpToolServer.getToolDefinitions();
-    const functions = ChatEngine.convertToolDefs(toolDefs);
-    const toolPrompt = mcpToolServer.getToolPrompt();
-    const compactToolPrompt = mcpToolServer.getCompactToolHint('default', { minimal: true }).join('');
+    const functions = askOnly ? {} : ChatEngine.convertToolDefs(toolDefs);
+    let toolPrompt = askOnly ? '' : mcpToolServer.getToolPrompt();
+    let compactToolPrompt = askOnly ? '' : mcpToolServer.getCompactToolHint('default', { minimal: true }).join('');
+
+    // Sub-agents: append spawn_subagent tool definition when enabled
+    if (enableSubAgents && toolPrompt) {
+      const subAgentTool = '\n- **spawn_subagent** — Delegate a focused sub-task to an isolated sub-agent that shares the same loaded model but runs in a fresh context. Use for long research tasks, code analysis, or any work that should not pollute the main context. Params: task (string, required) — description of what the sub-agent should do; contextSize (number, optional) — token budget for sub-agent.';
+      toolPrompt += subAgentTool;
+      compactToolPrompt += '\n- spawn_subagent(task): run focused sub-task in fresh context';
+    }
 
     // Inject current file context into the user message so the model can see the active file
     // Truncate to avoid consuming all context — model can use read_file for the full content
@@ -395,6 +407,13 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       toolPrompt,
       compactToolPrompt,
       executeToolFn: async (toolName, params) => {
+        if (toolName === 'spawn_subagent') {
+          if (!enableSubAgents) return { success: false, error: 'Sub-agents are disabled. Enable in Settings > Agentic Behavior.' };
+          return await llmEngine.spawnSubAgent(String(params?.task || ''), {
+            contextSize: params?.contextSize,
+            temperature: settings.temperature,
+          });
+        }
         return await mcpToolServer.executeTool(toolName, params);
       },
       systemPrompt: settings.systemPrompt || undefined,
@@ -404,6 +423,10 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       topP: settings.topP,
       topK: settings.topK,
       repeatPenalty: settings.repeatPenalty,
+      thinkingBudget: settings.thinkingBudget,
+      askOnly,
+      planMode,
+      autoLintFix,
     });
 
     // Sync guide instructions path to rulesManager so list_rules includes it
@@ -414,6 +437,13 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
   } catch (err) {
     return { error: err.message };
   }
+});
+
+// Plan B: Revert backend context to match a truncated frontend message array.
+// Called by pencil-edit submit and checkpoint-restore in ChatPanel.jsx.
+ipcMain.handle('revert-context', (_e, messages) => {
+  llmEngine.revertContext(Array.isArray(messages) ? messages : []);
+  return { success: true };
 });
 
 // Handle answer from frontend for ask_question tool
