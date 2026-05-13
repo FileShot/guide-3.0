@@ -326,7 +326,54 @@ class BrowserManager extends EventEmitter {
       // Inject data-ref attributes and build a numbered element list
       const snapshotData = await this._ensureRefs();
 
-      const result = `Page: ${title}\nURL: ${url}\n\nInteractive elements (use the [ref=N] number as the "ref" param, e.g. {"ref":"2"} or {"ref":"[ref=2]"}):\n${snapshotData.elementList}\n\nPage text:\n${snapshotData.pageText}`;
+      // Extract content from ALL frames (including cross-origin iframes).
+      // Playwright's page.frames() bypasses CORS — it can read cross-origin frame content
+      // that the DOM-level iframe extraction in _ensureRefs() cannot access.
+      // This is critical for sites like BrightSpace/D2L that render content in cross-origin iframes.
+      let frameTexts = [];
+      try {
+        const frames = this._page.frames();
+        for (const frame of frames) {
+          if (frame === this._page.mainFrame()) continue; // skip main frame (already in snapshotData)
+          const frameUrl = frame.url();
+          try {
+            const frameBody = await frame.evaluate(() => {
+              const body = document.body;
+              if (!body) return { text: '', interactive: [] };
+              const text = (body.innerText || '').trim();
+              const interactive = [...document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"], [role="textbox"], [role="combobox"]')].map(el => {
+                const tag = el.tagName.toLowerCase();
+                const text = (el.textContent || '').trim().substring(0, 60);
+                const href = el.href || '';
+                const type = el.type || '';
+                const name = el.name || el.id || '';
+                const placeholder = el.placeholder || '';
+                return `[${tag}${type ? ` type="${type}"` : ''}${name ? ` name="${name}"` : ''}${placeholder ? ` placeholder="${placeholder}"` : ''}${href ? ` href="${href.substring(0, 80)}"` : ''}] ${text}`;
+              });
+              return { text, interactive };
+            });
+            if (frameBody.text.length > 0 || frameBody.interactive.length > 0) {
+              const parts = [];
+              if (frameBody.interactive.length > 0) {
+                parts.push(`Interactive elements in this frame:\n${frameBody.interactive.join('\n')}`);
+              }
+              if (frameBody.text.length > 0) {
+                parts.push(`Frame text:\n${frameBody.text.substring(0, 15000)}`);
+              }
+              frameTexts.push(`--- iframe content (src="${frameUrl.substring(0, 120)}") ---\n${parts.join('\n\n')}`);
+            }
+          } catch (e) {
+            // Frame may be detached or inaccessible
+            if (frameUrl) frameTexts.push(`--- iframe (could not access content, src="${frameUrl.substring(0, 120)}") ---`);
+          }
+        }
+      } catch {}
+
+      const fullPageText = frameTexts.length > 0
+        ? snapshotData.pageText + '\n\n' + frameTexts.join('\n\n')
+        : snapshotData.pageText;
+
+      const result = `Page: ${title}\nURL: ${url}\n\nInteractive elements (use the [ref=N] number as the "ref" param, e.g. {"ref":"2"} or {"ref":"[ref=2]"}):\n${snapshotData.elementList}\n\nPage text:\n${fullPageText}`;
       // Include navigation history so the model knows what it already did
       let historySection = '';
       if (this._navHistory.length > 0) {
@@ -483,10 +530,12 @@ class BrowserManager extends EventEmitter {
       }
       return { success: true, url: urlAfter, clicked: clickedText || selector, navigated };
     } catch (e) {
-      // If ref-based selector failed, try JS click fallback by element index
-      // Uses the SAME selector list and visibility filter as _ensureRefs() so indices match the snapshot
+      // If ref-based selector failed on main page, try finding the element in child frames.
+      // Sites like BrightSpace/D2L render interactive content inside cross-origin iframes.
+      // Playwright's page.frames() can access all frames regardless of origin.
       const refMatch = selector?.match?.(/^\[ref\s*=\s*(\d+)\]$/) || selector?.match?.(/^\[(\d+)\]$/) || (typeof selector === 'string' && /^\d+$/.test(selector.trim()) && [null, selector.trim()]);
       if (refMatch) {
+        // First try JS click fallback on main page (existing logic)
         try {
           const idx = parseInt(refMatch[1]);
           const result = await this._page.evaluate((i) => {
@@ -516,6 +565,42 @@ class BrowserManager extends EventEmitter {
             if (snapshot.success) return { success: true, url: this._page.url(), snapshot: snapshot.text };
           }
           if (result.success) return result;
+        } catch (_) {}
+
+        // Main page click failed — try clicking in child frames
+        try {
+          const frames = this._page.frames();
+          for (const frame of frames) {
+            if (frame === this._page.mainFrame()) continue; // already tried
+            try {
+              const frameResult = await frame.evaluate((i) => {
+                const selectors = [
+                  'input', 'button', 'a', 'select', 'textarea',
+                  '[role="button"]', '[role="link"]', '[role="textbox"]',
+                  '[role="combobox"]', '[role="checkbox"]', '[role="radio"]',
+                  '[role="tab"]', '[role="menuitem"]', '[role="option"]',
+                  '[contenteditable]', 'summary', 'details',
+                ];
+                const all = [...document.querySelectorAll(selectors.join(','))].filter(el => {
+                  if (el.offsetParent !== null) return true;
+                  if (el.type === 'hidden') return false;
+                  const s = window.getComputedStyle(el);
+                  if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+                  if (s.position === 'fixed' || s.position === 'sticky') return true;
+                  const r = el.getBoundingClientRect();
+                  return r.width > 0 && r.height > 0;
+                });
+                if (all[i]) { const txt = (all[i].textContent || '').trim().substring(0, 60); all[i].click(); return { success: true, clicked: txt || `frame-element[${i}]`, frameUrl: location.href }; }
+                return null;
+              }, parseInt(refMatch[1]));
+              if (frameResult?.success) {
+                console.log(`[BrowserManager] Clicked element in frame: ${frameResult.frameUrl}`);
+                try { await this._page.waitForTimeout(800); } catch {}
+                const snapshot = await this.getSnapshot();
+                return { success: true, url: this._page.url(), clicked: frameResult.clicked, navigated: false, snapshot: snapshot.success ? snapshot.text : undefined };
+              }
+            } catch (_) { /* frame not accessible */ }
+          }
         } catch (_) {}
       }
       return { success: false, error: e.message };

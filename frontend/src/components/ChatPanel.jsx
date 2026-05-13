@@ -142,7 +142,7 @@ function FinalizedThinkingBlock({ text }) {
 
         </span>
 
-        <span className="font-medium whitespace-nowrap flex-shrink-0 text-vsc-text">
+        <span className="font-medium whitespace-nowrap flex-shrink-0 text-vsc-text-dim">
 
           <em>Thought for {lines.length} line{lines.length !== 1 ? 's' : ''}</em>
 
@@ -418,7 +418,7 @@ function StreamingFooter() {
 
             </span>
 
-            <span className="font-medium whitespace-nowrap flex-shrink-0 text-vsc-text">
+            <span className="font-medium whitespace-nowrap flex-shrink-0 text-vsc-text-dim">
 
               <em>{thinkLabel}</em>
 
@@ -1222,13 +1222,13 @@ export default function ChatPanel() {
 
       };
 
-      const attachmentSummary = serializedAttachments.length > 0
-
-        ? `\n\n[Attached context]\n${serializedAttachments.map((a, idx) => `- ${idx + 1}. ${a.name || 'attachment'} (${a.type || 'unknown'}, ${a.size || 0} bytes)`).join('\n')}`
-
-        : '';
-
-      const modelInputText = text + attachmentSummary;
+      // Do NOT inject raw attachment metadata into the user message text.
+      // The backend handles attachments properly: vision captioning injects descriptive text,
+      // and when vision fails, it injects an instruction for the model to ask the user.
+      // Raw metadata like "[Attached context]\n- 1. filename (image/png, 419861 bytes)"
+      // persists in chat history across all subsequent tool calls, and the model eventually
+      // echoes it verbatim as its response — even after 20+ tool calls on a different topic.
+      const modelInputText = text;
 
       const result = window.electronAPI?.aiChat
 
