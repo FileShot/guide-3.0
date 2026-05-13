@@ -1455,12 +1455,19 @@ class ChatEngine extends EventEmitter {
             }
             // Inject stuck-on-same-page signal into tool result so model stops hallucinating success.
             // Without this, browser_click returns {success:true} and the model assumes navigation worked.
+            // After 3 same-URL clicks, override success to false — the model MUST try something different.
             if (call.tool === 'browser_click' && toolResult?.success && sameUrlClickCount >= 2 && !toolResult.navigated) {
-              const stuckMsg = `\n[WARNING: You have clicked ${sameUrlClickCount + 1} times but the page URL has not changed. You are STUCK on ${toolResult.url}. The click did NOT navigate to a new page. Try a different element, use browser_snapshot to see the current page state, or use ask_question to ask the user for help.]`;
-              if (typeof toolResult.message === 'string') {
-                toolResult.message += stuckMsg;
+              if (sameUrlClickCount >= 3) {
+                // Force failure — the model cannot ignore success:false
+                toolResult.success = false;
+                toolResult.error = `Stuck: clicked ${sameUrlClickCount + 1} times on "${toolResult.clicked || '?'}" but page URL did not change from ${toolResult.url}. The element may not be a navigation link, or the page requires a different action. Try: (1) a different element, (2) browser_snapshot to see current state, (3) ask_question to ask the user for help.`;
               } else {
-                toolResult.stuckWarning = stuckMsg.trim();
+                const stuckMsg = `\n[WARNING: You have clicked ${sameUrlClickCount + 1} times but the page URL has not changed. You are STUCK on ${toolResult.url}. The click did NOT navigate to a new page. Try a different element, use browser_snapshot to see the current page state, or use ask_question to ask the user for help.]`;
+                if (typeof toolResult.message === 'string') {
+                  toolResult.message += stuckMsg;
+                } else {
+                  toolResult.stuckWarning = stuckMsg.trim();
+                }
               }
             }
 

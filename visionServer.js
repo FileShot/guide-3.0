@@ -115,13 +115,46 @@ class VisionServer {
     this._port = await this._findFreePort();
     const gpuType = options.gpuType || this._detectGpuFlag();
 
+    // Compute GPU layers for vision server based on available VRAM.
+    // The main model is already loaded and consuming most VRAM.
+    // Using -ngl 99 blindly overflows VRAM, causing both vision server crash
+    // AND main model context size reduction due to VRAM contention.
+    const visionCtxSize = options.contextSize || 2048; // vision only needs small context
+    let visionGpuLayers = options.gpuLayers; // explicit override from caller
+    if (visionGpuLayers == null) {
+      // Auto-compute: try to fit in available VRAM
+      try {
+        const { execSync } = require('child_process');
+        // Use nvidia-smi to get free VRAM (works on Windows/Linux)
+        const result = execSync('nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits', { encoding: 'utf8', timeout: 5000 }).trim();
+        const freeVramMiB = parseInt(result.split('\n')[0]);
+        // Rough estimate: each model layer uses modelSize/totalLayers MiB
+        // For a 4B Q4 model: ~2.7GB / 32 layers ≈ 84MB per layer
+        // Leave 512MB for KV cache + activations
+        const availableForLayers = freeVramMiB - 512;
+        if (availableForLayers < 200) {
+          // Less than 200MB free — run vision on CPU only
+          visionGpuLayers = 0;
+          console.log(`[VisionServer] Low VRAM (${freeVramMiB}MiB free) — running vision on CPU`);
+        } else {
+          // Assume ~100MB per layer as conservative estimate for vision model
+          visionGpuLayers = Math.max(0, Math.min(Math.floor(availableForLayers / 100), 99));
+          console.log(`[VisionServer] VRAM free: ${freeVramMiB}MiB — using ${visionGpuLayers} GPU layers for vision`);
+        }
+      } catch (e) {
+        // nvidia-smi not available — use 0 GPU layers (CPU) as safe default
+        visionGpuLayers = 0;
+        console.log('[VisionServer] Cannot query VRAM — running vision on CPU (safe default)');
+      }
+    }
+
     const args = [
       '-m', modelPath,
       '--mmproj', mmprojPath,
       '--port', String(this._port),
       '--host', '127.0.0.1',
-      '-c', String(options.contextSize || 4096),
-      '-ngl', String(options.gpuLayers || 99),
+      '-c', String(visionCtxSize),
+      '-ngl', String(visionGpuLayers),
       '--no-warmup',  // skip warmup to start faster
     ];
 
@@ -317,7 +350,6 @@ class VisionServer {
     if (!modelPath) return null;
     try {
       const modelDir = path.dirname(modelPath);
-      const entries = fs.readdirSync(modelDir);
 
       // Priority order: exact mmproj name patterns
       const patterns = [
@@ -328,18 +360,35 @@ class VisionServer {
         /vision/i,            // vision projector (some models use this naming)
       ];
 
-      for (const pattern of patterns) {
-        const match = entries.find(e =>
-          e.toLowerCase().endsWith('.gguf') && pattern.test(e)
-        );
-        if (match) {
-          const fullPath = path.join(modelDir, match);
-          console.log(`[VisionServer] Found mmproj: ${fullPath}`);
-          return fullPath;
+      // Search directories in priority order: model dir, parent dir, sibling dirs
+      const searchDirs = [modelDir];
+      const parentDir = path.dirname(modelDir);
+      try {
+        const parentEntries = fs.readdirSync(parentDir, { withFileTypes: true });
+        for (const entry of parentEntries) {
+          if (entry.isDirectory() && path.join(parentDir, entry.name) !== modelDir) {
+            searchDirs.push(path.join(parentDir, entry.name));
+          }
         }
+      } catch {}
+
+      for (const dir of searchDirs) {
+        try {
+          const entries = fs.readdirSync(dir);
+          for (const pattern of patterns) {
+            const match = entries.find(e =>
+              e.toLowerCase().endsWith('.gguf') && pattern.test(e)
+            );
+            if (match) {
+              const fullPath = path.join(dir, match);
+              console.log(`[VisionServer] Found mmproj: ${fullPath}`);
+              return fullPath;
+            }
+          }
+        } catch {}
       }
 
-      console.log(`[VisionServer] No mmproj file found in ${modelDir} (${entries.filter(e => e.endsWith('.gguf')).length} GGUF files total)`);
+      console.log(`[VisionServer] No mmproj file found in ${modelDir} or sibling directories`);
       return null;
     } catch (err) {
       console.error(`[VisionServer] Error scanning for mmproj: ${err.message}`);
