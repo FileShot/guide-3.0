@@ -120,6 +120,12 @@ function FinalizedThinkingBlock({ text }) {
 
   const lines = text.split('\n').filter(l => l.trim());
 
+  // Auto-collapse after completion (smooth UX — thinking starts expanded, then collapses)
+  useEffect(() => {
+    const timer = setTimeout(() => setExpanded(false), 2000);
+    return () => clearTimeout(timer);
+  }, []);
+
 
 
   return (
@@ -136,7 +142,7 @@ function FinalizedThinkingBlock({ text }) {
 
       >
 
-        <span className={`text-[8px] transition-transform duration-150 flex-shrink-0 ${expanded ? 'rotate-90' : ''}`}>
+        <span className={`text-[8px] transition-transform duration-200 flex-shrink-0 ${expanded ? 'rotate-90' : ''}`}>
 
           &#9654;
 
@@ -152,7 +158,10 @@ function FinalizedThinkingBlock({ text }) {
 
       </button>
 
-      {expanded && (
+      <div
+        className="transition-all duration-300 ease-in-out overflow-hidden"
+        style={{ maxHeight: expanded ? '200px' : '0px', opacity: expanded ? 1 : 0 }}
+      >
 
         <div
 
@@ -166,7 +175,7 @@ function FinalizedThinkingBlock({ text }) {
 
         </div>
 
-      )}
+      </div>
 
     </div>
 
@@ -398,63 +407,7 @@ function StreamingFooter() {
 
       </div>
 
-      {chatThinkingText && (
-
-        <div className="mb-2 overflow-hidden">
-
-          <button
-
-            className="w-full flex items-center gap-1 py-0.5 text-[10px] transition-colors leading-tight min-h-0"
-
-            style={{ color: 'var(--vsc-text-dim, #858585)' }}
-
-            onClick={() => setThinkingExpanded(!thinkingExpanded)}
-
-          >
-
-            <span className={`text-[8px] transition-transform duration-150 flex-shrink-0 ${thinkingExpanded ? 'rotate-90' : ''}`}>
-
-              &#9654;
-
-            </span>
-
-            <span className="font-medium whitespace-nowrap flex-shrink-0 text-vsc-text-dim">
-
-              <em>{thinkLabel}</em>
-
-            </span>
-
-            {isThinking
-
-              ? <Loader2 size={8} className="animate-spin ml-auto flex-shrink-0 text-vsc-text" />
-
-              : <Check size={9} className="ml-auto flex-shrink-0" style={{ color: '#4ec9b0' }} />
-
-            }
-
-          </button>
-
-          {thinkingExpanded && (
-
-            <div
-
-              ref={thinkContentRef}
-
-              className="px-2 pb-1.5 text-[10px] whitespace-pre-wrap leading-relaxed max-h-[180px] overflow-y-auto text-vsc-text-dim"
-
-              style={{ borderTop: '1px solid var(--vsc-panel-border, #2d2d2d)' }}
-
-            >
-
-              {chatThinkingText}
-
-            </div>
-
-          )}
-
-        </div>
-
-      )}
+      {/* Thinking is now rendered chronologically in streamingSegments below */}
 
       {chatGeneratingTool && !chatGeneratingTool.done && (
 
@@ -490,6 +443,44 @@ function StreamingFooter() {
 
           );
 
+        }
+
+        if (seg.type === 'thinking' && seg.content && seg.content.trim()) {
+          const thinkLines = seg.content.split('\n').filter(l => l.trim());
+          const isLastSeg = i === streamingSegments.length - 1;
+          const isLive = isThinking && isLastSeg;
+          return (
+            <div key={`seg-think-${i}`} className="mb-1 overflow-hidden">
+              <button
+                className="w-full flex items-center gap-1 py-0.5 text-[10px] transition-colors leading-tight min-h-0"
+                style={{ color: 'var(--vsc-text-dim, #858585)' }}
+                onClick={() => {}}
+              >
+                <span className="text-[8px] transition-transform duration-200 flex-shrink-0 rotate-90">
+                  &#9654;
+                </span>
+                <span className="font-medium whitespace-nowrap flex-shrink-0 text-vsc-text-dim">
+                  <em>{isLive ? 'Reasoning...' : `Thought for ${thinkLines.length} line${thinkLines.length !== 1 ? 's' : ''}`}</em>
+                </span>
+                {isLive
+                  ? <Loader2 size={8} className="animate-spin ml-auto flex-shrink-0 text-vsc-text" />
+                  : <Check size={9} className="ml-auto flex-shrink-0" style={{ color: '#4ec9b0' }} />
+                }
+              </button>
+              <div
+                className="transition-all duration-300 ease-in-out overflow-hidden"
+                style={{ maxHeight: '200px', opacity: 1 }}
+              >
+                <div
+                  ref={isLastSeg ? thinkContentRef : null}
+                  className="px-2 pb-1.5 text-[10px] whitespace-pre-wrap leading-relaxed max-h-[180px] overflow-y-auto text-vsc-text-dim"
+                  style={{ borderTop: '1px solid var(--vsc-panel-border, #2d2d2d)' }}
+                >
+                  {seg.content}
+                </div>
+              </div>
+            </div>
+          );
         }
 
         if (seg.type === 'file') {

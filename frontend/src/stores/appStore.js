@@ -628,9 +628,25 @@ const useAppStore = create((set, get) => ({
 
   appendThinkingToken: (token) => {
 
-    const { chatThinkingText } = get();
+    const store = get();
+    const segs = store.streamingSegments;
+    let newSegs;
 
-    set({ chatThinkingText: chatThinkingText + token });
+    // Chronological thinking: create/append thinking segments in streamingSegments
+    // so thinking blocks appear interleaved with prose, not all at the top.
+    if (segs.length > 0 && segs[segs.length - 1].type === 'thinking') {
+      newSegs = [...segs];
+      const lastSeg = newSegs[newSegs.length - 1];
+      newSegs[newSegs.length - 1] = { ...lastSeg, content: lastSeg.content + token };
+    } else {
+      // New thinking block — create a new segment (model started thinking again after prose)
+      newSegs = [...segs, { type: 'thinking', content: token }];
+    }
+
+    set({
+      chatThinkingText: store.chatThinkingText + token,
+      streamingSegments: newSegs,
+    });
 
   },
 

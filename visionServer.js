@@ -158,14 +158,14 @@ class VisionServer {
       '--no-warmup',  // skip warmup to start faster
     ];
 
-    // When running on CPU only, also disable CUDA entirely.
-    // Even with -ngl 0, llama-server's CLIP module auto-allocates ~1GB CUDA compute buffer,
-    // stealing VRAM from the main model and degrading inference speed from 15-20 tok/s to 2 tok/s.
-    if (visionGpuLayers === 0 && gpuType) {
-      // Remove the GPU flag (e.g. --cuda) so llama-server runs entirely on CPU
-      // This prevents CLIP from allocating CUDA buffers
-      args.splice(args.indexOf(gpuType), 1);
-      console.log('[VisionServer] Removed GPU flag — running vision entirely on CPU to preserve VRAM');
+    // When running on CPU only, explicitly force CPU device to prevent CUDA allocation.
+    // Even with -ngl 0 and no GPU flag, llama-server auto-detects CUDA and allocates
+    // ~1GB CUDA compute buffer for CLIP, stealing VRAM from the main model and
+    // degrading inference speed from 15-20 tok/s to 2 tok/s.
+    // --device cpu is the ONLY way to prevent this.
+    if (visionGpuLayers === 0) {
+      args.push('--device', 'cpu');
+      console.log('[VisionServer] Forced --device cpu — prevents CLIP CUDA buffer allocation to preserve VRAM');
     }
 
     if (gpuType && visionGpuLayers > 0) {
@@ -322,6 +322,15 @@ class VisionServer {
         return caption;
       }
 
+      // Qwen 3.5 reasoning models put the actual caption in reasoning_content, not content.
+      // The content field is empty ("") while reasoning_content has the full description.
+      // This is because llama-server uses the chat template with thinking=1 for Qwen models.
+      if (result?.choices?.[0]?.message?.reasoning_content) {
+        const caption = result.choices[0].message.reasoning_content;
+        console.log(`[VisionServer] ═══ CAPTION RESULT #${requestId} (from reasoning_content) ═══ ${elapsed}s, ${caption.length} chars: "${caption.substring(0, 200)}"`);
+        return caption;
+      }
+
       console.log(`[VisionServer] Caption request #${requestId} returned unexpected format: ${JSON.stringify(result).substring(0, 300)}`);
       return null;
     } catch (err) {
@@ -425,10 +434,54 @@ class VisionServer {
             valueSize = 8;
             break;
           }
+          case 8: { // bool
+            valueSize = 1;
+            break;
+          }
+          case 7: { // float32
+            valueSize = 4;
+            break;
+          }
+          case 13: { // float64
+            valueSize = 8;
+            break;
+          }
+          case 10: { // array — must parse to skip past it
+            const arrHeader = Buffer.alloc(12);
+            const arrRead = fs.readSync(fd, arrHeader, 0, 12, offset + 12 + keyLen);
+            if (arrRead < 12) { fs.closeSync(fd); return null; }
+            const elemType = arrHeader.readUInt32LE(0);
+            const arrLen = Number(arrHeader.readBigUInt64LE(4));
+            // Determine size per element based on type
+            let elemSize = 0;
+            switch (elemType) {
+              case 0: case 9: elemSize = -1; break; // string elements — can't skip, abort scan
+              case 1: elemSize = 1; break;  // uint8
+              case 2: elemSize = 1; break;  // int8
+              case 3: elemSize = 2; break;  // uint16
+              case 4: elemSize = 2; break;  // int16
+              case 5: elemSize = 4; break;  // uint32
+              case 6: elemSize = 4; break;  // int32
+              case 7: elemSize = 4; break;  // float32
+              case 8: elemSize = 1; break;  // bool
+              case 11: elemSize = 8; break; // uint64
+              case 12: elemSize = 8; break; // int64
+              case 13: elemSize = 8; break; // float64
+              default: elemSize = -1; break; // unknown
+            }
+            if (elemSize < 0) {
+              // Can't determine array size — skip remaining metadata by closing
+              // but DON'T return null — just break out of the loop
+              break;
+            }
+            valueSize = 12 + (elemSize * arrLen);
+            break;
+          }
           default:
-            // Skip unknown types — can't determine size easily
-            fs.closeSync(fd);
-            return null;
+            // Unknown type — can't determine size, stop scanning
+            // But DON'T return null — just break, we may have already found what we need
+            offset = 102400; // force loop exit
+            continue;
         }
         // Check if this key is the embedding length
         if (key.endsWith('.embedding_length') && embdValue !== null) {
