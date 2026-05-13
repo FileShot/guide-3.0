@@ -309,12 +309,12 @@ class VisionServer {
           ],
         },
       ],
-      max_tokens: 1024,
+      max_tokens: 256,
       temperature: 0.1,
     });
 
     try {
-      const result = await this._httpPost(`/v1/chat/completions`, body);
+      const result = await this._httpPost(`/v1/chat/completions`, body, 180000);
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
       if (result?.choices?.[0]?.message?.content) {
@@ -893,7 +893,7 @@ class VisionServer {
     });
   }
 
-  _httpPost(urlPath, body) {
+  _httpPost(urlPath, body, timeoutMs = 60000) {
     return new Promise((resolve, reject) => {
       const data = Buffer.from(body, 'utf8');
       const req = http.request({
@@ -905,7 +905,7 @@ class VisionServer {
           'Content-Type': 'application/json',
           'Content-Length': data.length,
         },
-        timeout: 60000,
+        timeout: timeoutMs,
       }, (res) => {
         let responseData = '';
         res.on('data', chunk => responseData += chunk);
