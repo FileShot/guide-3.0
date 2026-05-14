@@ -426,7 +426,6 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       repeatPenalty: settings.repeatPenalty,
       seed: settings.seed >= 0 ? settings.seed : undefined,
       thinkingBudget: settings.thinkingBudget,
-      generationTimeoutSec: settings.generationTimeoutSec,
       enableThinkingFilter: settings.enableThinkingFilter,
       enableGrammar: settings.enableGrammar,
       askOnly,

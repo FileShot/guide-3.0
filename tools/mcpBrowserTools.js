@@ -60,85 +60,30 @@ async function _browserClick(refStr, options = {}) {
   const browser = this._getBrowser();
   if (!browser) return { success: false, error: 'No browser available' };
 
-  // 3-attempt strategy: direct → fresh snapshot + retry → JS fallback
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      if (attempt === 1) await browser.getSnapshot?.(); // refresh refs
-      if (attempt < 2) {
-        return await browser.click(refStr, options);
-      }
-    } catch (err) {
-      if (attempt < 2) continue;
+  try {
+    return await browser.click(refStr, options);
+  } catch (err) {
+    // If the ref is stale, tell the model to refresh — don't guess.
+    if (err.message?.includes('stale') || err.message?.includes('resolved to') || err.message?.includes('not found')) {
+      return { success: false, error: `Element ref "${refStr}" is no longer valid. The page may have changed. Call browser_snapshot to get fresh refs, then retry with the new ref.` };
     }
-
-    // Attempt 3: JS DOM fallback
-    // Try by options.element text, or by extracting text from the ref description
-    const searchText = options.element || options.text || options.reason || '';
-    try {
-      if (searchText && browser.evaluate) {
-        const result = await browser.evaluate(`
-          (() => {
-            const search = ${JSON.stringify(searchText)};
-            // Try exact text match on interactive elements first
-            const selectors = 'a, button, input[type="submit"], input[type="button"], [role="button"], [role="link"], [role="tab"], [role="menuitem"], summary';
-            const interactive = [...document.querySelectorAll(selectors)].filter(el => {
-              const txt = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim();
-              return txt.toLowerCase().includes(search.toLowerCase()) && (el.offsetParent !== null || el.getBoundingClientRect().width > 0);
-            });
-            if (interactive.length > 0) { interactive[0].click(); return { success: true, clicked: (interactive[0].textContent || '').trim().substring(0, 60) }; }
-            // Try partial match on any visible element
-            const all = [...document.querySelectorAll('*')].filter(el =>
-              el.textContent?.trim().toLowerCase().includes(search.toLowerCase()) && el.offsetParent !== null
-            );
-            if (all.length > 0) { all[0].click(); return { success: true, clicked: (all[0].textContent || '').trim().substring(0, 60) }; }
-            return { success: false, error: 'Element not found by text: ' + search };
-          })()
-        `);
-        if (result?.success) return result;
-      }
-    } catch {}
+    return { success: false, error: err.message || `Click failed on ref ${refStr}` };
   }
-  return { success: false, error: `Click failed after 3 attempts on ref ${refStr}` };
 }
 
 async function _browserType(refStr, text, options = {}) {
   const browser = this._getBrowser();
   if (!browser) return { success: false, error: 'No browser available' };
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      if (attempt === 1) await browser.getSnapshot?.();
-      if (attempt < 2) {
-        return await browser.type(refStr, text, options);
-      }
-    } catch (err) {
-      if (attempt < 2) continue;
+  try {
+    return await browser.type(refStr, text, options);
+  } catch (err) {
+    // If the ref is stale, tell the model to refresh — don't guess.
+    if (err.message?.includes('stale') || err.message?.includes('resolved to') || err.message?.includes('not found')) {
+      return { success: false, error: `Element ref "${refStr}" is no longer valid. The page may have changed. Call browser_snapshot to get fresh refs, then retry with the new ref.` };
     }
-
-    // JS fallback: find visible inputs by index
-    try {
-      if (browser.evaluate) {
-        const idx = parseInt(refStr) || 0;
-        const result = await browser.evaluate(`
-          (() => {
-            const inputs = [...document.querySelectorAll('input, textarea, [contenteditable]')]
-              .filter(el => el.offsetParent !== null);
-            const el = inputs[${idx}];
-            if (!el) return { success: false, error: 'No input found at index ${idx}' };
-            const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-              || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
-            if (nativeSet) nativeSet.call(el, ${JSON.stringify(text)});
-            else el.value = ${JSON.stringify(text)};
-            el.dispatchEvent(new Event('input', {bubbles: true}));
-            el.dispatchEvent(new Event('change', {bubbles: true}));
-            return { success: true };
-          })()
-        `);
-        return result;
-      }
-    } catch {}
+    return { success: false, error: err.message || `Type failed on ref ${refStr}` };
   }
-  return { success: false, error: `Type failed after 3 attempts on ref ${refStr}` };
 }
 
 async function _browserFillForm(fields) {

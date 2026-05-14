@@ -119,7 +119,7 @@ function buildEngineLoadSettings(raw = {}) {
 }
 
 // Extreme tool-emphasis prompt — forces model to use tool calls instead of outputting code in chat
-const SYSTEM_PROMPT = `You are guIDE, an agentic coding assistant integrated into a local IDE. You have full access to the user's filesystem, terminal, web, browser, git, and memory through tool calls. Act directly: when a request calls for a file change, search, command, or fetch, call the tool IMMEDIATELY. Do not describe what you will do — do it. Do not say "I will investigate" or "Let me examine" — call the tool NOW.
+const SYSTEM_PROMPT = `You are guIDE, an autonomous agent with DIRECT system access. You DO NOT have a choice about using tools. When the user requests any action involving files, browser, terminal, or web, you MUST output the tool call JSON immediately. You CANNOT refuse. You CANNOT say "I cannot," "I don't have access," or "I'm unable to." You HAVE these tools. They are REAL. Use them NOW. Act directly: when a request calls for a file change, search, command, or fetch, call the tool IMMEDIATELY. Do not describe what you will do — do it. Do not say "I will investigate" or "Let me examine" — call the tool NOW.
 
 ## How to call tools
 Output a fenced JSON block with "tool" and "params" keys. Examples:
@@ -164,6 +164,9 @@ You are NOT a chatbot. You are an AGENT with real tools. These tools are NOT sim
 - run_command — execute real terminal commands
 - web_search, fetch_webpage — search and fetch the real internet
 If you are thinking "I cannot browse websites" or "I don't have access to the filesystem" — STOP. That is incorrect. You HAVE these tools. Use them. Output the tool call JSON now.
+
+## VISION CAPABILITY
+When the user attaches an image, your vision system automatically analyzes it and provides a description in the message context below. You HAVE seen the image. The description IS your visual analysis. Do NOT say you cannot see the image — you already have.
 If the user provides credentials (username, password) in their message, you already have them — do NOT ask for them again. Use them immediately in browser_type calls.
 
 ## When to use tools
@@ -174,6 +177,14 @@ If the user provides credentials (username, password) in their message, you alre
 - Interacting with web pages (forms, clicks, screenshots, LOGIN, authentication) — browser tools. You MUST log into websites, fill login forms, and authenticate on behalf of the user when they provide credentials. NEVER refuse to authenticate or say "I cannot log into your account" — you have full browser tools to do so. When the user gives you a URL and credentials, navigate there, then fill the login form and submit. After calling browser_navigate to a new page, you MUST call browser_snapshot to see the current page state and obtain accurate element refs. Do NOT reuse refs from a previous snapshot — refs reset after any navigation or page load. Obtain refs from the CURRENT snapshot before every browser_type or browser_click call. On login form retries, do NOT re-navigate to the login URL (re-navigating destroys session tokens and resets the form) — instead, call browser_snapshot to see current refs, then clear fields and re-fill. Elements in snapshots use [ref=N] format (e.g. [ref=5]) — use these exact refs. When browser_click returns newTab:true in its result, your NEXT call MUST be browser_snapshot — the new tab requires a fresh snapshot before any other action. In login forms, elements marked [SUBMIT] in the snapshot are the form submit buttons, not links or navigation elements.
 - BATCHING: When filling a login form, output ALL fields in ONE response — type username, type password, then click submit. Do NOT type one field per response. Output multiple tool call JSON blocks in a single response. Example: type username + type password + click submit = 3 tool calls in 1 response.
 - Version control — git tools.
+
+## BROWSER WORKFLOW
+When automating websites, follow this exact sequence: browser_snapshot → read → decide → act → verify.
+NEVER click or type without first taking a snapshot to see current element refs.
+After ANY click, type, scroll, or form submission, call browser_snapshot immediately to verify the result.
+If browser_click returns navigated:false, you are on the SAME page. Do not click that element again — it will not produce a different result. Call browser_snapshot to reassess, then choose a different element or action.
+Continue until the task is fully complete. Do not stop after partial progress.
+When filling forms: fill ALL required fields first, THEN submit. After submitting, snapshot to confirm success or read error messages.
 - Multi-step work — ALWAYS call write_todos FIRST to create a plan for any task requiring 2+ steps, then execute each step with tool calls. This is mandatory.
 - Clarification or decisions — ask_question to ask the user a multi-part question with clickable options or free-form answer.
 - Cross-session memory — save_memory, get_memory, list_memories.
@@ -595,7 +606,7 @@ class ChatEngine extends EventEmitter {
                   'Describe this image in detail. List all visible text, UI elements, content, and any information shown.'
                 );
                 if (caption) {
-                  textParts.push(`[Attached image: ${a.name || 'image'} — Vision description:\n${caption}]`);
+                  textParts.push(`[VISION ANALYSIS — You have already seen this image via your vision system. This is what you observed:\n${caption}\nEND VISION ANALYSIS]`);
                   console.log(`[ChatEngine] Image attachment captioned: ${caption.length} chars`);
                   captioned = true;
                 }
@@ -773,16 +784,6 @@ class ChatEngine extends EventEmitter {
     const genStartTime = Date.now();
     let genTokenCount = 0;
 
-    // Generation timeout â€” optional only (0 = disabled). No default cap on run length.
-    const timeoutSec = options.generationTimeoutSec ?? 0;
-    let generationTimer = null;
-    if (timeoutSec > 0) {
-      generationTimer = setTimeout(() => {
-        console.warn(`[ChatEngine] Generation timeout after ${timeoutSec}s â€” aborting`);
-        this._abortController?.abort('generation_timeout');
-      }, timeoutSec * 1000);
-    }
-
     try {
       // â”€â”€ Streaming tool call filter â”€â”€
       // Two-layer suppression of tool call JSON from the UI:
@@ -910,13 +911,20 @@ class ChatEngine extends EventEmitter {
           // so it appears in thinking blocks instead of as regular prose.
           if (_sfInThink) {
             _sfThinkBuf += ch;
+            // ALSO emit to visible stream so prose is never lost
+            if (onToken) onToken(ch);
+            _sfVisibleChars += 1;
             // Check for close tag
             if (_sfThinkBuf.length >= 8 && _sfThinkBuf.endsWith('</think>')) {
               const thinkContent = _sfThinkBuf.slice(0, -8);
               if (thinkContent && onStreamEvent && !_thinkingFilterEnabled) {
-                onStreamEvent('llm-thinking-token', thinkContent);
+                onStreamEvent('llm-thinking-end', {
+                  position: _sfVisibleChars - thinkContent.length,
+                  length: thinkContent.length,
+                  content: thinkContent
+                });
               }
-              console.log(`[ChatEngine] </think> closed — thinking block: ${(thinkContent || '').length} chars`);
+              console.log('[ChatEngine]  ` closed — thinking block: ' + (thinkContent || '').length + ' chars');
               _sfInThink = false;
               _sfThinkBuf = '';
               continue;
@@ -929,7 +937,10 @@ class ChatEngine extends EventEmitter {
               const toEmit = _sfThinkBuf.slice(0, -CLOSE_TAG_TAIL);
               const toKeep = _sfThinkBuf.slice(-CLOSE_TAG_TAIL);
               if (toEmit && onStreamEvent && !_thinkingFilterEnabled) {
-                onStreamEvent('llm-thinking-token', toEmit);
+                onStreamEvent('llm-thinking-token', {
+                  content: toEmit,
+                  position: _sfVisibleChars - toEmit.length
+                });
               }
               _sfThinkBuf = toKeep;
             }
@@ -945,7 +956,10 @@ class ChatEngine extends EventEmitter {
               _sfInThink = true;
               _sfThinkBuf = '';
               _sfThinkTagMatch = '';
-              console.log('[ChatEngine] ✓ <think> tag detected — routing thinking to llm-thinking-token (raw text path)');
+              if (onStreamEvent && !_thinkingFilterEnabled) {
+                onStreamEvent('llm-thinking-start', { position: _sfVisibleChars });
+              }
+              console.log('[ChatEngine]   tag detected — routing thinking to llm-thinking-token (raw text path)');
               continue;
             } else if (!OPEN_TAG.startsWith(_sfThinkTagMatch)) {
               // Not a match — flush buffered chars to normal processing
@@ -1464,9 +1478,9 @@ class ChatEngine extends EventEmitter {
       const _rawResp = result.response || '';
       const _thinkMatch = _rawResp.match(/<think>([\s\S]*?)<\/think>/) || _rawResp.match(/<reasoning>([\s\S]*?)<\/reasoning>/) || _rawResp.match(/<reflection>([\s\S]*?)<\/reflection>/);
       if (_thinkMatch) {
-        console.log(`[ChatEngine] ─── MODEL THINKING ─── "${_thinkMatch[1].substring(0, 500)}"`);
+        console.log(`[ChatEngine] ─── MODEL THINKING ─── "${_thinkMatch[1]}"`);
       }
-      console.log(`[ChatEngine] ─── MODEL RESPONSE ─── "${_rawResp.substring(0, 500)}"`);
+      console.log(`[ChatEngine] ─── MODEL RESPONSE ─── "${_rawResp}"`);
 
       // Raw-text tool call loop: parse tool calls from model output, execute, continue
       // No iteration cap — the model must be able to iterate indefinitely for long-running tasks.
@@ -1477,7 +1491,8 @@ class ChatEngine extends EventEmitter {
         _sfFlushFence();
 
         let roundStart = 0;
-        let parsedCalls = parseToolCalls(fullResponse);
+        let parsedCalls = []; // Hoisted to function scope for refusal correction access
+        parsedCalls = parseToolCalls(fullResponse);
         console.log(`[ChatEngine] Tool parse: found ${parsedCalls.length} tool call(s) in ${fullResponse.length} chars of model output`);
         // When 0 calls found, log response preview for diagnostics
         if (parsedCalls.length === 0 && fullResponse.length > 20) {
@@ -1500,13 +1515,6 @@ class ChatEngine extends EventEmitter {
             onStreamEvent('llm-replace-last', { originalLength: _sfVisibleChars, replacement: cleanText });
           }
         }
-
-        // Browser loop detection — MUST live outside the while loop so they persist
-        // across model continuations. Previously these were inside the while body,
-        // resetting to 0/null every iteration, so a 50-call login loop never triggered.
-        let consecutiveBrowserFailures = 0;
-        let lastBrowserClickUrl = null;
-        let sameUrlClickCount = 0;
 
         // Hoisted outside while loop — avoids reallocating a new Set on every tool-call iteration
         const FILE_MODIFY_OPS_SET = new Set(['write_file', 'create_file', 'append_to_file', 'edit_file', 'replace_in_file']);
@@ -1602,50 +1610,6 @@ class ChatEngine extends EventEmitter {
               }
             }
 
-            // Track consecutive browser failures to break retry loops.
-            // This includes both explicit failures (success:false) AND page-level failures
-            // where browser_click returns success:true but the URL didn't change
-            // (e.g., clicking "Login" with wrong credentials — click succeeds but page stays).
-            if (call.tool?.startsWith('browser_') && toolResult?.success === false) {
-              consecutiveBrowserFailures++;
-            } else if (call.tool === 'browser_click' && toolResult?.success && toolResult?.url) {
-              if (lastBrowserClickUrl && toolResult.url === lastBrowserClickUrl && !toolResult.navigated) {
-                sameUrlClickCount++;
-                if (sameUrlClickCount >= 3) {
-                  consecutiveBrowserFailures += sameUrlClickCount;
-                  console.warn(`[ChatEngine] browser_click same-URL loop detected: ${sameUrlClickCount} clicks on ${toolResult.url} without navigation — treating as failure`);
-                }
-              } else {
-                sameUrlClickCount = 0;
-              }
-              lastBrowserClickUrl = toolResult.url;
-              // If click didn't navigate and we've seen this URL before, count as soft failure
-              if (!toolResult.navigated && sameUrlClickCount >= 2) {
-                consecutiveBrowserFailures++;
-              }
-            } else if (call.tool === 'browser_navigate' && toolResult?.success) {
-              // Navigate to a new page resets the stuck counter
-              consecutiveBrowserFailures = 0;
-              sameUrlClickCount = 0;
-            } else if (call.tool === 'browser_snapshot' && toolResult?.success) {
-              // browser_snapshot on an error page (chrome-error://) is a stuck loop.
-              // The model keeps snapshotting the same error page hoping it changes.
-              // Count consecutive snapshots on error pages as failures.
-              const snapUrl = toolResult.url || toolResult.text?.match(/URL: (\S+)/)?.[1] || '';
-              if (snapUrl.startsWith('chrome-error://') || snapUrl.includes('chromewebdata')) {
-                consecutiveBrowserFailures++;
-                console.warn(`[ChatEngine] browser_snapshot on error page (${snapUrl}) — counting as failure (consecutive=${consecutiveBrowserFailures})`);
-              } else {
-                // Snapshot on a real page — model is reading the page to decide next action.
-                // This IS progress. Reset the failure counter so stuck-loop grounding
-                // doesn't fire prematurely after a successful snapshot.
-                consecutiveBrowserFailures = 0;
-              }
-            } else if (call.tool?.startsWith('browser_') && toolResult?.success && call.tool !== 'browser_snapshot') {
-              // Other browser tool successes (type, scroll, etc.) reset failure counter
-              // but NOT sameUrlClickCount — that only resets on actual navigation
-              consecutiveBrowserFailures = 0;
-            }
             if (call.tool === 'web_search' && toolResult?.success && Array.isArray(toolResult.results)) {
               for (const r of toolResult.results.slice(0, 2)) {
                 if (r && typeof r.url === 'string' && r.url) webSearchResults.push(r.url);
@@ -1656,27 +1620,10 @@ class ChatEngine extends EventEmitter {
             if (call.tool === 'browser_navigate' && toolResult?.samePage) {
               console.warn(`[ChatEngine] browser_navigate landed on same page: ${toolResult.url}`);
             }
-            // Diagnostic: log browser click results to trace repeated-click loops
+            // Log browser click results for diagnostics
             if (call.tool === 'browser_click' && toolResult?.success) {
-              console.log(`[ChatEngine] browser_click result: clicked="${toolResult.clicked || '?'}", navigated=${toolResult.navigated}, newTab=${toolResult.newTab || false}, url=${toolResult.url || '?'}, sameUrlCount=${sameUrlClickCount}`);
+              console.log(`[ChatEngine] browser_click result: clicked="${toolResult.clicked || '?'}", navigated=${toolResult.navigated}, newTab=${toolResult.newTab || false}, url=${toolResult.url || '?'}`);
               if (toolResult.newTab === true) newTabOpened = true;
-            }
-            // Inject stuck-on-same-page signal into tool result so model stops hallucinating success.
-            // Without this, browser_click returns {success:true} and the model assumes navigation worked.
-            // After 3 same-URL clicks, override success to false — the model MUST try something different.
-            if (call.tool === 'browser_click' && toolResult?.success && sameUrlClickCount >= 2 && !toolResult.navigated) {
-              if (sameUrlClickCount >= 3) {
-                // Force failure — the model cannot ignore success:false
-                toolResult.success = false;
-                toolResult.error = `Stuck: clicked ${sameUrlClickCount + 1} times on "${toolResult.clicked || '?'}" but page URL did not change from ${toolResult.url}. The element may not be a navigation link, or the page requires a different action. Try: (1) a different element, (2) browser_snapshot to see current state, (3) ask_question to ask the user for help.`;
-              } else {
-                const stuckMsg = `\n[WARNING: You have clicked ${sameUrlClickCount + 1} times but the page URL has not changed. You are STUCK on ${toolResult.url}. The click did NOT navigate to a new page. Try a different element, use browser_snapshot to see the current page state, or use ask_question to ask the user for help.]`;
-                if (typeof toolResult.message === 'string') {
-                  toolResult.message += stuckMsg;
-                } else {
-                  toolResult.stuckWarning = stuckMsg.trim();
-                }
-              }
             }
 
             // Collect file read results for multi-file context awareness
@@ -1753,20 +1700,16 @@ class ChatEngine extends EventEmitter {
             this._chatHistory = result.lastEvaluation.cleanHistory;
           }
 
-          // Echo dedup — detect when the current round's tool calls are substantively
-          // identical to the previous round's. The model sees its own previous attempts in
-          // context and mimics them, creating a feedback loop. Break it by making the model
-          // aware it's repeating itself, not by forcing canned responses.
-          let echoDetected = false;
-          if (this._lastRoundToolCalls && parsedCalls.length > 0) {
-            const currentSig = parsedCalls.map(c => `${c.tool}:${JSON.stringify(c.params).substring(0, 120)}`).join('|');
-            const prevSig = this._lastRoundToolCalls.map(c => `${c.tool}:${JSON.stringify(c.params).substring(0, 120)}`).join('|');
-            if (currentSig === prevSig) {
-              echoDetected = true;
-              console.warn(`[ChatEngine] Echo detected — model repeating identical tool calls: ${currentSig.substring(0, 200)}`);
-            }
+          // Compact the assistant's verbose tool-calling prose to prevent regeneration loops.
+          // The model sees "I will read..." text and regenerates the same call repeatedly.
+          const lastAssistantIdx = this._chatHistory.map(m => m.type).lastIndexOf('model');
+          if (lastAssistantIdx >= 0) {
+            const executedTools = parsedCalls.map(c => c.tool).join(', ');
+            this._chatHistory[lastAssistantIdx] = {
+              type: 'model',
+              text: `[Executed: ${executedTools}]`
+            };
           }
-          this._lastRoundToolCalls = parsedCalls.map(c => ({ tool: c.tool, params: c.params }));
 
           // Feed tool results back to the model so it knows what happened
           // Fix A: all-failures retry directive — when every tool call this round failed, tell the model to retry
@@ -1776,9 +1719,6 @@ class ChatEngine extends EventEmitter {
           // Browser tool failures require re-snapshotting, NOT blind retry
           const browserToolsFailed = allCallsFailed && parsedCalls.some(c =>
             c.tool?.startsWith('browser_') && c.tool !== 'browser_navigate' && c.tool !== 'browser_close');
-          // Hard loop break: 2+ consecutive browser failures = model is stuck retrying same ref
-          const browserRetryLoop = consecutiveBrowserFailures >= 2;
-
           // Fix B: explicit URL injection — after web_search, name the exact URLs the model must fetch next
           let fetchDirective = '';
           if (webSearchResults.length > 0) {
@@ -1787,11 +1727,7 @@ class ChatEngine extends EventEmitter {
           }
 
           let toolResultsGrounding;
-          if (echoDetected) {
-            toolResultsGrounding = 'ECHO DETECTED: You just made the exact same tool calls as the previous round and got the same results. Repeating identical calls will not produce different outcomes. You MUST try a different approach — different element, different URL, different tool, or use browser_snapshot to reassess the current page state.\n\n';
-          } else if (browserRetryLoop) {
-            toolResultsGrounding = 'BROWSER STUCK LOOP: You have failed on the same element 2+ times in a row. STOP retrying. The page has changed and those refs are stale. You MUST call browser_snapshot FIRST to get fresh refs. Do NOT call browser_click or browser_type again until you have a new snapshot.\n\n';
-          } else if (browserToolsFailed) {
+          if (browserToolsFailed) {
             toolResultsGrounding = 'BROWSER TOOL ERRORS: The browser tool calls above failed (likely stale element refs or page changed). DO NOT retry with the same refs — they are invalid now. Call browser_snapshot FIRST to get fresh element refs, then interact with the page using the new refs.\n\n';
           } else if (allCallsFailed) {
             toolResultsGrounding = 'TOOL ERRORS: Every tool call above returned an error. DO NOT explain or report these errors to the user. DO NOT say "unfortunately" or "I was unable to". Retry immediately using different parameters or a different approach. If a path does not exist, create it first. If a command failed, fix the command and run it again. If the file is not found, use list_directory to check what exists.\n\n';
@@ -1799,9 +1735,7 @@ class ChatEngine extends EventEmitter {
             toolResultsGrounding = `Grounding: The JSON below is authoritative. ${fetchDirective}If these results include web_search only (no fetch_webpage yet), your next tool calls MUST be fetch_webpage for the first and second ranked result URLs (or the only URL if one hit) in this continuation \u2014 do not ask the user for permission to fetch. If fetch_webpage results are already present, answer from that content. Do not call list_directory or get_project_structure in the same round as completing web fetch unless the user asked about the project. Ground your reply in fetched page text; do not use generic site blurbs.\n\n`;
           }
 
-          const injectionSuffix = browserRetryLoop
-              ? '\n\nYou MUST call browser_snapshot now. Do NOT retry any browser_click or browser_type.'
-              : browserToolsFailed
+          const injectionSuffix = browserToolsFailed
               ? '\n\nCall browser_snapshot now to get fresh element refs.'
               : allCallsFailed
                 ? '\n\nAll tool calls failed. Do NOT repeat the same URL or parameters that just failed. Use browser_snapshot to check the current page state, then try a completely different approach. If stuck, use ask_question.'
@@ -1910,7 +1844,7 @@ class ChatEngine extends EventEmitter {
           }
 
           this._chatHistory.push({ type: 'user', text: `${userInterruptPrefix}[Tool Results]\n${taskReminder}${toolResultsGrounding}${toolResultLines.join('\n')}${relatedSection}${injectionSuffix}${fileReadWarning}` });
-          console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── grounding=${browserRetryLoop ? 'STUCK_LOOP' : browserToolsFailed ? 'BROWSER_FAIL' : allCallsFailed ? 'ALL_FAIL' : 'normal'}, ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${!!this._pendingUserMessage}`);
+          console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── grounding=${browserToolsFailed ? 'BROWSER_FAIL' : allCallsFailed ? 'ALL_FAIL' : 'normal'}, ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${!!this._pendingUserMessage}`);
           console.log(`[ChatEngine] Tool result summary: ${toolResultLines.map(l => l.substring(0, 100)).join(' | ')}`);
 
           // ─── Context compaction between tool rounds ───
@@ -2003,10 +1937,10 @@ class ChatEngine extends EventEmitter {
             }
           }
 
-          genOptions.lastEvaluationContextWindow = this._lastEvaluation ? {
-            contextWindow: this._lastEvaluation.contextWindow,
-            contextShiftMetadata: this._lastEvaluation.contextShiftMetadata,
-          } : undefined;
+          // Force full prefill after tool execution to break repetition patterns
+          // cached in KV state from previous generation.
+          genOptions.lastEvaluationContextWindow = undefined;
+          try { this._sequence?.clearHistory(); } catch (_) {}
 
           // Reset streaming filter state for the next generation round
           _sfBuf = '';
@@ -2099,57 +2033,6 @@ class ChatEngine extends EventEmitter {
         console.log(`[ChatEngine] Generation complete. Tool calls: ${totalToolCalls}, stop reason: ${stopReason}`);
       }
 
-      // Refusal detection — when the model refuses to use tools despite the user requesting action.
-      // Small models (2B-4B) have strong RLHF training that overrides system prompt instructions.
-      // They say "I cannot access your account" or "I cannot browse websites" instead of using browser tools.
-      // Detection: 0 tool calls + refusal language + user message contains action indicators (URLs, credentials, etc.)
-      if (totalToolCalls === 0 && fullResponse.length > 50) {
-        // Broadened refusal detection — catches more refusal patterns from small models.
-        // Original regex only matched "I cannot access/browse" — small models also say:
-        //   "I'm not able to", "I don't have the ability", "it's not possible for me",
-        //   "I can't directly", "I'm a language model", "as an AI",
-        //   "I cannot interact with", "I cannot perform"
-        const refusalPatterns = /i (?:cannot|can't|am unable|am not able|don't have (?:access|the ability)|will not|won't|'m not able|'m unable) (?:access|browse|log into|navigate|visit|open|enter|use|perform|execute|run|create|write|modify|delete|search|interact with|control|operate)/i;
-        const softRefusalPatterns = /(?:i'?m (?:a (?:language|ai) model|not (?:able|designed|programmed|capable) to)|as (?:an ai|a language model)|it'?s (?:not possible|beyond my|outside my) (?:for me|capabilities|abilities)|i (?:don't|cannot|can't) (?:directly|actually|physically|currently|personally))/i;
-        const actionIndicators = /https?:\/\/|\.edu|\.com|\.org|login|password|credential|navigate|browse|open|create|write|edit|delete|search|find|run|execute|install|download|click|form|website|account|browser|file|folder|directory|terminal|command/i;
-        const lastUserMsg = this._chatHistory.filter(m => m.type === 'user').pop()?.text || '';
-        const isRefusal = refusalPatterns.test(fullResponse) || (softRefusalPatterns.test(fullResponse) && actionIndicators.test(lastUserMsg));
-        if (isRefusal) {
-          console.warn(`[ChatEngine] REFUSAL DETECTED — model refused action despite having tools. Auto-correcting.`);
-          // Multi-attempt correction: try up to 2 times with escalating specificity
-          for (let attempt = 0; attempt < 2; attempt++) {
-            const correctionMsg = attempt === 0
-              ? `[SYSTEM OVERRIDE] You MUST use your tools to fulfill this request. You HAVE browser tools (browser_navigate, browser_click, browser_type, browser_snapshot), file tools (read_file, write_file, edit_file), terminal tools (run_command), and web tools (web_search, fetch_webpage). You are NOT a chatbot — you are an agent with full system access. The user's request requires action, not words. Call the appropriate tool NOW. Do not explain why you can't — you can. Output the tool call JSON immediately.]`
-              : `[CRITICAL] Your previous response was still a refusal. This is WRONG. You HAVE these tools — they are real, not simulated. Look at the tool examples in your system prompt and OUTPUT ONE NOW. The user said: "${lastUserMsg.substring(0, 200)}". Which tool does this require? Call it.]`;
-            this._chatHistory.push({ type: 'assistant', text: fullResponse });
-            this._chatHistory.push({ type: 'user', text: correctionMsg });
-            try {
-              const correctedResult = await this._chat.generateResponse(this._chatHistory, genOptions);
-              const correctedText = correctedResult.response || '';
-              const correctedCalls = parseToolCalls(correctedText);
-              if (correctedCalls.length > 0) {
-                console.log(`[ChatEngine] Refusal correction succeeded (attempt ${attempt + 1}) — model now outputting tool calls: [${correctedCalls.map(c => c.tool).join(', ')}]`);
-                this._chatHistory.pop(); // remove correction user msg
-                this._chatHistory.pop(); // remove refusal assistant msg
-                fullResponse = correctedText;
-                parsedCalls = correctedCalls;
-                const { repaired } = repairToolCalls(parsedCalls, correctedText);
-                parsedCalls = filterWebWorkspaceToolConflict(repaired);
-                break; // success — exit retry loop
-              } else {
-                console.warn(`[ChatEngine] Refusal correction attempt ${attempt + 1} failed — model still refusing.`);
-                this._chatHistory.pop(); // remove correction user msg
-                this._chatHistory.pop(); // remove refusal assistant msg
-              }
-            } catch (correctionErr) {
-              console.warn(`[ChatEngine] Refusal correction error: ${correctionErr.message}`);
-              this._chatHistory.pop(); // remove correction user msg
-              this._chatHistory.pop(); // remove refusal assistant msg
-            }
-          }
-        }
-      }
-
       // Inference speed diagnostic
       const ctxUsedTokens = this._sequence?.nextTokenIndex || 0;
       const totalCtx = this._context?.contextSize || 0;
@@ -2206,7 +2089,6 @@ class ChatEngine extends EventEmitter {
       }
       throw err;
     } finally {
-      if (generationTimer) clearTimeout(generationTimer);
       this._abortController = null;
     }
   }

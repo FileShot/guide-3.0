@@ -329,60 +329,26 @@ class RAGEngine {
         for (const t of seen) docFreq[t] = (docFreq[t] || 0) + 1;
       }
 
-      // ── AST-aware boundary chunking ──
-      // Find function/class/method boundaries using regex heuristics
-      const boundaries = this._findChunkBoundaries(lines);
-
-      if (boundaries.length <= 1) {
-        // Small file or no boundaries found — chunk as a single unit
-        const chunkContent = lines.join('\n');
+      // ── Line-based chunking with overlap ──
+      // Language-agnostic and deterministic. No regex heuristics that miss
+      // nested structures or false-positive on comments.
+      const CHUNK_SIZE = 50;
+      const CHUNK_OVERLAP = 10;
+      for (let i = 0; i < lines.length; i += CHUNK_SIZE) {
+        const startLine = i;
+        const endLine = Math.min(i + CHUNK_SIZE + CHUNK_OVERLAP, lines.length);
+        const chunkLines = lines.slice(startLine, endLine);
+        const chunkContent = chunkLines.join('\n');
         const tokens = tokenize(chunkContent);
         this._chunks.push({
           relativePath,
-          startLine: 0,
-          endLine: lines.length,
+          startLine,
+          endLine,
           content: chunkContent,
           tokens,
         });
         const seen = new Set(tokens);
         for (const t of seen) docFreq[t] = (docFreq[t] || 0) + 1;
-      } else {
-        // Chunk at boundaries with overlap
-        for (let i = 0; i < boundaries.length; i++) {
-          const startLine = boundaries[i];
-          const endLine = i + 1 < boundaries.length ? boundaries[i + 1] : lines.length;
-          const chunkLines = lines.slice(startLine, endLine);
-
-          // If chunk is too large (>80 lines), sub-chunk it
-          if (chunkLines.length > 80) {
-            for (let j = 0; j < chunkLines.length; j += 60) {
-              const subLines = chunkLines.slice(j, j + 60);
-              const subContent = subLines.join('\n');
-              const tokens = tokenize(subContent);
-              this._chunks.push({
-                relativePath,
-                startLine: startLine + j,
-                endLine: startLine + j + subLines.length,
-                content: subContent,
-                tokens,
-              });
-              const seen = new Set(tokens);
-              for (const t of seen) docFreq[t] = (docFreq[t] || 0) + 1;
-            }
-          } else {
-            const chunkContent = chunkLines.join('\n');
-            const tokens = tokenize(chunkContent);
-            this._chunks.push({
-              relativePath,
-              startLine,
-              endLine,
-              content: chunkContent,
-              tokens,
-            });
-            const seen = new Set(tokens);
-            for (const t of seen) docFreq[t] = (docFreq[t] || 0) + 1;
-          }
-        }
       }
     }
 
@@ -422,54 +388,15 @@ class RAGEngine {
   }
 
   /**
-   * Find chunk boundaries at function/class/method declarations using regex heuristics.
-   * Works for JS/TS, Python, Java, C/C++, Go, Rust, Ruby — covers the most common languages.
-   * Returns an array of line indices where new top-level constructs begin.
+   * Fixed-size line chunking — language-agnostic and deterministic.
+   * No regex heuristics that miss nested structures or false-positive on comments.
    */
   _findChunkBoundaries(lines) {
-    const boundaries = [0]; // Always start with line 0
-
-    // Patterns for top-level declarations (not indented or minimally indented)
-    const topLevelPatterns = [
-      // JS/TS: function, class, const/let/var with arrow function, export
-      /^ {0,2}(?:export\s+)?(?:async\s+)?function\s+/,
-      /^ {0,2}(?:export\s+)?(?:default\s+)?class\s+/,
-      /^ {0,2}(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?(?:function|\()/,
-      /^ {0,2}(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:\(|{)/,
-      // Python: def, class, async def (at column 0)
-      /^(?:async\s+)?def\s+/,
-      /^class\s+/,
-      // Java/C#/C++: public/private/protected class/function
-      /^\s*(?:public|private|protected|static)\s+(?:class|void|int|String|boolean|async)/,
-      // Go: func, type
-      /^func\s+/,
-      /^type\s+\w+\s+struct/,
-      // Rust: fn, pub fn, impl, struct
-      /^(?:pub\s+)?fn\s+/,
-      /^(?:pub\s+)?struct\s+/,
-      /^impl\s+/,
-      // Ruby: def, class, module
-      /^(?:def|class|module)\s+/,
-    ];
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      // Skip blank lines and comments
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('#') || trimmed.startsWith('/*') || trimmed.startsWith('*')) continue;
-
-      for (const pattern of topLevelPatterns) {
-        if (pattern.test(line)) {
-          // Don't add duplicate boundaries or ones too close together (<5 lines)
-          const lastBoundary = boundaries[boundaries.length - 1];
-          if (i - lastBoundary >= 5) {
-            boundaries.push(i);
-          }
-          break;
-        }
-      }
+    const CHUNK_SIZE = 50;
+    const boundaries = [0];
+    for (let i = CHUNK_SIZE; i < lines.length; i += CHUNK_SIZE) {
+      boundaries.push(i);
     }
-
     return boundaries;
   }
 

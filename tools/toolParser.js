@@ -198,9 +198,27 @@ function extractJsonObjects(text) {
           const toolMatch = slice.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
           if (toolMatch) {
             const toolName = toolMatch[1];
+            // Try multiple param patterns for different tool types
             const pathMatch = slice.match(/"(?:filePath|path)"\s*:\s*"([^"]+)"/);
+            const urlMatch = slice.match(/"(?:url|href|link)"\s*:\s*"([^"]+)"/);
+            const cmdMatch = slice.match(/"(?:command|cmd)"\s*:\s*"([^"]+)"/);
+            const searchMatch = slice.match(/"(?:pattern|query|search)"\s*:\s*"([^"]+)"/);
+            const dirMatch = slice.match(/"(?:dirPath|directory|dir)"\s*:\s*"([^"]+)"/);
+            
+            let recovered = null;
             if (pathMatch) {
-              const recovered = { tool: toolName, params: { filePath: pathMatch[1] }, _recovered: true };
+              recovered = { tool: toolName, params: { filePath: pathMatch[1] }, _recovered: true };
+            } else if (urlMatch) {
+              recovered = { tool: toolName, params: { url: urlMatch[1] }, _recovered: true };
+            } else if (cmdMatch) {
+              recovered = { tool: toolName, params: { command: cmdMatch[1] }, _recovered: true };
+            } else if (searchMatch) {
+              recovered = { tool: toolName, params: { pattern: searchMatch[1] }, _recovered: true };
+            } else if (dirMatch) {
+              recovered = { tool: toolName, params: { dirPath: dirMatch[1] }, _recovered: true };
+            }
+            
+            if (recovered) {
               // Try to extract content field for write/create/edit/append tools
               // Fix 78: Forward-scan approach — take everything after the content opening
               // quote instead of scanning backward for a closing quote. Backward scanning
@@ -232,7 +250,7 @@ function extractJsonObjects(text) {
                 }
               }
               objects.push(recovered);
-              console.log(`[ToolParser] Recovered tool call via regex: ${toolName} → ${pathMatch[1]}`);
+              console.log(`[ToolParser] Recovered tool call via regex: ${toolName}`);
             }
           }
         }
@@ -619,24 +637,9 @@ function parseToolCalls(text) {
 }
 
 function _postProcess(calls, text) {
-  const shellCmdRe = /^(npm|node|npx|git|python|pip|cargo|go|ruby|make|cmake)\b/i;
-  const urlRe = /^https?:\/\//i;
-  const externalRe = /\b(documentation|tutorial|how to|install|getting started|API reference)\b/i;
-  return calls.map(call => {
-    // web_search with shell command → run_command
-    if (call.tool === 'web_search' && call.params.query && shellCmdRe.test(call.params.query)) {
-      return { tool: 'run_command', params: { command: call.params.query } };
-    }
-    // web_search with raw URL → browser_navigate
-    if (call.tool === 'web_search' && call.params.query && urlRe.test(call.params.query)) {
-      return { tool: 'browser_navigate', params: { url: call.params.query } };
-    }
-    // search_codebase with external/docs query → web_search
-    if (call.tool === 'search_codebase' && call.params.query && externalRe.test(call.params.query)) {
-      return { tool: 'web_search', params: { query: call.params.query } };
-    }
-    return call;
-  });
+  // Passthrough — no regex-based tool conversion.
+  // The model must call the correct tool explicitly.
+  return calls;
 }
 
 // ─── Tool Call Repair ───
@@ -741,21 +744,6 @@ function _inferFilePath(text, content, lang) {
   };
   if (lang && langToExt[lang.toLowerCase()]) return langToExt[lang.toLowerCase()];
   return 'output.txt';
-}
-
-// ─── Prose Command Detection ───
-function _detectProseCommands(text) {
-  if (!text) return [];
-  const calls = [];
-  const proseRe = /(?:run|running|execute|executing|type|enter)\s+[`'"]([\w\s./@-]+(?:\s+[\w./@="-]+)*)[`'"]/gi;
-  let m;
-  while ((m = proseRe.exec(text)) !== null) {
-    const cmd = m[1].trim();
-    if (cmd.length > 2 && cmd.length < 500) {
-      calls.push({ tool: 'run_command', params: { command: cmd } });
-    }
-  }
-  return calls;
 }
 
 // ─── Fallback File Operation Detection ───
@@ -912,6 +900,5 @@ module.exports = {
   stripToolCallText,
   _recoverWriteFileContent,
   _inferFilePath,
-  _detectProseCommands,
   _detectFallbackFileOperations,
 };

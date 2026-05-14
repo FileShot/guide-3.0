@@ -115,23 +115,8 @@ class BrowserManager extends EventEmitter {
         // Wait for SPAs to render — load event fires after initial render,
         // but SPAs need extra time for JS-driven content
         try { await this._page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {}); } catch {}
-        // Wait for DOM stability — SPAs render content after networkidle.
-        // Poll element count until it stops changing (max 3s).
-        try {
-          await this._page.waitForFunction(() => {
-            return new Promise(resolve => {
-              let lastCount = document.querySelectorAll('*').length;
-              let stableTicks = 0;
-              const check = () => {
-                const count = document.querySelectorAll('*').length;
-                if (count === lastCount) { stableTicks++; } else { stableTicks = 0; lastCount = count; }
-                if (stableTicks >= 3 || count > 50) resolve(true); // stable for 300ms or page has content
-              };
-              const interval = setInterval(() => { check(); }, 100);
-              setTimeout(() => { clearInterval(interval); resolve(true); }, 3000); // max 3s
-            });
-          }, { timeout: 4000 }).catch(() => {});
-        } catch {}
+        // Brief pause for any post-networkidle JS rendering
+        try { await this._page.waitForTimeout(500).catch(() => {}); } catch {}
         const finalUrl = this._page.url();
         const title = await this._page.title().catch(() => '');
         this._navHistory.push({ url: finalUrl, title, timestamp: Date.now(), action: 'navigate' });
