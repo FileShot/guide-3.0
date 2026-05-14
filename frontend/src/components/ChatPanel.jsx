@@ -2813,8 +2813,8 @@ export default function ChatPanel() {
 
                       alt={a.name}
 
-                      className="h-12 w-12 object-cover rounded-md border border-vsc-panel-border/40"
-
+                      className="h-12 w-12 object-cover rounded-md border border-vsc-panel-border/40 cursor-pointer hover:border-vsc-accent/60 transition-colors"
+                      onClick={() => openFile({ path: a.url, name: a.name, extension: a.name?.split(`.`).pop()?.toLowerCase() || `png` })}
                     />
 
                   ) : (

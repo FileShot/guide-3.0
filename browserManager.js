@@ -266,6 +266,7 @@ class BrowserManager extends EventEmitter {
         const titleAttr = el.getAttribute('title') || '';
         const imgAlt = (!text && el.querySelector)
           ? (el.querySelector('img')?.getAttribute('alt') || '') : '';
+        const isSubmit = (type === 'submit' && tag === 'input') || (tag === 'button' && el.form !== null && type !== 'button' && type !== 'reset');
         let desc = `[ref=${i}] <${tag}`;
         if (type) desc += ` type="${type}"`;
         if (name) desc += ` name="${name}"`;
@@ -278,6 +279,7 @@ class BrowserManager extends EventEmitter {
         desc += '>';
         if (text && type !== 'password' && tag !== 'input') desc += ` ${text}`;
         else if (imgAlt) desc += ` [img: ${imgAlt.substring(0, 80)}]`;
+        if (isSubmit) desc += ' [SUBMIT]';
         lines.push(desc);
       }
       const pageText = (document.body?.innerText || '').substring(0, 50000);
@@ -501,7 +503,10 @@ class BrowserManager extends EventEmitter {
 
       if (newPage) {
         // A new tab opened — switch to it and close old tabs to prevent accumulation
-        try { await newPage.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {}); } catch {}
+        try {
+          await newPage.waitForURL(url => url !== 'about:blank' && url !== '', { timeout: 10000 }).catch(() => {});
+          await newPage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
+        } catch {}
         // Close all other tabs except the new one
         const context = this._page.context();
         const allPages = context.pages();
