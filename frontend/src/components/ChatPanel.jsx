@@ -1193,8 +1193,6 @@ export default function ChatPanel() {
 
           generationTimeoutSec: s.generationTimeoutSec,
 
-          snapshotMaxChars: s.snapshotMaxChars,
-
           enableThinkingFilter: s.enableThinkingFilter,
 
           enableGrammar: s.enableGrammar,

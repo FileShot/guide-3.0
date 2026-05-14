@@ -72,25 +72,29 @@ async function _browserClick(refStr, options = {}) {
     }
 
     // Attempt 3: JS DOM fallback
+    // Try by options.element text, or by extracting text from the ref description
+    const searchText = options.element || options.text || options.reason || '';
     try {
-      if (options.element && browser.evaluate) {
+      if (searchText && browser.evaluate) {
         const result = await browser.evaluate(`
           (() => {
-            const els = [...document.querySelectorAll('*')].filter(el =>
-              el.textContent?.trim().includes(${JSON.stringify(options.element)}) && el.offsetParent !== null
+            const search = ${JSON.stringify(searchText)};
+            // Try exact text match on interactive elements first
+            const selectors = 'a, button, input[type="submit"], input[type="button"], [role="button"], [role="link"], [role="tab"], [role="menuitem"], summary';
+            const interactive = [...document.querySelectorAll(selectors)].filter(el => {
+              const txt = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim();
+              return txt.toLowerCase().includes(search.toLowerCase()) && (el.offsetParent !== null || el.getBoundingClientRect().width > 0);
+            });
+            if (interactive.length > 0) { interactive[0].click(); return { success: true, clicked: (interactive[0].textContent || '').trim().substring(0, 60) }; }
+            // Try partial match on any visible element
+            const all = [...document.querySelectorAll('*')].filter(el =>
+              el.textContent?.trim().toLowerCase().includes(search.toLowerCase()) && el.offsetParent !== null
             );
-            if (els.length > 0) { els[0].click(); return { success: true }; }
-            // Try dismissing overlays first
-            document.querySelectorAll('[class*="modal"], [class*="overlay"], [class*="cookie"], [class*="consent"]')
-              .forEach(el => { try { el.remove(); } catch {} });
-            const retry = [...document.querySelectorAll('*')].filter(el =>
-              el.textContent?.trim().includes(${JSON.stringify(options.element)}) && el.offsetParent !== null
-            );
-            if (retry.length > 0) { retry[0].click(); return { success: true }; }
-            return { success: false, error: 'Element not found by text' };
+            if (all.length > 0) { all[0].click(); return { success: true, clicked: (all[0].textContent || '').trim().substring(0, 60) }; }
+            return { success: false, error: 'Element not found by text: ' + search };
           })()
         `);
-        return result;
+        if (result?.success) return result;
       }
     } catch {}
   }

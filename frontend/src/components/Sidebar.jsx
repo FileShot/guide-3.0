@@ -1403,10 +1403,6 @@ function SettingsPanel() {
           onChange={v => updateSetting('generationTimeoutSec', v)}
           tooltip="Abort generation after this many seconds (0 = no limit)"
           format={v => v === 0 ? 'disabled' : String(Math.round(v))} />
-        <SettingSlider label="Snapshot Max Chars" value={settings.snapshotMaxChars} min={1000} max={30000} step={1000}
-          onChange={v => updateSetting('snapshotMaxChars', v)}
-          tooltip="Larger = more page detail but uses more context"
-          format={v => v >= 1000 ? `${(v / 1000).toFixed(0)}K` : String(v)} />
         <SettingToggle label="Filter Thinking Tokens" value={settings.enableThinkingFilter}
           onChange={v => updateSetting('enableThinkingFilter', v)}
           hint="Strip <think>...</think> from output" />

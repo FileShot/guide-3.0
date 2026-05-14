@@ -306,11 +306,17 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         return await mcpToolServer.executeTool(toolName, params);
       },
       systemPrompt: settings.systemPrompt || undefined,
+      customInstructions: settings.customInstructions || undefined,
       temperature: settings.temperature,
       maxTokens: settings.maxTokens || -1,
       topP: settings.topP,
       topK: settings.topK,
       repeatPenalty: settings.repeatPenalty,
+      seed: settings.seed >= 0 ? settings.seed : undefined,
+      thinkingBudget: settings.thinkingBudget,
+      generationTimeoutSec: settings.generationTimeoutSec,
+      enableThinkingFilter: settings.enableThinkingFilter,
+      enableGrammar: settings.enableGrammar,
     });
     return { text: result.text, toolCallCount: result.toolCallCount };
   } catch (err) {

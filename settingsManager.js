@@ -30,9 +30,8 @@ const SETTINGS_DEFAULTS = {
   thinkingBudget: 2048,
   reasoningEffort: 'medium',
   // Agentic Behavior
-  maxIterations: 25,
+  maxIterations: 0,
   generationTimeoutSec: 0,
-  snapshotMaxChars: 8000,
   enableThinkingFilter: false,
   enableGrammar: false,
   // System Prompt

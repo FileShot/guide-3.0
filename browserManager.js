@@ -111,11 +111,11 @@ class BrowserManager extends EventEmitter {
     if (this._page) {
       try {
         // Use page.goto() return value to get the HTTP response object
-        const response = await this._page.goto(url, { waitUntil: 'load', timeout: 20000 });
+        const response = await this._page.goto(url, { waitUntil: 'load', timeout: 90000 });
         // Wait for SPAs to render — load event fires after initial render,
         // but SPAs need extra time for JS-driven content
-        try { await this._page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {}); } catch {}
-        // B6d: Wait for DOM stability — SPAs render content after networkidle.
+        try { await this._page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {}); } catch {}
+        // Wait for DOM stability — SPAs render content after networkidle.
         // Poll element count until it stops changing (max 3s).
         try {
           await this._page.waitForFunction(() => {
@@ -303,9 +303,9 @@ class BrowserManager extends EventEmitter {
       const pageText = (document.body?.innerText || '').substring(0, 50000);
 
       // Extract visible text from same-origin iframes.
-      // Many web apps (BrightSpace/D2L, LMS, enterprise portals) render their
-      // main content inside iframes. Without this, the snapshot only shows
-      // "<iframe>" elements and the model cannot see or interact with the content.
+      // Many web apps render their main content inside iframes.
+      // Without this, the snapshot only shows "<iframe>" elements and the model
+      // cannot see or interact with the content.
       const iframeTexts = [];
       try {
         const iframes = document.querySelectorAll('iframe');
@@ -346,7 +346,7 @@ class BrowserManager extends EventEmitter {
       // Inject data-ref attributes and build a numbered element list
       const snapshotData = await this._ensureRefs();
 
-      // RC2: Build ref→frame map. Main frame refs are already numbered by _ensureRefs.
+      // Build ref→frame map. Main frame refs are already numbered by _ensureRefs.
       // Now inject data-ref into child frames with CONTINUING ref numbers so the model
       // sees a single unified [ref=N] namespace across all frames.
       this._refFrameMap.clear();
@@ -360,7 +360,7 @@ class BrowserManager extends EventEmitter {
       // Extract content from ALL frames (including cross-origin iframes).
       // Playwright's page.frames() bypasses CORS — it can read cross-origin frame content
       // that the DOM-level iframe extraction in _ensureRefs() cannot access.
-      // This is critical for sites like BrightSpace/D2L that render content in cross-origin iframes.
+      // This is critical for sites that render content in cross-origin iframes.
       let frameTexts = [];
       let iframeElementLines = []; // [ref=N] lines for iframe elements
       let nextRef = mainFrameElementCount; // continuing ref counter for iframe elements
@@ -455,7 +455,7 @@ class BrowserManager extends EventEmitter {
         ? snapshotData.pageText + '\n\n' + frameTexts.join('\n\n')
         : snapshotData.pageText;
 
-      // B6c: Navigation history at TOP of snapshot — model reads top-down and needs
+      // Navigation history at TOP of snapshot — model reads top-down and needs
       // to see what it already did BEFORE choosing the next element to click.
       let historySection = '';
       if (this._navHistory.length > 0) {
@@ -575,12 +575,12 @@ class BrowserManager extends EventEmitter {
     // Re-inject data-ref attrs before resolving — they're lost on page navigation/reload
     await this._ensureRefs();
 
-    // RC2: If this ref maps to a child frame, click directly in that frame.
+    // If this ref maps to a child frame, click directly in that frame.
     // This replaces the blind frame iteration fallback that mismatched element indices.
     const refNum = this._extractRefNumber(selector);
     if (refNum !== null && this._refFrameMap.has(refNum)) {
       const targetFrame = this._refFrameMap.get(refNum);
-      // Bug 3 fix: Verify the frame is still attached — after navigation, child frames
+      // Verify the frame is still attached — after navigation, child frames
       // may be detached and using a stale frame reference throws.
       const currentFrames = this._page.frames();
       if (!currentFrames.includes(targetFrame)) {
@@ -657,6 +657,11 @@ class BrowserManager extends EventEmitter {
           if (p !== newPage) { try { await p.close(); } catch {} }
         }
         this._page = newPage;
+        // Wait for new tab to fully load before snapshotting.
+        // Without this, snapshot returns about:blank because the new tab
+        // hasn't finished its redirect chain yet.
+        try { await this._page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {}); } catch {}
+        try { await this._page.waitForTimeout(1000); } catch {}
         const snapshot = await this.getSnapshot();
         if (snapshot.success) {
           return { success: true, url: newPage.url(), clicked: clickedText || selector, navigated: true, newTab: true, snapshot: snapshot.text };
@@ -673,7 +678,7 @@ class BrowserManager extends EventEmitter {
       }
       // Always snapshot so model sees DOM changes
       const snapshot = await this.getSnapshot();
-      // B6b: Clear page state messaging — tell the model exactly what happened
+      // Clear page state messaging — tell the model exactly what happened
       // so it doesn't guess or retry the same action blindly
       const pageState = navigated
         ? 'PAGE NAVIGATED — you are now on a new page. Call browser_snapshot to see the new page before taking any action.'
@@ -684,7 +689,7 @@ class BrowserManager extends EventEmitter {
       return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, pageState };
     } catch (e) {
       // If ref-based selector failed on main page, try finding the element in child frames.
-      // Sites like BrightSpace/D2L render interactive content inside cross-origin iframes.
+      // Some sites render interactive content inside cross-origin iframes.
       // Playwright's page.frames() can access all frames regardless of origin.
       const refMatch = selector?.match?.(/^\[ref\s*=\s*(\d+)\]$/) || selector?.match?.(/^\[(\d+)\]$/) || (typeof selector === 'string' && /^\d+$/.test(selector.trim()) && [null, selector.trim()]);
       if (refMatch) {
@@ -781,7 +786,7 @@ class BrowserManager extends EventEmitter {
     // Re-inject data-ref attrs before resolving — they're lost on page navigation/reload
     await this._ensureRefs();
 
-    // RC2: If this ref maps to a child frame, type directly in that frame.
+    // If this ref maps to a child frame, type directly in that frame.
     const refNum = this._extractRefNumber(ref);
     if (refNum !== null && this._refFrameMap.has(refNum)) {
       const targetFrame = this._refFrameMap.get(refNum);

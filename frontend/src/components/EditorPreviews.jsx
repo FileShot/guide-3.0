@@ -23,12 +23,16 @@ const PREVIEW_EXTENSIONS = new Set([
 
 export function isPreviewable(filePath) {
   if (!filePath) return false;
+  // F7: blob: and data: URLs from chat attachments are previewable as images
+  if (filePath.startsWith('blob:') || filePath.startsWith('data:')) return true;
   const ext = filePath.split('.').pop()?.toLowerCase();
   return PREVIEW_EXTENSIONS.has(ext);
 }
 
 export function getPreviewType(filePath) {
   if (!filePath) return null;
+  // F7: blob: and data: URLs from chat attachments are image previews
+  if (filePath.startsWith('blob:') || filePath.startsWith('data:')) return 'image';
   const ext = filePath.split('.').pop()?.toLowerCase();
   if (ext === 'html' || ext === 'htm') return 'html';
   if (ext === 'md' || ext === 'markdown') return 'markdown';
@@ -437,7 +441,9 @@ export function SvgPreview({ content, filePath, onToggleCode }) {
 
 export function ImagePreview({ filePath, onToggleCode }) {
   const [error, setError] = useState(false);
-  const src = filePath?.replace(/\\/g, '/');
+  // F7: blob: and data: URLs are already valid src attributes — don't prepend file:///
+  const isDirectUrl = filePath?.startsWith('blob:') || filePath?.startsWith('data:');
+  const src = isDirectUrl ? filePath : `file:///${filePath?.replace(/\\/g, '/')}`;
 
   if (error) {
     return (
@@ -459,7 +465,7 @@ export function ImagePreview({ filePath, onToggleCode }) {
       <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto p-4">
         <div className="text-center">
           <img
-            src={`file:///${src}`}
+            src={src}
             alt={getFileName(filePath)}
             className="max-w-full max-h-[calc(100vh-200px)] object-contain rounded shadow-lg"
             onError={() => setError(true)}

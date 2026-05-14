@@ -164,6 +164,7 @@ You are NOT a chatbot. You are an AGENT with real tools. These tools are NOT sim
 - run_command — execute real terminal commands
 - web_search, fetch_webpage — search and fetch the real internet
 If you are thinking "I cannot browse websites" or "I don't have access to the filesystem" — STOP. That is incorrect. You HAVE these tools. Use them. Output the tool call JSON now.
+If the user provides credentials (username, password) in their message, you already have them — do NOT ask for them again. Use them immediately in browser_type calls.
 
 ## When to use tools
 - File creation, edits, or deletion — file tools (write_file, edit_file, append_to_file, delete_file, rename_file). Never paste file contents into chat as a substitute.
@@ -171,6 +172,7 @@ If you are thinking "I cannot browse websites" or "I don't have access to the fi
 - Live information (prices, news, docs, release notes) — web_search, then fetch_webpage on the top two result URLs in the same turn before answering.
 - Running commands, checking services, installing packages — terminal tools.
 - Interacting with web pages (forms, clicks, screenshots, LOGIN, authentication) — browser tools. You MUST log into websites, fill login forms, and authenticate on behalf of the user when they provide credentials. NEVER refuse to authenticate or say "I cannot log into your account" — you have full browser tools to do so. When the user gives you a URL and credentials, navigate there, then fill the login form and submit. After calling browser_navigate to a new page, you MUST call browser_snapshot to see the current page state and obtain accurate element refs. Do NOT reuse refs from a previous snapshot — refs reset after any navigation or page load. Obtain refs from the CURRENT snapshot before every browser_type or browser_click call. On login form retries, do NOT re-navigate to the login URL (re-navigating destroys session tokens and resets the form) — instead, call browser_snapshot to see current refs, then clear fields and re-fill. Elements in snapshots use [ref=N] format (e.g. [ref=5]) — use these exact refs. When browser_click returns newTab:true in its result, your NEXT call MUST be browser_snapshot — the new tab requires a fresh snapshot before any other action. In login forms, elements marked [SUBMIT] in the snapshot are the form submit buttons, not links or navigation elements.
+- BATCHING: When filling a login form, output ALL fields in ONE response — type username, type password, then click submit. Do NOT type one field per response. Output multiple tool call JSON blocks in a single response. Example: type username + type password + click submit = 3 tool calls in 1 response.
 - Version control — git tools.
 - Multi-step work — ALWAYS call write_todos FIRST to create a plan for any task requiring 2+ steps, then execute each step with tool calls. This is mandatory.
 - Clarification or decisions — ask_question to ask the user a multi-part question with clickable options or free-form answer.
@@ -191,6 +193,8 @@ Greetings, clarifying questions, opinions, explanations, and small talk are answ
 - Complete the user's request. If you hit an error, diagnose and retry rather than giving up.
 - NEVER stop working on a task until it is fully complete. If you encounter an error, fix it and continue. If a tool call fails, retry with adjusted parameters. If you need more information, call another tool. Do NOT output a final response saying "I was unable to" or "Unfortunately" — instead, keep trying with different approaches until you succeed. The only valid reason to stop is that the user's goal has been achieved.
 - If you are STUCK (e.g. login failed, element not found, page not loading, you don't know what to do next), you MUST call ask_question to ask the user for guidance. NEVER just end your response saying "it didn't work" — always either retry with a different approach or ask the user for help via ask_question.
+- NEVER navigate to a login URL if you are already on a login page and the form failed. Re-navigating destroys the session. Call browser_snapshot instead and retry with the existing form.
+- When a click opens a new tab (newTab:true), the old page is gone. Do NOT try to go back to the old page — work with the new tab.
 - Browser anti-loop: After taking a snapshot, if the page URL and content are the same as the previous snapshot, DO NOT take another snapshot or navigate to the same URL. Instead, take a DIFFERENT action: click a different element, scroll, go back, or use ask_question if you're truly stuck. Repeating the same action expecting a different result is a bug in your reasoning, not in the page.
 - When the user mentions a file, assume they want you to interact with it. Call read_file or the appropriate tool — do not ask for confirmation.
 - Vision: Images are automatically captioned by the vision system. When you receive an image description in brackets, that IS the image content — you do not need to read the image file. Never call read_file on image files (.png/.jpg/.gif/.webp) — they are binary data.`;
@@ -567,7 +571,7 @@ class ChatEngine extends EventEmitter {
       const attachments = Array.isArray(options.attachments) ? options.attachments : [];
       let effectiveUserMessage = String(userMessage ?? '');
       this._recentlyWrittenFiles.clear(); // reset per chat() call
-      // B6a: Store original user goal for task persistence across tool rounds.
+      // Store original user goal for task persistence across tool rounds.
       // Without this, the model loses track of what it was asked to do after several tool results.
       this._originalUserGoal = String(userMessage ?? '').substring(0, 300);
       this._toolRoundCount = 0;
@@ -655,6 +659,11 @@ class ChatEngine extends EventEmitter {
           }
         }
       } catch (e) { console.warn('[ChatEngine] Guide instructions load failed:', e.message); }
+    }
+    // Custom instructions from settings — user-defined behavior overrides
+    const customInstructions = options.customInstructions;
+    if (customInstructions && customInstructions.trim()) {
+      basePrompt += `\n\n## Custom Instructions\n${customInstructions.trim()}`;
     }
 
     // Layer 3: Editor context (active file, cursor position, recent saves, diagnostics)
@@ -817,10 +826,14 @@ class ChatEngine extends EventEmitter {
       let _sfUnicodeCount = 0;
       let _sfUnicodeChars = '';
 
-      // RC10: Think-tag tracking for Qwen 3.5 reasoning models.
+      // enableThinkingFilter — when true, suppress thinking tokens from UI output
+      const _thinkingFilterEnabled = !!options.enableThinkingFilter;
+
+      // Think-tag tracking for reasoning models.
       // These models output <think>...</think> in raw text (LlamaCompletion mode).
       // Without detection, thinking text gets sent as regular prose to the UI.
-      // We track <think> open/close tags and route thinking content to llm-thinking-token events.
+      // We track <think> open/close tags and route thinking content to llm-thinking-token events
+      // so it appears in thinking blocks instead of as regular prose.
       let _sfInThink = false;       // currently inside <think>...</think>
       let _sfThinkBuf = '';         // buffer for detecting <think> and </think> tags across chunk boundaries
       let _sfThinkTagMatch = '';    // partial match for think tags
@@ -891,7 +904,7 @@ class ChatEngine extends EventEmitter {
         for (let i = 0; i < chunk.length; i++) {
           const ch = chunk[i];
 
-          // RC10: Think-tag detection for Qwen 3.5 reasoning models.
+          // Think-tag detection for reasoning models.
           // These models output thinking in raw text (LlamaCompletion mode).
           // We detect these tags and route thinking content to llm-thinking-token events
           // so it appears in thinking blocks instead of as regular prose.
@@ -900,7 +913,7 @@ class ChatEngine extends EventEmitter {
             // Check for close tag
             if (_sfThinkBuf.length >= 8 && _sfThinkBuf.endsWith('</think>')) {
               const thinkContent = _sfThinkBuf.slice(0, -8);
-              if (thinkContent && onStreamEvent) {
+              if (thinkContent && onStreamEvent && !_thinkingFilterEnabled) {
                 onStreamEvent('llm-thinking-token', thinkContent);
               }
               console.log(`[ChatEngine] </think> closed — thinking block: ${(thinkContent || '').length} chars`);
@@ -909,13 +922,13 @@ class ChatEngine extends EventEmitter {
               continue;
             }
             // Flush periodically to avoid unbounded buffer.
-            // B7-Fix: preserve the last 7 chars (len('</think>')-1) so a close tag
+            // Preserve the last 7 chars (len('</think>')-1) so a close tag
             // that starts near the 200-char boundary is never split across two flushes.
             if (_sfThinkBuf.length > 200) {
               const CLOSE_TAG_TAIL = 7; // '</think>'.length - 1
               const toEmit = _sfThinkBuf.slice(0, -CLOSE_TAG_TAIL);
               const toKeep = _sfThinkBuf.slice(-CLOSE_TAG_TAIL);
-              if (toEmit && onStreamEvent) {
+              if (toEmit && onStreamEvent && !_thinkingFilterEnabled) {
                 onStreamEvent('llm-thinking-token', toEmit);
               }
               _sfThinkBuf = toKeep;
@@ -1289,6 +1302,7 @@ class ChatEngine extends EventEmitter {
         topP: options.topP,
         topK: options.topK,
         repeatPenalty: { penalty: options.repeatPenalty ?? 1.1 },
+        seed: options.seed ?? undefined,
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
           fullResponse += chunk;
@@ -1303,7 +1317,7 @@ class ChatEngine extends EventEmitter {
           }
         },
         onResponseChunk: (chunk) => {
-          if (chunk.type === 'segment' && chunk.text && onStreamEvent) {
+          if (chunk.type === 'segment' && chunk.text && onStreamEvent && !_thinkingFilterEnabled) {
             onStreamEvent('llm-thinking-token', chunk.text);
             // Diagnostic: log first native thinking segment so we can confirm this path fires
             if (!this._nativeThinkLogged) {
@@ -1325,9 +1339,28 @@ class ChatEngine extends EventEmitter {
         console.log('[ChatEngine] Thinking budget: 0 (auto) — native thinking NOT explicitly enabled');
       }
 
-      // GBNF grammar-based function calling removed â€” small models (under ~4B)
-      // either ignore the grammar or loop indefinitely (see PAST_FAILURES.md Category 6).
-      // Tool calls are parsed from raw model text via toolParser.parseToolCalls().
+      // Grammar-constrained generation: when enableGrammar is true, use
+      // node-llama-cpp's LlamaJsonSchemaGrammar to force valid JSON tool calls.
+      // Disabled by default — small models may loop or hang with grammar constraints.
+      // User has total control via settings toggle.
+      if (options.enableGrammar && functions && Object.keys(functions).length > 0) {
+        try {
+          const llamaCppPath = this._getNodeLlamaCppPath();
+          const { LlamaJsonSchemaGrammar } = await import(pathToFileURL(llamaCppPath).href);
+          const schema = {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: Object.keys(functions) },
+              params: { type: 'object' },
+            },
+            required: ['tool', 'params'],
+          };
+          genOptions.grammar = new LlamaJsonSchemaGrammar(this._llama, schema);
+          console.log('[ChatEngine] Grammar-constrained generation enabled — tool calls forced to valid JSON schema');
+        } catch (grammarErr) {
+          console.warn(`[ChatEngine] Grammar setup failed (node-llama-cpp may not support it): ${grammarErr.message}`);
+        }
+      }
 
       // Add lastEvaluation context window if available
       if (this._lastEvaluation) {
@@ -1397,7 +1430,7 @@ class ChatEngine extends EventEmitter {
       // Set maxTokens to guarantee generation space (node-llama-cpp will use remaining context)
       // This ensures the model always has room to output tool calls
       genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, availableForGeneration);
-      // B7: Log generation setup for diagnostics
+      // Log generation setup for diagnostics
       console.log(`[ChatEngine] Generation setup: maxTokens=${genOptions.maxTokens}, contextSize=${contextSize}, usedTokens=${usedTokens}, available=${availableForGeneration}, chatHistory=${this._chatHistory.length} msgs, temperature=${genOptions.temperature}`);
 
       // Generate response — model outputs text which may contain tool call JSON blocks
@@ -1446,7 +1479,7 @@ class ChatEngine extends EventEmitter {
         let roundStart = 0;
         let parsedCalls = parseToolCalls(fullResponse);
         console.log(`[ChatEngine] Tool parse: found ${parsedCalls.length} tool call(s) in ${fullResponse.length} chars of model output`);
-        // B7: When 0 calls found, log response preview for diagnostics
+        // When 0 calls found, log response preview for diagnostics
         if (parsedCalls.length === 0 && fullResponse.length > 20) {
           console.warn(`[ChatEngine] ⚠ 0 tool calls parsed — model output preview: "${fullResponse.substring(0, 300).replace(/\n/g, '\\n')}"`);
         }
@@ -1666,7 +1699,7 @@ class ChatEngine extends EventEmitter {
             }
 
             let injectResult = resultStr;
-            // Plan F: Lint auto-fix — if any file-modification tool returned diagnostic errors,
+            // Lint auto-fix — if any file-modification tool returned diagnostic errors,
             // inject a human-readable correction instruction AND emit a frontend event for the UI pill.
             if (FILE_MODIFY_OPS_SET.has(call.tool) && toolResult?.diagnostics?.errors > 0 && options.autoLintFix !== false) {
               const { errors, details } = toolResult.diagnostics;
@@ -1720,7 +1753,7 @@ class ChatEngine extends EventEmitter {
             this._chatHistory = result.lastEvaluation.cleanHistory;
           }
 
-          // RC4: Echo dedup — detect when the current round's tool calls are substantively
+          // Echo dedup — detect when the current round's tool calls are substantively
           // identical to the previous round's. The model sees its own previous attempts in
           // context and mimics them, creating a feedback loop. Break it by making the model
           // aware it's repeating itself, not by forcing canned responses.
@@ -1861,13 +1894,13 @@ class ChatEngine extends EventEmitter {
           let userInterruptPrefix = '';
           if (this._pendingUserMessage) {
             userInterruptPrefix = `[USER INTERRUPT — OBEY THIS IMMEDIATELY]: ${this._pendingUserMessage}\n\n`;
-            // B6a: Update goal when user changes direction mid-loop
+            // Update goal when user changes direction mid-loop
             this._originalUserGoal = this._pendingUserMessage.substring(0, 300);
             this._toolRoundCount = 0; // reset round count for new goal
             this._pendingUserMessage = null;
           }
 
-          // B6a: Task persistence — remind the model of its original goal every round.
+          // Task persistence — remind the model of its original goal every round.
           // After 3+ tool rounds, the model loses track of what the user asked it to do.
           // Injecting the goal keeps it focused on the task instead of wandering.
           this._toolRoundCount++;
@@ -2066,12 +2099,12 @@ class ChatEngine extends EventEmitter {
         console.log(`[ChatEngine] Generation complete. Tool calls: ${totalToolCalls}, stop reason: ${stopReason}`);
       }
 
-      // RC9: Refusal detection — when the model refuses to use tools despite the user requesting action.
+      // Refusal detection — when the model refuses to use tools despite the user requesting action.
       // Small models (2B-4B) have strong RLHF training that overrides system prompt instructions.
       // They say "I cannot access your account" or "I cannot browse websites" instead of using browser tools.
       // Detection: 0 tool calls + refusal language + user message contains action indicators (URLs, credentials, etc.)
       if (totalToolCalls === 0 && fullResponse.length > 50) {
-        // B6e: Broadened refusal detection — catches more refusal patterns from small models.
+        // Broadened refusal detection — catches more refusal patterns from small models.
         // Original regex only matched "I cannot access/browse" — small models also say:
         //   "I'm not able to", "I don't have the ability", "it's not possible for me",
         //   "I can't directly", "I'm a language model", "as an AI",
@@ -2185,7 +2218,7 @@ class ChatEngine extends EventEmitter {
   }
 
   /**
-   * Plan B: Revert the backend context to match a truncated frontend message array.
+   * Revert the backend context to match a truncated frontend message array.
    * Called when the user clicks the pencil edit submit or a checkpoint restore button.
    * Rebuilds _chatHistory from the provided messages, preserving the system prompt entry.
    * @param {Array<{role:string, content:string}>} messages - truncated chatMessages from frontend
@@ -2217,7 +2250,7 @@ class ChatEngine extends EventEmitter {
   }
 
   /**
-   * Plan G: Spawn a focused sub-agent using the same loaded model with a fresh context.
+   * Spawn a focused sub-agent using the same loaded model with a fresh context.
    * Sub-agents run SEQUENTIALLY (local hardware can't run two models in parallel).
    * The sub-context is disposed immediately after the task completes to free VRAM.
    * @param {string} task - the sub-task description
