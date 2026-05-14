@@ -157,6 +157,14 @@ Assistant:
 NEVER say "I'll check the files" — instead output the tool call JSON immediately.
 NEVER say "I don't have access" — you DO have access through tools.
 
+## TOOL PROOF — READ THIS IF YOU ARE UNSURE
+You are NOT a chatbot. You are an AGENT with real tools. These tools are NOT simulated:
+- browser_navigate, browser_click, browser_type, browser_snapshot — control a real Chromium browser
+- write_file, read_file, edit_file — access the real local filesystem
+- run_command — execute real terminal commands
+- web_search, fetch_webpage — search and fetch the real internet
+If you are thinking "I cannot browse websites" or "I don't have access to the filesystem" — STOP. That is incorrect. You HAVE these tools. Use them. Output the tool call JSON now.
+
 ## When to use tools
 - File creation, edits, or deletion — file tools (write_file, edit_file, append_to_file, delete_file, rename_file). Never paste file contents into chat as a substitute.
 - Reading or reviewing a file — read_file. When the user says "review this file" or "look at this", call read_file immediately.
@@ -559,6 +567,10 @@ class ChatEngine extends EventEmitter {
       const attachments = Array.isArray(options.attachments) ? options.attachments : [];
       let effectiveUserMessage = String(userMessage ?? '');
       this._recentlyWrittenFiles.clear(); // reset per chat() call
+      // B6a: Store original user goal for task persistence across tool rounds.
+      // Without this, the model loses track of what it was asked to do after several tool results.
+      this._originalUserGoal = String(userMessage ?? '').substring(0, 300);
+      this._toolRoundCount = 0;
       console.log(`[ChatEngine] ═══ USER MESSAGE ═══ "${String(userMessage).substring(0, 200)}"`);
       if (attachments.length > 0) {
         console.log(`[ChatEngine] Attachments: ${attachments.length} (${attachments.map(a => `${a.name||'?'} ${a.mimeType||a.type||'?'}`).join(', ')})`);
@@ -1337,7 +1349,8 @@ class ChatEngine extends EventEmitter {
       const availableForGeneration = contextSize - usedTokens;
 
       if (availableForGeneration < MIN_GENERATION_TOKENS) {
-        console.log(`[ChatEngine] Generation space too small (${availableForGeneration}/${contextSize} tokens available, need ${MIN_GENERATION_TOKENS}). Trimming prompt.`);
+        console.warn(`[ChatEngine] ⚠ GENERATION SPACE CRITICAL: ${availableForGeneration}/${contextSize} tokens available, need ${MIN_GENERATION_TOKENS}. Trimming prompt.`);
+        console.warn(`[ChatEngine]   ctx state: usedTokens=${usedTokens}, contextSize=${contextSize}, chatHistory=${this._chatHistory.length} msgs`);
 
         // Progressive trimming: try compact prompt first, then trim compact, then trim history
         if (compactToolPrompt && !useCompact) {
@@ -1384,6 +1397,8 @@ class ChatEngine extends EventEmitter {
       // Set maxTokens to guarantee generation space (node-llama-cpp will use remaining context)
       // This ensures the model always has room to output tool calls
       genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, availableForGeneration);
+      // B7: Log generation setup for diagnostics
+      console.log(`[ChatEngine] Generation setup: maxTokens=${genOptions.maxTokens}, contextSize=${contextSize}, usedTokens=${usedTokens}, available=${availableForGeneration}, chatHistory=${this._chatHistory.length} msgs, temperature=${genOptions.temperature}`);
 
       // Generate response — model outputs text which may contain tool call JSON blocks
       const roundStartTime = Date.now();
@@ -1431,6 +1446,10 @@ class ChatEngine extends EventEmitter {
         let roundStart = 0;
         let parsedCalls = parseToolCalls(fullResponse);
         console.log(`[ChatEngine] Tool parse: found ${parsedCalls.length} tool call(s) in ${fullResponse.length} chars of model output`);
+        // B7: When 0 calls found, log response preview for diagnostics
+        if (parsedCalls.length === 0 && fullResponse.length > 20) {
+          console.warn(`[ChatEngine] ⚠ 0 tool calls parsed — model output preview: "${fullResponse.substring(0, 300).replace(/\n/g, '\\n')}"`);
+        }
         if (parsedCalls.length > 0) {
           const { repaired } = repairToolCalls(parsedCalls, fullResponse);
           parsedCalls = filterWebWorkspaceToolConflict(repaired);
@@ -1583,9 +1602,11 @@ class ChatEngine extends EventEmitter {
               if (snapUrl.startsWith('chrome-error://') || snapUrl.includes('chromewebdata')) {
                 consecutiveBrowserFailures++;
                 console.warn(`[ChatEngine] browser_snapshot on error page (${snapUrl}) — counting as failure (consecutive=${consecutiveBrowserFailures})`);
-              } else if (consecutiveBrowserFailures > 0) {
-                // Snapshot on a real page — don't reset failures entirely,
-                // but don't increment either (the model is just reading the page)
+              } else {
+                // Snapshot on a real page — model is reading the page to decide next action.
+                // This IS progress. Reset the failure counter so stuck-loop grounding
+                // doesn't fire prematurely after a successful snapshot.
+                consecutiveBrowserFailures = 0;
               }
             } else if (call.tool?.startsWith('browser_') && toolResult?.success && call.tool !== 'browser_snapshot') {
               // Other browser tool successes (type, scroll, etc.) reset failure counter
@@ -1699,6 +1720,21 @@ class ChatEngine extends EventEmitter {
             this._chatHistory = result.lastEvaluation.cleanHistory;
           }
 
+          // RC4: Echo dedup — detect when the current round's tool calls are substantively
+          // identical to the previous round's. The model sees its own previous attempts in
+          // context and mimics them, creating a feedback loop. Break it by making the model
+          // aware it's repeating itself, not by forcing canned responses.
+          let echoDetected = false;
+          if (this._lastRoundToolCalls && parsedCalls.length > 0) {
+            const currentSig = parsedCalls.map(c => `${c.tool}:${JSON.stringify(c.params).substring(0, 120)}`).join('|');
+            const prevSig = this._lastRoundToolCalls.map(c => `${c.tool}:${JSON.stringify(c.params).substring(0, 120)}`).join('|');
+            if (currentSig === prevSig) {
+              echoDetected = true;
+              console.warn(`[ChatEngine] Echo detected — model repeating identical tool calls: ${currentSig.substring(0, 200)}`);
+            }
+          }
+          this._lastRoundToolCalls = parsedCalls.map(c => ({ tool: c.tool, params: c.params }));
+
           // Feed tool results back to the model so it knows what happened
           // Fix A: all-failures retry directive — when every tool call this round failed, tell the model to retry
           const allCallsFailed = failedCallCount > 0 && failedCallCount === parsedCalls.length;
@@ -1718,7 +1754,9 @@ class ChatEngine extends EventEmitter {
           }
 
           let toolResultsGrounding;
-          if (browserRetryLoop) {
+          if (echoDetected) {
+            toolResultsGrounding = 'ECHO DETECTED: You just made the exact same tool calls as the previous round and got the same results. Repeating identical calls will not produce different outcomes. You MUST try a different approach — different element, different URL, different tool, or use browser_snapshot to reassess the current page state.\n\n';
+          } else if (browserRetryLoop) {
             toolResultsGrounding = 'BROWSER STUCK LOOP: You have failed on the same element 2+ times in a row. STOP retrying. The page has changed and those refs are stale. You MUST call browser_snapshot FIRST to get fresh refs. Do NOT call browser_click or browser_type again until you have a new snapshot.\n\n';
           } else if (browserToolsFailed) {
             toolResultsGrounding = 'BROWSER TOOL ERRORS: The browser tool calls above failed (likely stale element refs or page changed). DO NOT retry with the same refs — they are invalid now. Call browser_snapshot FIRST to get fresh element refs, then interact with the page using the new refs.\n\n';
@@ -1823,10 +1861,22 @@ class ChatEngine extends EventEmitter {
           let userInterruptPrefix = '';
           if (this._pendingUserMessage) {
             userInterruptPrefix = `[USER INTERRUPT — OBEY THIS IMMEDIATELY]: ${this._pendingUserMessage}\n\n`;
+            // B6a: Update goal when user changes direction mid-loop
+            this._originalUserGoal = this._pendingUserMessage.substring(0, 300);
+            this._toolRoundCount = 0; // reset round count for new goal
             this._pendingUserMessage = null;
           }
 
-          this._chatHistory.push({ type: 'user', text: `${userInterruptPrefix}[Tool Results]\n${toolResultsGrounding}${toolResultLines.join('\n')}${relatedSection}${injectionSuffix}${fileReadWarning}` });
+          // B6a: Task persistence — remind the model of its original goal every round.
+          // After 3+ tool rounds, the model loses track of what the user asked it to do.
+          // Injecting the goal keeps it focused on the task instead of wandering.
+          this._toolRoundCount++;
+          let taskReminder = '';
+          if (this._originalUserGoal && this._toolRoundCount >= 2) {
+            taskReminder = `[Task reminder — round ${this._toolRoundCount}]: The user's original request was: "${this._originalUserGoal}". Continue working toward this goal. Do NOT restart or re-explain — just execute the next step.\n\n`;
+          }
+
+          this._chatHistory.push({ type: 'user', text: `${userInterruptPrefix}[Tool Results]\n${taskReminder}${toolResultsGrounding}${toolResultLines.join('\n')}${relatedSection}${injectionSuffix}${fileReadWarning}` });
           console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── grounding=${browserRetryLoop ? 'STUCK_LOOP' : browserToolsFailed ? 'BROWSER_FAIL' : allCallsFailed ? 'ALL_FAIL' : 'normal'}, ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${!!this._pendingUserMessage}`);
           console.log(`[ChatEngine] Tool result summary: ${toolResultLines.map(l => l.substring(0, 100)).join(' | ')}`);
 
@@ -2021,39 +2071,48 @@ class ChatEngine extends EventEmitter {
       // They say "I cannot access your account" or "I cannot browse websites" instead of using browser tools.
       // Detection: 0 tool calls + refusal language + user message contains action indicators (URLs, credentials, etc.)
       if (totalToolCalls === 0 && fullResponse.length > 50) {
-        const refusalPatterns = /i (?:cannot|can't|am unable|am not able|don't have access|will not|won't) (?:access|browse|log into|navigate|visit|open|enter|use|perform|execute|run|create|write|modify|delete|search)/i;
-        const actionIndicators = /https?:\/\/|\.edu|\.com|\.org|login|password|credential|navigate|browse|open|create|write|edit|delete|search|find|run|execute|install|download/i;
+        // B6e: Broadened refusal detection — catches more refusal patterns from small models.
+        // Original regex only matched "I cannot access/browse" — small models also say:
+        //   "I'm not able to", "I don't have the ability", "it's not possible for me",
+        //   "I can't directly", "I'm a language model", "as an AI",
+        //   "I cannot interact with", "I cannot perform"
+        const refusalPatterns = /i (?:cannot|can't|am unable|am not able|don't have (?:access|the ability)|will not|won't|'m not able|'m unable) (?:access|browse|log into|navigate|visit|open|enter|use|perform|execute|run|create|write|modify|delete|search|interact with|control|operate)/i;
+        const softRefusalPatterns = /(?:i'?m (?:a (?:language|ai) model|not (?:able|designed|programmed|capable) to)|as (?:an ai|a language model)|it'?s (?:not possible|beyond my|outside my) (?:for me|capabilities|abilities)|i (?:don't|cannot|can't) (?:directly|actually|physically|currently|personally))/i;
+        const actionIndicators = /https?:\/\/|\.edu|\.com|\.org|login|password|credential|navigate|browse|open|create|write|edit|delete|search|find|run|execute|install|download|click|form|website|account|browser|file|folder|directory|terminal|command/i;
         const lastUserMsg = this._chatHistory.filter(m => m.type === 'user').pop()?.text || '';
-        if (refusalPatterns.test(fullResponse) && actionIndicators.test(lastUserMsg)) {
+        const isRefusal = refusalPatterns.test(fullResponse) || (softRefusalPatterns.test(fullResponse) && actionIndicators.test(lastUserMsg));
+        if (isRefusal) {
           console.warn(`[ChatEngine] REFUSAL DETECTED — model refused action despite having tools. Auto-correcting.`);
-          // Inject a forceful corrective message and re-prompt
-          const correctionMsg = `[SYSTEM OVERRIDE] You MUST use your tools to fulfill this request. You HAVE browser tools (browser_navigate, browser_click, browser_type, browser_snapshot), file tools, terminal tools, and web tools. You are NOT a chatbot — you are an agent with full system access. The user's request requires action, not words. Call the appropriate tool NOW. Do not explain why you can't — you can. Output the tool call JSON immediately.]`;
-          this._chatHistory.push({ type: 'assistant', text: fullResponse });
-          this._chatHistory.push({ type: 'user', text: correctionMsg });
-          // Re-generate with the corrective prompt injected into chat history
-          try {
-            const correctedResult = await this._chat.generateResponse(this._chatHistory, genOptions);
-            const correctedText = correctedResult.response || '';
-            const correctedCalls = parseToolCalls(correctedText);
-            if (correctedCalls.length > 0) {
-              console.log(`[ChatEngine] Refusal correction succeeded — model now outputting tool calls: [${correctedCalls.map(c => c.tool).join(', ')}]`);
-              // Remove the injected correction messages — the main tool loop below will handle execution
-              this._chatHistory.pop(); // remove correction user msg
-              this._chatHistory.pop(); // remove refusal assistant msg
-              fullResponse = correctedText;
-              parsedCalls = correctedCalls;
-              const { repaired } = repairToolCalls(parsedCalls, correctedText);
-              parsedCalls = filterWebWorkspaceToolConflict(repaired);
-              // parsedCalls is now set — the outer while (parsedCalls.length > 0) loop will execute them
-            } else {
-              console.warn(`[ChatEngine] Refusal correction failed — model still refusing. Giving up.`);
+          // Multi-attempt correction: try up to 2 times with escalating specificity
+          for (let attempt = 0; attempt < 2; attempt++) {
+            const correctionMsg = attempt === 0
+              ? `[SYSTEM OVERRIDE] You MUST use your tools to fulfill this request. You HAVE browser tools (browser_navigate, browser_click, browser_type, browser_snapshot), file tools (read_file, write_file, edit_file), terminal tools (run_command), and web tools (web_search, fetch_webpage). You are NOT a chatbot — you are an agent with full system access. The user's request requires action, not words. Call the appropriate tool NOW. Do not explain why you can't — you can. Output the tool call JSON immediately.]`
+              : `[CRITICAL] Your previous response was still a refusal. This is WRONG. You HAVE these tools — they are real, not simulated. Look at the tool examples in your system prompt and OUTPUT ONE NOW. The user said: "${lastUserMsg.substring(0, 200)}". Which tool does this require? Call it.]`;
+            this._chatHistory.push({ type: 'assistant', text: fullResponse });
+            this._chatHistory.push({ type: 'user', text: correctionMsg });
+            try {
+              const correctedResult = await this._chat.generateResponse(this._chatHistory, genOptions);
+              const correctedText = correctedResult.response || '';
+              const correctedCalls = parseToolCalls(correctedText);
+              if (correctedCalls.length > 0) {
+                console.log(`[ChatEngine] Refusal correction succeeded (attempt ${attempt + 1}) — model now outputting tool calls: [${correctedCalls.map(c => c.tool).join(', ')}]`);
+                this._chatHistory.pop(); // remove correction user msg
+                this._chatHistory.pop(); // remove refusal assistant msg
+                fullResponse = correctedText;
+                parsedCalls = correctedCalls;
+                const { repaired } = repairToolCalls(parsedCalls, correctedText);
+                parsedCalls = filterWebWorkspaceToolConflict(repaired);
+                break; // success — exit retry loop
+              } else {
+                console.warn(`[ChatEngine] Refusal correction attempt ${attempt + 1} failed — model still refusing.`);
+                this._chatHistory.pop(); // remove correction user msg
+                this._chatHistory.pop(); // remove refusal assistant msg
+              }
+            } catch (correctionErr) {
+              console.warn(`[ChatEngine] Refusal correction error: ${correctionErr.message}`);
               this._chatHistory.pop(); // remove correction user msg
               this._chatHistory.pop(); // remove refusal assistant msg
             }
-          } catch (correctionErr) {
-            console.warn(`[ChatEngine] Refusal correction error: ${correctionErr.message}`);
-            this._chatHistory.pop(); // remove correction user msg
-            this._chatHistory.pop(); // remove refusal assistant msg
           }
         }
       }

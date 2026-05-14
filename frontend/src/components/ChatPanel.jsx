@@ -2471,7 +2471,7 @@ export default function ChatPanel() {
 
                       ) : (
 
-                        <div className="group/msg relative">
+                        <div className="group relative">
 
                           <div className="whitespace-pre-wrap pr-5">{msg.content}</div>
 
@@ -2479,7 +2479,7 @@ export default function ChatPanel() {
 
                             <button
 
-                              className="absolute top-0 right-0 p-0.5 rounded text-vsc-text-dim/0 group-hover/msg:text-vsc-text-dim/70 opacity-0 group-hover/msg:opacity-100 transition-opacity"
+                              className="absolute top-0 right-0 p-0.5 rounded text-vsc-text-dim/0 group-hover:text-vsc-text-dim/70 opacity-0 group-hover:opacity-100 transition-opacity"
 
                               title="Edit and resend"
 

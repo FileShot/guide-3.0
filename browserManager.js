@@ -33,6 +33,7 @@ class BrowserManager extends EventEmitter {
     this._navHistory = []; // [{url, title, timestamp, action}] — tracks what the model already did
     this._lastSnapshotUrl = null;
     this._lastSnapshotTime = 0;
+    this._refFrameMap = new Map(); // ref number → owning Playwright Frame
   }
 
   /* ── Live Preview ──────────────────────────────────────── */
@@ -114,6 +115,23 @@ class BrowserManager extends EventEmitter {
         // Wait for SPAs to render — load event fires after initial render,
         // but SPAs need extra time for JS-driven content
         try { await this._page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {}); } catch {}
+        // B6d: Wait for DOM stability — SPAs render content after networkidle.
+        // Poll element count until it stops changing (max 3s).
+        try {
+          await this._page.waitForFunction(() => {
+            return new Promise(resolve => {
+              let lastCount = document.querySelectorAll('*').length;
+              let stableTicks = 0;
+              const check = () => {
+                const count = document.querySelectorAll('*').length;
+                if (count === lastCount) { stableTicks++; } else { stableTicks = 0; lastCount = count; }
+                if (stableTicks >= 3 || count > 50) resolve(true); // stable for 300ms or page has content
+              };
+              const interval = setInterval(() => { check(); }, 100);
+              setTimeout(() => { clearInterval(interval); resolve(true); }, 3000); // max 3s
+            });
+          }, { timeout: 4000 }).catch(() => {});
+        } catch {}
         const finalUrl = this._page.url();
         const title = await this._page.title().catch(() => '');
         this._navHistory.push({ url: finalUrl, title, timestamp: Date.now(), action: 'navigate' });
@@ -328,20 +346,33 @@ class BrowserManager extends EventEmitter {
       // Inject data-ref attributes and build a numbered element list
       const snapshotData = await this._ensureRefs();
 
+      // RC2: Build ref→frame map. Main frame refs are already numbered by _ensureRefs.
+      // Now inject data-ref into child frames with CONTINUING ref numbers so the model
+      // sees a single unified [ref=N] namespace across all frames.
+      this._refFrameMap.clear();
+      const mainFrameElementCount = snapshotData.elementList ? snapshotData.elementList.split('\n').length : 0;
+      // All main frame refs map to the main frame
+      const mainFrame = this._page.mainFrame();
+      for (let i = 0; i < mainFrameElementCount; i++) {
+        this._refFrameMap.set(i, mainFrame);
+      }
+
       // Extract content from ALL frames (including cross-origin iframes).
       // Playwright's page.frames() bypasses CORS — it can read cross-origin frame content
       // that the DOM-level iframe extraction in _ensureRefs() cannot access.
       // This is critical for sites like BrightSpace/D2L that render content in cross-origin iframes.
       let frameTexts = [];
+      let iframeElementLines = []; // [ref=N] lines for iframe elements
+      let nextRef = mainFrameElementCount; // continuing ref counter for iframe elements
       try {
         const frames = this._page.frames();
         for (const frame of frames) {
           if (frame === this._page.mainFrame()) continue; // skip main frame (already in snapshotData)
           const frameUrl = frame.url();
           try {
-            const frameBody = await frame.evaluate(() => {
+            const frameBody = await frame.evaluate((startRef) => {
               const body = document.body;
-              if (!body) return { text: '', interactive: [] };
+              if (!body) return { text: '', interactive: [], refLines: [], nextRef: startRef };
               const text = (body.innerText || '').trim();
               const interactive = [...document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"], [role="textbox"], [role="combobox"]')].map(el => {
                 const tag = el.tagName.toLowerCase();
@@ -352,8 +383,52 @@ class BrowserManager extends EventEmitter {
                 const placeholder = el.placeholder || '';
                 return `[${tag}${type ? ` type="${type}"` : ''}${name ? ` name="${name}"` : ''}${placeholder ? ` placeholder="${placeholder}"` : ''}${href ? ` href="${href.substring(0, 80)}"` : ''}] ${text}`;
               });
-              return { text, interactive };
-            });
+              // Inject data-ref attributes into iframe interactive elements with continuing refs
+              const refLines = [];
+              const allInteractive = [...document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"], [role="textbox"], [role="combobox"], [role="checkbox"], [role="radio"], [role="tab"], [role="menuitem"], [role="option"], [contenteditable]')].filter(el => {
+                if (el.offsetParent !== null) return true;
+                if (el.type === 'hidden') return false;
+                const s = window.getComputedStyle(el);
+                if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+                if (s.position === 'fixed' || s.position === 'sticky') return true;
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
+              });
+              let refIdx = startRef;
+              for (const el of allInteractive) {
+                el.setAttribute('data-ref', String(refIdx));
+                const tag = el.tagName.toLowerCase();
+                const type = el.type || '';
+                const name = el.name || el.id || '';
+                const placeholder = el.placeholder || '';
+                const value = el.value || '';
+                const text2 = (el.textContent || '').trim().substring(0, 80);
+                const href = el.href || '';
+                const role = el.getAttribute('role') || '';
+                const ariaLabel = el.getAttribute('aria-label') || '';
+                let desc = `[ref=${refIdx}] <${tag}`;
+                if (type) desc += ` type="${type}"`;
+                if (name) desc += ` name="${name}"`;
+                if (role) desc += ` role="${role}"`;
+                if (ariaLabel) desc += ` aria-label="${ariaLabel}"`;
+                if (placeholder) desc += ` placeholder="${placeholder}"`;
+                if (value && type !== 'password') desc += ` value="${value.substring(0, 50)}"`;
+                if (href) desc += ` href="${href.substring(0, 80)}"`;
+                desc += '>';
+                if (text2 && type !== 'password' && tag !== 'input') desc += ` ${text2}`;
+                refLines.push(desc);
+                refIdx++;
+              }
+              return { text, interactive, refLines, nextRef: refIdx };
+            }, nextRef);
+            // Store ref→frame mapping for each iframe element
+            for (let r = nextRef; r < frameBody.nextRef; r++) {
+              this._refFrameMap.set(r, frame);
+            }
+            nextRef = frameBody.nextRef;
+            if (frameBody.refLines.length > 0) {
+              iframeElementLines.push(...frameBody.refLines);
+            }
             if (frameBody.text.length > 0 || frameBody.interactive.length > 0) {
               const parts = [];
               if (frameBody.interactive.length > 0) {
@@ -371,23 +446,31 @@ class BrowserManager extends EventEmitter {
         }
       } catch {}
 
+      // Merge iframe element lines into the main element list
+      const fullElementList = iframeElementLines.length > 0
+        ? snapshotData.elementList + '\n' + iframeElementLines.join('\n')
+        : snapshotData.elementList;
+
       const fullPageText = frameTexts.length > 0
         ? snapshotData.pageText + '\n\n' + frameTexts.join('\n\n')
         : snapshotData.pageText;
 
-      const result = `Page: ${title}\nURL: ${url}\n\nInteractive elements (use the [ref=N] number as the "ref" param, e.g. {"ref":"2"} or {"ref":"[ref=2]"}):\n${snapshotData.elementList}\n\nPage text:\n${fullPageText}`;
-      // Include navigation history so the model knows what it already did
+      // B6c: Navigation history at TOP of snapshot — model reads top-down and needs
+      // to see what it already did BEFORE choosing the next element to click.
       let historySection = '';
       if (this._navHistory.length > 0) {
         const recentHistory = this._navHistory.slice(-8);
-        historySection = '\n\nNavigation history (DO NOT repeat these actions — move to the NEXT step):\n'
-          + recentHistory.map((h, i) => `${i + 1}. ${h.action}: ${h.url}${h.title ? ` (${h.title})` : ''}`).join('\n');
+        historySection = `Navigation history (DO NOT repeat these — move to NEXT step):\n`
+          + recentHistory.map((h, i) => `${i + 1}. ${h.action}: ${h.url}${h.title ? ` (${h.title})` : ''}`).join('\n')
+          + '\n\n';
       }
+
+      const result = `${historySection}Page: ${title}\nURL: ${url}\n\nInteractive elements (use the [ref=N] number as the "ref" param, e.g. {"ref":"2"} or {"ref":"[ref=2]"}):\n${fullElementList}\n\nPage text:\n${fullPageText}`;
       this._lastSnapshotUrl = url;
       this._lastSnapshotTime = Date.now();
       // No total cap — the model needs the full snapshot to make correct decisions.
       // Truncation was the root cause of repeated wrong clicks (elements below the fold invisible).
-      return { success: true, title, url, text: result + historySection };
+      return { success: true, title, url, text: result };
     } catch (e) {
       return { success: false, error: e.message };
     }
@@ -471,12 +554,72 @@ class BrowserManager extends EventEmitter {
   }
 
   /**
-   * Click an element by selector.
+   * Extract the numeric ref from a selector string (e.g. "[ref=5]" → 5, "3" → 3).
+   * Returns null if the selector is not a ref-based selector.
    */
+  _extractRefNumber(selector) {
+    if (!selector || typeof selector !== 'string') return null;
+    const trimmed = selector.trim();
+    let m = trimmed.match(/^\[ref\s*=\s*(\d+)\]$/);
+    if (m) return parseInt(m[1]);
+    m = trimmed.match(/^\[(\d+)\]$/);
+    if (m) return parseInt(m[1]);
+    m = trimmed.match(/^ref=(\d+)$/);
+    if (m) return parseInt(m[1]);
+    if (/^\d+$/.test(trimmed)) return parseInt(trimmed);
+    return null;
+  }
+
   async click(selector) {
     if (!(await this._ensurePage())) return { success: false, error: 'No browser page open' };
     // Re-inject data-ref attrs before resolving — they're lost on page navigation/reload
     await this._ensureRefs();
+
+    // RC2: If this ref maps to a child frame, click directly in that frame.
+    // This replaces the blind frame iteration fallback that mismatched element indices.
+    const refNum = this._extractRefNumber(selector);
+    if (refNum !== null && this._refFrameMap.has(refNum)) {
+      const targetFrame = this._refFrameMap.get(refNum);
+      // Bug 3 fix: Verify the frame is still attached — after navigation, child frames
+      // may be detached and using a stale frame reference throws.
+      const currentFrames = this._page.frames();
+      if (!currentFrames.includes(targetFrame)) {
+        this._refFrameMap.delete(refNum);
+        // Fall through to main page click logic
+      } else {
+        const refSelector = `[data-ref="${refNum}"]`;
+        if (targetFrame !== this._page.mainFrame()) {
+        // Element is in a child frame — click directly there
+        try {
+          const urlBefore = this._page.url();
+          let clickedText = '';
+          try {
+            clickedText = await targetFrame.evaluate((sel) => {
+              const el = document.querySelector(sel);
+              return el ? (el.textContent || '').trim().substring(0, 60) : '';
+            }, refSelector);
+          } catch {}
+          await targetFrame.click(refSelector, { timeout: 5000 });
+          try { await this._page.waitForTimeout(800); } catch {}
+          const urlAfter = this._page.url();
+          const navigated = urlAfter !== urlBefore;
+          const snapshot = await this.getSnapshot();
+          const pageState = navigated
+            ? 'PAGE NAVIGATED — you are now on a new page. Call browser_snapshot to see the new page before taking any action.'
+            : 'SAME PAGE — the click succeeded but the URL did not change. The page may have updated (dialog opened, content changed, etc.). Use the snapshot below to see what changed.';
+          console.log(`[BrowserManager] Clicked ref=${refNum} in child frame directly`);
+          if (snapshot.success) {
+            return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, pageState, snapshot: snapshot.text };
+          }
+          return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, pageState };
+        } catch (frameErr) {
+          console.warn(`[BrowserManager] Direct frame click failed for ref=${refNum}: ${frameErr.message}`);
+          // Fall through to main page click logic below
+        }
+      }
+    }
+    }
+
     const resolved = this._resolveRef(selector);
     if (!resolved) {
       return { success: false, error: `Invalid element ref "${selector}". Use the [ref=N] number from the snapshot, e.g. browser_click({"ref":"5"}). Call browser_snapshot first if you need fresh refs.` };
@@ -530,10 +673,15 @@ class BrowserManager extends EventEmitter {
       }
       // Always snapshot so model sees DOM changes
       const snapshot = await this.getSnapshot();
+      // B6b: Clear page state messaging — tell the model exactly what happened
+      // so it doesn't guess or retry the same action blindly
+      const pageState = navigated
+        ? 'PAGE NAVIGATED — you are now on a new page. Call browser_snapshot to see the new page before taking any action.'
+        : 'SAME PAGE — the click succeeded but the URL did not change. The page may have updated (dialog opened, content changed, etc.). Use the snapshot below to see what changed.';
       if (snapshot.success) {
-        return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, snapshot: snapshot.text };
+        return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, pageState, snapshot: snapshot.text };
       }
-      return { success: true, url: urlAfter, clicked: clickedText || selector, navigated };
+      return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, pageState };
     } catch (e) {
       // If ref-based selector failed on main page, try finding the element in child frames.
       // Sites like BrightSpace/D2L render interactive content inside cross-origin iframes.
@@ -632,6 +780,39 @@ class BrowserManager extends EventEmitter {
     if (!(await this._ensurePage())) return { success: false, error: 'No browser page open' };
     // Re-inject data-ref attrs before resolving — they're lost on page navigation/reload
     await this._ensureRefs();
+
+    // RC2: If this ref maps to a child frame, type directly in that frame.
+    const refNum = this._extractRefNumber(ref);
+    if (refNum !== null && this._refFrameMap.has(refNum)) {
+      const targetFrame = this._refFrameMap.get(refNum);
+      // Verify frame is still attached (same check as click())
+      const currentFrames = this._page.frames();
+      if (!currentFrames.includes(targetFrame)) {
+        this._refFrameMap.delete(refNum);
+        // Fall through to main page logic
+      } else {
+        const refSelector = `[data-ref="${refNum}"]`;
+        if (targetFrame !== this._page.mainFrame()) {
+        try {
+          const locator = targetFrame.locator(refSelector).first();
+          await locator.fill(text, { timeout: 5000 });
+          if (options.submit) {
+            await this._page.keyboard.press('Enter');
+            try { await this._page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {}); } catch {}
+            try { await this._page.waitForTimeout(1000); } catch {}
+            const snapshot = await this.getSnapshot();
+            if (snapshot.success) return { success: true, url: this._page.url(), snapshot: snapshot.text };
+          }
+          console.log(`[BrowserManager] Typed into ref=${refNum} in child frame directly`);
+          return { success: true };
+        } catch (frameErr) {
+          console.warn(`[BrowserManager] Direct frame type failed for ref=${refNum}: ${frameErr.message}`);
+          // Fall through to main page logic below
+        }
+      }
+    }
+    }
+
     const resolved = this._resolveRef(ref);
     if (!resolved) {
       return { success: false, error: `Invalid element ref "${ref}". Use the [ref=N] number from the snapshot, e.g. browser_type({"ref":"3","text":"hello"}). Call browser_snapshot first if you need fresh refs.` };

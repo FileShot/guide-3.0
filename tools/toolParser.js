@@ -459,14 +459,15 @@ function parseToolCalls(text) {
             }
           }
           // Extract other common params via regex
-          const queryMatch = fenceContent.match(/"query"\s*:\s*"([^"]+)"/);
-          if (queryMatch) call.params.query = queryMatch[1];
-          const cmdMatch = fenceContent.match(/"command"\s*:\s*"([^"]+)"/);
-          if (cmdMatch) call.params.command = cmdMatch[1];
-          const urlMatch = fenceContent.match(/"url"\s*:\s*"([^"]+)"/);
-          if (urlMatch) call.params.url = urlMatch[1];
-          const dirMatch = fenceContent.match(/"dirPath"\s*:\s*"([^"]+)"/);
-          if (dirMatch) call.params.dirPath = dirMatch[1];
+          const _unescape = s => s.replace(/\\(.)/g, '$1');
+          const queryMatch = fenceContent.match(/"query"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+          if (queryMatch) call.params.query = _unescape(queryMatch[1]);
+          const cmdMatch = fenceContent.match(/"command"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+          if (cmdMatch) call.params.command = _unescape(cmdMatch[1]);
+          const urlMatch = fenceContent.match(/"url"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+          if (urlMatch) call.params.url = _unescape(urlMatch[1]);
+          const dirMatch = fenceContent.match(/"dirPath"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+          if (dirMatch) call.params.dirPath = _unescape(dirMatch[1]);
           // Infer filePath from content if missing
           if (!call.params.filePath && call.params.content) {
             call.params.filePath = _inferFilePath(text, call.params.content);
@@ -708,7 +709,10 @@ function _recoverWriteFileContent(text, preferredFilePath) {
   let largest = '';
   let m;
   while ((m = codeBlockRe.exec(text)) !== null) {
-    if (m[1].length > largest.length) largest = m[1];
+    const block = m[1];
+    // Skip blocks that are tool-call JSON syntax — they are NOT file content
+    if (/"(?:tool|name)"\s*:\s*"/.test(block)) continue;
+    if (block.length > largest.length) largest = block;
   }
   if (largest.length < 50) return null;
   const filePath = preferredFilePath || _inferFilePath(text, largest);
