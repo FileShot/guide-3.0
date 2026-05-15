@@ -81,6 +81,7 @@ const VALID_TOOLS = new Set([
 // ─── JSON Repair Utilities ───
 function sanitizeJson(raw) {
   if (!raw || typeof raw !== 'string') return raw;
+  console.log(`[ToolParser] sanitizeJson START: rawLen=${raw.length}`);
   let result = '';
   let inStr = false;
   let escaped = false;
@@ -114,6 +115,7 @@ function sanitizeJson(raw) {
     }
     result += ch;
   }
+  console.log(`[ToolParser] sanitizeJson DONE: resultLen=${result.length}`);
   return result;
 }
 
@@ -157,16 +159,19 @@ function fixSeparatorTypos(raw) {
 }
 
 function tryParseJson(raw) {
+  console.log(`[ToolParser] tryParseJson START: rawLen=${raw?.length || 0}`);
   // Quadruple-try chain: raw → fixQuoting → fixBackticks → fixSeparatorTypos
-  try { return JSON.parse(sanitizeJson(raw)); } catch {}
-  try { return JSON.parse(sanitizeJson(fixQuoting(raw))); } catch {}
-  try { return JSON.parse(sanitizeJson(fixBackticks(fixQuoting(raw)))); } catch {}
-  try { return JSON.parse(sanitizeJson(fixSeparatorTypos(fixBackticks(fixQuoting(raw))))); } catch {}
+  try { const r = JSON.parse(sanitizeJson(raw)); console.log('[ToolParser] tryParseJson: raw parse OK'); return r; } catch {}
+  try { const r = JSON.parse(sanitizeJson(fixQuoting(raw))); console.log('[ToolParser] tryParseJson: fixQuoting parse OK'); return r; } catch {}
+  try { const r = JSON.parse(sanitizeJson(fixBackticks(fixQuoting(raw)))); console.log('[ToolParser] tryParseJson: fixBackticks parse OK'); return r; } catch {}
+  try { const r = JSON.parse(sanitizeJson(fixSeparatorTypos(fixBackticks(fixQuoting(raw))))); console.log('[ToolParser] tryParseJson: fixSeparatorTypos parse OK'); return r; } catch {}
+  console.log('[ToolParser] tryParseJson: all parse attempts failed');
   return null;
 }
 
 // ─── Brace-Counting JSON Extractor ───
 function extractJsonObjects(text) {
+  console.log(`[ToolParser] extractJsonObjects START: textLen=${text?.length || 0}`);
   const objects = [];
   let depth = 0;
   let start = -1;
@@ -309,16 +314,21 @@ function extractJsonObjects(text) {
     }
   }
 
+  console.log(`[ToolParser] extractJsonObjects DONE: objects=${objects.length}`);
   return objects;
 }
 
 // ─── Tool Call Normalization ───
 function normalizeToolCall(parsed) {
   if (!parsed || typeof parsed !== 'object') return null;
+  console.log(`[ToolParser] normalizeToolCall START: raw=${JSON.stringify(parsed).substring(0,200)}`);
 
   // Extract tool name
   let toolName = parsed.tool || parsed.name || parsed.function || parsed.action;
-  if (!toolName) return null;
+  if (!toolName) {
+    console.log('[ToolParser] normalizeToolCall: no tool name found');
+    return null;
+  }
 
   toolName = String(toolName).trim().toLowerCase().replace(/\s+/g, '_');
 
@@ -329,11 +339,15 @@ function normalizeToolCall(parsed) {
   const shellBinaries = /^(node|npm|npx|git|python|pip|cargo|go|ruby|java|gcc|make|cmake|dotnet|curl|wget)\b/;
   if (shellBinaries.test(toolName) && !VALID_TOOLS.has(toolName)) {
     const cmd = parsed.params?.command || `${toolName} ${parsed.params?.args || ''}`.trim();
+    console.log(`[ToolParser] normalizeToolCall: shell binary recovered as run_command`);
     return { tool: 'run_command', params: { command: cmd } };
   }
 
   // Reject hallucinated tool names
-  if (!VALID_TOOLS.has(toolName)) return null;
+  if (!VALID_TOOLS.has(toolName)) {
+    console.log(`[ToolParser] normalizeToolCall: invalid toolName=${toolName}`);
+    return null;
+  }
 
   // Extract params
   let params = parsed.params || parsed.parameters || parsed.arguments || parsed.args || {};
@@ -346,6 +360,7 @@ function normalizeToolCall(parsed) {
       params[k] = v;
     }
   }
+  console.log(`[ToolParser] normalizeToolCall DONE: tool=${toolName}`);
 
   // Param name normalization
   if (params.file_path && !params.filePath) { params.filePath = params.file_path; delete params.file_path; }
@@ -368,7 +383,11 @@ function normalizeToolCall(parsed) {
 
 // ─── Main Parser ───
 function parseToolCalls(text) {
-  if (!text || typeof text !== 'string') return [];
+  if (!text || typeof text !== 'string') {
+    console.log('[ToolParser] parseToolCalls: empty or non-string input');
+    return [];
+  }
+  console.log(`[ToolParser] parseToolCalls START: textLen=${text.length}`);
 
   const calls = [];
   const seen = new Set(); // dedup by signature
@@ -633,10 +652,12 @@ function parseToolCalls(text) {
     }
   }
 
+  console.log(`[ToolParser] parseToolCalls DONE: calls=${calls.length}`);
   return _postProcess(calls, text);
 }
 
 function _postProcess(calls, text) {
+  console.log(`[ToolParser] _postProcess: calls=${calls?.length || 0}`);
   // Passthrough — no regex-based tool conversion.
   // The model must call the correct tool explicitly.
   return calls;
@@ -644,6 +665,7 @@ function _postProcess(calls, text) {
 
 // ─── Tool Call Repair ───
 function repairToolCalls(toolCalls, responseText) {
+  console.log(`[ToolParser] repairToolCalls START: toolCalls=${toolCalls?.length || 0}`);
   const repaired = [];
   const issues = [];
   const droppedFilePaths = [];
@@ -702,6 +724,7 @@ function repairToolCalls(toolCalls, responseText) {
     }
   }
 
+  console.log(`[ToolParser] repairToolCalls DONE: repaired=${repaired.length}, issues=${issues.length}, dropped=${droppedFilePaths.length}`);
   return { repaired, issues, droppedFilePaths };
 }
 
@@ -784,7 +807,11 @@ function _detectFallbackFileOperations(responseText, userMessage, lastDroppedFil
 // Uses the same structural patterns that parseToolCalls detects.
 // Returns the cleaned text (empty string if nothing remains).
 function stripToolCallText(text) {
-  if (!text || typeof text !== 'string') return '';
+  if (!text || typeof text !== 'string') {
+    console.log('[ToolParser] stripToolCallText: empty or non-string input');
+    return '';
+  }
+  console.log(`[ToolParser] stripToolCallText START: textLen=${text.length}`);
   const ranges = [];
 
   // Pattern 1: XML ◠...◠

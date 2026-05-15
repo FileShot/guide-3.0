@@ -207,12 +207,14 @@ cloudLLM.setLicenseManager(ctx.licenseManager);
 
 // Register the ai-chat handler for basic model chat
 ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
+  console.log(`[server/main] ai-chat START: userMessageLen=${String(userMessage).length}, cloudProvider=${chatContext?.cloudProvider || 'none'}`);
   const cloudProvider = chatContext?.cloudProvider;
   const cloudModel = chatContext?.cloudModel;
 
   // ── Cloud provider path ──────────────────────────────────────────────
   if (cloudProvider) {
     try {
+      console.log(`[server/main] ai-chat: cloud path provider=${cloudProvider}`);
       ctx.agenticCancelled = false;
       const settings = chatContext?.params || chatContext?.settings || {};
       const attachments = Array.isArray(chatContext?.attachments) ? chatContext.attachments : [];
@@ -250,6 +252,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
 
       return { text: result.text || '', toolCallCount: 0 };
     } catch (err) {
+      console.error(`[server/main] ai-chat cloud ERROR: ${err.message}`);
       if (err.isQuotaError) return { isQuotaError: true, error: '__QUOTA_EXCEEDED__' };
       return { error: err.message };
     }
@@ -257,9 +260,11 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
 
   // ── Local model path ─────────────────────────────────────────────────
   if (!llmEngine.isReady) {
+    console.warn('[server/main] ai-chat: no model loaded');
     return { error: 'No model loaded. Please load a model first.' };
   }
   try {
+    console.log('[server/main] ai-chat: local model path');
     ctx.agenticCancelled = false;
     const settings = chatContext?.params || chatContext?.settings || {};
 
@@ -285,6 +290,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       effectiveMessage = userMessage + `\n\n[Current file: ${currentFile.path}]\n${truncated}`;
     }
 
+    console.log(`[server/main] ai-chat: calling llmEngine.chat, effectiveMessageLen=${effectiveMessage.length}`);
     const result = await llmEngine.chat(effectiveMessage, {
       onToken: (token) => {
         mainWindow.webContents.send('llm-token', token);
@@ -317,13 +323,16 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       enableThinkingFilter: settings.enableThinkingFilter,
       enableGrammar: settings.enableGrammar,
     });
+    console.log(`[server/main] ai-chat DONE: toolCallCount=${result.toolCallCount}`);
     return { text: result.text, toolCallCount: result.toolCallCount };
   } catch (err) {
+    console.error(`[server/main] ai-chat local ERROR: ${err.message}`);
     return { error: err.message };
   }
 });
 
 ipcMain.handle('cancel-generation', async () => {
+  console.log('[server/main] cancel-generation');
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
   return { success: true };
@@ -379,14 +388,17 @@ ipcMain.on('editor-context', (_event, data) => {
 // Alias: the frontend Stop button invokes 'agent-pause'. Route to the same
 // cancellation path so generation stops immediately.
 ipcMain.handle('agent-pause', async () => {
+  console.log('[server/main] agent-pause');
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
   return { success: true };
 });
 
 async function openProjectPath(projectPath) {
+  console.log(`[server/main] openProjectPath START: ${projectPath}`);
   const resolved = path.resolve(projectPath);
   if (!fs.existsSync(resolved)) {
+    console.error(`[server/main] openProjectPath: directory not found ${resolved}`);
     const error = new Error('Directory not found');
     error.statusCode = 404;
     throw error;
@@ -399,7 +411,7 @@ async function openProjectPath(projectPath) {
   longTermMemory.initialize(resolved);
   ragEngine.indexProject(resolved).catch(e => console.warn('[Server] RAG indexing failed:', e.message));
   mainWindow.webContents.send('project-opened', { path: resolved });
-
+  console.log(`[server/main] openProjectPath DONE: ${resolved}`);
   return { path: resolved };
 }
 

@@ -253,8 +253,10 @@ let agenticCancelled = false;
 let autoUpdater = null;
 
 async function openProjectPath(projectPath) {
+  console.log(`[electron-main] openProjectPath START: ${projectPath}`);
   const resolved = path.resolve(projectPath);
   if (!fs.existsSync(resolved)) {
+    console.error(`[electron-main] openProjectPath: directory not found ${resolved}`);
     const error = new Error('Directory not found');
     error.statusCode = 404;
     throw error;
@@ -269,7 +271,7 @@ async function openProjectPath(projectPath) {
   rulesManager.initialize(resolved);
   ragEngine.indexProject(resolved).catch(e => console.warn('[Main] RAG indexing failed:', e.message));
   _send('project-opened', { path: resolved });
-
+  console.log(`[electron-main] openProjectPath DONE: ${resolved}`);
   return { path: resolved };
 }
 
@@ -277,6 +279,8 @@ async function openProjectPath(projectPath) {
 function _send(event, data) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(event, data);
+  } else {
+    console.warn(`[electron-main] _send: mainWindow not available for event '${event}'`);
   }
 }
 
@@ -314,12 +318,14 @@ ipcMain.handle('rules-delete', (_e, name) => rulesManager.deleteRule(name));
 
 // Register ai-chat handler for basic model chat
 ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
+  console.log(`[electron-main] ai-chat START: userMessageLen=${String(userMessage).length}, cloudProvider=${chatContext?.cloudProvider || 'none'}`);
   const cloudProvider = chatContext?.cloudProvider;
   const cloudModel = chatContext?.cloudModel;
 
   // ── Cloud provider path ──────────────────────────────────────────────
   if (cloudProvider) {
     try {
+      console.log(`[electron-main] ai-chat: cloud path provider=${cloudProvider}`);
       agenticCancelled = false;
       const settings = chatContext?.params || chatContext?.settings || {};
       const attachments = Array.isArray(chatContext?.attachments) ? chatContext.attachments : [];
@@ -354,6 +360,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
 
       return { text: result.text || '', toolCallCount: 0 };
     } catch (err) {
+      console.error(`[electron-main] ai-chat cloud ERROR: ${err.message}`);
       if (err.isQuotaError) return { isQuotaError: true, error: '__QUOTA_EXCEEDED__' };
       return { error: err.message };
     }
@@ -361,9 +368,11 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
 
   // ── Local model path ─────────────────────────────────────────────────
   if (!llmEngine.isReady) {
+    console.warn('[electron-main] ai-chat: no model loaded');
     return { error: 'No model loaded. Please load a model first.' };
   }
   try {
+    console.log('[electron-main] ai-chat: local model path');
     agenticCancelled = false;
     const settings = chatContext?.params || chatContext?.settings || {};
 
@@ -397,6 +406,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       effectiveMessage = userMessage + `\n\n[Current file: ${currentFile.path}]\n${truncated}`;
     }
 
+    console.log(`[electron-main] ai-chat: calling llmEngine.chat, effectiveMessageLen=${effectiveMessage.length}`);
     const result = await llmEngine.chat(effectiveMessage, {
       onToken: (token) => _send('llm-token', token),
       onContextUsage: (data) => _send('context-usage', data),
@@ -437,8 +447,10 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     if (settings.guideInstructionsPath) {
       rulesManager.setGuideInstructionsPath(settings.guideInstructionsPath);
     }
+    console.log(`[electron-main] ai-chat DONE: toolCallCount=${result.toolCallCount}`);
     return { text: result.text, toolCallCount: result.toolCallCount };
   } catch (err) {
+    console.error(`[electron-main] ai-chat local ERROR: ${err.message}`);
     return { error: err.message };
   }
 });
@@ -461,12 +473,14 @@ ipcMain.handle('answer-question', (_e, answer) => {
 });
 
 ipcMain.handle('cancel-generation', async () => {
+  console.log('[electron-main] cancel-generation');
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
   return { success: true };
 });
 
 ipcMain.handle('agent-pause', async () => {
+  console.log('[electron-main] agent-pause');
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
   return { success: true };

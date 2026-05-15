@@ -202,13 +202,31 @@ export default function App() {
 
       case 'tool-executing': {
 
+        console.log('[App] tool-executing:', JSON.stringify(data).substring(0, 200));
+
         // File write ops are displayed via FileContentBlock (backend emits file-content-* events)
 
         const FILE_WRITE_OPS = new Set(['write_file', 'create_file', 'append_to_file']);
 
         const items = Array.isArray(data) ? data : [data];
 
+        if (!Array.isArray(items)) {
+
+          console.error('[App] tool-executing: data is not iterable!', data);
+
+          break;
+
+        }
+
         for (const item of items) {
+
+          if (!item || typeof item !== 'object') {
+
+            console.warn('[App] tool-executing: skipping non-object item', item);
+
+            continue;
+
+          }
 
           const toolName = item.tool || item.functionName || item.name;
 
@@ -276,11 +294,29 @@ export default function App() {
 
       case 'mcp-tool-results': {
 
+        console.log('[App] mcp-tool-results:', JSON.stringify(data).substring(0, 200));
+
         const FILE_WRITE_OPS_R = new Set(['write_file', 'create_file', 'append_to_file']);
 
         const results = Array.isArray(data) ? data : [data];
 
+        if (!Array.isArray(results)) {
+
+          console.error('[App] mcp-tool-results: data is not iterable!', data);
+
+          break;
+
+        }
+
         for (const item of results) {
+
+          if (!item || typeof item !== 'object') {
+
+            console.warn('[App] mcp-tool-results: skipping non-object item', item);
+
+            continue;
+
+          }
 
           const name = item.tool || item.functionName || item.name;
 
@@ -581,6 +617,20 @@ export default function App() {
 
 
   useEffect(() => {
+
+    // Global error handlers for debugging "not iterable" and other frontend errors
+
+    window.onerror = (message, source, lineno, colno, error) => {
+
+      console.error('[App] window.onerror:', message, 'at', source, lineno, colno, error);
+
+    };
+
+    window.onunhandledrejection = (event) => {
+
+      console.error('[App] window.onunhandledrejection:', event.reason);
+
+    };
 
     const api = window.electronAPI;
 

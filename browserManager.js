@@ -22,6 +22,7 @@ class BrowserManager extends EventEmitter {
    */
   constructor(options = {}) {
     super();
+    console.log('[BrowserManager] constructor START');
     this.liveServer = options.liveServer || null;
     this.parentWindow = options.parentWindow || null;
     this._previewUrl = null;
@@ -34,6 +35,7 @@ class BrowserManager extends EventEmitter {
     this._lastSnapshotUrl = null;
     this._lastSnapshotTime = 0;
     this._refFrameMap = new Map(); // ref number → owning Playwright Frame
+    console.log('[BrowserManager] constructor DONE');
   }
 
   /* ── Live Preview ──────────────────────────────────────── */
@@ -44,10 +46,13 @@ class BrowserManager extends EventEmitter {
    * @returns {Promise<{ success: boolean, url?: string, port?: number, error?: string }>}
    */
   async startPreview(rootPath) {
+    console.log(`[BrowserManager] startPreview START: rootPath=${rootPath}`);
     if (!this.liveServer) {
+      console.warn('[BrowserManager] startPreview: no liveServer');
       return { success: false, error: 'Live server module not available' };
     }
     const result = await this.liveServer.start(rootPath);
+    console.log(`[BrowserManager] startPreview: liveServer result success=${result.success}`);
     if (result.success) {
       this._previewUrl = result.url;
       this._previewPort = result.port;
@@ -60,6 +65,7 @@ class BrowserManager extends EventEmitter {
         });
       }
     }
+    console.log('[BrowserManager] startPreview DONE');
     return result;
   }
 
@@ -67,7 +73,11 @@ class BrowserManager extends EventEmitter {
    * Stop the live preview server.
    */
   async stopPreview() {
-    if (!this.liveServer) return { success: false, error: 'No live server' };
+    console.log('[BrowserManager] stopPreview START');
+    if (!this.liveServer) {
+      console.warn('[BrowserManager] stopPreview: no liveServer');
+      return { success: false, error: 'No live server' };
+    }
     await this.liveServer.stop();
     this._previewUrl = null;
     this._previewPort = null;
@@ -76,6 +86,7 @@ class BrowserManager extends EventEmitter {
     if (this.parentWindow?.webContents) {
       this.parentWindow.webContents.send('preview-stopped');
     }
+    console.log('[BrowserManager] stopPreview DONE');
     return { success: true };
   }
 
@@ -106,11 +117,16 @@ class BrowserManager extends EventEmitter {
    * Navigate to a URL. Uses Playwright if available, otherwise opens in preview.
    */
   async navigate(url) {
+    console.log(`[BrowserManager] navigate START: url=${url}`);
     const ok = await this._ensurePage();
-    if (!ok) return { success: false, error: 'Could not launch browser' };
+    if (!ok) {
+      console.warn('[BrowserManager] navigate: could not launch browser');
+      return { success: false, error: 'Could not launch browser' };
+    }
     if (this._page) {
       try {
         // Use page.goto() return value to get the HTTP response object
+        console.log(`[BrowserManager] navigate: page.goto ${url}`);
         const response = await this._page.goto(url, { waitUntil: 'load', timeout: 90000 });
         // Wait for SPAs to render — load event fires after initial render,
         // but SPAs need extra time for JS-driven content
@@ -123,9 +139,11 @@ class BrowserManager extends EventEmitter {
         if (this._navHistory.length > 30) this._navHistory = this._navHistory.slice(-30);
         // Check HTTP status code from the navigation response (not title keywords)
         const httpStatus = response ? response.status() : 0;
+        console.log(`[BrowserManager] navigate: httpStatus=${httpStatus}, finalUrl=${finalUrl}`);
         if (httpStatus >= 400) {
           const snapshot = await this.getSnapshot();
           const snapshotText = snapshot.success ? snapshot.text : '';
+          console.warn(`[BrowserManager] navigate: HTTP error ${httpStatus}`);
           return {
             success: false,
             url: finalUrl,
@@ -139,10 +157,13 @@ class BrowserManager extends EventEmitter {
         // without needing a separate browser_snapshot call
         const snapshot = await this.getSnapshot();
         if (snapshot.success) {
+          console.log(`[BrowserManager] navigate DONE: success, url=${finalUrl}, snapshotLen=${snapshot.text?.length || 0}`);
           return { success: true, url: finalUrl, title, httpStatus, snapshot: snapshot.text };
         }
+        console.log(`[BrowserManager] navigate DONE: success, url=${finalUrl}`);
         return { success: true, url: finalUrl, title, httpStatus };
       } catch (e) {
+        console.error(`[BrowserManager] navigate ERROR: ${e.message}`);
         return { success: false, error: e.message };
       }
     }
@@ -150,6 +171,7 @@ class BrowserManager extends EventEmitter {
     if (this.parentWindow?.webContents) {
       this.parentWindow.webContents.send('preview-navigate', { url });
     }
+    console.log('[BrowserManager] navigate: frontend-iframe fallback');
     return { success: true, url, method: 'frontend-iframe' };
   }
 
@@ -159,28 +181,34 @@ class BrowserManager extends EventEmitter {
    * Launch Playwright browser. Returns false if Playwright is not installed.
    */
   async launchPlaywright() {
+    console.log('[BrowserManager] launchPlaywright START');
     if (this._browser && this._page) {
       // Verify the page is actually alive
-      try { await this._page.evaluate(() => true); return { success: true, message: 'Already launched' }; } catch {}
+      try { await this._page.evaluate(() => true); console.log('[BrowserManager] launchPlaywright: already alive'); return { success: true, message: 'Already launched' }; } catch {}
       // Page is dead — clean up and relaunch
+      console.log('[BrowserManager] launchPlaywright: page dead, closing');
       await this.closePlaywright();
     }
     try {
       this._playwright = require('playwright');
     } catch {
+      console.warn('[BrowserManager] launchPlaywright: Playwright not installed');
       return { success: false, error: 'Playwright not installed. Run: npm i playwright' };
     }
     try {
       this._browser = await this._playwright.chromium.launch({ headless: false });
       this._page = await this._browser.newPage();
+      console.log('[BrowserManager] launchPlaywright: Chromium launched, new page created');
       // Register disconnect handler so we know when browser dies
       this._browser.on('disconnected', () => {
         console.log('[BrowserManager] Browser disconnected — clearing references');
         this._page = null;
         this._browser = null;
       });
+      console.log('[BrowserManager] launchPlaywright DONE');
       return { success: true };
     } catch (e) {
+      console.error(`[BrowserManager] launchPlaywright FAILED: ${e.message}`);
       return { success: false, error: `Failed to launch browser: ${e.message}` };
     }
   }
@@ -190,13 +218,16 @@ class BrowserManager extends EventEmitter {
    * @returns {Promise<boolean>} true if page is ready
    */
   async _ensurePage() {
+    console.log('[BrowserManager] _ensurePage START');
     if (this._page) {
-      try { await this._page.evaluate(() => true); return true; } catch {}
+      try { await this._page.evaluate(() => true); console.log('[BrowserManager] _ensurePage: page alive'); return true; } catch {}
       // Page is dead — clear stale references
+      console.log('[BrowserManager] _ensurePage: page dead, clearing refs');
       this._page = null;
       this._browser = null;
     }
     const result = await this.launchPlaywright();
+    console.log(`[BrowserManager] _ensurePage DONE: success=${result.success}`);
     return result.success;
   }
 
@@ -204,11 +235,13 @@ class BrowserManager extends EventEmitter {
    * Close Playwright browser.
    */
   async closePlaywright() {
-    if (this._page) { try { await this._page.close(); } catch {} }
-    if (this._browser) { try { await this._browser.close(); } catch {} }
+    console.log('[BrowserManager] closePlaywright START');
+    if (this._page) { try { await this._page.close(); } catch (e) { console.warn('[BrowserManager] closePlaywright page close failed:', e.message); } }
+    if (this._browser) { try { await this._browser.close(); } catch (e) { console.warn('[BrowserManager] closePlaywright browser close failed:', e.message); } }
     this._page = null;
     this._browser = null;
     this._playwright = null;
+    console.log('[BrowserManager] closePlaywright DONE');
     return { success: true };
   }
 
@@ -217,11 +250,18 @@ class BrowserManager extends EventEmitter {
    * @returns {Promise<{ success: boolean, screenshot?: string, error?: string }>}
    */
   async screenshot() {
-    if (!(await this._ensurePage())) return { success: false, error: 'No browser page open' };
+    console.log('[BrowserManager] screenshot START');
+    if (!(await this._ensurePage())) {
+      console.warn('[BrowserManager] screenshot: no page');
+      return { success: false, error: 'No browser page open' };
+    }
     try {
       const buffer = await this._page.screenshot({ type: 'png' });
-      return { success: true, screenshot: buffer.toString('base64') };
+      const base64 = buffer.toString('base64');
+      console.log(`[BrowserManager] screenshot DONE: ${base64.length} chars`);
+      return { success: true, screenshot: base64 };
     } catch (e) {
+      console.error(`[BrowserManager] screenshot ERROR: ${e.message}`);
       return { success: false, error: e.message };
     }
   }
@@ -323,10 +363,15 @@ class BrowserManager extends EventEmitter {
   }
 
   async getSnapshot() {
-    if (!(await this._ensurePage())) return { success: false, error: 'No browser page open' };
+    console.log('[BrowserManager] getSnapshot START');
+    if (!(await this._ensurePage())) {
+      console.warn('[BrowserManager] getSnapshot: no page');
+      return { success: false, error: 'No browser page open' };
+    }
     try {
       const title = await this._page.title();
       const url = this._page.url();
+      console.log(`[BrowserManager] getSnapshot: title=${title}, url=${url}`);
 
       // Inject data-ref attributes and build a numbered element list
       const snapshotData = await this._ensureRefs();
@@ -455,8 +500,10 @@ class BrowserManager extends EventEmitter {
       this._lastSnapshotTime = Date.now();
       // No total cap — the model needs the full snapshot to make correct decisions.
       // Truncation was the root cause of repeated wrong clicks (elements below the fold invisible).
+      console.log(`[BrowserManager] getSnapshot DONE: elementCount=${fullElementList?.split('\n')?.length || 0}, textLen=${fullPageText?.length || 0}`);
       return { success: true, title, url, text: result };
     } catch (e) {
+      console.error(`[BrowserManager] getSnapshot ERROR: ${e.message}`);
       return { success: false, error: e.message };
     }
   }
@@ -556,7 +603,11 @@ class BrowserManager extends EventEmitter {
   }
 
   async click(selector) {
-    if (!(await this._ensurePage())) return { success: false, error: 'No browser page open' };
+    console.log(`[BrowserManager] click START: selector=${selector}`);
+    if (!(await this._ensurePage())) {
+      console.warn('[BrowserManager] click: no page');
+      return { success: false, error: 'No browser page open' };
+    }
     // Re-inject data-ref attrs before resolving — they're lost on page navigation/reload
     await this._ensureRefs();
 
@@ -669,10 +720,13 @@ class BrowserManager extends EventEmitter {
         ? 'PAGE NAVIGATED — you are now on a new page. Call browser_snapshot to see the new page before taking any action.'
         : 'SAME PAGE — the click succeeded but the URL did not change. The page may have updated (dialog opened, content changed, etc.). Use the snapshot below to see what changed.';
       if (snapshot.success) {
+        console.log(`[BrowserManager] click DONE: success, url=${urlAfter}, navigated=${navigated}`);
         return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, pageState, snapshot: snapshot.text };
       }
+      console.log(`[BrowserManager] click DONE: success (no snapshot), url=${urlAfter}, navigated=${navigated}`);
       return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, pageState };
     } catch (e) {
+      console.error(`[BrowserManager] click ERROR: ${e.message}`);
       // If ref-based selector failed on main page, try finding the element in child frames.
       // Some sites render interactive content inside cross-origin iframes.
       // Playwright's page.frames() can access all frames regardless of origin.

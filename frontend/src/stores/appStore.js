@@ -402,6 +402,8 @@ const useAppStore = create((set, get) => ({
 
   addChatMessage: (msg) => {
 
+    console.log('[appStore] addChatMessage:', msg.role, msg.content?.substring(0, 50));
+
     const { chatMessages } = get();
 
     const updated = [...chatMessages, { ...msg, id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, timestamp: Date.now() }];
@@ -451,6 +453,8 @@ const useAppStore = create((set, get) => ({
 
 
   setChatStreaming: (val) => {
+
+    console.log('[appStore] setChatStreaming:', val);
 
     if (!val) {
 
@@ -576,6 +580,12 @@ const useAppStore = create((set, get) => ({
 
     const store = get();
 
+    if (!store.chatStreaming) {
+
+      console.warn('[appStore] appendStreamToken called while chatStreaming=false, token=', token.substring(0, 30));
+
+    }
+
     if (!store._textTokenBuffer) {
 
       store._textTokenBuffer = token;
@@ -622,6 +632,12 @@ const useAppStore = create((set, get) => ({
 
     }
 
+    if (typeof token !== 'string') {
+
+      console.error('[appStore] appendStreamToken: token is not string!', typeof token, token);
+
+    }
+
   },
 
 
@@ -663,6 +679,8 @@ const useAppStore = create((set, get) => ({
   // R39-A1 + R40: Tool call tracking with segment interleaving
 
   addStreamingToolCall: (tc) => {
+
+    console.log('[appStore] addStreamingToolCall:', tc?.functionName, tc?.status);
 
     // Flush pending text buffer before inserting tool segment (same pattern as startFileContentBlock)
 
@@ -720,6 +738,8 @@ const useAppStore = create((set, get) => ({
 
   updateStreamingToolCall: (name, updates) => {
 
+    console.log('[appStore] updateStreamingToolCall:', name, updates?.status);
+
     const { streamingToolCalls } = get();
 
     // Prefer matching a pending or generating call with this name (handles duplicates)
@@ -728,7 +748,13 @@ const useAppStore = create((set, get) => ({
 
     if (idx === -1) idx = streamingToolCalls.findIndex(tc => tc.functionName === name);
 
-    if (idx === -1) return;
+    if (idx === -1) {
+
+      console.warn('[appStore] updateStreamingToolCall: no matching tool call for', name);
+
+      return;
+
+    }
 
     const updated = [...streamingToolCalls];
 
@@ -741,6 +767,8 @@ const useAppStore = create((set, get) => ({
 
 
   startFileContentBlock: ({ filePath, fileKey, language, fileName }) => {
+
+    console.log('[appStore] startFileContentBlock:', fileKey || filePath);
 
     // R34: Flush pending text buffer before starting file block (ensures correct segment ordering)
 
@@ -852,6 +880,12 @@ const useAppStore = create((set, get) => ({
 
     const store = get();
 
+    if (typeof chunk !== 'string') {
+
+      console.error('[appStore] appendFileContentToken: chunk is not string!', typeof chunk, chunk);
+
+    }
+
     const targetIdx = findActiveStreamingFileBlockIndex(store.streamingFileBlocks, store.activeStreamingFileKey);
 
     if (targetIdx === -1) return;
@@ -903,6 +937,8 @@ const useAppStore = create((set, get) => ({
   },
 
   endFileContentBlock: (payload) => {
+
+    console.log('[appStore] endFileContentBlock:', payload?.fileKey || payload?.filePath);
 
     // R33-Phase2: Flush any pending buffered tokens before marking complete
 
@@ -1021,6 +1057,8 @@ const useAppStore = create((set, get) => ({
 
 
   clearChat: () => {
+
+    console.log('[appStore] clearChat');
 
     const store = get();
 
