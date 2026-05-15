@@ -4,6 +4,43 @@
 
 ---
 
+## 2026-05-15 — CRITICAL: Fix _ensurePage false-dead bug — browser restarts at about:blank during SAML redirects (B15)
+
+### Problem
+Clicking the BrightSpace Launcher on mycampus.maine.edu opens a popup that triggers SAML redirects.
+During these redirects, `_ensurePage()` uses `page.evaluate(() => true)` to check page liveness.
+But `evaluate()` throws when the JS execution context is being destroyed/recreated mid-navigation,
+falsely marking the live page as dead. This causes `_ensurePage()` to close the entire browser
+and relaunch at about:blank — losing all session state, cookies, and navigation progress.
+
+This happened 3 times in a single session (log lines 818, 1231, 1630), each time producing
+the same crash: click BrightSpace Launcher → SAML redirect → evaluate throws → browser killed → about:blank.
+
+### Root Cause
+`_ensurePage()` at lines 225 and 237-238 used `page.evaluate(() => true)` as the liveness check.
+The B15 fix (using `isClosed()` instead) was already applied to `click()` popup handling at lines
+808 and 821, but was NEVER applied to `_ensurePage()` itself. This is the exact bug documented
+in the code comment at lines 805-807.
+
+### Fix
+- **browserManager.js `_ensurePage()` (lines 222-282)**: Replaced `evaluate(() => true)` with `isClosed()`
+  at both locations (primary check + surviving-pages scan). Added retry loop (3 attempts with
+  waitForLoadState + waitForTimeout) for pages that aren't closed but have evaluate fail mid-navigation.
+  Only declares a page dead after all retries exhaust AND isClosed() confirms closure.
+- Surviving-pages scan now uses `isClosed()` instead of `evaluate()`, so it finds pages that are
+  mid-navigation instead of skipping them.
+
+### Files Changed
+- `browserManager.js` lines 222-282 (function `_ensurePage`)
+- `package.json` version 0.3.53 → 0.3.54
+
+### Impact
+- Browser no longer restarts at about:blank when clicking links that trigger SAML redirects
+- Popup/new-tab navigation works correctly through redirect chains
+- Session cookies and login state preserved across navigation events
+
+---
+
 ## 2026-05-15 — CRITICAL: Fix PL8 role TDZ bug — browser_snapshot crashed on every call (B8)
 
 ### Problem

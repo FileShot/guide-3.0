@@ -222,10 +222,37 @@ class BrowserManager extends EventEmitter {
   async _ensurePage() {
     console.log('[BrowserManager] _ensurePage START');
     if (this._page) {
-      try { await this._page.evaluate(() => true); console.log('[BrowserManager] _ensurePage: page alive'); return true; } catch {}
-      // Page is dead — but the browser process may still be alive with other pages
-      // (e.g., SAML redirect killed the current page but created a new one in the same context).
-      // Check for surviving pages before launching a new browser.
+      // B15: Use isClosed() instead of evaluate(() => true) — evaluate() throws
+      // during navigation when the JS execution context is being destroyed/recreated
+      // (e.g., SAML redirects), falsely marking a live page as dead.
+      if (!this._page.isClosed()) {
+        // Page is not closed — but it may be mid-navigation (evaluate would throw).
+        // Try evaluate to confirm it's responsive; if it fails, wait for navigation
+        // to complete rather than immediately declaring it dead.
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await this._page.evaluate(() => true);
+            console.log('[BrowserManager] _ensurePage: page alive');
+            return true;
+          } catch {
+            if (this._page.isClosed()) break; // genuinely closed now
+            console.log(`[BrowserManager] _ensurePage: page not closed but evaluate failed (attempt ${attempt + 1}/3), waiting for navigation...`);
+            try { await this._page.waitForLoadState('domcontentloaded', { timeout: 3000 }).catch(() => {}); } catch {}
+            try { await this._page.waitForTimeout(1000); } catch {}
+          }
+        }
+        // After retries, check one final time
+        if (!this._page.isClosed()) {
+          try {
+            await this._page.evaluate(() => true);
+            console.log('[BrowserManager] _ensurePage: page alive after retry');
+            return true;
+          } catch {
+            console.log('[BrowserManager] _ensurePage: page not closed but unresponsive after retries, treating as dead');
+          }
+        }
+      }
+      // Page is genuinely closed or unresponsive — check for surviving pages
       console.log('[BrowserManager] _ensurePage: page dead, checking for surviving pages in context');
       this._page = null;
       if (this._browser) {
@@ -234,13 +261,13 @@ class BrowserManager extends EventEmitter {
           for (const ctx of contexts) {
             const pages = ctx.pages();
             for (const p of pages) {
-              try {
-                await p.evaluate(() => true);
+              // B15: Use isClosed() for surviving-pages scan too
+              if (!p.isClosed()) {
                 // Found a living page — switch to it instead of relaunching
                 console.log(`[BrowserManager] _ensurePage: found surviving page at ${p.url()}, switching to it`);
                 this._page = p;
                 return true;
-              } catch {}
+              }
             }
           }
         } catch {}
