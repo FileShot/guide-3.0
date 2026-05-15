@@ -32,6 +32,7 @@ class BrowserManager extends EventEmitter {
     this._browser = null;
     this._page = null;
     this._navHistory = []; // [{url, title, timestamp, action}] — tracks what the model already did
+    this._popupPages = []; // popup pages opened by clicks — model switches via browser_tabs
     this._lastSnapshotUrl = null;
     this._lastSnapshotTime = 0;
     this._refFrameMap = new Map(); // ref number → owning Playwright Frame
@@ -820,18 +821,14 @@ class BrowserManager extends EventEmitter {
       const newPage = await popupPromise;
 
       if (newPage) {
-        // A popup event fired — but it may be a false positive from SAML redirects
-        // or JavaScript that briefly opens/closes a window. Wait for the popup to
-        // settle, then decide which page to keep based on which one has a real URL.
+        // A popup event fired — wait for it to settle, then track it.
+        // NEVER switch this._page to the popup — the original page holds session state.
+        // The model can use browser_tabs to list/switch to the popup if desired.
         try {
           await newPage.waitForURL(url => url !== 'about:blank' && url !== '', { timeout: 10000 }).catch(() => {});
           await newPage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
         } catch {}
 
-        // Check popup state: is it alive AND does it have a real URL?
-        // B15: Use isClosed() instead of evaluate(() => true) — evaluate() throws
-        // during navigation when the execution context is being destroyed/recreated
-        // (e.g., SAML redirects), falsely marking a live page as dead.
         let popupAlive = !newPage.isClosed();
         let popupUrl = '';
         try {
@@ -839,71 +836,32 @@ class BrowserManager extends EventEmitter {
         } catch {
           popupAlive = false;
         }
-        if (!popupAlive) {
+
+        if (popupAlive) {
+          // Track the popup so browser_tabs can find it
+          this._popupPages.push(newPage);
+          // Clean up popup from tracking when it closes
+          newPage.on('close', () => {
+            const idx = this._popupPages.indexOf(newPage);
+            if (idx >= 0) this._popupPages.splice(idx, 1);
+          });
+          console.log(`[BrowserManager] Popup opened at ${popupUrl}, tracking in _popupPages. Original page stays active.`);
+        } else {
+          // Popup already dead — close it and move on
+          try { await newPage.close(); } catch {}
           console.warn('[BrowserManager] Popup closed unexpectedly, keeping original page');
         }
 
-        // Also check if the original page navigated (SAML redirects may complete
-        // in the original tab even though a popup event fired).
-        let originalAlive = !this._page.isClosed();
-        let originalUrl = '';
-        try {
-          originalUrl = this._page.url();
-        } catch {
-          originalAlive = false;
-        }
-
-        const popupHasRealUrl = popupAlive && popupUrl && popupUrl !== 'about:blank' && popupUrl !== '';
-        const originalHasRealUrl = originalAlive && originalUrl && originalUrl !== 'about:blank' && originalUrl !== '' && originalUrl !== urlBefore;
-
-        // Decision logic: prefer the page that actually navigated to a real URL.
-        // If both have real URLs, prefer the popup (intentional new tab).
-        // If neither has a real URL, keep the original (avoids about:blank death spiral).
-        let activePage;
-        let switchedToPopup = false;
-
-        if (popupHasRealUrl && originalHasRealUrl) {
-          // Both navigated — prefer popup (likely intentional target=_blank)
-          activePage = newPage;
-          switchedToPopup = true;
-        } else if (popupHasRealUrl && !originalHasRealUrl) {
-          // Only popup has real URL — use it
-          activePage = newPage;
-          switchedToPopup = true;
-        } else if (!popupHasRealUrl && originalHasRealUrl) {
-          // Only original navigated — popup was a false positive (SAML redirect artifact)
-          console.warn('[BrowserManager] Popup has no real URL but original page navigated — keeping original page (popup was false positive)');
-          activePage = this._page;
-          try { await newPage.close(); } catch {} // close the useless popup
-        } else {
-          // Neither has a real URL — keep original, close popup
-          console.warn('[BrowserManager] Neither popup nor original page has a real URL — keeping original page');
-          activePage = this._page;
-          try { await newPage.close(); } catch {}
-        }
-
-        // Close the page we're NOT keeping
-        if (switchedToPopup && originalAlive) {
-          try { await this._page.close(); } catch {}
-        }
-
-        this._page = activePage;
-
-        // Wait for the active page to fully load before snapshotting.
-        try { await this._page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {}); } catch {}
-        try { await this._page.waitForTimeout(1000); } catch {}
+        // Original page is always the active page — never switch to popup
         const snapshot = await this.getSnapshot();
-        // B13: navigated must reflect actual URL change, not just popup event.
-        // When neither popup nor original has a real URL, the page didn't navigate.
-        const navigated = this._page.url() !== urlBefore;
-        // PL6: Include previous URL in popup result so model knows where it came from
-        const pageState = navigated
-          ? `PAGE NAVIGATED — you switched to a new tab/page. Previous page was: ${urlBefore}. You are now on: ${this._page.url()}. The snapshot below shows the new page.`
-          : 'SAME PAGE — the click triggered a popup that failed to navigate. The URL did not change. Try a different approach (e.g., navigate directly to the target URL instead of clicking this element).';
+        const navigated = false; // original page didn't navigate (popup took the click)
+        const pageState = popupAlive && popupUrl && popupUrl !== 'about:blank'
+          ? `NEW TAB OPENED — a new browser tab opened at: ${popupUrl}. You are still on the original page: ${urlBefore}. Use browser_tabs to list all open tabs and switch to the new one if needed.`
+          : `POPUP FAILED — a popup was triggered but it did not navigate to a real URL. You are still on: ${urlBefore}. Try navigating directly to the target URL instead of clicking this element.`;
         if (snapshot.success) {
-          return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated, newTab: switchedToPopup, previousUrl: urlBefore, pageState, snapshot: snapshot.text };
+          return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated, newTab: true, popupUrl: popupAlive ? popupUrl : null, previousUrl: urlBefore, pageState, snapshot: snapshot.text };
         }
-        return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated, newTab: switchedToPopup, previousUrl: urlBefore, pageState };
+        return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated, newTab: true, popupUrl: popupAlive ? popupUrl : null, previousUrl: urlBefore, pageState };
       }
 
       // No new tab — check if same-page navigation happened

@@ -26,8 +26,8 @@ const TOOL_INJECT_MULTIPLIERS = {
 // These are tested on line boundaries only — never on every character.
 const RE_FENCE_HEADER = /^```\s*(\w*)\r?\n/;
 // Tightened: only match tool-call schema, not arbitrary JSON with "tool" or "name" keys
-const RE_TOOL_KEY = /"tool"\s*:\s*"[a-z_]+"/;          // {"tool":"write_file"} — requires string value
-const RE_NAME_KEY = /"name"\s*:\s*"[a-z_]+(?:_[a-z_]+)*"/; // {"name":"read_file"} — snake_case tool name
+const RE_TOOL_KEY = /"tool"\s*:\s*"[a-zA-Z0-9_]+"/;          // {"tool":"write_file"} or {"tool":"vscode_askQuestions"} — requires string value
+const RE_NAME_KEY = /"name"\s*:\s*"[a-zA-Z0-9_]+(?:_[a-zA-Z0-9_]+)*"/; // {"name":"read_file"} or mixed-case
 const RE_PARAMS_KEY = /"(?:params|parameters|arguments)"\s*:\s*\{/; // {"params":{ — strong tool-call signal
 const RE_FILE_WRITE_TOOLS = /write_file|create_file|append_to_file/;
 const RE_CONTENT_START = /"content"\s*:\s*"$/;
@@ -228,7 +228,10 @@ When the user attaches an image, your vision system automatically analyzes it an
 - If you are STUCK (element not found, page not loading, you don't know what to do next), you MUST call ask_question to ask the user for guidance. NEVER just end your response saying "it didn't work" — always either retry with a different approach or ask the user for help via ask_question.
 - If a snapshot shows the same page as before, try a different action instead of repeating. Repeating the same action expecting a different result is a bug in your reasoning.
 - When the user mentions a file, assume they want you to interact with it. Call read_file or the appropriate tool — do not ask for confirmation. If you are unsure of the exact filename (e.g., dash vs underscore, case), call list_directory first to verify the name exists, then read_file with the exact name.
-- Vision: Images are automatically captioned by the vision system. When you receive an image description in brackets, that IS the image content — you do not need to read the image file. Never call read_file on image files (.png/.jpg/.gif/.webp) — they are binary data.`;
+- Vision: Images are automatically captioned by the vision system. When you receive an image description in brackets, that IS the image content — you do not need to read the image file. Never call read_file on image files (.png/.jpg/.gif/.webp) — they are binary data.
+
+## USER-PROVIDED INFORMATION
+When the user provides credentials, answers, or instructions via the ask_question tool, those answers ARE part of your context. You DO have them. Use them immediately when needed. Do NOT say you do not have access to them. Do NOT ask the user to provide them again. Do NOT say "for security reasons" or "I don't have access" — these are FACTUALLY INCORRECT statements. The user gave you this information to use, and you must use it.`;
 
 class ChatEngine extends EventEmitter {
   constructor() {
@@ -2021,6 +2024,15 @@ class ChatEngine extends EventEmitter {
                         const entries = (parsed.entries || []).map(e => e.name || e).slice(0, 15).join(', ');
                         return `list_directory: ${dirPath} — ${entries}`;
                       } catch { return `list_directory: OK`; }
+                    }
+                    // ask_question: preserve the full answer — it contains user-provided data
+                    // (credentials, choices, instructions) that must survive compaction
+                    if (toolName === 'ask_question' && !isErr) {
+                      try {
+                        const parsed = JSON.parse(result);
+                        const answer = parsed.answer || '';
+                        return `ask_question: ${answer.substring(0, 1000)}${answer.length > 1000 ? '...' : ''}`;
+                      } catch { return `ask_question: OK`; }
                     }
                     return `${toolName}: ${isErr ? 'FAILED' : 'OK'}`;
                   });

@@ -2865,7 +2865,7 @@ export default function ChatPanel() {
 
                   {pendingQuestion.options && pendingQuestion.options.length > 0 && (
 
-                    <div className="flex flex-col gap-0.5 mb-2">
+                    <div className="flex flex-col mb-2">
 
                       {pendingQuestion.options.map((opt, i) => {
 
@@ -2879,7 +2879,7 @@ export default function ChatPanel() {
 
                             key={i}
 
-                            className="flex items-center gap-2 px-2.5 py-1.5 text-left rounded hover:bg-vsc-list-hover/60 transition-colors group/opt"
+                            className="flex items-center gap-2 px-2.5 py-1.5 text-left rounded hover:bg-vsc-list-hover/60 transition-colors group/opt border-b border-vsc-panel-border/20 last:border-b-0"
 
                             onClick={() => {
 
@@ -2893,7 +2893,7 @@ export default function ChatPanel() {
 
                             <span className="text-[10px] text-vsc-text-dim/60 font-mono w-4 flex-shrink-0">{i + 1}.</span>
 
-                            <span className="text-[12px] text-vsc-text">{label}</span>
+                            <span className="text-[12px] text-vsc-text-dim">{label}</span>
 
                             {desc && <span className="text-[10px] text-vsc-text-dim/60 truncate">{desc}</span>}
 

@@ -275,8 +275,8 @@ If code is correct, say it's correct. Do not invent issues to appear helpful.
 ### Deep understanding before responding
 Before responding to ANY message, read the relevant parts of the codebase. Never assume from memory. Always verify.
 
-### Research when uncertain
-If you don't know something, research it. Browse documentation, academic papers, open-source projects. "I assumed" is never acceptable.
+### Research when uncertain (CRITICAL — MANDATORY)
+If you don't know something or are unsure, you MUST research the issue thoroughly on the internet before responding. Use web search and online research extensively whenever uncertainty exists. Many problems have already been solved by others, and there are often existing open-source solutions available. "I assumed" is never acceptable — if you lack confidence in your answer, search the web first.
 
 ### Never selectively ignore requirements
 If the user established a constraint, it is permanent until explicitly changed. Do not silently drop constraints.
