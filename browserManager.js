@@ -35,6 +35,8 @@ class BrowserManager extends EventEmitter {
     this._lastSnapshotUrl = null;
     this._lastSnapshotTime = 0;
     this._refFrameMap = new Map(); // ref number → owning Playwright Frame
+    this._snapshotGen = 0;         // Incremented each getSnapshot() call
+    this._refGenMap = new Map();   // ref number → snapshot generation it belongs to
     console.log('[BrowserManager] constructor DONE');
   }
 
@@ -324,7 +326,10 @@ class BrowserManager extends EventEmitter {
         const name = el.name || el.id || '';
         const placeholder = el.placeholder || '';
         const value = el.value || '';
-        const text = (el.textContent || '').trim().substring(0, 80);
+        // PL8: Links need more text (course names, long descriptions) — 200 chars.
+        // Other elements (buttons, inputs) are typically shorter — 120 chars.
+        const textLimit = (tag === 'a' || role === 'link') ? 200 : 120;
+        const text = (el.textContent || '').trim().substring(0, textLimit);
         const href = el.href || '';
         const role = el.getAttribute('role') || '';
         const ariaLabel = el.getAttribute('aria-label') || '';
@@ -340,10 +345,19 @@ class BrowserManager extends EventEmitter {
         if (titleAttr) desc += ` title="${titleAttr.substring(0, 80)}"`;
         if (placeholder) desc += ` placeholder="${placeholder}"`;
         if (value && type !== 'password') desc += ` value="${value.substring(0, 50)}"`;
-        if (href) desc += ` href="${href.substring(0, 80)}"`;
+        if (href) desc += ` href="${href.substring(0, 150)}"`;
         desc += '>';
-        if (text && type !== 'password' && tag !== 'input') desc += ` ${text}`;
-        else if (imgAlt) desc += ` [img: ${imgAlt.substring(0, 80)}]`;
+        if (text && type !== 'password' && tag !== 'input') {
+          // PL8: General-purpose cleanup for link text: strip trailing registration codes
+          // (patterns like NNNN.XXXX-XX.NNNNN.N) and trailing date suffixes.
+          // These are common in LMS and portal sites and add noise without helping identify the link.
+          let cleanText = text;
+          if (tag === 'a' || role === 'link') {
+            cleanText = cleanText.replace(/,?\s+\d{4}\.\w+-\w+\.\d+\.\d+$/g, '');
+            cleanText = cleanText.replace(/,?\s+Ends\s+\w+\s+\d{1,2},?\s+\d{4}\s+at\s+\d{1,2}:\d{2}\s*[AP]M$/i, '');
+          }
+          desc += ` ${cleanText}`;
+        } else if (imgAlt) desc += ` [img: ${imgAlt.substring(0, 120)}]`;
         if (isSubmit) desc += ' [SUBMIT]';
         if (tag === 'select') desc += ' [SELECT]';
         lines.push(desc);
@@ -366,7 +380,13 @@ class BrowserManager extends EventEmitter {
               if (iframeText.length > 0) {
                 const iframeInteractive = iframeDoc.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"]');
                 const iframeElCount = iframeInteractive.length;
-                iframeTexts.push(`--- iframe content (${iframeElCount} interactive elements, src="${src.substring(0, 120)}") ---\n${iframeText.substring(0, 20000)}`);
+                // PL3: Check if iframe content is scrollable — tell the model if more content exists
+                const scrollH = iframeDoc.body.scrollHeight || 0;
+                const clientH = iframeDoc.body.clientHeight || 0;
+                const scrollable = scrollH > clientH;
+                const scrollPct = clientH > 0 ? Math.round((clientH / scrollH) * 100) : 100;
+                const scrollNote = scrollable ? `, scrollable: ${scrollPct}% visible — use browser_scroll to see more` : '';
+                iframeTexts.push(`--- iframe content (${iframeElCount} interactive elements, src="${src.substring(0, 120)}"${scrollNote}) ---\n${iframeText.substring(0, 20000)}`);
               }
             }
           } catch (e) {
@@ -403,11 +423,14 @@ class BrowserManager extends EventEmitter {
       // Now inject data-ref into child frames with CONTINUING ref numbers so the model
       // sees a single unified [ref=N] namespace across all frames.
       this._refFrameMap.clear();
+      this._refGenMap.clear();
+      this._snapshotGen++; // PL7: New generation for this snapshot
       const mainFrameElementCount = snapshotData.elementList ? snapshotData.elementList.split('\n').length : 0;
-      // All main frame refs map to the main frame
+      // All main frame refs map to the main frame AND belong to current generation
       const mainFrame = this._page.mainFrame();
       for (let i = 0; i < mainFrameElementCount; i++) {
         this._refFrameMap.set(i, mainFrame);
+        this._refGenMap.set(i, this._snapshotGen);
       }
 
       // Extract content from ALL frames (including cross-origin iframes).
@@ -466,7 +489,7 @@ class BrowserManager extends EventEmitter {
                 if (ariaLabel) desc += ` aria-label="${ariaLabel}"`;
                 if (placeholder) desc += ` placeholder="${placeholder}"`;
                 if (value && type !== 'password') desc += ` value="${value.substring(0, 50)}"`;
-                if (href) desc += ` href="${href.substring(0, 80)}"`;
+                if (href) desc += ` href="${href.substring(0, 150)}"`;
                 desc += '>';
                 if (text2 && type !== 'password' && tag !== 'input') desc += ` ${text2}`;
                 if (tag === 'select') desc += ' [SELECT]';
@@ -478,6 +501,7 @@ class BrowserManager extends EventEmitter {
             // Store ref→frame mapping for each iframe element
             for (let r = nextRef; r < frameBody.nextRef; r++) {
               this._refFrameMap.set(r, frame);
+              this._refGenMap.set(r, this._snapshotGen);
             }
             nextRef = frameBody.nextRef;
             if (frameBody.refLines.length > 0) {
@@ -491,7 +515,17 @@ class BrowserManager extends EventEmitter {
               if (frameBody.text.length > 0) {
                 parts.push(`Frame text:\n${frameBody.text.substring(0, 15000)}`);
               }
-              frameTexts.push(`--- iframe content (src="${frameUrl.substring(0, 120)}") ---\n${parts.join('\n\n')}`);
+              // PL3: Check if cross-origin frame content is scrollable
+              let scrollNote = '';
+              try {
+                const scrollH = await frame.evaluate(() => document.body?.scrollHeight || 0);
+                const clientH = await frame.evaluate(() => document.body?.clientHeight || 0);
+                if (scrollH > clientH) {
+                  const pct = Math.round((clientH / scrollH) * 100);
+                  scrollNote = `, scrollable: ${pct}% visible — use browser_scroll to see more`;
+                }
+              } catch {}
+              frameTexts.push(`--- iframe content (src="${frameUrl.substring(0, 120)}"${scrollNote}) ---\n${parts.join('\n\n')}`);
             }
           } catch (e) {
             // Frame may be detached or inaccessible
@@ -519,7 +553,28 @@ class BrowserManager extends EventEmitter {
           + '\n\n';
       }
 
-      const result = `${historySection}Page: ${title}\nURL: ${url}\n\nInteractive elements (use the [ref=N] number as the "ref" param, e.g. {"ref":"2"} or {"ref":"[ref=2]"}):\n${fullElementList}\n\nPage text:\n${fullPageText}`;
+      // PL1: Compress page text — deduplicate, trim line width, collapse blanks.
+      // Preserves ALL unique content (assignments, due dates, etc.) while removing
+      // visual noise that wastes context (repeated progress indicators, decorative spacing).
+      const _compressPageText = (text) => {
+        if (!text) return '';
+        const seen = new Set();
+        const lines = text.split('\n');
+        const out = [];
+        let prevBlank = false;
+        for (const raw of lines) {
+          const line = raw.trim();
+          if (!line) { if (!prevBlank) { out.push(''); prevBlank = true; } continue; }
+          prevBlank = false;
+          if (seen.has(line)) continue;
+          seen.add(line);
+          out.push(line.length > 200 ? line.substring(0, 200) + '…' : line);
+        }
+        return out.join('\n');
+      };
+
+      const compressedPageText = _compressPageText(fullPageText);
+      const result = `${historySection}Page: ${title}\nURL: ${url}\n\nInteractive elements (use the [ref=N] number as the "ref" param, e.g. {"ref":"2"} or {"ref":"[ref=2]"}):\n${fullElementList}\n\nPage text:\n${compressedPageText}`;
       this._lastSnapshotUrl = url;
       this._lastSnapshotTime = Date.now();
       // No total cap — the model needs the full snapshot to make correct decisions.
@@ -610,6 +665,25 @@ class BrowserManager extends EventEmitter {
   }
 
   /**
+   * PL7: Check if a ref string belongs to a previous snapshot generation (stale ref).
+   * Returns an error string if stale, null if fresh or untrackable.
+   * Prevents the model from clicking elements that no longer exist after navigation.
+   */
+  _isStaleRef(ref) {
+    if (!ref || typeof ref !== 'string') return null;
+    const trimmed = ref.trim();
+    // Extract numeric ref from any known format
+    const m = trimmed.match(/(?:ref\s*=\s*|\[|^)(\d+)(?:\]|$)/) || (/^(\d+)$/.test(trimmed) && [null, trimmed]);
+    if (!m) return null; // Non-numeric ref (e.g., CSS selector) — can't track
+    const numRef = parseInt(m[1]);
+    if (!this._refGenMap.has(numRef)) return null; // Ref not in map — might be from a page without snapshot
+    if (this._refGenMap.get(numRef) !== this._snapshotGen) {
+      return `Stale ref [ref=${numRef}] — this element was from a previous page. The page has changed since then. Call browser_snapshot to get fresh element refs before clicking.`;
+    }
+    return null; // Fresh ref
+  }
+
+  /**
    * Extract the numeric ref from a selector string (e.g. "[ref=5]" → 5, "3" → 3).
    * Returns null if the selector is not a ref-based selector.
    */
@@ -639,6 +713,9 @@ class BrowserManager extends EventEmitter {
     // This replaces the blind frame iteration fallback that mismatched element indices.
     const refNum = this._extractRefNumber(selector);
     if (refNum !== null && this._refFrameMap.has(refNum)) {
+      // PL7: Stale-ref check for iframe refs too
+      const staleErr = this._isStaleRef(selector);
+      if (staleErr) return { success: false, error: staleErr };
       const targetFrame = this._refFrameMap.get(refNum);
       // Verify the frame is still attached — after navigation, child frames
       // may be detached and using a stale frame reference throws.
@@ -680,12 +757,21 @@ class BrowserManager extends EventEmitter {
     }
     }
 
+    // PL7: Stale-ref detection — reject refs from previous page snapshots
+    const staleErr = this._isStaleRef(selector);
+    if (staleErr) return { success: false, error: staleErr };
     const resolved = this._resolveRef(selector);
     if (!resolved) {
       return { success: false, error: `Invalid element ref "${selector}". Use the [ref=N] number from the snapshot, e.g. browser_click({"ref":"5"}). Call browser_snapshot first if you need fresh refs.` };
     }
     try {
       const urlBefore = this._page.url();
+      // PL5: Lightweight DOM fingerprint before click — detects same-URL content changes
+      let fingerprintBefore = '';
+      try { fingerprintBefore = await this._page.evaluate(() => {
+        const els = document.querySelectorAll('a, button, [role="tab"], [role="menuitem"]');
+        return `${els.length}:${(document.body?.innerText || '').substring(0, 200)}`;
+      }); } catch {}
       // Get the element text before clicking — include title/alt for image-only links
       let clickedText = '';
       try {
@@ -714,25 +800,29 @@ class BrowserManager extends EventEmitter {
         } catch {}
 
         // Check popup state: is it alive AND does it have a real URL?
-        let popupAlive = false;
+        // B15: Use isClosed() instead of evaluate(() => true) — evaluate() throws
+        // during navigation when the execution context is being destroyed/recreated
+        // (e.g., SAML redirects), falsely marking a live page as dead.
+        let popupAlive = !newPage.isClosed();
         let popupUrl = '';
         try {
           popupUrl = newPage.url();
-          await newPage.evaluate(() => true);
-          popupAlive = true;
         } catch {
+          popupAlive = false;
+        }
+        if (!popupAlive) {
           console.warn('[BrowserManager] Popup closed unexpectedly, keeping original page');
         }
 
         // Also check if the original page navigated (SAML redirects may complete
         // in the original tab even though a popup event fired).
-        let originalAlive = false;
+        let originalAlive = !this._page.isClosed();
         let originalUrl = '';
         try {
           originalUrl = this._page.url();
-          await this._page.evaluate(() => true);
-          originalAlive = true;
-        } catch {}
+        } catch {
+          originalAlive = false;
+        }
 
         const popupHasRealUrl = popupAlive && popupUrl && popupUrl !== 'about:blank' && popupUrl !== '';
         const originalHasRealUrl = originalAlive && originalUrl && originalUrl !== 'about:blank' && originalUrl !== '' && originalUrl !== urlBefore;
@@ -774,14 +864,23 @@ class BrowserManager extends EventEmitter {
         try { await this._page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {}); } catch {}
         try { await this._page.waitForTimeout(1000); } catch {}
         const snapshot = await this.getSnapshot();
+        // B13: navigated must reflect actual URL change, not just popup event.
+        // When neither popup nor original has a real URL, the page didn't navigate.
+        const navigated = this._page.url() !== urlBefore;
+        // PL6: Include previous URL in popup result so model knows where it came from
+        const pageState = navigated
+          ? `PAGE NAVIGATED — you switched to a new tab/page. Previous page was: ${urlBefore}. You are now on: ${this._page.url()}. The snapshot below shows the new page.`
+          : 'SAME PAGE — the click triggered a popup that failed to navigate. The URL did not change. Try a different approach (e.g., navigate directly to the target URL instead of clicking this element).';
         if (snapshot.success) {
-          return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated: true, newTab: switchedToPopup, snapshot: snapshot.text };
+          return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated, newTab: switchedToPopup, previousUrl: urlBefore, pageState, snapshot: snapshot.text };
         }
-        return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated: true, newTab: switchedToPopup };
+        return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated, newTab: switchedToPopup, previousUrl: urlBefore, pageState };
       }
 
       // No new tab — check if same-page navigation happened
+      // PL4: Extra wait for dropdown menus that animate open
       try { await this._page.waitForTimeout(800); } catch {}
+      try { await this._page.waitForTimeout(500); } catch {}
       const urlAfter = this._page.url();
       const navigated = urlAfter !== urlBefore;
       if (navigated) {
@@ -789,11 +888,31 @@ class BrowserManager extends EventEmitter {
       }
       // Always snapshot so model sees DOM changes
       const snapshot = await this.getSnapshot();
-      // Clear page state messaging — tell the model exactly what happened
+      // PL4+PL5: Clear page state messaging — tell the model exactly what happened
       // so it doesn't guess or retry the same action blindly
-      const pageState = navigated
-        ? 'PAGE NAVIGATED — you are now on a new page. Call browser_snapshot to see the new page before taking any action.'
-        : 'SAME PAGE — the click succeeded but the URL did not change. The page may have updated (dialog opened, content changed, etc.). Use the snapshot below to see what changed.';
+      let pageState;
+      if (navigated) {
+        pageState = 'PAGE NAVIGATED — you are now on a new page. Call browser_snapshot to see the new page before taking any action.';
+      } else {
+        // PL5: Compare DOM fingerprints to detect same-URL content changes
+        let contentChanged = false;
+        try {
+          const fingerprintAfter = await this._page.evaluate(() => {
+            const els = document.querySelectorAll('a, button, [role="tab"], [role="menuitem"]');
+            return `${els.length}:${(document.body?.innerText || '').substring(0, 200)}`;
+          });
+          contentChanged = fingerprintBefore !== fingerprintAfter;
+        } catch {}
+        // PL4: Check if dropdown menuitems appeared
+        const hasMenuItems = snapshot.success && snapshot.text?.includes('role="menuitem"');
+        if (hasMenuItems) {
+          pageState = 'SAME PAGE — a dropdown menu opened. Menu items are visible in the snapshot below. Click one directly using its ref number.';
+        } else if (contentChanged) {
+          pageState = 'SAME URL but page content changed (tab switch, content update). The snapshot below shows the updated page.';
+        } else {
+          pageState = 'SAME PAGE — the click succeeded but the URL and content did not change. The click may not have had the intended effect. Try a different element or action.';
+        }
+      }
       if (snapshot.success) {
         console.log(`[BrowserManager] click DONE: success, url=${urlAfter}, navigated=${navigated}`);
         return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, pageState, snapshot: snapshot.text };
@@ -903,6 +1022,9 @@ class BrowserManager extends EventEmitter {
     // If this ref maps to a child frame, type directly in that frame.
     const refNum = this._extractRefNumber(ref);
     if (refNum !== null && this._refFrameMap.has(refNum)) {
+      // PL7: Stale-ref check for iframe refs
+      const staleErr = this._isStaleRef(ref);
+      if (staleErr) return { success: false, error: staleErr };
       const targetFrame = this._refFrameMap.get(refNum);
       // Verify frame is still attached (same check as click())
       const currentFrames = this._page.frames();
@@ -932,6 +1054,9 @@ class BrowserManager extends EventEmitter {
     }
     }
 
+    // PL7: Stale-ref detection
+    const staleErr = this._isStaleRef(ref);
+    if (staleErr) return { success: false, error: staleErr };
     const resolved = this._resolveRef(ref);
     if (!resolved) {
       return { success: false, error: `Invalid element ref "${ref}". Use the [ref=N] number from the snapshot, e.g. browser_type({"ref":"3","text":"hello"}). Call browser_snapshot first if you need fresh refs.` };
@@ -991,6 +1116,9 @@ class BrowserManager extends EventEmitter {
   async selectOption(ref, values) {
     if (!(await this._ensurePage())) return { success: false, error: 'No browser page open' };
     await this._ensureRefs();
+    // PL7: Stale-ref detection
+    const staleErr = this._isStaleRef(ref);
+    if (staleErr) return { success: false, error: staleErr };
     const resolved = this._resolveRef(ref);
     if (!resolved) return { success: false, error: `Invalid element ref "${ref}". Use the [ref=N] number from the snapshot.` };
     try {
@@ -1051,6 +1179,9 @@ class BrowserManager extends EventEmitter {
   async hover(ref) {
     if (!(await this._ensurePage())) return { success: false, error: 'No browser page open' };
     await this._ensureRefs();
+    // PL7: Stale-ref detection
+    const staleErr = this._isStaleRef(ref);
+    if (staleErr) return { success: false, error: staleErr };
     const resolved = this._resolveRef(ref);
     if (!resolved) return { success: false, error: `Invalid element ref "${ref}". Use the [ref=N] number from the snapshot.` };
     try {
@@ -1084,6 +1215,9 @@ class BrowserManager extends EventEmitter {
     try {
       for (const field of fields) {
         const refVal = field.ref || field.selector;
+        // PL7: Stale-ref detection
+        const staleErr = this._isStaleRef(refVal);
+        if (staleErr) { failed.push(staleErr); continue; }
         const resolved = this._resolveRef(refVal);
         if (!resolved) {
           failed.push(`ref "${refVal}" could not be resolved — call browser_snapshot first`);

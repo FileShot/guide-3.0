@@ -8,8 +8,19 @@ const { pathToFileURL } = require('url');
 const { parseToolCalls, repairToolCalls, stripToolCallText } = require('./tools/toolParser');
 const { visionServer } = require('./visionServer');
 
-/** Max chars of each tool result injected into chat history (full JSON/snippets must reach the model). */
-const MAX_TOOL_RESULT_INJECT_CHARS = 32000;
+/** Base max chars of each tool result injected into chat history.
+ *  Actual cap is computed at runtime proportional to the model's context size
+ *  (Rule 9: no hardcoded context numbers) so it works for any model from 2K to 128K context.
+ */
+const BASE_TOOL_RESULT_INJECT_CHARS = 32000;
+// PL2: Per-tool-type multipliers (fraction of context-based cap).
+// Browser tools need more because snapshots contain both element refs and page text.
+// File/web tools need less because the model can re-read or re-fetch.
+const TOOL_INJECT_MULTIPLIERS = {
+  browser_snapshot: 1.5, browser_navigate: 1.5, browser_click: 1.5,
+  browser_type: 1.5, browser_screenshot: 0.5,
+  read_file: 0.5, fetch_webpage: 0.5, web_search: 0.25,
+};
 
 // Pre-compiled regex patterns for the streaming tool call filter.
 // These are tested on line boundaries only — never on every character.
@@ -198,7 +209,7 @@ If you are thinking "I cannot browse websites" or "I don't have access to the fi
 ## BROWSER WORKFLOW
 When automating websites, follow this sequence: browser_snapshot → read → decide → act → verify.
 NEVER click or type without first taking a snapshot to see current element refs.
-After ANY click, type, scroll, or form submission, call browser_snapshot to verify the result.
+After ANY click, type, scroll, or form submission, call browser_snapshot to verify the result. If a snapshot shows content is truncated or you need to see more of the page (e.g., content below the fold), call browser_scroll to scroll down, then browser_snapshot to see the new content.
 If browser_click returns navigated:false, you are on the SAME page. Do not click that element again — call browser_snapshot to reassess, then choose a different element or action.
 When filling forms: fill ALL required fields first, THEN submit. After submitting, snapshot to confirm success or read error messages.
 
@@ -216,7 +227,7 @@ When the user attaches an image, your vision system automatically analyzes it an
 - If output is truncated, continue from the point of interruption. Do not restart or re-summarize what was already produced.
 - If you are STUCK (element not found, page not loading, you don't know what to do next), you MUST call ask_question to ask the user for guidance. NEVER just end your response saying "it didn't work" — always either retry with a different approach or ask the user for help via ask_question.
 - If a snapshot shows the same page as before, try a different action instead of repeating. Repeating the same action expecting a different result is a bug in your reasoning.
-- When the user mentions a file, assume they want you to interact with it. Call read_file or the appropriate tool — do not ask for confirmation.
+- When the user mentions a file, assume they want you to interact with it. Call read_file or the appropriate tool — do not ask for confirmation. If you are unsure of the exact filename (e.g., dash vs underscore, case), call list_directory first to verify the name exists, then read_file with the exact name.
 - Vision: Images are automatically captioned by the vision system. When you receive an image description in brackets, that IS the image content — you do not need to read the image file. Never call read_file on image files (.png/.jpg/.gif/.webp) — they are binary data.`;
 
 class ChatEngine extends EventEmitter {
@@ -1728,9 +1739,42 @@ class ChatEngine extends EventEmitter {
                 injectResult = '{"success":true,"note":"Screenshot captured. Use browser_snapshot for a detailed text description of the page."}';
               }
             }
-            if (injectResult.length > MAX_TOOL_RESULT_INJECT_CHARS) {
-              injectResult = injectResult.slice(0, MAX_TOOL_RESULT_INJECT_CHARS)
-                + '\n[... result truncated by system for context size; use only text above]';
+            // PL2: Compute inject cap proportional to model context size (Rule 9: no hardcoded context numbers).
+            // Approx 4 chars per token; cap at 25% of context as chars (leaves 75% for prompt + history).
+            // Minimum floor of 8000 chars so tiny contexts still get usable results.
+            const ctxTokens = this._contextSize || this.modelInfo?.contextSize || 8192;
+            const ctxChars = ctxTokens * 4;
+            const baseCap = Math.max(8000, Math.floor(ctxChars * 0.25));
+            const multiplier = TOOL_INJECT_MULTIPLIERS[call.tool] || 1.0;
+            const injectCap = Math.floor(baseCap * multiplier);
+            if (injectResult.length > injectCap) {
+              // PL1: Smart truncation for browser snapshots — preserve ALL interactive elements
+              // (the model needs every ref to make correct decisions) and truncate only the page text.
+              // For non-browser tools, use the original flat cap.
+              if (call.tool === 'browser_snapshot' || call.tool === 'browser_navigate' || call.tool === 'browser_click' || call.tool === 'browser_type') {
+                const pageTextIdx = injectResult.indexOf('\nPage text:\n');
+                if (pageTextIdx !== -1) {
+                  const elementSection = injectResult.substring(0, pageTextIdx + 12);
+                  const textSection = injectResult.substring(pageTextIdx + 12);
+                  const budgetForText = injectCap - elementSection.length;
+                  if (budgetForText > 500) {
+                    const headSize = Math.floor(budgetForText * 0.7);
+                    const tailSize = budgetForText - headSize - 60;
+                    injectResult = elementSection + textSection.substring(0, headSize)
+                      + '\n[... middle section omitted for context size — call browser_scroll to see more]\n'
+                      + textSection.substring(Math.max(headSize, textSection.length - tailSize));
+                  } else {
+                    injectResult = elementSection + textSection.substring(0, budgetForText)
+                      + '\n[... result truncated — call browser_scroll to see more content]';
+                  }
+                } else {
+                  injectResult = injectResult.slice(0, injectCap)
+                    + '\n[... result truncated by system for context size; use browser_scroll to see more]';
+                }
+              } else {
+                injectResult = injectResult.slice(0, injectCap)
+                  + '\n[... result truncated by system for context size; use only text above]';
+              }
             }
             toolResultLines.push(`${call.tool}: ${injectResult}`);
           }

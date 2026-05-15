@@ -10,6 +10,58 @@
 
 
 
+## 2026-05-15 — Pipeline limiting factor fixes (PL1–PL8)
+
+### Problem
+
+Full browser test walkthrough of a university portal (login → BrightSpace → course → syllabus → assessments) identified 8 structural pipeline limitations that make web automation difficult or impossible for models, especially smaller ones:
+
+1. Snapshot page text was uncompressed — repeated lines, overlong lines, decorative noise consumed context without helping the model act.
+2. Tool result injection used a flat 32K char cap regardless of tool type or model context size — too aggressive for browser snapshots, too generous for file reads. Hardcoded number violated Rule 9.
+3. Iframe content showed no scroll metadata — model had no way to know content was scrollable beyond the visible portion.
+4. Dropdown menus needed 4 tool calls instead of 2 — post-click snapshot was taken before dropdown animation completed.
+5. Same-URL clicks (tab switches, AJAX updates) returned "SAME PAGE" with no indication whether content actually changed — model might retry thinking the click failed.
+6. Popup/tab navigation gave no context about where the model came from — it didn't know the previous page URL.
+7. Ref numbers reset every snapshot — model could reuse stale refs from a previous page and click wrong elements.
+8. Element text was truncated at 80 chars — long link text (course names) was cut off before identifying information appeared.
+
+### Changes
+
+1. **PL1 — Smart snapshot compression** (`browserManager.js` `getSnapshot`): Added `_compressPageText()` that deduplicates identical lines, trims lines over 200 chars, and collapses consecutive blank lines. Preserves ALL unique content (assignments, due dates, etc.) while removing visual noise. Smart truncation in `chatEngine.js` preserves ALL interactive element refs and only truncates page text section, using head+tail pattern with "call browser_scroll to see more" hint.
+
+2. **PL2 — Runtime-computed per-tool inject budgets** (`chatEngine.js`): Replaced fixed `MAX_TOOL_RESULT_INJECT_CHARS = 32000` with `BASE_TOOL_RESULT_INJECT_CHARS` + `TOOL_INJECT_MULTIPLIERS` map. Actual cap computed at runtime as `max(8000, contextSize * 4 * 0.25) * multiplier`. Browser tools get 1.5x, file/web tools get 0.25–0.5x. Works for any model from 2K to 128K context (Rule 9 compliant).
+
+3. **PL3 — Iframe scroll metadata** (`browserManager.js` `_ensureRefs` + `getSnapshot`): Both same-origin and cross-origin iframe sections now include scrollability info: `scrollable: 30% visible — use browser_scroll to see more`. Model can see that more content exists beyond the visible portion.
+
+4. **PL4 — Dropdown timing + menuitem hint** (`browserManager.js` click handler): Added 500ms extra wait after click for dropdown animation. Post-click pageState now detects `role="menuitem"` in snapshot and says "a dropdown menu opened — click one directly using its ref number."
+
+5. **PL5 — DOM fingerprint change detection** (`browserManager.js` click handler): Before click, captures lightweight DOM fingerprint (interactive element count + first 200 chars of body text). After click, compares fingerprints. Same-URL clicks now get one of three messages: "dropdown opened", "content changed (tab switch)", or "content unchanged — try different element."
+
+6. **PL6 — Popup context info** (`browserManager.js` popup handler): Added `previousUrl` field to popup click results. pageState for navigated popups now says "you switched from [previous URL] to [current URL]" so the model knows where it came from.
+
+7. **PL7 — Stale-ref detection** (`browserManager.js`): Added `_snapshotGen` counter and `_refGenMap` (ref→generation mapping). New `_isStaleRef()` method checks if a ref belongs to the current snapshot generation. Added stale-ref check before `_resolveRef()` in `browser_click`, `browser_type`, `selectOption`, `hover`, and `fillForm`. Stale refs return clear error: "Call browser_snapshot to get fresh element refs." Ref format `[ref=N]` is unchanged — no model retraining needed.
+
+8. **PL8 — Element text limit increase + general link text cleaning** (`browserManager.js` `_ensureRefs`): Link text limit raised from 80→200 chars, other elements 80→120 chars. Href limit raised 80→150 chars. Added general-purpose regex cleanup for link text: strips trailing registration codes (`NNNN.XXXX-XX.NNNNN.N`) and date suffixes (`Ends Mon DD, YYYY at HH:MM AM/PM`). No site-specific strings.
+
+9. **PL1 — General scroll guidance** (`chatEngine.js` SYSTEM_PROMPT): Added "If a snapshot shows content is truncated or you need to see more of the page (e.g., content below the fold), call browser_scroll to scroll down, then browser_snapshot to see the new content." — general wording, no test-specific references.
+
+### Root cause
+
+- PL1: Flat truncation cut from the end of a monolithic string, which could remove element refs the model needed to act.
+- PL2: Hardcoded 32K cap was wrong for 4K context models and insufficient for 128K context models.
+- PL3: Model had zero information about scrollable iframe content — it couldn't know more existed.
+- PL4: 800ms wait was too short for CSS-animated dropdown menus.
+- PL5: `navigated: false` gave no signal about whether the click had any effect on the DOM.
+- PL6: Model lost track of where it was when switching tabs — no previous URL in result.
+- PL7: Ref numbers reset every snapshot; model could click a stale ref from a previous page.
+- PL8: 80-char limit was arbitrary and too short for long link text common in LMS/portal sites.
+
+
+
+---
+
+
+
 ## 2026-05-15 — Browser navigation fixes (B8–B11)
 
 ### Problem
@@ -38,6 +90,36 @@
 - B9: `_ensurePage` treated a dead page as a dead browser. These are different failure modes — the browser can be alive with other pages.
 - B10: No visual indicator for `<select>` elements in the snapshot. The model saw text content near an element and guessed it was a dropdown option.
 - B11: Tool description didn't emphasize that the `options` array is what creates clickable UI. Small models took the path of least resistance (embedding in text).
+
+---
+
+
+
+## 2026-05-15 — Tool parser alias fix + popup liveness fix (B12–B15)
+
+### Problem
+
+1. `vscode_askQuestions` tool call silently dropped — `normalizeToolCall` lowercased the tool name to `vscode_askquestions`, but the alias key in `TOOL_NAME_ALIASES` was mixed-case (`vscode_askQuestions`). JavaScript object key lookup is case-sensitive, so the alias was never found, and the tool was rejected as invalid. Model fell back to plain text or `ask_question` with malformed params.
+
+2. BrightSpace Launcher click → 27x repetitive loop over 1h14m. Click triggered popup event, B8 resilience kept original page, but `navigated` was hardcoded `true` in the popup path — model thought it navigated, saw same page, retried.
+
+3. Popup liveness check `evaluate(() => true)` threw during SAML redirect (JS execution context being destroyed/recreated), falsely marking live popups as dead. B8 then closed the "dead" popup and kept the original page. The popup that would have navigated to BrightSpace was killed on every attempt.
+
+### Changes
+
+1. **B12 — TOOL_NAME_ALIASES case normalization** (`toolParser.js`): Added runtime normalization loop that lowercases all alias keys at module load. Added broad alias coverage for every VALID_TOOLS entry in underscore-joined lowercase form (e.g., `browsernavigate`, `readfile`, `runcommand`). Fixed `vscode_askQuestions` → `vscode_askquestions` key. Any future mixed-case alias is automatically normalized.
+
+2. **B13 — Click navigated flag reflects actual URL change** (`browserManager.js` popup resilience path): Changed hardcoded `navigated: true` to `navigated = this._page.url() !== urlBefore`. Added `pageState` message that tells the model the popup failed and suggests navigating directly.
+
+3. **B15 — Popup liveness check uses isClosed()** (`browserManager.js` click handler): Replaced `evaluate(() => true)` with `page.isClosed()` for both popup and original page liveness checks. `isClosed()` is a Playwright API that checks page state without executing JS in the page context, so it doesn't throw during navigation. This prevents live popups from being falsely marked dead during SAML redirects.
+
+### Root cause
+
+- B12: `normalizeToolCall` lowercased tool names at line 333, but `TOOL_NAME_ALIASES` keys were defined in mixed case. The alias existed but was unreachable. `vscode_askQuestions` was the only mixed-case key, but the bug would affect any future mixed-case alias.
+- B13: B8's popup resilience path hardcoded `navigated: true` because it assumed any popup event meant navigation. When the popup died (due to B15 bug), the original page hadn't navigated, but the result said it had — misleading the model into retrying.
+- B15: `evaluate(() => true)` requires a live JS execution context in the page. During SAML redirect chains, the old context is destroyed and a new one is created — `evaluate()` throws during this transition. `isClosed()` is a Playwright-level check that doesn't depend on JS context state.
+
+
 
 ---
 

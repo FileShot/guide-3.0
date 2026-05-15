@@ -49,10 +49,51 @@ const TOOL_NAME_ALIASES = {
   // Other
   undo: 'undo_edit', todos: 'write_todos', todo: 'update_todo',
   ask: 'ask_question', question: 'ask_question', ask_user: 'ask_question',
-  vscode_askQuestions: 'ask_question', ask_questions: 'ask_question',
-  askQuestion: 'ask_question', ask_user_question: 'ask_question',
+  vscode_askquestions: 'ask_question', vscode_askquestion: 'ask_question',
+  ask_questions: 'ask_question', askquestion: 'ask_question',
+  askquestionstool: 'ask_question', ask_user_questions: 'ask_question',
+  ask_user_question: 'ask_question',
   request: 'http_request', http: 'http_request', curl: 'http_request',
+  // Additional common model misspellings / alternate casings
+  browsernavigate: 'browser_navigate', browsersnapshot: 'browser_snapshot',
+  browserclick: 'browser_click', browsertype: 'browser_type',
+  browserscreenshot: 'browser_screenshot', browserscroll: 'browser_scroll',
+  browserwait: 'browser_wait', browserback: 'browser_back',
+  browserclose: 'browser_close', browserevaluate: 'browser_evaluate',
+  browserfillform: 'browser_fill_form', browserselectoption: 'browser_select_option',
+  browserhover: 'browser_hover', browserpresskey: 'browser_press_key',
+  browsertabs: 'browser_tabs', browserdrag: 'browser_drag',
+  browserhandledialog: 'browser_handle_dialog',
+  readfile: 'read_file', writefile: 'write_file', editfile: 'edit_file',
+  appendtofile: 'append_to_file', deletefile: 'delete_file',
+  renamefile: 'rename_file', copyfile: 'copy_file',
+  listdirectory: 'list_directory', createdirectory: 'create_directory',
+  findfiles: 'find_files', grepsearch: 'grep_search',
+  runcommand: 'run_command', websearch: 'web_search',
+  fetchwebpage: 'fetch_webpage', httprequest: 'http_request',
+  gitstatus: 'git_status', gitcommit: 'git_commit', gitdiff: 'git_diff',
+  gitlog: 'git_log', gitbranch: 'git_branch', gitstash: 'git_stash',
+  gitreset: 'git_reset', savememory: 'save_memory', getmemory: 'get_memory',
+  listmemories: 'list_memories', writetodos: 'write_todos', updatetodo: 'update_todo',
+  writescratchpad: 'write_scratchpad', readscratchpad: 'read_scratchpad',
+  save_rule: 'save_rule', list_rules: 'list_rules',
+  diff_files: 'diff_files', check_port: 'check_port',
+  open_file_in_editor: 'open_file_in_editor', generate_image: 'generate_image',
+  get_project_structure: 'get_project_structure', analyze_error: 'analyze_error',
+  install_packages: 'install_packages', undo_edit: 'undo_edit',
+  list_undoable: 'list_undoable', get_file_info: 'get_file_info',
+  search_codebase: 'search_codebase', search_in_file: 'search_in_file',
+  replace_in_files: 'replace_in_files',
 };
+
+// Normalize all alias keys to lowercase so the lowercased lookup in normalizeToolCall
+// always finds them, regardless of how they were defined above.
+for (const key of Object.keys(TOOL_NAME_ALIASES)) {
+  if (key !== key.toLowerCase()) {
+    TOOL_NAME_ALIASES[key.toLowerCase()] = TOOL_NAME_ALIASES[key];
+    delete TOOL_NAME_ALIASES[key];
+  }
+}
 
 // ─── Valid Tool Names ───
 const VALID_TOOLS = new Set([
