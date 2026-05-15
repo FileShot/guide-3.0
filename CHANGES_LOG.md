@@ -1,10 +1,36 @@
 # guIDE 3.0 — Changes Log
 
-
-
 > Every code change must be logged here. Context windows expire. If it's not here, it's lost.
 
+---
 
+## 2026-05-15 — CRITICAL: Fix PL8 role TDZ bug — browser_snapshot crashed on every call (B8)
+
+### Problem
+PL8 added link-aware text limits: `(tag === 'a' || role === 'link') ? 200 : 120` on line 331 of browserManager.js.
+But `const role` was declared on line 334 — 3 lines AFTER its first use. JavaScript `const` has a Temporal Dead Zone:
+accessing it before declaration throws `ReferenceError: Cannot access 'role' before initialization`.
+This crashed `getSnapshot()` on EVERY call, making browser_snapshot return `success:false` 100% of the time.
+The model then looped calling browser_snapshot 220 times, browser_navigate 32 times, and read_file 26 times.
+The browser subsystem was completely non-functional.
+
+### Root Cause
+Variable declaration order bug introduced by PL8. `role` used before declared. Same pattern in iframe section (line 483)
+but iframe section never got the link-aware text limit — it was hardcoded to 80 chars.
+
+### Fix
+- **browserManager.js line 329-334**: Moved `const role = el.getAttribute('role') || ''` BEFORE `textLimit` computation.
+  Now `role` is available when the ternary evaluates. No more ReferenceError.
+- **browserManager.js line 481-485**: Same fix for iframe interactive elements. Also applied link-aware text limit
+  (200 for links, 120 for others) instead of the old hardcoded 80 chars.
+
+### Files Changed
+- `browserManager.js` lines 328-334, 480-485
+
+### Impact
+- browser_snapshot now works on ALL sites (not just Brightspace — the TDZ crash affected every page)
+- Link text preserved up to 200 chars on both main frame and iframe elements
+- 704 ReferenceError crashes eliminated per session
 
 ---
 

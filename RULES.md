@@ -526,7 +526,58 @@ If the pipeline has bugs, it gets destroyed and rebuilt using a different approa
 
 ---
 
-## SECTION 16 — CRITICAL REMINDERS
+## SECTION 16 — MANDATORY PLANNING FORMAT
+
+Every plan for a code change MUST answer ALL of the following. No exceptions. No skipping. If any field is missing, the plan is incomplete and must not be approved.
+
+```
+PLAN: [short title]
+=====
+EXACT LINES OF CHANGE:
+  - File: [absolute path]
+  - Function: [name]
+  - Line range: [start]-[end]
+  - What changes: [specific description]
+
+WHAT: [what the change does — one sentence]
+WHERE: [file, function, line range]
+WHEN: [when this code runs — at startup? per-request? per-tool-round?]
+WHY: [root cause this addresses — NOT the symptom, the CAUSE]
+HOW: [mechanism — how the code change produces the intended effect]
+
+EDGE CASES:
+  - [edge case 1]: [how it's handled]
+  - [edge case 2]: [how it's handled]
+
+FALSE POSITIVES:
+  - Could this trigger when nothing is wrong? [yes/no + explanation]
+  - Could this block a legitimate action? [yes/no + explanation]
+
+BAND-AID CHECK:
+  - Does this fix what happens AFTER the problem occurs? [yes/no]
+  - Or does this PREVENT the problem from occurring? [yes/no]
+  - If "after" — this is a band-aid. Redesign.
+
+PRODUCTION QUALITY CHECK:
+  - Is this ONLY a proper production solution? [yes/no]
+  - Test-specific? [yes/no — BANNED if yes]
+  - Use-case-specific? [yes/no — BANNED if yes]
+  - Model-specific? [yes/no — BANNED if yes]
+  - Hardware-specific? [yes/no — BANNED if yes]
+  - On par with $1M software (Windsurf/Cursor quality)? [yes/no + justification]
+  - Uses any banned mechanisms? [yes/no — list any from Section 4/11]
+
+AI PERSPECTIVE:
+  - If I (the AI) were running inside guIDE, would this change help me
+    make better decisions? [yes/no + what I would experience differently]
+  - Would I understand why my tool call was blocked/modified? [yes/no]
+```
+
+A plan that skips any field is INCOMPLETE. Incomplete plans are NOT approved.
+
+---
+
+## SECTION 17 — CRITICAL REMINDERS
 
 - Every code change MUST update CHANGES_LOG.md
 - Hardware-specific fixes are bugs

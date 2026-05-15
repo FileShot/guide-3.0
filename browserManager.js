@@ -326,12 +326,12 @@ class BrowserManager extends EventEmitter {
         const name = el.name || el.id || '';
         const placeholder = el.placeholder || '';
         const value = el.value || '';
-        // PL8: Links need more text (course names, long descriptions) — 200 chars.
+        const role = el.getAttribute('role') || '';
+        // Links need more text (course names, long descriptions) — 200 chars.
         // Other elements (buttons, inputs) are typically shorter — 120 chars.
         const textLimit = (tag === 'a' || role === 'link') ? 200 : 120;
         const text = (el.textContent || '').trim().substring(0, textLimit);
         const href = el.href || '';
-        const role = el.getAttribute('role') || '';
         const ariaLabel = el.getAttribute('aria-label') || '';
         const titleAttr = el.getAttribute('title') || '';
         const imgAlt = (!text && el.querySelector)
@@ -478,9 +478,11 @@ class BrowserManager extends EventEmitter {
                 const name = el.name || el.id || '';
                 const placeholder = el.placeholder || '';
                 const value = el.value || '';
-                const text2 = (el.textContent || '').trim().substring(0, 80);
-                const href = el.href || '';
                 const role = el.getAttribute('role') || '';
+                // Links need more text — 200 chars; other elements — 120 chars.
+                const textLimit = (tag === 'a' || role === 'link') ? 200 : 120;
+                const text2 = (el.textContent || '').trim().substring(0, textLimit);
+                const href = el.href || '';
                 const ariaLabel = el.getAttribute('aria-label') || '';
                 let desc = `[ref=${refIdx}] <${tag}`;
                 if (type) desc += ` type="${type}"`;
