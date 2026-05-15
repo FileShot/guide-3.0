@@ -1353,7 +1353,14 @@ class ChatEngine extends EventEmitter {
       };
 
       // Build common generation options
-      const thinkBudget = options.thinkingBudget;
+      // S5: reasoningEffort maps to thinkingBudget when thinkingBudget is 0 (auto)
+      let thinkBudget = options.thinkingBudget;
+      const reasoningEffort = options.reasoningEffort;
+      if ((!thinkBudget || thinkBudget === 0) && reasoningEffort) {
+        if (reasoningEffort === 'low') thinkBudget = 512;
+        else if (reasoningEffort === 'medium') thinkBudget = 2048;
+        else if (reasoningEffort === 'high') thinkBudget = 8192;
+      }
       const genOptions = {
         signal: this._abortController.signal,
         stopOnAbortSignal: true,
@@ -1488,7 +1495,9 @@ class ChatEngine extends EventEmitter {
 
       // Set maxTokens to guarantee generation space (node-llama-cpp will use remaining context)
       // This ensures the model always has room to output tool calls
-      genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, availableForGeneration);
+      // S4: Respect user-set maxResponseTokens (passed as options.maxTokens) as a cap
+      const userMaxTokens = (options.maxTokens > 0) ? options.maxTokens : Infinity;
+      genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, Math.min(availableForGeneration, userMaxTokens));
       // Log generation setup for diagnostics
       console.log(`[ChatEngine] Generation setup: maxTokens=${genOptions.maxTokens}, contextSize=${contextSize}, usedTokens=${usedTokens}, available=${availableForGeneration}, chatHistory=${this._chatHistory.length} msgs, temperature=${genOptions.temperature}`);
 
@@ -1496,7 +1505,19 @@ class ChatEngine extends EventEmitter {
       const roundStartTime = Date.now();
       const ctxUsedBefore = this._sequence?.nextTokenIndex || 0;
       console.log(`[ChatEngine] Calling generateResponse #1: history=${this._chatHistory.length} msgs, ctxUsedBefore=${ctxUsedBefore}`);
+
+      // S3: Generation timeout — abort if model gets stuck (0 = disabled)
+      const timeoutSec = options.generationTimeoutSec ?? 0;
+      let generationTimer = null;
+      if (timeoutSec > 0) {
+        generationTimer = setTimeout(() => {
+          console.warn(`[ChatEngine] Generation timeout (${timeoutSec}s) — aborting`);
+          this._abortController.abort();
+        }, timeoutSec * 1000);
+      }
+
       let result = await this._chat.generateResponse(this._chatHistory, genOptions);
+      if (generationTimer) clearTimeout(generationTimer);
       console.log(`[ChatEngine] generateResponse #1 returned`);
       const roundElapsed = (Date.now() - roundStartTime) / 1000;
       const roundTokens = result.metadata?.totalTokens ?? result.response?.length ?? 0;
@@ -1530,8 +1551,8 @@ class ChatEngine extends EventEmitter {
       console.log(`[ChatEngine] ─── MODEL RESPONSE ─── "${_rawResp}"`);
 
       // Raw-text tool call loop: parse tool calls from model output, execute, continue
-      // No iteration cap — the model must be able to iterate indefinitely for long-running tasks.
-      // Context window limits and context shift naturally bound the loop.
+      // S2: maxIterations caps the loop when set (>0); 0 = unlimited (context bounds naturally)
+      const maxIterations = (options.maxIterations > 0) ? options.maxIterations : Infinity;
       if (executeToolFn) {
         // Flush any buffered content from the streaming filter before parsing
         _sfFlush();
@@ -1572,8 +1593,8 @@ class ChatEngine extends EventEmitter {
           parsedCalls = [];
         }
 
-        console.log(`[ChatEngine] Tool loop ENTER: ${parsedCalls.length} parsed call(s)`);
-        while (parsedCalls.length > 0) {
+        console.log(`[ChatEngine] Tool loop ENTER: ${parsedCalls.length} parsed call(s), maxIterations=${maxIterations === Infinity ? 'unlimited' : maxIterations}`);
+        while (parsedCalls.length > 0 && this._toolRoundCount < maxIterations) {
           console.log(`[ChatEngine] Tool loop ITERATION: ${parsedCalls.length} call(s)`);
           // Notify UI so ToolCallCards appear for each tool call (spinner state)
           if (onStreamEvent) {
@@ -2106,6 +2127,20 @@ class ChatEngine extends EventEmitter {
               }
             }
           }
+        }
+
+        // S2: If we hit the iteration cap, notify the model so it can summarize
+        if (this._toolRoundCount >= maxIterations && parsedCalls.length > 0) {
+          console.warn(`[ChatEngine] Max iterations (${maxIterations}) reached — ${parsedCalls.length} tool call(s) still pending`);
+          this._chatHistory.push({ type: 'user', text: `[System: Max iterations (${maxIterations}) reached. Summarize what you've accomplished and what remains. Do NOT attempt more tool calls.]` });
+          // Generate one final summary response
+          const ctxUsedNow = this._sequence?.nextTokenIndex || 0;
+          genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, contextSize - ctxUsedNow);
+          try {
+            result = await this._chat.generateResponse(this._chatHistory, genOptions);
+            fullResponse += result.response || '';
+            if (onStreamEvent) onStreamEvent('llm-token', result.response || '');
+          } catch (_) {}
         }
       }
 

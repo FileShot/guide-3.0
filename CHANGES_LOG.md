@@ -10,6 +10,49 @@
 
 
 
+## 2026-05-15 — Settings audit: 4 dead settings wired + frontend-backend sync (S1–S7)
+
+### Problem
+
+Full pipeline audit of all settings revealed 4 "dead" settings that were defined in the UI but never consumed by the inference engine, plus a critical frontend-backend sync gap that made hardware settings (gpuLayers, contextSize, kvCacheType) stale after user changes.
+
+1. `maxIterations` — slider in UI, sent in chatContext, but never extracted or enforced in `chatEngine.js`. Tool loop had no iteration cap.
+2. `generationTimeoutSec` — slider in UI, sent in chatContext, but never extracted. No timeout existed around `generateResponse()`. Old `chatEngine.js` had this code but it was lost in rewrite.
+3. `maxResponseTokens` — field in UI, sent as `maxTokens` in chatContext, but `chatEngine.js` computed `genOptions.maxTokens` from context space alone, ignoring the user value entirely.
+4. `reasoningEffort` — Low/Medium/High buttons in UI, sent in chatContext, but `chatEngine.js` never read it. Pure placebo.
+5. Frontend `updateSetting()` wrote to localStorage only — never called `POST /api/settings`. Backend `settingsManager` reads from `settings.json`, a completely separate store. Hardware settings changed in UI were never persisted to backend, so model reload read stale values.
+6. Frontend default mismatches: `maxIterations` was 25 in frontend vs 0 in backend; `kvCacheType` was `q3_0` in frontend vs `q4_0` in backend (after migration).
+7. Visual sync feedback UI existed in Sidebar but was never triggered because `updateSetting()` never called `setSettingsSyncState`.
+
+### Changes
+
+1. **S1 — Frontend-backend settings sync** (`appStore.js`): `updateSetting()` now calls `POST /api/settings` after localStorage save, with `setSettingsSyncState` feedback. Hardware settings changes now persist to `settings.json` so model reload reads correct values.
+
+2. **S2 — Wire maxIterations** (`electron-main.js`, `server/main.js`, `chatEngine.js`): Pass `maxIterations` from settings to `chat()`. Tool loop `while` condition now checks `this._toolRoundCount < maxIterations`. When limit hit, injects system message telling model to summarize. 0 = unlimited (default, matches current behavior).
+
+3. **S3 — Wire generationTimeoutSec** (`electron-main.js`, `server/main.js`, `chatEngine.js`): Pass `generationTimeoutSec` from settings to `chat()`. Before `generateResponse()`, sets `setTimeout` that calls `this._abortController.abort()` after N seconds. Timer cleared on completion. 0 = disabled (default).
+
+4. **S4 — Wire maxResponseTokens** (`chatEngine.js`): `genOptions.maxTokens` now computed as `Math.max(512, Math.min(availableForGeneration, userMaxTokens))` where `userMaxTokens = options.maxTokens > 0 ? options.maxTokens : Infinity`. User-set limit is respected; 0/-1 = unlimited.
+
+5. **S5 — Wire reasoningEffort** (`chatEngine.js`): When `thinkingBudget` is 0 (auto), maps `reasoningEffort` to thinking token budget: low=512, medium=2048, high=8192. Explicit `thinkingBudget` setting overrides this.
+
+6. **S6 — Fix frontend default mismatches** (`appStore.js`): `maxIterations` default changed 25→0 (match backend). `kvCacheType` default changed `q3_0`→`q4_0` (match backend migration). Both in initial settings object and `resetSettings()`.
+
+7. **S7 — Visual sync feedback** (`Sidebar.jsx`): Already existed — shows "Saving..." (blue) → "Saved" (green) → "Save failed" (red). Was dead because `updateSetting()` never triggered it. Now works via S1.
+
+### Root cause
+
+- S1: `updateSetting()` was localStorage-only. Backend `settingsManager` reads `settings.json`. Two completely separate stores.
+- S2-S5: Settings were sent in `chatContext.params` from `ChatPanel.jsx` but never extracted in `electron-main.js` or consumed in `chatEngine.js`.
+- S6: Frontend defaults were written independently of backend defaults and never synchronized after backend migrations.
+- S7: `setSettingsSyncState` was defined but never called from `updateSetting()`.
+
+
+
+---
+
+
+
 ## 2026-05-15 — Pipeline limiting factor fixes (PL1–PL8)
 
 ### Problem

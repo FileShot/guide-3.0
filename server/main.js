@@ -322,6 +322,9 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       thinkingBudget: settings.thinkingBudget,
       enableThinkingFilter: settings.enableThinkingFilter,
       enableGrammar: settings.enableGrammar,
+      maxIterations: settings.maxIterations || 0,
+      generationTimeoutSec: settings.generationTimeoutSec || 0,
+      reasoningEffort: settings.reasoningEffort || 'medium',
     });
     console.log(`[server/main] ai-chat DONE: toolCallCount=${result.toolCallCount}`);
     return { text: result.text, toolCallCount: result.toolCallCount };

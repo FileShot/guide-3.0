@@ -1768,7 +1768,7 @@ const useAppStore = create((set, get) => ({
 
       requireMinContextForGpu: false,
 
-      kvCacheType: 'q3_0',      // 'f16' | 'q8_0' | 'q4_0' | 'q3_0' | 'q4_1' | 'off' — lower = more context, less precision
+      kvCacheType: 'q4_0',      // 'f16' | 'q8_0' | 'q4_0' | 'q3_0' | 'q4_1' | 'off' — lower = more context, less precision
 
       // Editor
 
@@ -1832,6 +1832,18 @@ const useAppStore = create((set, get) => ({
 
     localStorage.setItem('guIDE-settings', JSON.stringify(next));
 
+    // Sync to backend settings.json so model reload reads correct values
+    set().setSettingsSyncState({ status: 'saving', at: Date.now() });
+    fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(next),
+    }).then(r => r.json()).then(() => {
+      set().setSettingsSyncState({ status: 'saved', at: Date.now() });
+    }).catch(e => {
+      set().setSettingsSyncState({ status: 'error', error: e.message, at: Date.now() });
+    });
+
     return { settings: next };
 
   }),
@@ -1846,13 +1858,13 @@ const useAppStore = create((set, get) => ({
 
       thinkingBudget: 2048, reasoningEffort: 'medium',
 
-      maxIterations: 25, generationTimeoutSec: 0, snapshotMaxChars: 8000,
+      maxIterations: 0, generationTimeoutSec: 0, snapshotMaxChars: 8000,
 
       enableThinkingFilter: false, enableGrammar: false,
 
       autoLintFix: true, enableSubAgents: false,
 
-      kvCacheType: 'q3_0',
+      kvCacheType: 'q4_0',
 
       systemPrompt: '', customInstructions: '', guideInstructionsPath: '',
 
