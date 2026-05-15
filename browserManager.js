@@ -681,28 +681,37 @@ class BrowserManager extends EventEmitter {
       const newPage = await popupPromise;
 
       if (newPage) {
-        // A new tab opened — switch to it and close old tabs to prevent accumulation
+        // A new tab opened — wait for it to stabilize before switching
         try {
           await newPage.waitForURL(url => url !== 'about:blank' && url !== '', { timeout: 10000 }).catch(() => {});
           await newPage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
         } catch {}
-        // Close all other tabs except the new one
-        const context = this._page.context();
-        const allPages = context.pages();
-        for (const p of allPages) {
-          if (p !== newPage) { try { await p.close(); } catch {} }
+        // Verify popup is actually usable before discarding the original page.
+        // If the popup self-closes (e.g., SAML redirect chain), falling back to
+        // the original page prevents about:blank.
+        let popupUsable = false;
+        try {
+          await newPage.evaluate(() => true);
+          popupUsable = true;
+        } catch {
+          console.warn('[BrowserManager] Popup closed unexpectedly, keeping original page');
         }
-        this._page = newPage;
-        // Wait for new tab to fully load before snapshotting.
-        // Without this, snapshot returns about:blank because the new tab
-        // hasn't finished its redirect chain yet.
+        if (popupUsable) {
+          const context = this._page.context();
+          const allPages = context.pages();
+          for (const p of allPages) {
+            if (p !== newPage) { try { await p.close(); } catch {} }
+          }
+          this._page = newPage;
+        }
+        // Wait for the active page to fully load before snapshotting.
         try { await this._page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {}); } catch {}
         try { await this._page.waitForTimeout(1000); } catch {}
         const snapshot = await this.getSnapshot();
         if (snapshot.success) {
-          return { success: true, url: newPage.url(), clicked: clickedText || selector, navigated: true, newTab: true, snapshot: snapshot.text };
+          return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated: true, newTab: true, snapshot: snapshot.text };
         }
-        return { success: true, url: newPage.url(), clicked: clickedText || selector, navigated: true, newTab: true };
+        return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated: true, newTab: true };
       }
 
       // No new tab — check if same-page navigation happened
