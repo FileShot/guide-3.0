@@ -10,6 +10,39 @@
 
 
 
+## 2026-05-15 — Browser navigation fixes (B8–B11)
+
+### Problem
+
+1. Clicking links that trigger SAML SSO redirects (e.g., BrightSpace Launcher on UMS portal) resulted in `about:blank` — Playwright falsely detected a popup event, the code killed the original page, the popup died, and `_ensurePage` launched a brand new blank browser. Happened 3 times in one session.
+
+2. `_ensurePage()` immediately launched a new browser when `this._page` was dead, even if the browser process was still alive with surviving pages in its context.
+
+3. `browser_select_option` was called on `<a>` elements (not `<select>`) because the snapshot didn't distinguish dropdowns from links — no `[SELECT]` marker existed.
+
+4. `ask_question` options weren't appearing as clickable buttons — small models embedded option descriptions in the question text string instead of passing them as the `options` array parameter.
+
+### Changes
+
+1. **B8 — Popup false-positive resilience** (`browserManager.js` click handler): Instead of blindly switching to any popup Playwright detects, now checks BOTH the popup and original page for real URLs after the click. If the popup is on `about:blank` but the original page navigated, keeps the original (popup was a SAML redirect artifact). Only switches to popup if it has a real, non-blank URL. Prevents the about:blank death spiral.
+
+2. **B9 — _ensurePage surviving page recovery** (`browserManager.js` `_ensurePage`): When `this._page` is dead, checks `this._browser.contexts()` for any alive pages before launching a new browser. If found, switches to the surviving page. Only relaunches browser if no usable pages exist.
+
+3. **B10 — [SELECT] marker in snapshot** (`browserManager.js` `_ensureRefs` + iframe frame eval): Added `[SELECT]` marker to `<select>` elements in both main frame and iframe snapshots, matching the existing `[SUBMIT]` pattern. Models can now distinguish dropdowns from links.
+
+4. **B11 — ask_question clickable options guidance** (`mcpToolServer.js` tool definition + `chatEngine.js` SYSTEM_PROMPT): Rewrote tool description to emphasize options MUST be in the `options` array parameter for clickable buttons. Updated SYSTEM_PROMPT with explicit example format. Prevents small models from embedding options in question text.
+
+### Root cause
+
+- B8: Popup handling assumed `waitForEvent('popup')` only fires for intentional `target=_blank` links. SAML redirect chains can trigger transient popup events that don't represent real navigation targets. The code killed the original page before verifying the popup was useful.
+- B9: `_ensurePage` treated a dead page as a dead browser. These are different failure modes — the browser can be alive with other pages.
+- B10: No visual indicator for `<select>` elements in the snapshot. The model saw text content near an element and guessed it was a dropdown option.
+- B11: Tool description didn't emphasize that the `options` array is what creates clickable UI. Small models took the path of least resistance (embedding in text).
+
+---
+
+
+
 ## 2026-04-20 — Install Playwright + fix browser loop + reduce inject cap
 
 

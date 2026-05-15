@@ -1003,10 +1003,10 @@ class MCPToolServer {
       },
       {
         name: 'ask_question',
-        description: 'Ask the user a multi-part question and wait for their response. Use this when you need clarification, a decision, or user input before proceeding. The question appears in the chat input area with options the user can click or type a free-form answer.',
+        description: 'Ask the user a multi-part question and wait for their response. Use this when you need clarification, a decision, or user input before proceeding. The question appears in the chat input area with clickable option buttons. IMPORTANT: Options MUST be passed in the "options" array parameter as {label, description} objects to appear as clickable buttons. Options written in the question text string will NOT be clickable — they will just be plain text the user has to read.',
         parameters: {
-          question: { type: 'string', description: 'The main question to ask the user', required: true },
-          options: { type: 'array', description: 'Array of {label, description} option objects (max 4). Include a free-form option if the user should be able to type their own answer.', required: false },
+          question: { type: 'string', description: 'The main question to ask the user (do NOT list options here — use the "options" array instead)', required: true },
+          options: { type: 'array', description: 'REQUIRED for clickable options. Array of {label, description} objects (max 4). Each option becomes a clickable button the user can press. Without this array, the user sees only plain text with no buttons. Include a free-form option like {label:"Other"} if the user should be able to type their own answer.', required: false },
           allowMultiple: { type: 'boolean', description: 'If true, the user can select multiple options', required: false },
         },
       },

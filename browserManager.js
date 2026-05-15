@@ -221,9 +221,31 @@ class BrowserManager extends EventEmitter {
     console.log('[BrowserManager] _ensurePage START');
     if (this._page) {
       try { await this._page.evaluate(() => true); console.log('[BrowserManager] _ensurePage: page alive'); return true; } catch {}
-      // Page is dead — clear stale references
-      console.log('[BrowserManager] _ensurePage: page dead, clearing refs');
+      // Page is dead — but the browser process may still be alive with other pages
+      // (e.g., SAML redirect killed the current page but created a new one in the same context).
+      // Check for surviving pages before launching a new browser.
+      console.log('[BrowserManager] _ensurePage: page dead, checking for surviving pages in context');
       this._page = null;
+      if (this._browser) {
+        try {
+          const contexts = this._browser.contexts();
+          for (const ctx of contexts) {
+            const pages = ctx.pages();
+            for (const p of pages) {
+              try {
+                await p.evaluate(() => true);
+                // Found a living page — switch to it instead of relaunching
+                console.log(`[BrowserManager] _ensurePage: found surviving page at ${p.url()}, switching to it`);
+                this._page = p;
+                return true;
+              } catch {}
+            }
+          }
+        } catch {}
+        // Browser is alive but no usable pages — close it and relaunch
+        console.log('[BrowserManager] _ensurePage: browser alive but no usable pages, closing browser');
+        try { await this._browser.close(); } catch {}
+      }
       this._browser = null;
     }
     const result = await this.launchPlaywright();
@@ -323,6 +345,7 @@ class BrowserManager extends EventEmitter {
         if (text && type !== 'password' && tag !== 'input') desc += ` ${text}`;
         else if (imgAlt) desc += ` [img: ${imgAlt.substring(0, 80)}]`;
         if (isSubmit) desc += ' [SUBMIT]';
+        if (tag === 'select') desc += ' [SELECT]';
         lines.push(desc);
       }
       const pageText = (document.body?.innerText || '').substring(0, 50000);
@@ -446,6 +469,7 @@ class BrowserManager extends EventEmitter {
                 if (href) desc += ` href="${href.substring(0, 80)}"`;
                 desc += '>';
                 if (text2 && type !== 'password' && tag !== 'input') desc += ` ${text2}`;
+                if (tag === 'select') desc += ' [SELECT]';
                 refLines.push(desc);
                 refIdx++;
               }
@@ -681,37 +705,79 @@ class BrowserManager extends EventEmitter {
       const newPage = await popupPromise;
 
       if (newPage) {
-        // A new tab opened — wait for it to stabilize before switching
+        // A popup event fired — but it may be a false positive from SAML redirects
+        // or JavaScript that briefly opens/closes a window. Wait for the popup to
+        // settle, then decide which page to keep based on which one has a real URL.
         try {
           await newPage.waitForURL(url => url !== 'about:blank' && url !== '', { timeout: 10000 }).catch(() => {});
           await newPage.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
         } catch {}
-        // Verify popup is actually usable before discarding the original page.
-        // If the popup self-closes (e.g., SAML redirect chain), falling back to
-        // the original page prevents about:blank.
-        let popupUsable = false;
+
+        // Check popup state: is it alive AND does it have a real URL?
+        let popupAlive = false;
+        let popupUrl = '';
         try {
+          popupUrl = newPage.url();
           await newPage.evaluate(() => true);
-          popupUsable = true;
+          popupAlive = true;
         } catch {
           console.warn('[BrowserManager] Popup closed unexpectedly, keeping original page');
         }
-        if (popupUsable) {
-          const context = this._page.context();
-          const allPages = context.pages();
-          for (const p of allPages) {
-            if (p !== newPage) { try { await p.close(); } catch {} }
-          }
-          this._page = newPage;
+
+        // Also check if the original page navigated (SAML redirects may complete
+        // in the original tab even though a popup event fired).
+        let originalAlive = false;
+        let originalUrl = '';
+        try {
+          originalUrl = this._page.url();
+          await this._page.evaluate(() => true);
+          originalAlive = true;
+        } catch {}
+
+        const popupHasRealUrl = popupAlive && popupUrl && popupUrl !== 'about:blank' && popupUrl !== '';
+        const originalHasRealUrl = originalAlive && originalUrl && originalUrl !== 'about:blank' && originalUrl !== '' && originalUrl !== urlBefore;
+
+        // Decision logic: prefer the page that actually navigated to a real URL.
+        // If both have real URLs, prefer the popup (intentional new tab).
+        // If neither has a real URL, keep the original (avoids about:blank death spiral).
+        let activePage;
+        let switchedToPopup = false;
+
+        if (popupHasRealUrl && originalHasRealUrl) {
+          // Both navigated — prefer popup (likely intentional target=_blank)
+          activePage = newPage;
+          switchedToPopup = true;
+        } else if (popupHasRealUrl && !originalHasRealUrl) {
+          // Only popup has real URL — use it
+          activePage = newPage;
+          switchedToPopup = true;
+        } else if (!popupHasRealUrl && originalHasRealUrl) {
+          // Only original navigated — popup was a false positive (SAML redirect artifact)
+          console.warn('[BrowserManager] Popup has no real URL but original page navigated — keeping original page (popup was false positive)');
+          activePage = this._page;
+          try { await newPage.close(); } catch {} // close the useless popup
+        } else {
+          // Neither has a real URL — keep original, close popup
+          console.warn('[BrowserManager] Neither popup nor original page has a real URL — keeping original page');
+          activePage = this._page;
+          try { await newPage.close(); } catch {}
         }
+
+        // Close the page we're NOT keeping
+        if (switchedToPopup && originalAlive) {
+          try { await this._page.close(); } catch {}
+        }
+
+        this._page = activePage;
+
         // Wait for the active page to fully load before snapshotting.
         try { await this._page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {}); } catch {}
         try { await this._page.waitForTimeout(1000); } catch {}
         const snapshot = await this.getSnapshot();
         if (snapshot.success) {
-          return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated: true, newTab: true, snapshot: snapshot.text };
+          return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated: true, newTab: switchedToPopup, snapshot: snapshot.text };
         }
-        return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated: true, newTab: true };
+        return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated: true, newTab: switchedToPopup };
       }
 
       // No new tab — check if same-page navigation happened
