@@ -92,6 +92,18 @@ function createWindow() {
 
   mainWindow.on('closed', () => { mainWindow = null; });
 
+  // Forward maximize/unmaximize state to the renderer as an event so the
+  // TitleBar can subscribe instead of polling isMaximized() every 500ms.
+  const _emitWinState = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const maximized = mainWindow.isMaximized();
+    try { mainWindow.webContents.send('win-state', { maximized }); } catch (_) {}
+  };
+  mainWindow.on('maximize', _emitWinState);
+  mainWindow.on('unmaximize', _emitWinState);
+  mainWindow.on('enter-full-screen', _emitWinState);
+  mainWindow.on('leave-full-screen', _emitWinState);
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('file://')) return { action: 'allow' };
     shell.openExternal(url);
@@ -606,6 +618,17 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
 
     // ── GPU ─────────────────────────────────────────────
     if (p === '/api/gpu' && method === 'GET') {
+      // Plan 8 instrumentation — track frequency of /api/gpu so we can identify
+      // any caller that polls more often than the StatusBar's 60s schedule.
+      // Logs once per call with the elapsed time since the previous call. The
+      // upstream caller stack lives in chatEngine.getGPUInfo (also instrumented).
+      try {
+        const _now = Date.now();
+        if (!global.__guideGpuApiLast) global.__guideGpuApiLast = 0;
+        const _delta = global.__guideGpuApiLast ? (_now - global.__guideGpuApiLast) : 0;
+        global.__guideGpuApiLast = _now;
+        console.log(`[Main] /api/gpu hit (delta=${_delta}ms since last)`);
+      } catch (_) {}
       const info = await llmEngine.getGPUInfo();
       const totalMem = os.totalmem();
       const freeMem = os.freemem();
@@ -1217,7 +1240,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/health' && method === 'GET') {
       return {
         status: 'running',
-        version: '3.0.15',
+        version: require('./package.json').version,
         modelLoaded: llmEngine.isReady,
         modelInfo: llmEngine.modelInfo,
         projectPath: currentProjectPath,
@@ -1407,10 +1430,24 @@ app.whenReady().then(async () => {
   createWindow();
   buildAppMenu(mainWindow);
 
-  // Auto-updater with real Electron IPC
+  // Auto-updater with real Electron IPC.
+  // Manual check is fired once 5 seconds after startup. Periodic background checking
+  // is opt-in via settingsManager.autoUpdateCheckHours (0 = off, default). Users
+  // change the cadence from Settings; the listener below reschedules immediately.
   autoUpdater = new AutoUpdater(mainWindow, { autoDownload: false });
   autoUpdater.registerIPC(ipcMain);
   setTimeout(() => autoUpdater.checkForUpdates(), 5000);
+  const _initialAutoUpdateHours = Number(settingsManager.get('autoUpdateCheckHours')) || 0;
+  if (_initialAutoUpdateHours > 0) autoUpdater.startPeriodicCheck(_initialAutoUpdateHours);
+  settingsManager.on('change', (key, value) => {
+    // React to the user changing the periodic-check cadence at runtime.
+    // When key is null, the whole settings object was replaced (setAll/reset).
+    if (key === 'autoUpdateCheckHours' || key === null) {
+      const hours = Number(settingsManager.get('autoUpdateCheckHours')) || 0;
+      if (hours > 0) autoUpdater.startPeriodicCheck(hours);
+      else autoUpdater.stopPeriodicCheck();
+    }
+  });
 
   // Initialize models
   modelManager.initialize().then((models) => {

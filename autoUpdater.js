@@ -29,6 +29,8 @@ class AutoUpdater extends EventEmitter {
     this._updateInfo = null;
     this._progress = null;
     this._error = null;
+    this._periodicTimer = null;
+    this._periodicHours = 0;
 
     this._init(opts || {});
   }
@@ -148,7 +150,45 @@ class AutoUpdater extends EventEmitter {
       updateInfo: this._updateInfo,
       progress: this._progress,
       error: this._error,
+      periodicCheckHours: this._periodicHours,
     };
+  }
+
+  /**
+   * Schedule a periodic background check.
+   * Setting hours <= 0 cancels any existing schedule. Calling with a new positive
+   * value replaces the existing schedule. The check is fire-and-forget; status
+   * still flows through the same renderer events as a manual checkForUpdates().
+   * @param {number} hours - check interval in hours. 0 disables. Values below 1 are clamped to 1.
+   */
+  startPeriodicCheck(hours) {
+    this.stopPeriodicCheck();
+    const h = Number(hours);
+    if (!Number.isFinite(h) || h <= 0) {
+      this._periodicHours = 0;
+      return;
+    }
+    this._periodicHours = Math.max(1, Math.floor(h));
+    const intervalMs = this._periodicHours * 60 * 60 * 1000;
+    this._periodicTimer = setInterval(() => {
+      try { this.checkForUpdates(); }
+      catch (e) { console.warn('[AutoUpdater] periodic check failed:', e.message); }
+    }, intervalMs);
+    // Allow the Node process to exit even if this timer is alive.
+    if (this._periodicTimer && typeof this._periodicTimer.unref === 'function') {
+      this._periodicTimer.unref();
+    }
+    console.log(`[AutoUpdater] periodic check scheduled every ${this._periodicHours}h`);
+  }
+
+  /** Cancel the periodic background check. No-op if none is scheduled. */
+  stopPeriodicCheck() {
+    if (this._periodicTimer) {
+      clearInterval(this._periodicTimer);
+      this._periodicTimer = null;
+      console.log('[AutoUpdater] periodic check cancelled');
+    }
+    this._periodicHours = 0;
   }
 
   /**

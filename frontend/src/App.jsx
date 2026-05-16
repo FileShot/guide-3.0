@@ -616,6 +616,34 @@ export default function App() {
 
 
 
+  // Hydrate the application version from package.json (via Electron IPC or
+  // websocket fallback) into the global store exactly once. Every UI surface
+  // that needs to display "guIDE <version>" reads from useAppStore.appVersion
+  // so there is a single source of truth and no hardcoded version strings.
+  useEffect(() => {
+
+    let cancelled = false;
+
+    (async () => {
+
+      try {
+
+        const v = window.electronAPI?.getAppVersion
+
+          ? await window.electronAPI.getAppVersion()
+
+          : (await (await import('./api/websocket')).invoke('get-app-version'));
+
+        if (!cancelled && v) useAppStore.getState().setAppVersion(v);
+
+      } catch (e) { console.warn('[App] appVersion hydrate failed:', e?.message || e); }
+
+    })();
+
+    return () => { cancelled = true; };
+
+  }, []);
+
   useEffect(() => {
 
     // Global error handlers for debugging "not iterable" and other frontend errors
@@ -1044,7 +1072,13 @@ export default function App() {
 
         case 'about':
 
-          s.addNotification({ type: 'info', message: 'guIDE 3.0.15 — Local-first AI IDE. Built for offline inference.', duration: 8000 });
+          {
+
+            const v = useAppStore.getState().appVersion || '...';
+
+            s.addNotification({ type: 'info', message: `guIDE ${v} — Local-first AI IDE. Built for offline inference.`, duration: 8000 });
+
+          }
 
           return;
 

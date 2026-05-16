@@ -1,5 +1,5 @@
 # guIDE 3.0 — Comprehensive Rules
-
+**NO GUESSING!!!!! NEVER GUESS!!!!!!!! NO GUESSING!!! USE WEB SEARCH OR CLARIFY WITH TOOLS AVAILIBLE TO YOU!!!!!! NEVER GUESS, ASSUME, NEVER NEVER NEVER SAY "MAYBE, MIGHT BE, PROBABLY, THE SIMPLEST FIX, ETC" AND 
 > **STOP. Read EVERY line of this file before making any change. No exceptions.**
 > If you cannot confirm all rules are followed, say "I need to review the rules before proceeding."
 
@@ -58,6 +58,41 @@ After writing ANY code:
 1. Complete the POST-CODE VERIFICATION in full — display it to the user
 2. Cross-reference CHANGES_LOG.md
 3. Write: `TRIPWIRE 5 CLEARED: Post-code verification completed, changelog updated.`
+
+### Tripwire 6 — EVERY RESPONSE: READ RULES AT START AND END
+At the START and END of EVERY response (not just the first response of a session):
+1. Re-read this ENTIRE file (every line, every section)
+2. At the START of your response, write: `TRIPWIRE 6 CLEARED: Rules re-read at response start. [line count] lines.`
+3. At the END of your response (before the askQuestions call), write: `TRIPWIRE 6 CLEARED: Rules re-read at response end. [line count] lines.`
+4. "I already read it this session" = violation. "I read it earlier in this conversation" = violation. Read it AGAIN. Every response. Both start and end. No exceptions.
+5. This exists because the agent has a proven pattern of reading rules once then immediately violating them. This tripwire makes forgetting impossible.
+
+### Tripwire 7 — EVERY RESPONSE: END WITH askQuestions
+At the END of EVERY response, without exception:
+1. Call the askQuestions tool (or equivalent user-interaction tool)
+2. If this tool call is absent from a response, the rules were violated
+3. "The response felt complete" is NOT a reason to skip this. EVER.
+4. "I was waiting for approval" is NOT a reason to skip this. Ask the question AND wait.
+5. This exists because the agent has a proven pattern of ending responses prematurely, leaving the user with no way to continue the interaction.
+
+### Tripwire 8 — BEFORE EVERY CODE CHANGE: TRACE FULL PIPELINE
+Before proposing OR implementing ANY code change:
+1. Trace the ENTIRE execution pipeline from where the broken value is PRODUCED to where it is DISPLAYED or CONSUMED
+2. Read EVERY file and function in that pipeline — not just the first file that looks relevant
+3. Document the full call chain in the PRE-CODE CHECKLIST
+4. If ANY function in the chain has not been read, the trace is INCOMPLETE and the change MUST NOT proceed
+5. This exists because the agent has a proven 3-month pattern of grabbing the first relevant-looking code, making a change, and ignoring every other location where the same issue occurs. This has caused hundreds of failed patches and regressions.
+6. "I found the issue" after reading one file = violation. You have NOT found the issue until you have traced every path.
+
+### Tripwire 9 — PRODUCTION FINALIZATION PHASE (CURRENT)
+The application is in the FINAL PRODUCTION PHASE. The following rules are NON-NEGOTIABLE:
+1. **No rushing.** Speed is not a virtue. Thoroughness is. If the correct investigation takes reading 20 files, read 20 files.
+2. **No simple fixes.** "The simpler approach would be..." is BANNED. This is a $1M software application in finalization. Every fix must be production-grade, root-cause, and general.
+3. **No grabbing the first relevant thing.** When investigating a bug, the first code location that looks relevant is almost NEVER the only one. This pipeline is deeply integrated. Every issue has multiple occurrence points. Trace ALL of them.
+4. **No band-aids.** Adding retries, detectors, limiters, guard clauses, timeouts, or any mechanism that addresses what happens AFTER a problem occurs instead of preventing the problem — ALL BANNED. This has been the cause of failure for 2+ weeks of patch cycles.
+5. **Research before implementing.** Every problem here has been solved by someone else. Search the web. Find existing solutions. Study how others solved it. Do NOT invent solutions from imagination.
+6. **Over-engineering is also banned.** The pipeline should be SIMPLE. If the fix requires dozens of edge-case handlers, the design is wrong. Find the root cause and fix it at the source.
+7. **Every change must work for ALL users, ALL models, ALL hardware.** No hardware-specific fixes. No model-specific fixes. No use-case-specific fixes.
 
 ---
 

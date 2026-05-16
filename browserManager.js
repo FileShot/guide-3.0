@@ -138,6 +138,8 @@ class BrowserManager extends EventEmitter {
         try { await this._page.waitForTimeout(500).catch(() => {}); } catch {}
         const finalUrl = this._page.url();
         const title = await this._page.title().catch(() => '');
+        // Detect same-page navigation — model often re-navigates the same URL in a loop
+        const samePage = (finalUrl === url) || (this._navHistory.length > 0 && finalUrl === this._navHistory[this._navHistory.length - 1]?.url);
         this._navHistory.push({ url: finalUrl, title, timestamp: Date.now(), action: 'navigate' });
         if (this._navHistory.length > 30) this._navHistory = this._navHistory.slice(-30);
         // Check HTTP status code from the navigation response (not title keywords)
@@ -161,10 +163,10 @@ class BrowserManager extends EventEmitter {
         const snapshot = await this.getSnapshot();
         if (snapshot.success) {
           console.log(`[BrowserManager] navigate DONE: success, url=${finalUrl}, snapshotLen=${snapshot.text?.length || 0}`);
-          return { success: true, url: finalUrl, title, httpStatus, snapshot: snapshot.text };
+          return { success: true, url: finalUrl, title, httpStatus, samePage, snapshot: snapshot.text };
         }
         console.log(`[BrowserManager] navigate DONE: success, url=${finalUrl}`);
-        return { success: true, url: finalUrl, title, httpStatus };
+        return { success: true, url: finalUrl, title, httpStatus, samePage };
       } catch (e) {
         console.error(`[BrowserManager] navigate ERROR: ${e.message}`);
         return { success: false, error: e.message };

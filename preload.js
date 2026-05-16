@@ -26,11 +26,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // ── Window controls ───────────────────────────────────
+  // `onState` lets the renderer subscribe to maximize/unmaximize/full-screen
+  // changes as an event. Returns a cleanup function. Prefer this over
+  // isMaximized() polling.
   windowControls: {
     minimize:    () => ipcRenderer.invoke('win-minimize'),
     maximize:    () => ipcRenderer.invoke('win-maximize'),
     close:       () => ipcRenderer.invoke('win-close'),
     isMaximized: () => ipcRenderer.invoke('win-is-maximized'),
+    onState:     (callback) => _on('win-state', callback),
   },
 
   // ── Dialogs ───────────────────────────────────────────

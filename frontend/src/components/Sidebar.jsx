@@ -1177,6 +1177,106 @@ function CloudProviderSettings() {
   );
 }
 
+// Auto-update settings — exposes the existing AutoUpdater (electron-updater wrapper).
+// Periodic checking is opt-in. The user picks a cadence (off / hourly / daily / weekly)
+// and the backend listens for the change to schedule or cancel its setInterval.
+// A manual "Check now" button always works regardless of the periodic setting.
+function UpdatesSettings({ settings, updateSetting }) {
+  const addNotification = useAppStore(s => s.addNotification);
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const cadence = Number(settings.autoUpdateCheckHours) || 0;
+
+  const refreshStatus = useCallback(() => {
+    fetch('/api/updater/status').then(r => r.json()).then(setStatus).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshStatus();
+    const id = setInterval(refreshStatus, 30000);
+    return () => clearInterval(id);
+  }, [refreshStatus]);
+
+  const checkNow = () => {
+    setBusy(true);
+    fetch('/api/updater/check', { method: 'POST' })
+      .then(r => r.json())
+      .then(() => { addNotification({ type: 'info', message: 'Checking for updates…', duration: 2000 }); setTimeout(refreshStatus, 1500); })
+      .catch(e => addNotification({ type: 'error', message: e.message }))
+      .finally(() => setBusy(false));
+  };
+
+  const downloadNow = () => {
+    fetch('/api/updater/download', { method: 'POST' })
+      .then(() => addNotification({ type: 'info', message: 'Download started', duration: 2000 }))
+      .catch(e => addNotification({ type: 'error', message: e.message }));
+  };
+
+  const installNow = () => {
+    fetch('/api/updater/install', { method: 'POST' })
+      .catch(e => addNotification({ type: 'error', message: e.message }));
+  };
+
+  const statusLabel =
+    status?.available === false ? 'Updater unavailable (dev/web mode)'
+      : status?.status === 'checking' ? 'Checking…'
+        : status?.status === 'available' ? `Update available: v${status?.updateInfo?.version || '?'}`
+          : status?.status === 'downloading' ? `Downloading… ${Math.round(status?.progress?.percent || 0)}%`
+            : status?.status === 'downloaded' ? `Downloaded v${status?.updateInfo?.version || '?'} — ready to install`
+              : status?.status === 'error' ? `Error: ${status?.error || 'unknown'}`
+                : 'Up to date';
+
+  return (
+    <SettingsSection title="Updates" icon={<Download size={13} />}>
+      <div className="text-[11px] text-vsc-text-dim mb-2">{statusLabel}</div>
+
+      <div className="mb-3">
+        <label className="text-[11px] text-vsc-text-dim block mb-1">Automatic check cadence</label>
+        <select
+          value={String(cadence)}
+          onChange={e => updateSetting('autoUpdateCheckHours', Number(e.target.value))}
+          className="w-full text-[11px] px-2 py-1 rounded bg-vsc-input border border-vsc-input-border text-vsc-text"
+        >
+          <option value="0">Off (manual only)</option>
+          <option value="1">Every hour</option>
+          <option value="6">Every 6 hours</option>
+          <option value="24">Every day</option>
+          <option value="168">Every week</option>
+        </select>
+        <div className="text-[10px] text-vsc-text-dim mt-0.5">
+          Off by default. Periodic checks only run when the app is open. The check itself is a small HTTP request to the release feed; no data leaves your machine other than your version.
+        </div>
+      </div>
+
+      <div className="flex gap-1.5 flex-wrap">
+        <button
+          className="px-2.5 py-1 bg-vsc-button hover:bg-vsc-button-hover text-white rounded text-vsc-xs disabled:opacity-50"
+          onClick={checkNow}
+          disabled={busy || status?.available === false}
+        >
+          Check now
+        </button>
+        {status?.status === 'available' && (
+          <button
+            className="px-2.5 py-1 bg-vsc-accent hover:brightness-110 text-vsc-bg rounded text-vsc-xs"
+            onClick={downloadNow}
+          >
+            Download
+          </button>
+        )}
+        {status?.status === 'downloaded' && (
+          <button
+            className="px-2.5 py-1 bg-vsc-accent hover:brightness-110 text-vsc-bg rounded text-vsc-xs"
+            onClick={installNow}
+          >
+            Restart & install
+          </button>
+        )}
+      </div>
+    </SettingsSection>
+  );
+}
+
 function SettingsPanel() {
   const modelInfo = useAppStore(s => s.modelInfo);
   const availableModels = useAppStore(s => s.availableModels);
@@ -1552,6 +1652,9 @@ function SettingsPanel() {
         <SettingToggle label="Format on Type" value={settings.formatOnType}
           onChange={v => updateSetting('formatOnType', v)} />
       </SettingsSection>
+
+      {/* Auto-Update — opt-in, off by default */}
+      <UpdatesSettings settings={settings} updateSetting={updateSetting} />
 
       {/* Cloud AI Provider */}
       <CloudProviderSettings />

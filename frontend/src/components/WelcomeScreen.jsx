@@ -45,6 +45,7 @@ export default function WelcomeScreen() {
   const modelLoading = useAppStore(s => s.modelLoading);
   const defaultModelPath = useAppStore(s => s.defaultModelPath);
   const setDefaultModelPath = useAppStore(s => s.setDefaultModelPath);
+  const appVersion = useAppStore(s => s.appVersion);
 
   const [loadingModel, setLoadingModel] = useState(null);
   const [showDownloadPanel, setShowDownloadPanel] = useState(false);
@@ -498,7 +499,7 @@ export default function WelcomeScreen() {
 
       {/* Footer */}
       <div className="pb-6 text-[10px] text-vsc-text-dim/30 select-none relative z-10" style={anim(0.5)}>
-        guIDE 2.0 — Built for local AI inference
+        guIDE {appVersion || ''} — Local-first AI IDE. Built for offline inference.
       </div>
     </div>
   );

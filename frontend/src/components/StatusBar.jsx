@@ -95,7 +95,7 @@ export default function StatusBar() {
     })();
   }, []);
 
-  // Poll GPU memory every 10s when model is loaded
+  // Poll GPU memory every 60s when model is loaded
   useEffect(() => {
     if (!modelLoaded) return;
     const poll = () => {
@@ -106,7 +106,7 @@ export default function StatusBar() {
       }).catch(() => {});
     };
     poll();
-    const id = setInterval(poll, 10000);
+    const id = setInterval(poll, 60000);
     return () => clearInterval(id);
   }, [modelLoaded, setGpuMemory]);
 

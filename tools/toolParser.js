@@ -139,10 +139,25 @@ function sanitizeJson(raw) {
       escaped = false;
       continue;
     }
-    if (ch === '\\' && inStr) {
-      escaped = true;
-      result += ch;
-      continue;
+    if (ch === '\\') {
+      if (inStr) {
+        escaped = true;
+        result += ch;
+        continue;
+      } else {
+        // Outside a string: model used \" as a string delimiter (common with small models)
+        // Peek at next char — if it's ", treat \" as just " (the model meant to start/end a string)
+        const nextCh = raw[i + 1];
+        if (nextCh === '"') {
+          result += '"';
+          inStr = !inStr;
+          i++; // skip the " — we already consumed both \" as a single "
+          continue;
+        }
+        // Other \ outside string (rare) — pass through as-is
+        result += ch;
+        continue;
+      }
     }
     if (ch === '"' && !escaped) {
       inStr = !inStr;
@@ -250,6 +265,10 @@ function extractJsonObjects(text) {
             const cmdMatch = slice.match(/"(?:command|cmd)"\s*:\s*"([^"]+)"/);
             const searchMatch = slice.match(/"(?:pattern|query|search)"\s*:\s*"([^"]+)"/);
             const dirMatch = slice.match(/"(?:dirPath|directory|dir)"\s*:\s*"([^"]+)"/);
+            // Browser tool params — small models frequently produce malformed JSON for browser calls
+            const browserRefMatch = slice.match(/"(?:ref|elementRef|elementId|id|selector)"\s*:\s*"([^"]+)"/);
+            const browserTextMatch = slice.match(/"(?:text|value|input)"\s*:\s*"([^"]+)"/);
+            const browserReasonMatch = slice.match(/"(?:reason|description|purpose)"\s*:\s*"([^"]+)"/);
             
             let recovered = null;
             if (pathMatch) {
@@ -262,6 +281,14 @@ function extractJsonObjects(text) {
               recovered = { tool: toolName, params: { pattern: searchMatch[1] }, _recovered: true };
             } else if (dirMatch) {
               recovered = { tool: toolName, params: { dirPath: dirMatch[1] }, _recovered: true };
+            } else if (browserRefMatch || browserTextMatch || browserReasonMatch) {
+              // Browser tool recovery — assemble all found browser params
+              const params = {};
+              if (urlMatch) params.url = urlMatch[1];
+              if (browserRefMatch) params.ref = browserRefMatch[1];
+              if (browserTextMatch) params.text = browserTextMatch[1];
+              if (browserReasonMatch) params.reason = browserReasonMatch[1];
+              recovered = { tool: toolName, params, _recovered: true };
             }
             
             if (recovered) {

@@ -61,6 +61,11 @@ const SETTINGS_DEFAULTS = {
   sessionToken: null,
   accountUser: null,
   licenseData: null,
+  // Auto-update — opt-in, off by default to honour the offline-first principle.
+  // 0 = disabled (no automatic check). >0 = check every N hours. The minimum sane
+  // value is 1; values below 1 are clamped to 1 by the periodic-check scheduler.
+  // The user can still manually trigger a check from the UI regardless of this value.
+  autoUpdateCheckHours: 0,
   // UI State
   lastModelPath: null,
   lastProjectPath: null,

@@ -2076,6 +2076,14 @@ const useAppStore = create((set, get) => ({
 
 
 
+  // ─── App Version (single source of truth — pulled from package.json via IPC) ───
+
+  appVersion: '',
+
+  setAppVersion: (v) => set({ appVersion: String(v || '') }),
+
+
+
   // ─── Model Downloads ──────────────────────────────────
 
   modelDownloads: {},

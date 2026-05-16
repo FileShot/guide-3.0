@@ -33,13 +33,22 @@ export default function TitleBar() {
   const title = projectName ? `${projectName}` : '';
 
   useEffect(() => {
-    const check = async () => {
-      const m = await wc()?.isMaximized?.();
-      setMaximized(!!m);
+    // One-shot read on mount, then subscribe to push events from the main
+    // process. The 500ms isMaximized() poll was replaced with this event
+    // subscription because the underlying OS already emits maximize/unmaximize
+    // — polling was pure waste.
+    let cancelled = false;
+    (async () => {
+      try {
+        const m = await wc()?.isMaximized?.();
+        if (!cancelled) setMaximized(!!m);
+      } catch (_) {}
+    })();
+    const unsubscribe = wc()?.onState?.(({ maximized: m }) => setMaximized(!!m));
+    return () => {
+      cancelled = true;
+      try { unsubscribe?.(); } catch (_) {}
     };
-    check();
-    const id = setInterval(check, 500);
-    return () => clearInterval(id);
   }, []);
 
   // Close hamburger / search on Escape or click outside
@@ -542,9 +551,11 @@ function executeMenuAction(action) {
     // Help
     case 'showWelcome': store.openFile({ path: 'welcome', name: 'Welcome', extension: 'welcome', content: '' }); return;
     case 'showShortcuts': store.setActiveActivity('settings'); return;
-    case 'about':
-      store.addNotification({ type: 'info', message: 'guIDE 3.0.0 — Local-first AI IDE. Built for offline inference.', duration: 8000 });
+    case 'about': {
+      const v = store.appVersion || '...';
+      store.addNotification({ type: 'info', message: `guIDE ${v} — Local-first AI IDE. Built for offline inference.`, duration: 8000 });
       return;
+    }
 
     default: return;
   }
