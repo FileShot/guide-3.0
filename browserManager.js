@@ -225,35 +225,9 @@ class BrowserManager extends EventEmitter {
   async _ensurePage() {
     console.log('[BrowserManager] _ensurePage START');
     if (this._page) {
-      // B15: Use isClosed() instead of evaluate(() => true) — evaluate() throws
-      // during navigation when the JS execution context is being destroyed/recreated
-      // (e.g., SAML redirects), falsely marking a live page as dead.
+      // Page exists and is not closed — Playwright handles timing internally.
       if (!this._page.isClosed()) {
-        // Page is not closed — but it may be mid-navigation (evaluate would throw).
-        // Try evaluate to confirm it's responsive; if it fails, wait for navigation
-        // to complete rather than immediately declaring it dead.
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            await this._page.evaluate(() => true);
-            console.log('[BrowserManager] _ensurePage: page alive');
-            return true;
-          } catch {
-            if (this._page.isClosed()) break; // genuinely closed now
-            console.log(`[BrowserManager] _ensurePage: page not closed but evaluate failed (attempt ${attempt + 1}/3), waiting for navigation...`);
-            try { await this._page.waitForLoadState('domcontentloaded', { timeout: 3000 }).catch(() => {}); } catch {}
-            try { await this._page.waitForTimeout(1000); } catch {}
-          }
-        }
-        // After retries, check one final time
-        if (!this._page.isClosed()) {
-          try {
-            await this._page.evaluate(() => true);
-            console.log('[BrowserManager] _ensurePage: page alive after retry');
-            return true;
-          } catch {
-            console.log('[BrowserManager] _ensurePage: page not closed but unresponsive after retries, treating as dead');
-          }
-        }
+        return true;
       }
       // Page is genuinely closed or unresponsive — check for surviving pages
       console.log('[BrowserManager] _ensurePage: page dead, checking for surviving pages in context');
@@ -575,16 +549,6 @@ class BrowserManager extends EventEmitter {
         ? snapshotData.pageText + '\n\n' + frameTexts.join('\n\n')
         : snapshotData.pageText;
 
-      // Navigation history at TOP of snapshot — model reads top-down and needs
-      // to see what it already did BEFORE choosing the next element to click.
-      let historySection = '';
-      if (this._navHistory.length > 0) {
-        const recentHistory = this._navHistory.slice(-8);
-        historySection = `Navigation history (DO NOT repeat these — move to NEXT step):\n`
-          + recentHistory.map((h, i) => `${i + 1}. ${h.action}: ${h.url}${h.title ? ` (${h.title})` : ''}`).join('\n')
-          + '\n\n';
-      }
-
       // PL1: Compress page text — deduplicate, trim line width, collapse blanks.
       // Preserves ALL unique content (assignments, due dates, etc.) while removing
       // visual noise that wastes context (repeated progress indicators, decorative spacing).
@@ -606,7 +570,7 @@ class BrowserManager extends EventEmitter {
       };
 
       const compressedPageText = _compressPageText(fullPageText);
-      const result = `${historySection}Page: ${title}\nURL: ${url}\n\nInteractive elements (use the [ref=N] number as the "ref" param, e.g. {"ref":"2"} or {"ref":"[ref=2]"}):\n${fullElementList}\n\nPage text:\n${compressedPageText}`;
+      const result = `Page: ${title}\nURL: ${url}\n\nInteractive elements (use the [ref=N] number as the "ref" param, e.g. {"ref":"2"} or {"ref":"[ref=2]"}):\n${fullElementList}\n\nPage text:\n${compressedPageText}`;
       this._lastSnapshotUrl = url;
       this._lastSnapshotTime = Date.now();
       // No total cap — the model needs the full snapshot to make correct decisions.
@@ -773,14 +737,11 @@ class BrowserManager extends EventEmitter {
           const urlAfter = this._page.url();
           const navigated = urlAfter !== urlBefore;
           const snapshot = await this.getSnapshot();
-          const pageState = navigated
-            ? 'PAGE NAVIGATED — you are now on a new page. Call browser_snapshot to see the new page before taking any action.'
-            : 'SAME PAGE — the click succeeded but the URL did not change. The page may have updated (dialog opened, content changed, etc.). Use the snapshot below to see what changed.';
           console.log(`[BrowserManager] Clicked ref=${refNum} in child frame directly`);
           if (snapshot.success) {
-            return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, pageState, snapshot: snapshot.text };
+            return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, snapshot: snapshot.text };
           }
-          return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, pageState };
+          return { success: true, url: urlAfter, clicked: clickedText || selector, navigated };
         } catch (frameErr) {
           console.warn(`[BrowserManager] Direct frame click failed for ref=${refNum}: ${frameErr.message}`);
           // Fall through to main page click logic below
@@ -798,12 +759,6 @@ class BrowserManager extends EventEmitter {
     }
     try {
       const urlBefore = this._page.url();
-      // PL5: Lightweight DOM fingerprint before click — detects same-URL content changes
-      let fingerprintBefore = '';
-      try { fingerprintBefore = await this._page.evaluate(() => {
-        const els = document.querySelectorAll('a, button, [role="tab"], [role="menuitem"]');
-        return `${els.length}:${(document.body?.innerText || '').substring(0, 200)}`;
-      }); } catch {}
       // Get the element text before clicking — include title/alt for image-only links
       let clickedText = '';
       try {
@@ -857,13 +812,10 @@ class BrowserManager extends EventEmitter {
         // Original page is always the active page — never switch to popup
         const snapshot = await this.getSnapshot();
         const navigated = false; // original page didn't navigate (popup took the click)
-        const pageState = popupAlive && popupUrl && popupUrl !== 'about:blank'
-          ? `NEW TAB OPENED — a new browser tab opened at: ${popupUrl}. You are still on the original page: ${urlBefore}. Use browser_tabs to list all open tabs and switch to the new one if needed.`
-          : `POPUP FAILED — a popup was triggered but it did not navigate to a real URL. You are still on: ${urlBefore}. Try navigating directly to the target URL instead of clicking this element.`;
         if (snapshot.success) {
-          return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated, newTab: true, popupUrl: popupAlive ? popupUrl : null, previousUrl: urlBefore, pageState, snapshot: snapshot.text };
+          return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated, newTab: true, popupUrl: popupAlive ? popupUrl : null, previousUrl: urlBefore, snapshot: snapshot.text };
         }
-        return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated, newTab: true, popupUrl: popupAlive ? popupUrl : null, previousUrl: urlBefore, pageState };
+        return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated, newTab: true, popupUrl: popupAlive ? popupUrl : null, previousUrl: urlBefore };
       }
 
       // No new tab — check if same-page navigation happened
@@ -877,37 +829,12 @@ class BrowserManager extends EventEmitter {
       }
       // Always snapshot so model sees DOM changes
       const snapshot = await this.getSnapshot();
-      // PL4+PL5: Clear page state messaging — tell the model exactly what happened
-      // so it doesn't guess or retry the same action blindly
-      let pageState;
-      if (navigated) {
-        pageState = 'PAGE NAVIGATED — you are now on a new page. Call browser_snapshot to see the new page before taking any action.';
-      } else {
-        // PL5: Compare DOM fingerprints to detect same-URL content changes
-        let contentChanged = false;
-        try {
-          const fingerprintAfter = await this._page.evaluate(() => {
-            const els = document.querySelectorAll('a, button, [role="tab"], [role="menuitem"]');
-            return `${els.length}:${(document.body?.innerText || '').substring(0, 200)}`;
-          });
-          contentChanged = fingerprintBefore !== fingerprintAfter;
-        } catch {}
-        // PL4: Check if dropdown menuitems appeared
-        const hasMenuItems = snapshot.success && snapshot.text?.includes('role="menuitem"');
-        if (hasMenuItems) {
-          pageState = 'SAME PAGE — a dropdown menu opened. Menu items are visible in the snapshot below. Click one directly using its ref number.';
-        } else if (contentChanged) {
-          pageState = 'SAME URL but page content changed (tab switch, content update). The snapshot below shows the updated page.';
-        } else {
-          pageState = 'SAME PAGE — the click succeeded but the URL and content did not change. The click may not have had the intended effect. Try a different element or action.';
-        }
-      }
       if (snapshot.success) {
         console.log(`[BrowserManager] click DONE: success, url=${urlAfter}, navigated=${navigated}`);
-        return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, pageState, snapshot: snapshot.text };
+        return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, snapshot: snapshot.text };
       }
       console.log(`[BrowserManager] click DONE: success (no snapshot), url=${urlAfter}, navigated=${navigated}`);
-      return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, pageState };
+      return { success: true, url: urlAfter, clicked: clickedText || selector, navigated };
     } catch (e) {
       console.error(`[BrowserManager] click ERROR: ${e.message}`);
       // If ref-based selector failed on main page, try finding the element in child frames.

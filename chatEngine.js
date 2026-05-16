@@ -139,7 +139,9 @@ NEVER end your response before the task is fully complete. If you encounter an e
 If the user says "hi", "hello", "how are you", "thanks", "goodbye", or asks a general opinion question, answer in chat with NO tool call. Do not call tools for greetings, small talk, gratitude, or social conversation. Only call tools when the user asks you to DO something (create, edit, read, search, run, navigate, fetch).
 
 ## How to call tools
-Output a fenced JSON block with "tool" and "params" keys. Examples:
+Output a fenced JSON block with "tool" and "params" keys. NEVER output raw JSON, braces, or backticks outside of a fenced code block. If you are not calling a tool, write normal prose with NO JSON syntax.
+
+Examples:
 
 User: "What files are in this project?"
 Assistant:
@@ -1333,15 +1335,8 @@ class ChatEngine extends EventEmitter {
               }
               _sfBuf = '';
             } else {
-              // Unconfirmed buffer reached depth 0 — likely stray {} or non-tool JSON
-              // Suppress if it looks like a tool call fragment (starts with {, short, no prose)
-              const trimmed = _sfBuf.trim();
-              if (trimmed.length <= 4 || /^[\{\}\[\]:,.\s\d]+$/.test(trimmed)) {
-                // Just punctuation/braces — suppress (this is the empty } bug)
-                _sfBuf = '';
-              } else {
-                _sfFlush();
-              }
+              // Unconfirmed buffer reached depth 0 — flush as normal prose
+              _sfFlush();
             }
             _sfActive = false;
             _sfConfirmed = false;
@@ -1506,18 +1501,7 @@ class ChatEngine extends EventEmitter {
       const ctxUsedBefore = this._sequence?.nextTokenIndex || 0;
       console.log(`[ChatEngine] Calling generateResponse #1: history=${this._chatHistory.length} msgs, ctxUsedBefore=${ctxUsedBefore}`);
 
-      // S3: Generation timeout — abort if model gets stuck (0 = disabled)
-      const timeoutSec = options.generationTimeoutSec ?? 0;
-      let generationTimer = null;
-      if (timeoutSec > 0) {
-        generationTimer = setTimeout(() => {
-          console.warn(`[ChatEngine] Generation timeout (${timeoutSec}s) — aborting`);
-          this._abortController.abort();
-        }, timeoutSec * 1000);
-      }
-
       let result = await this._chat.generateResponse(this._chatHistory, genOptions);
-      if (generationTimer) clearTimeout(generationTimer);
       console.log(`[ChatEngine] generateResponse #1 returned`);
       const roundElapsed = (Date.now() - roundStartTime) / 1000;
       const roundTokens = result.metadata?.totalTokens ?? result.response?.length ?? 0;
@@ -1559,8 +1543,6 @@ class ChatEngine extends EventEmitter {
       console.log(`[ChatEngine] ─── MODEL RESPONSE ─── "${_rawResp}"`);
 
       // Raw-text tool call loop: parse tool calls from model output, execute, continue
-      // S2: maxIterations caps the loop when set (>0); 0 = unlimited (context bounds naturally)
-      const maxIterations = (options.maxIterations > 0) ? options.maxIterations : Infinity;
       if (executeToolFn) {
         // Flush any buffered content from the streaming filter before parsing
         _sfFlush();
@@ -1601,8 +1583,8 @@ class ChatEngine extends EventEmitter {
           parsedCalls = [];
         }
 
-        console.log(`[ChatEngine] Tool loop ENTER: ${parsedCalls.length} parsed call(s), maxIterations=${maxIterations === Infinity ? 'unlimited' : maxIterations}`);
-        while (parsedCalls.length > 0 && this._toolRoundCount < maxIterations) {
+        console.log(`[ChatEngine] Tool loop ENTER: ${parsedCalls.length} parsed call(s)`);
+        while (parsedCalls.length > 0) {
           console.log(`[ChatEngine] Tool loop ITERATION: ${parsedCalls.length} call(s)`);
           // Notify UI so ToolCallCards appear for each tool call (spinner state)
           if (onStreamEvent) {
@@ -1692,15 +1674,6 @@ class ChatEngine extends EventEmitter {
               }
             }
 
-            // Detect same-page navigation — when browser_navigate lands on the same URL
-            if (call.tool === 'browser_navigate' && toolResult?.samePage) {
-              console.warn(`[ChatEngine] browser_navigate landed on same page: ${toolResult.url}`);
-              // Inject anti-loop directive into the result so the model sees it
-              const samePageWarning = `\n[SYSTEM: You are ALREADY on this page (${toolResult.url}). Do NOT navigate to this URL again — it will land on the same page. Use browser_snapshot, browser_click, or browser_type to interact with the current page instead.]`;
-              if (typeof toolResult === 'object' && toolResult.snapshot) {
-                toolResult.snapshot = (toolResult.snapshot || '') + samePageWarning;
-              }
-            }
             // Log browser click results for diagnostics
             if (call.tool === 'browser_click' && toolResult?.success) {
               console.log(`[ChatEngine] browser_click result: clicked="${toolResult.clicked || '?'}", navigated=${toolResult.navigated}, newTab=${toolResult.newTab || false}, url=${toolResult.url || '?'}`);
@@ -2123,19 +2096,6 @@ class ChatEngine extends EventEmitter {
 
         }
 
-        // S2: If we hit the iteration cap, notify the model so it can summarize
-        if (this._toolRoundCount >= maxIterations && parsedCalls.length > 0) {
-          console.warn(`[ChatEngine] Max iterations (${maxIterations}) reached — ${parsedCalls.length} tool call(s) still pending`);
-          this._chatHistory.push({ type: 'user', text: `[System: Max iterations (${maxIterations}) reached. Summarize what you've accomplished and what remains. Do NOT attempt more tool calls.]` });
-          // Generate one final summary response
-          const ctxUsedNow = this._sequence?.nextTokenIndex || 0;
-          genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, contextSize - ctxUsedNow);
-          try {
-            result = await this._chat.generateResponse(this._chatHistory, genOptions);
-            fullResponse += result.response || '';
-            if (onStreamEvent) onStreamEvent('llm-token', result.response || '');
-          } catch (_) {}
-        }
       }
 
       this._lastEvaluation = result.lastEvaluation;
