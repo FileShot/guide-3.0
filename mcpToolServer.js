@@ -1845,11 +1845,15 @@ class MCPToolServer {
     }
     const fullPath = this._sanitizeFilePath(path.isAbsolute(dirPath) ? dirPath : path.join(this.projectPath, dirPath));
     try {
+      const exists = await fs.access(fullPath).then(() => true).catch(() => false);
+      if (exists) {
+        return { success: true, path: fullPath, created: false, message: `Directory already exists: ${fullPath}` };
+      }
       await fs.mkdir(fullPath, { recursive: true });
       if (this.browserManager?.parentWindow) {
         this.browserManager.parentWindow.webContents.send('files-changed');
       }
-      return { success: true, path: fullPath, message: `Directory created: ${fullPath}` };
+      return { success: true, path: fullPath, created: true, message: `Directory created: ${fullPath}` };
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -2245,10 +2249,11 @@ class MCPToolServer {
       const stats = await fs.stat(fullSrc);
       if (stats.isDirectory()) {
         await this._copyDirRecursive(fullSrc, fullDst);
-      } else {
-        await fs.copyFile(fullSrc, fullDst);
+        return { success: true, source: fullSrc, destination: fullDst, overwritten: false, message: `Copied directory to ${fullDst}` };
       }
-      return { success: true, source: fullSrc, destination: fullDst, message: `Copied to ${fullDst}` };
+      const dstExists = await fs.access(fullDst).then(() => true).catch(() => false);
+      await fs.copyFile(fullSrc, fullDst);
+      return { success: true, source: fullSrc, destination: fullDst, overwritten: dstExists, message: dstExists ? `Overwritten: ${fullDst}` : `Copied to ${fullDst}` };
     } catch (error) {
       return { success: false, error: error.message };
     }

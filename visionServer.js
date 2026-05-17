@@ -59,6 +59,11 @@ class VisionServer {
     }
 
     console.log(`[VisionServer] Found mmproj: ${mmprojPath}`);
+    // If model changed, clear previous start args so _ensureRunning uses the new model
+    if (this._modelPath && this._modelPath !== modelPath) {
+      console.log(`[VisionServer] Model changed (${path.basename(this._modelPath)} → ${path.basename(modelPath)}), clearing _lastCaptionArgs`);
+      this._lastCaptionArgs = null;
+    }
     this._mmprojPath = mmprojPath;
     this._modelPath = modelPath; // store for _ensureRunning first start
     return { available: true, reason: 'mmproj found', mmprojPath };

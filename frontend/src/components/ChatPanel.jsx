@@ -1401,6 +1401,12 @@ export default function ChatPanel() {
 
             }
 
+          } else if (seg.type === 'thinking') {
+
+            messageContent += seg.content;
+
+            messageSegments.push({ type: 'thinking', content: seg.content });
+
           } else if (seg.type === 'tool') {
 
             // R40: Preserve tool segments in finalized message
@@ -1528,8 +1534,6 @@ export default function ChatPanel() {
           fileBlocks: messageFileBlocks.length > 0 ? messageFileBlocks : undefined,
 
           toolCalls: hasToolCalls ? finalToolCalls : undefined,
-
-          thinking: thinkingText || undefined,
 
           // R46-A: Store model name for display on finalized messages
 
@@ -2223,19 +2227,21 @@ export default function ChatPanel() {
 
                       <>
 
-                      {/* Persisted thinking block — shown collapsed for finalized messages */}
-
-                      {msg.thinking && <FinalizedThinkingBlock text={msg.thinking} />}
-
                       {/* R35-L4: Use segments + FileContentBlock for file blocks when available */}
 
-                      {msg.segments && (msg.fileBlocks || msg.toolCalls) ? (
+                      {msg.segments && (msg.fileBlocks || msg.toolCalls || msg.segments.some(s => s.type === 'thinking')) ? (
 
                         msg.segments.map((seg, i) => {
 
                           if (seg.type === 'text' && seg.content && seg.content.trim()) {
 
                             return <MarkdownRenderer key={`seg-${i}`} content={seg.content} />;
+
+                          }
+
+                          if (seg.type === 'thinking' && seg.content && seg.content.trim()) {
+
+                            return <FinalizedThinkingBlock key={`think-${i}`} text={seg.content} />;
 
                           }
 
@@ -2681,29 +2687,31 @@ export default function ChatPanel() {
 
                       <span className="text-vsc-accent hover:underline truncate flex-1 cursor-pointer" onClick={async () => {
 
-                        const api = window.electronAPI;
+                        console.log('[ChatPanel] Files-changed banner click:', f.path);
 
-                        if (api?.apiFetch) {
+                        try {
 
-                          try {
+                          const res = await window.fetch(`/api/files/read?path=${encodeURIComponent(f.path)}`);
 
-                            const res = await api.apiFetch(`/api/files/read?path=${encodeURIComponent(f.path)}`);
+                          console.log('[ChatPanel] window.fetch response status:', res.status);
 
-                            const data = await res.json();
+                          const data = await res.json();
 
-                            if (data.content !== undefined) {
+                          console.log('[ChatPanel] File content fetched, length:', data.content?.length);
 
-                              useAppStore.getState().openFile({ path: f.path, content: data.content });
+                          if (data.content !== undefined) {
 
-                            }
+                            useAppStore.getState().openFile({ path: f.path, content: data.content });
 
-                          } catch (_) {
+                          } else {
 
                             useAppStore.getState().openFile({ path: f.path });
 
                           }
 
-                        } else {
+                        } catch (err) {
+
+                          console.error('[ChatPanel] Failed to fetch file content:', err);
 
                           useAppStore.getState().openFile({ path: f.path });
 
@@ -2743,7 +2751,7 @@ export default function ChatPanel() {
 
                         title="Undo"
 
-                        onClick={() => {
+                        onClick={async () => {
 
                           const tab = useAppStore.getState().openTabs.find(t => t.path === f.path);
 
@@ -2751,11 +2759,11 @@ export default function ChatPanel() {
 
                             useAppStore.getState().updateTabContent(tab.id, tab.originalContent);
 
-                            const api = window.electronAPI;
+                            console.log('[ChatPanel] Undo file write:', f.path);
 
-                            if (api?.apiFetch) {
+                            try {
 
-                              api.apiFetch('/api/files/write', {
+                              const res = await window.fetch('/api/files/write', {
 
                                 method: 'POST',
 
@@ -2764,6 +2772,12 @@ export default function ChatPanel() {
                                 body: JSON.stringify({ path: f.path, content: tab.originalContent }),
 
                               });
+
+                              console.log('[ChatPanel] Undo write response status:', res.status);
+
+                            } catch (err) {
+
+                              console.error('[ChatPanel] Undo write failed:', err);
 
                             }
 
