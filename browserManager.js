@@ -810,12 +810,11 @@ class BrowserManager extends EventEmitter {
         }
 
         // Original page is always the active page — never switch to popup
-        const snapshot = await this.getSnapshot();
+        // Do NOT return the original-page snapshot; it misleads the model into
+        // thinking the page state is unchanged and the same element is still clickable.
         const navigated = false; // original page didn't navigate (popup took the click)
-        if (snapshot.success) {
-          return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated, newTab: true, popupUrl: popupAlive ? popupUrl : null, previousUrl: urlBefore, snapshot: snapshot.text };
-        }
-        return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated, newTab: true, popupUrl: popupAlive ? popupUrl : null, previousUrl: urlBefore };
+        const note = `A new tab opened to ${popupAlive ? popupUrl : 'an unknown URL'}. The original page did not change. To interact with the new tab, use browser_tabs to switch to it, or browser_navigate to the popup URL.`;
+        return { success: true, url: this._page.url(), clicked: clickedText || selector, navigated, newTab: true, popupUrl: popupAlive ? popupUrl : null, previousUrl: urlBefore, note };
       }
 
       // No new tab — check if same-page navigation happened

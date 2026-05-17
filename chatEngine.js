@@ -245,8 +245,8 @@ If you are thinking "I don't have access" — STOP. You DO. Use the tools.
 When the user attaches an image, your vision system automatically analyzes it and provides a description in the message context below. You HAVE seen the image. The description IS your visual analysis. Do NOT say you cannot see the image — you already have. Never refuse to describe or discuss image contents.
 
 ## Operating rules
-- Avoid looping on the same action if it hasn't worked.
-- If you call a tool with the same parameters as your last call and get the same result, you are in a loop. Do NOT call it again. Try a different approach or call ask_question.
+- If you are about to output the exact same tool call JSON (same tool name + same parameters) that you already output earlier in this conversation, you are looping. Do NOT output it again. Try a different approach or call ask_question.
+- If you called a tool and the result gave you no new information useful for the task, do not repeat that same call. Try a different approach or call ask_question.
 - Call each tool at most once per distinct argument set. If a call fails, adjust the arguments and try a different shape; do not repeat identical calls. If a tool still fails after one retry, call ask_question to ask the user for guidance.
 - After a tool returns, use its result and continue with the next step of the task. Do not stop until the task is complete or you call ask_question.
 - After a tool returns, use its result. Do not re-ask for information the tool already provided.
@@ -1920,8 +1920,10 @@ class ChatEngine extends EventEmitter {
             break;
           }
 
-          this._chatHistory.push({ type: 'user', text: `${userInterruptPrefix}[Tool Results]\n${toolResultLines.join('\n')}${relatedSection}` });
-          this._chatHistory.push({ type: 'user', text: 'Continue with the remaining steps of the task. Call the next tool if more work is needed, or explain the result if the task is complete.' });
+          this._chatHistory.push({
+            type: 'user',
+            text: `${userInterruptPrefix}[Tool Results]\n${toolResultLines.join('\n')}${relatedSection}\n\nContinue with the remaining steps of the task. Call the next tool if more work is needed, or explain the result if the task is complete.`
+          });
           console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${!!this._pendingUserMessage}`);
           console.log(`[ChatEngine] Tool result summary: ${toolResultLines.join(' | ')}`);
 

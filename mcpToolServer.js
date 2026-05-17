@@ -673,7 +673,7 @@ class MCPToolServer {
       },
       {
         name: 'browser_tabs',
-        description: 'Manage browser tabs: list all tabs, create new tab, close a tab, or switch to a tab.',
+        description: 'Manage browser tabs: list all tabs, create new tab, close a tab, or select a tab.',
         parameters: {
           action: { type: 'string', description: "'list', 'new', 'close', or 'select'", required: true },
           index: { type: 'number', description: 'Tab index (for close/select)', required: false },
@@ -958,14 +958,14 @@ class MCPToolServer {
       // ── Planning / TODO Tools ──
       {
         name: 'write_todos',
-        description: 'Create a checklist to plan and track multi-step tasks. Accepts an array of items displayed in the UI as a trackable todo list.',
+        description: 'Create a checklist to plan and track multi-step tasks. After creating todos, you MUST call update_todo to mark each item as "in_progress" when you start it and "done" when you complete it. The user sees the todo list update in real time.',
         parameters: {
           items: { type: 'array', description: 'Array of todo strings or {text,status} objects', required: true },
         },
       },
       {
         name: 'update_todo',
-        description: 'Update a TODO item status to pending, in-progress, or done. Can also update the item text.',
+        description: 'Update a TODO item status. Call this EVERY time you start or finish a task step. Status values: "pending", "in-progress", "done". Can also update the item text.',
         parameters: {
           id: { type: 'number', description: 'Todo ID (from write_todos result)', required: true },
           status: { type: 'string', description: 'New status: pending, in-progress, or done', required: true },
