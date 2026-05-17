@@ -501,6 +501,13 @@ ipcMain.handle('agent-pause', async () => {
   return { success: true };
 });
 
+ipcMain.handle('force-send-queued', async () => {
+  console.log('[electron-main] force-send-queued');
+  llmEngine.cancelGeneration('user');
+  try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
+  return { success: true };
+});
+
 // ─── Generic API-fetch IPC handler ──────────────────────────────────
 // The frontend's fetch('/api/...') calls are intercepted and routed here.
 // This replaces the entire Express REST API from server/main.js.

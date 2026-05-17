@@ -146,7 +146,7 @@ Assistant:
 User: "Create a todo list for adding auth, then mark the first task done"
 Assistant:
 \`\`\`json
-{"tool":"write_todos","params":{"todos":[{"id":"auth-1","content":"Add login route to Express","status":"pending","priority":"high"},{"id":"auth-2","content":"Create JWT middleware","status":"pending","priority":"high"}]}}
+{"tool":"write_todos","params":{"items":["Add login route to Express","Create JWT middleware"]}}
 \`\`\`
 \`\`\`json
 {"tool":"update_todo","params":{"id":"auth-1","status":"completed"}}
@@ -188,7 +188,7 @@ Assistant:
 {"tool":"browser_snapshot","params":{}}
 \`\`\`
 \`\`\`json
-{"tool":"browser_click","params":{"ref":"ref123","element":"Login button"}}
+{"tool":"browser_click","params":{"ref":"e5","element":"Login button"}}
 \`\`\`
 
 User: "Which database should I use?"
@@ -253,6 +253,7 @@ When the user attaches an image, your vision system automatically analyzes it an
 - Ground web answers in fetched page content, not in training memory. Search snippets alone are never sufficient.
 - If output is truncated, continue from the point of interruption. Do not restart or re-summarize what was already produced.
 - If you are STUCK, you MUST call ask_question to ask the user for guidance. NEVER just end your response saying "it didn't work".
+- If you are uncertain about any information, parameter, value, or next step, call ask_question. NEVER guess. Guessing causes errors. Asking prevents them.
 - Vision: Images are automatically captioned. When you receive an image description in brackets, that IS the image content — do not call read_file on image files.
 
 ## USER-PROVIDED INFORMATION
@@ -279,6 +280,7 @@ class ChatEngine extends EventEmitter {
     this._abortController = null;
     this._pendingUserMessage = null; // injected by user interrupt during tool loop
     this._recentlyWrittenFiles = new Map(); // filePath → content written in current chat() call
+    this._sessionId = 0; // increments on resetSession to detect stale tool results
     console.log('[ChatEngine] constructor DONE');
   }
 
@@ -1605,7 +1607,8 @@ class ChatEngine extends EventEmitter {
 
         console.log(`[ChatEngine] Tool loop ENTER: ${parsedCalls.length} parsed call(s)`);
         while (parsedCalls.length > 0) {
-          console.log(`[ChatEngine] Tool loop ITERATION: ${parsedCalls.length} call(s)`);
+          const sessionAtStart = this._sessionId;
+          console.log(`[ChatEngine] Tool loop ITERATION: ${parsedCalls.length} call(s), sessionId=${sessionAtStart}`);
           // Notify UI so ToolCallCards appear for each tool call (spinner state)
           if (onStreamEvent) {
             onStreamEvent('tool-executing', parsedCalls.map(c => ({ tool: c.tool, params: c.params })));
@@ -1912,8 +1915,13 @@ class ChatEngine extends EventEmitter {
           }
           this._toolRoundCount++;
 
+          if (this._sessionId !== sessionAtStart) {
+            console.warn(`[ChatEngine] Session changed during tool execution (was ${sessionAtStart}, now ${this._sessionId}) — dropping stale tool results`);
+            break;
+          }
+
           this._chatHistory.push({ type: 'user', text: `${userInterruptPrefix}[Tool Results]\n${toolResultLines.join('\n')}${relatedSection}` });
-          this._chatHistory.push({ type: 'user', text: 'Continue with the next step of the task. Call the next tool if more work is needed, or explain the result if the task is complete.' });
+          this._chatHistory.push({ type: 'user', text: 'Continue with the remaining steps of the task. Call the next tool if more work is needed, or explain the result if the task is complete.' });
           console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${!!this._pendingUserMessage}`);
           console.log(`[ChatEngine] Tool result summary: ${toolResultLines.join(' | ')}`);
 
@@ -2297,12 +2305,13 @@ class ChatEngine extends EventEmitter {
 
   async resetSession() {
     console.log('[ChatEngine] resetSession START');
+    this._sessionId++;
     this._chatHistory = [{ type: 'system', text: SYSTEM_PROMPT }];
     this._lastEvaluation = null;
     if (this._sequence) {
       try { this._sequence.clearHistory(); } catch (e) { console.warn('[ChatEngine] resetSession clearHistory failed:', e.message); }
     }
-    console.log('[ChatEngine] resetSession DONE');
+    console.log(`[ChatEngine] resetSession DONE: newSessionId=${this._sessionId}`);
   }
 
   getStatus() {

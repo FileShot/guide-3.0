@@ -537,7 +537,7 @@ class MCPToolServer {
       // ── Browser Tools ──
       {
         name: 'browser_navigate',
-        description: 'Navigate to a URL in a Playwright-controlled Chrome browser. Auto-launches the browser if needed. Returns the page snapshot automatically — no need to call browser_snapshot separately after navigating.',
+        description: 'Navigate to a URL in a Playwright-controlled Chrome browser. Auto-launches the browser if needed.',
         parameters: {
           url: { type: 'string', description: 'Full URL to navigate to (must include https:// or http://)', required: true },
           reason: { type: 'string', description: 'One sentence explaining why you are navigating to this URL', required: false },
@@ -550,7 +550,7 @@ class MCPToolServer {
       },
       {
         name: 'browser_click',
-        description: 'Click an element by its ref number. Returns the page snapshot automatically after clicking — no need to call browser_snapshot separately. Handles scrolling and overlays automatically. Auto-retries with a fresh snapshot if the ref is stale.',
+        description: 'Click an element by its ref number. Handles scrolling and overlays automatically. Auto-retries with a fresh snapshot if the ref is stale.',
         parameters: {
           ref: { type: 'string', description: 'Element reference from snapshot [ref=eN] (e.g. "e5"), OR visible text of the element (e.g. "Sign In"). Also accepts: elementIndex, index, selector', required: true },
           reason: { type: 'string', description: 'One sentence explaining why you are clicking this element', required: false },
@@ -561,7 +561,7 @@ class MCPToolServer {
       },
       {
         name: 'browser_type',
-        description: 'Type text into an input field by ref number. Returns the page snapshot automatically after typing — no need to call browser_snapshot separately. Clears the field first, then types the new text. Auto-retries with fresh snapshot if ref is stale.',
+        description: 'Type text into an input field by ref number. Clears the field first, then types the new text. Auto-retries with fresh snapshot if ref is stale.',
         parameters: {
           ref: { type: 'string', description: 'Element reference from snapshot [ref=eN] (e.g. "e3"). Also accepts: elementIndex, index, selector', required: true },
           text: { type: 'string', description: 'Text to type', required: true },

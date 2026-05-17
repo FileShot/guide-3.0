@@ -1679,6 +1679,18 @@ export default function ChatPanel() {
 
 
 
+  const handleForceSend = useCallback(async (msg) => {
+    try {
+      if (window.electronAPI?.forceSendQueued) {
+        await window.electronAPI.forceSendQueued();
+      } else {
+        await (await import('../api/websocket')).invoke('force-send-queued');
+      }
+    } catch (_) {}
+    removeQueuedMessage(msg.id);
+    setTimeout(() => handleSendQueued(msg.text), 1000);
+  }, [removeQueuedMessage, handleSendQueued]);
+
   const handleStop = useCallback(async () => {
 
     if (stopPending) return;
@@ -3024,6 +3036,20 @@ export default function ChatPanel() {
                       onChange={(e) => updateQueuedMessage(msg.id, e.target.value)}
 
                     />
+
+                    <button
+
+                      className="p-0.5 text-vsc-text-dim hover:text-vsc-accent opacity-0 group-hover:opacity-100 transition-opacity"
+
+                      onClick={() => handleForceSend(msg)}
+
+                      title="Force send now"
+
+                    >
+
+                      <Zap size={10} />
+
+                    </button>
 
                     <button
 

@@ -60,6 +60,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   aiChat: (message, context) => ipcRenderer.invoke('ai-chat', message, context),
   agentPause: () => ipcRenderer.invoke('agent-pause'),
   agentResume: () => ipcRenderer.invoke('agent-resume'),
+  forceSendQueued: () => ipcRenderer.invoke('force-send-queued'),
   injectUserMessage: (text) => ipcRenderer.invoke('inject-user-message', { text }),
   revertContext: (messages) => ipcRenderer.invoke('revert-context', messages),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
