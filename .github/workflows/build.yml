@@ -81,7 +81,7 @@ jobs:
         run: npm run build:renderer
 
       - name: Download latest llama.cpp source (Gemma 4 + future arch support)
-        run: npx node-llama-cpp source download --skipBuild --release latest
+        run: npx node-llama-cpp source download --skipBuild --release b9209
 
       - name: Build Windows CPU installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.json
@@ -131,7 +131,7 @@ jobs:
         run: npm run build:renderer
 
       - name: Download latest llama.cpp source (Gemma 4 + future arch support)
-        run: npx node-llama-cpp source download --skipBuild --release latest
+        run: npx node-llama-cpp source download --skipBuild --release b9209
 
       - name: Build Windows CUDA installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.cuda.json
@@ -182,7 +182,7 @@ jobs:
           fi
 
       - name: Download latest llama.cpp source (Gemma 4 + future arch support)
-        run: npx node-llama-cpp source download --skipBuild --release latest
+        run: npx node-llama-cpp source download --skipBuild --release b9209
 
       - name: Build Linux CPU AppImage
         run: npx electron-builder --linux --x64 --config electron-builder.nosign.json
@@ -232,7 +232,7 @@ jobs:
           fi
 
       - name: Download latest llama.cpp source (Gemma 4 + future arch support)
-        run: npx node-llama-cpp source download --skipBuild --release latest
+        run: npx node-llama-cpp source download --skipBuild --release b9209
 
       - name: Build Linux CUDA AppImage
         run: npx electron-builder --linux --x64 --config electron-builder.nosign.cuda.json
@@ -297,7 +297,7 @@ jobs:
           iconutil -c icns build/icon.iconset -o build/icon.icns
 
       - name: Download latest llama.cpp source (Gemma 4 + future arch support)
-        run: npx node-llama-cpp source download --skipBuild --release latest
+        run: npx node-llama-cpp source download --skipBuild --release b9209
 
       - name: Build macOS DMG (CPU, x64 + arm64)
         run: npx electron-builder --mac --x64 --arm64 --config electron-builder.nosign.json
