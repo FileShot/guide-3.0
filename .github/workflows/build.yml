@@ -82,6 +82,8 @@ jobs:
 
       - name: Download latest llama.cpp source (Gemma 4 + future arch support)
         run: npx node-llama-cpp source download --skipBuild --release b9209
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Windows CPU installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.json
@@ -132,6 +134,8 @@ jobs:
 
       - name: Download latest llama.cpp source (Gemma 4 + future arch support)
         run: npx node-llama-cpp source download --skipBuild --release b9209
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Windows CUDA installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.cuda.json
@@ -183,6 +187,8 @@ jobs:
 
       - name: Download latest llama.cpp source (Gemma 4 + future arch support)
         run: npx node-llama-cpp source download --skipBuild --release b9209
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Linux CPU AppImage
         run: npx electron-builder --linux --x64 --config electron-builder.nosign.json
@@ -233,6 +239,8 @@ jobs:
 
       - name: Download latest llama.cpp source (Gemma 4 + future arch support)
         run: npx node-llama-cpp source download --skipBuild --release b9209
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Linux CUDA AppImage
         run: npx electron-builder --linux --x64 --config electron-builder.nosign.cuda.json
@@ -298,6 +306,8 @@ jobs:
 
       - name: Download latest llama.cpp source (Gemma 4 + future arch support)
         run: npx node-llama-cpp source download --skipBuild --release b9209
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build macOS DMG (CPU, x64 + arm64)
         run: npx electron-builder --mac --x64 --arm64 --config electron-builder.nosign.json
