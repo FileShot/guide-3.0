@@ -46,6 +46,16 @@ Earlier in the session I claimed GLM-4.6 was prefixing `<think>` invisibly via c
 - Plan 1 verification: the verbatim string `"React latest version release notes"` is no longer present anywhere in `chatEngine.js`.
 - Plan 2 verification: `rebuildLlamaCpp()` is called once before any backend pruning so the rebuild affects both CUDA and CPU installer variants.
 
+### CI rebuild fix — v0.3.70 (final)
+**Problem**: `npx node-llama-cpp source download --release b9209` makes unauthenticated GitHub API calls to resolve the release tag. GitHub Actions shared runners hit the 60 req/hr unauthenticated rate limit, causing intermittent `403 rate limit exceeded` failures (macOS consistently, Linux sporadically). The CLI does not read `GITHUB_TOKEN`.
+
+**Fix**:
+- `.github/workflows/build.yml`: Replaced all 5 `npx node-llama-cpp source download` steps with manual `curl -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}"` to download the GitHub release tarball, followed by `tar` extraction into `node_modules/node-llama-cpp/llama/`. This uses authenticated API calls (5000 req/hr limit) and avoids the CLI entirely.
+- Pinned release to `b9209` for reproducible builds.
+- `scripts/build-installers.js`: Also pinned to `b9209` for local build consistency.
+
+**Result**: All 5 build jobs (Windows CPU/CUDA, Linux CPU/CUDA, macOS) + release step passed. `v0.3.70` installers published.
+
 ---
 
 ## 2026-05-17 — v0.3.63 — Performance audit: P1–P6 (inference) + B4 (think consolidation) + F1–F3 (frontend)
