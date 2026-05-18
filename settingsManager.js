@@ -29,10 +29,11 @@ const SETTINGS_DEFAULTS = {
   // Thinking & Reasoning
   thinkingBudget: 2048,
   reasoningEffort: 'medium',
+  enableThinking: true,        // Pass enable_thinking=true to chat template (Qwen 3.5 small models disable thinking by default; this activates it)
+  enableThinkingFilter: false,
   // Agentic Behavior
   maxIterations: 0,
   generationTimeoutSec: 0,
-  enableThinkingFilter: false,
   enableGrammar: false,
   // System Prompt
   systemPrompt: '',
@@ -41,7 +42,8 @@ const SETTINGS_DEFAULTS = {
   gpuPreference: 'auto',
   gpuLayers: -1,
   requireMinContextForGpu: false,
-  kvCacheType: 'q4_0', // KV cache quantization — q4_0 balances speed and quality; q3_0 is smaller but lower quality
+  gpuConstrainedContext: true,  // When GPU layers < 30% of total, cap context to VRAM-bounded size for faster generation
+  kvCacheType: 'f16', // KV cache quantization — f16 matches llama.cpp upstream default and enables the fastest fused flash-attention path on consumer NVIDIA GPUs (matches LM Studio / llama-server). Lower-precision options (q8_0, q4_0) save VRAM at a measurable speed cost; user-overridable.
   // Editor
   fontSize: 14,
   fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
@@ -151,9 +153,12 @@ class SettingsManager extends EventEmitter {
           this._settings.contextSize = 0;
           this._scheduleSave();
         }
-        // Migration: kvCacheType=q3_0 → q4_0 (better attention quality, negligible VRAM difference)
-        if (this._settings.kvCacheType === 'q3_0') {
-          this._settings.kvCacheType = 'q4_0';
+        // Migration: legacy guIDE KV defaults (q3_0, q4_0) → f16. f16 matches llama.cpp upstream and
+        // enables the fastest fused flash-attention path on consumer NVIDIA GPUs (LM Studio / llama-server
+        // behaviour). Users who explicitly want lower-precision KV (e.g. for very long contexts on low-VRAM
+        // systems) can set q8_0 / q4_0 / etc. via settings — only legacy guIDE defaults are swept.
+        if (this._settings.kvCacheType === 'q3_0' || this._settings.kvCacheType === 'q4_0') {
+          this._settings.kvCacheType = 'f16';
           this._scheduleSave();
         }
       }

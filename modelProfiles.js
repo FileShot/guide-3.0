@@ -73,39 +73,50 @@ const BASE_DEFAULTS = {
 // ─── Family Profiles ───
 const FAMILY_PROFILES = {
   qwen: {
+    // Official Qwen 3.5/3.6 recommended settings from https://unsloth.ai/docs/models/qwen3.5
+    // Thinking mode (default): temp=0.6, topP=0.95, topK=20, repeatPenalty=1.0, presencePenalty=0
+    // Instruct (non-thinking): temp=0.7, topP=0.8, topK=20, repeatPenalty=1.0, presencePenalty=1.5
     base: {
-      sampling: { temperature: 0.5, topP: 0.90, topK: 30, repeatPenalty: 1.08 },
+      sampling: { temperature: 0.6, topP: 0.95, topK: 20, repeatPenalty: 1.0, presencePenalty: 0 },
+      samplingInstruct: { temperature: 0.7, topP: 0.8, topK: 20, repeatPenalty: 1.0, presencePenalty: 1.5 },
       thinkTokens: { mode: 'budget', budget: 2048 },
       quirks: { emitsSpecialTokens: true },
     },
     tiny: {
-      sampling: { temperature: 0.45, topP: 0.85, topK: 20, repeatPenalty: 1.10, lastTokensPenaltyCount: 512 },
+      sampling: { temperature: 0.6, topP: 0.95, topK: 20, repeatPenalty: 1.0, presencePenalty: 0, lastTokensPenaltyCount: 512 },
+      samplingInstruct: { temperature: 0.7, topP: 0.8, topK: 20, repeatPenalty: 1.0, presencePenalty: 1.5, lastTokensPenaltyCount: 512 },
       prompt: { style: 'compact', fewShotExamples: 1 },
       thinkTokens: { mode: 'budget', budget: 1024 },
       generation: { maxToolsPerTurn: 10 },
       quirks: { truncatesMidTool: true, poorMultiTool: true },
     },
     small: {
-      sampling: { temperature: 0.35, topP: 0.88, topK: 25, repeatPenalty: 1.12, lastTokensPenaltyCount: 512 },
+      sampling: { temperature: 0.6, topP: 0.95, topK: 20, repeatPenalty: 1.0, presencePenalty: 0, lastTokensPenaltyCount: 512 },
+      samplingInstruct: { temperature: 0.7, topP: 0.8, topK: 20, repeatPenalty: 1.0, presencePenalty: 1.5, lastTokensPenaltyCount: 512 },
       prompt: { style: 'compact', fewShotExamples: 1 },
       thinkTokens: { mode: 'budget', budget: 2048 },
       generation: { maxToolsPerTurn: 14 },
       quirks: { poorMultiTool: true },
     },
     medium: {
-      sampling: { temperature: 0.55, topP: 0.90, topK: 30, repeatPenalty: 1.05 },
+      sampling: { temperature: 0.6, topP: 0.95, topK: 20, repeatPenalty: 1.0, presencePenalty: 0 },
+      samplingInstruct: { temperature: 0.7, topP: 0.8, topK: 20, repeatPenalty: 1.0, presencePenalty: 1.5 },
       context: { effectiveContextSize: 16384 },
       prompt: { style: 'full' },
       generation: { maxToolsPerTurn: 15 },
       thinkTokens: { mode: 'budget', budget: 2048 },
     },
     large: {
+      sampling: { temperature: 0.6, topP: 0.95, topK: 20, repeatPenalty: 1.0, presencePenalty: 0 },
+      samplingInstruct: { temperature: 0.7, topP: 0.8, topK: 20, repeatPenalty: 1.0, presencePenalty: 1.5 },
       context: { effectiveContextSize: 32768, maxResponseTokens: 8192 },
       prompt: { style: 'full' },
       generation: { maxToolsPerTurn: 25 },
       thinkTokens: { _thinkBudgetWhenActive: 2048 },
     },
     xlarge: {
+      sampling: { temperature: 0.6, topP: 0.95, topK: 20, repeatPenalty: 1.0, presencePenalty: 0 },
+      samplingInstruct: { temperature: 0.7, topP: 0.8, topK: 20, repeatPenalty: 1.0, presencePenalty: 1.5 },
       context: { effectiveContextSize: 65536, maxResponseTokens: 16384 },
       prompt: { style: 'full' },
       generation: { maxToolsPerTurn: 50 },

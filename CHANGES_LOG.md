@@ -4,6 +4,52 @@
 
 ---
 
+## 2026-05-18 — Generation-speed parity with llama.cpp upstream / LM Studio (Causes 1 + 3)
+
+### Problem
+User benchmark on RTX 3050 Ti Laptop / 4 GB VRAM with `Qwen3.6-35B-A3B-Q4_K_M.gguf`:
+- LM Studio: **10.76 tok/s** (verified from `C:\Users\brend\.lmstudio\server-logs\2026-05\2026-05-18.1.log` line 326)
+- guIDE: **1–2 tok/s** (5×–10× slower with identical hardware, identical model file)
+
+### Root cause
+guIDE shipped two guIDE-specific KV-cache choices that diverged from llama.cpp upstream / LM Studio / llama-server defaults:
+
+1. **`settingsManager.js:44`** defaulted `kvCacheType` to `'q4_0'` (and the prior migration only stepped `q3_0 → q4_0`).
+2. **`chatEngine.js:546-579`** unconditionally passed `experimentalKvCacheKeyType` and `experimentalKvCacheValueType` to `createContext`, which means even when the resolved type was nominally f16 the createContext call took the override branch instead of llama.cpp's native default code path.
+
+The combined effect on consumer NVIDIA GPUs:
+- KV size estimator at `chatEngine.js:108-110` returned 0.5 B/elem (q4_0), so the auto-context computation at `chatEngine.js:400-419` allocated a context window sized for q4_0 KV memory. When llama.cpp could not actually apply q4_0 to the model architecture (which happens silently for several recent architectures including `qwen35moe`), the realised KV was f16 — 4× the planned size — and llama.cpp pushed the cache off-GPU onto CPU. The fallback retry at lines 556-579 acknowledges this exact failure mode.
+- q4_0 KV requires per-step dequantisation in the attention kernel; on CUDA Ampere the fused flash-attention path is faster with f16/f16 symmetric KV (research links below).
+
+### Fix
+**`settingsManager.js:44`** — default `kvCacheType` changed from `'q4_0'` to `'f16'`. Comment updated to describe the rationale (matches llama.cpp upstream + LM Studio + llama-server; lower-precision options remain user-selectable).
+
+**`settingsManager.js:154-161`** — migration extended to sweep both legacy guIDE defaults (`q3_0`, `q4_0`) to `'f16'`. Explicit user choices of other values (q5_0, q5_1, q8_0, currentQuant) are preserved.
+
+**`chatEngine.js:130`** — `buildEngineLoadSettings` fallback for `kvCacheType` aligned to `'f16'`.
+
+**`chatEngine.js:455-457`** — `rawKvType` fallback aligned to `'f16'`. Comment updated.
+
+**`chatEngine.js:546-581`** — createContext options hoisted into a single `baseCtxOpts` object. `experimentalKvCacheKeyType` / `experimentalKvCacheValueType` are now attached only when the user has explicitly selected a non-f16 KV type. For the new default (f16) the override is omitted entirely so llama.cpp uses its native default fast path. The f16-fallback retry now reuses `baseCtxOpts` with only `contextSize` replaced.
+
+### Verification
+- All edits read after write; no syntax issues.
+- Default value chain verified end-to-end: settingsManager default → IPC raw payload → `buildEngineLoadSettings` fallback → `rawKvType` fallback → createContext params.
+- Hardware-agnostic: applies to all VRAM tiers; auto gpuLayers fitting in `chatEngine.js:471-487` self-adjusts to f16 KV bytes/token via the unchanged estimator at lines 108-117.
+- Model-agnostic: applies to every GGUF; no architecture-specific code path.
+- User-overridable: `kvCacheType` setting still accepted in settingsManager; users wanting smaller KV at the cost of speed can set `q8_0` / `q4_0` / etc. via persisted settings.
+- No detection-on-output, no retries-after-fact, no timeouts. Pure load-time parameter alignment.
+
+### Research
+- `https://github.com/ggml-org/llama.cpp/discussions/22411` — Symmetric KV quantisation enables fused FA kernel; mismatched K/V silently falls back.
+- `https://github.com/ggml-org/llama.cpp/discussions/20969` (TurboQuant) — q4_0 KV decode ~12% slower at 24K, ~37% slower at 110K vs f16.
+- `https://www.reddit.com/r/LocalLLaMA/comments/1ng0fmv/` — KV quantisation forces extra dequant work per attention step on consumer NVIDIA.
+
+### Scope
+This change addresses Causes 1 + 3 from the investigation report only. Cause 2 (auto-context default), Cause 4 (no prompt cache) and the installer process-detection issue remain to be addressed in follow-up plans.
+
+---
+
 ## 2026-05-18 — Bug-fix pass: Pattern-block prompt (Plan 1) + llama.cpp rebuild in build (Plan 2) + unsupported-arch error (Plan 2 Part B) + tool-selection rubric (Plan 4) + context-sizing mmap math (Bug 8)
 
 ### Problems addressed

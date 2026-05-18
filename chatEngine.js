@@ -127,7 +127,9 @@ function buildEngineLoadSettings(raw = {}) {
     gpuLayers,
     contextSize,
     requireMinContextForGpu: !!raw.requireMinContextForGpu,
+    gpuConstrainedContext: raw.gpuConstrainedContext !== false, // default true
     kvCacheType: raw.kvCacheType || 'f16',
+    enableThinking: raw.enableThinking !== false, // default true
   };
 }
 
@@ -545,6 +547,20 @@ class ChatEngine extends EventEmitter {
         const maxCtxFromVram = Math.floor((vramFreeAfterModel - vramBuffer) / (kvBytesPerToken * gpuLayerRatio));
         computedCtxSize = Math.max(MIN_CONTEXT_FLOOR, Math.min(maxCtxFromVram, desiredMax));
         console.log(`[ChatEngine] Context size computation: vramFreeAfterModel=${(vramFreeAfterModel/1e9).toFixed(2)}GB, kvBpt=${kvBytesPerToken}, gpuRatio=${gpuLayerRatio.toFixed(2)}, maxCtxFromVram=${maxCtxFromVram}, computedCtxSize=${computedCtxSize}`);
+
+        // Fix D: GPU-constrained context cap. When only a small fraction of layers
+        // fit on GPU (gpuRatio < 0.3), the formula above allows massive context because
+        // only the GPU fraction of KV needs VRAM — but the remaining KV lives in system
+        // RAM, and every generation step traverses CPU layers with that massive KV cache,
+        // causing significant slowdown. Cap context to what fits in VRAM for the full KV
+        // (not just the GPU fraction) to keep generation fast. Toggleable via setting.
+        if (s.gpuConstrainedContext && gpuLayerRatio < 0.3 && kvBytesPerToken > 0) {
+          const vramBoundedCtx = Math.floor((vramFreeAfterModel - vramBuffer) / kvBytesPerToken);
+          if (vramBoundedCtx > 0 && vramBoundedCtx < computedCtxSize) {
+            console.log(`[ChatEngine] Fix D: GPU-constrained context cap: ${vramBoundedCtx} (from ${computedCtxSize}) — gpuRatio=${gpuLayerRatio.toFixed(2)}, only ${actualGpuLayers}/${totalLayersForCtx} layers on GPU`);
+            computedCtxSize = Math.max(MIN_CONTEXT_FLOOR, vramBoundedCtx);
+          }
+        }
       }
 
       // Build createContext options. Only attach experimentalKvCacheKeyType / ValueType when
@@ -602,9 +618,6 @@ class ChatEngine extends EventEmitter {
       }
 
       this._sequence = this._context.getSequence();
-      this._chat = new LlamaChat({ contextSequence: this._sequence });
-      this._chatHistory = [{ type: 'system', text: SYSTEM_PROMPT }];
-      this._lastEvaluation = null;
 
       const actualCtx = this._context.contextSize || 0;
       // Estimate parameter count from GGUF metadata or filename (e.g. "Qwen3.5-4B" → 4B)
@@ -642,6 +655,24 @@ class ChatEngine extends EventEmitter {
       const _detectedFamily = _archFamily || _fileFamily;
       const _detectedSizeB = paramCount ? paramCount / 1e9 : detectParamSize(modelPath);
       this._modelProfile = getModelProfile(_detectedFamily, _detectedSizeB);
+
+      // Fix B: Pass enable_thinking to chat template kwargs so Qwen 3.5 small models
+      // (which disable thinking by default in their Jinja template) activate thinking.
+      // When the profile says thinkTokens.mode='budget' or 'strip' and the user hasn't
+      // disabled thinking in settings, pass enable_thinking=true. This is silently
+      // ignored by models whose templates don't reference the kwarg.
+      const _profileThinkMode = this._modelProfile?.thinkTokens?.mode;
+      const _chatTemplateKwargs = {};
+      if (s.enableThinking && _profileThinkMode !== 'none') {
+        _chatTemplateKwargs.enable_thinking = true;
+      } else if (_profileThinkMode === 'none' || !s.enableThinking) {
+        _chatTemplateKwargs.enable_thinking = false;
+      }
+      this._chat = new LlamaChat({ contextSequence: this._sequence, chatTemplateKwargs: _chatTemplateKwargs });
+      console.log(`[ChatEngine] Fix B: chatTemplateKwargs=${JSON.stringify(_chatTemplateKwargs)}, profileThinkMode=${_profileThinkMode}, enableThinking=${s.enableThinking}`);
+
+      this._chatHistory = [{ type: 'system', text: SYSTEM_PROMPT }];
+      this._lastEvaluation = null;
       this.modelInfo.family = _detectedFamily;
       this.modelInfo.sizeB = _detectedSizeB;
       this.modelInfo.tier = this._modelProfile._meta.tier;
@@ -1569,14 +1600,28 @@ class ChatEngine extends EventEmitter {
         else if (reasoningEffort === 'medium') thinkBudget = 2048;
         else if (reasoningEffort === 'high') thinkBudget = 8192;
       }
+      // Fix C: Adaptive sampling — when thinking is NOT active (budget=0 or mode=none),
+      // use samplingInstruct profile if the model family provides one. This ensures
+      // Qwen models get presencePenalty=1.5 in instruct mode (preventing loops) and
+      // presencePenalty=0 in thinking mode (per official vendor recommendations).
+      const _thinkingActive = thinkBudget > 0 && profileThinkMode !== 'none';
+      const _samplingProfile = (!_thinkingActive && this._modelProfile?.samplingInstruct)
+        ? this._modelProfile.samplingInstruct
+        : this._modelProfile?.sampling;
       const genOptions = {
         signal: this._abortController.signal,
         stopOnAbortSignal: true,
-        // P3: Per-family/tier sampling defaults from modelProfiles.js. Caller's options override.
-        temperature: options.temperature ?? this._modelProfile?.sampling?.temperature ?? 0.4,
-        topP: options.topP ?? this._modelProfile?.sampling?.topP,
-        topK: options.topK ?? this._modelProfile?.sampling?.topK,
-        repeatPenalty: { penalty: options.repeatPenalty ?? this._modelProfile?.sampling?.repeatPenalty ?? 1.1 },
+        // P3 + Fix C: Per-family/tier sampling defaults from modelProfiles.js. Caller's options override.
+        // When thinking is off, samplingInstruct is used (if defined) for instruct-mode settings.
+        temperature: options.temperature ?? _samplingProfile?.temperature ?? 0.4,
+        topP: options.topP ?? _samplingProfile?.topP,
+        topK: options.topK ?? _samplingProfile?.topK,
+        repeatPenalty: {
+          penalty: options.repeatPenalty ?? _samplingProfile?.repeatPenalty ?? 1.1,
+          frequencyPenalty: options.frequencyPenalty ?? _samplingProfile?.frequencyPenalty ?? 0,
+          presencePenalty: options.presencePenalty ?? _samplingProfile?.presencePenalty ?? 0,
+          lastTokens: _samplingProfile?.lastTokensPenaltyCount ?? 128,
+        },
         seed: options.seed ?? undefined,
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {

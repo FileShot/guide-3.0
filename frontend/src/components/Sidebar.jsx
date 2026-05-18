@@ -1336,7 +1336,7 @@ function SettingsPanel() {
 
   const updateSettingWithReload = useCallback((key, value) => {
     updateSetting(key, value);
-    const requiresReload = key === 'contextSize' || key === 'gpuLayers' || key === 'gpuPreference' || key === 'requireMinContextForGpu' || key === 'kvCacheType';
+    const requiresReload = key === 'contextSize' || key === 'gpuLayers' || key === 'gpuPreference' || key === 'requireMinContextForGpu' || key === 'kvCacheType' || key === 'enableThinking' || key === 'gpuConstrainedContext';
     if (requiresReload) triggerModelReload(key);
   }, [updateSetting, triggerModelReload]);
 
@@ -1503,9 +1503,12 @@ function SettingsPanel() {
           onChange={v => updateSetting('generationTimeoutSec', v)}
           tooltip="Abort generation after this many seconds (0 = no limit)"
           format={v => v === 0 ? 'disabled' : String(Math.round(v))} />
+        <SettingToggle label="Enable Thinking (Chat Template)" value={settings.enableThinking !== false}
+          onChange={v => updateSettingWithReload('enableThinking', v)}
+          hint="Pass enable_thinking to chat template. Required for Qwen 3.5 small models to think." />
         <SettingToggle label="Filter Thinking Tokens" value={settings.enableThinkingFilter}
           onChange={v => updateSetting('enableThinkingFilter', v)}
-          hint="Strip <think>...</think> from output" />
+          hint="Strip thinking tags from output" />
         <SettingToggle label="Grammar-Constrained Tool Calls" value={settings.enableGrammar}
           onChange={v => updateSetting('enableGrammar', v)}
           hint="Forces valid tool calls. May cause hangs on small models." />
@@ -1592,6 +1595,9 @@ function SettingsPanel() {
         <SettingToggle label="Require Min Context for GPU" value={settings.requireMinContextForGpu}
           onChange={v => updateSettingWithReload('requireMinContextForGpu', v)}
           hint="If GPU yields < 4096 ctx, retry on CPU for larger context" />
+        <SettingToggle label="GPU-Constrained Context" value={settings.gpuConstrainedContext !== false}
+          onChange={v => updateSettingWithReload('gpuConstrainedContext', v)}
+          hint="Cap context to VRAM-bounded size when few GPU layers. Improves speed for large models on small GPUs." />
         <div className="mb-3 mt-2">
           <label className="text-[11px] text-vsc-text-dim block mb-1">KV Cache Quantization</label>
           <div className="flex gap-1">
