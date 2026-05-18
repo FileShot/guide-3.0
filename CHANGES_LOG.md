@@ -4,6 +4,50 @@
 
 ---
 
+## 2026-05-17 — Plans A, C, D, G, I — orphan </think> leak, single-dollar math, tool-call recovery, system-prompt honesty, tool fences inside think
+
+### Problem
+Five user-reported bugs across the streaming buffer, markdown renderer, parser, and system prompt:
+
+- **A** Orphan `</think>` close tag visible in chat. Verified root cause via GLM-4.6 jinja template (`@huggingface.co/zai-org/GLM-4.6/blob/main/chat_template.jinja`): model self-emits both `<think>` and `</think>`; the streaming buffer at `chatEngine.js:984-1021` was dual-emitting thinking chars to `onToken` (visible stream) AND `_sfThinkBuf`, so the `</think>` bytes were forwarded char-by-char to the chat before the close-tag check could fire. Additionally, normal-mode partial-match recognized only `<think>` (open), not `</think>` (close) — orphan close tags fell through as visible text.
+- **C** Dollar signs in prose (e.g. `$5`) rendered as KaTeX math because `remark-math` was registered without options; default is `singleDollarTextMath: true`.
+- **D** `repairToolCalls` only covered `write_file`, `edit_file`, `browser_navigate`. Malformed calls for `browser_click`, `browser_type`, `run_command`, `read_file`, `web_search`, `fetch_webpage` (and their alternative param names) silently dropped.
+- **G** No grounding/anti-sycophancy directive in `SYSTEM_PROMPT`.
+- **I** Tool fences emitted inside `<think>...</think>` were consumed by the think-buffer flush as plain thinking text. Tool calls lost.
+
+### Fix
+- **chatEngine.js streaming buffer think-mode (Plans A + I)**:
+  - Removed `if (onToken) onToken(ch); _sfVisibleChars += 1;` from think-mode (root cause of close-tag leak).
+  - Thinking chars now route exclusively through `llm-thinking-token` events.
+  - On `</think>` close, the remaining buffered content is also emitted via `llm-thinking-token` before `llm-thinking-end` so nothing is lost.
+  - Lowered periodic flush threshold from 200 to 32 chars for responsive thinking-stream UI now that `onToken` is no longer dual-emitting.
+  - Added detection of tool fence ``` inside think mode → implicit close, transition to fence mode so tool calls are parsed normally.
+- **chatEngine.js streaming buffer normal-mode partial-match (Plan A)**:
+  - Extended partial-match to recognize both `<think>` (open) and `</think>` (close).
+  - Orphan `</think>` is silently consumed (preceding visible content stays as prose).
+  - Updated startsWith check to keep buffering when prefix matches either tag.
+- **frontend/src/components/chat/MarkdownRenderer.jsx (Plan C)**:
+  - `remarkPlugins` now passes `{ singleDollarTextMath: false }` to `remarkMath`. `$5` and similar prose stays literal.
+- **chatEngine.js SYSTEM_PROMPT (Plan G)**:
+  - Added two-line `## HONESTY` section after `## TOOL PROOF`: grounding rule + explicit anti-sycophancy line.
+- **tools/toolParser.js `repairToolCalls` (Plan D)**:
+  - Added structural recovery for `browser_click/type/hover/fill/select/select_option/drag/press_key` (require `ref|element|selector|target|key`).
+  - Added recovery for `run_command/execute_command/shell` (require non-empty `command|cmd|script`; normalize to `command`).
+  - Added recovery for `read_file/get_file_info` (require `filePath|path|file`; normalize to `filePath`).
+  - Added recovery for `web_search` (require `query|q`; normalize to `query`).
+  - Added recovery for `fetch_webpage` (require `url`; auto-prepend `https://`).
+
+### Files Changed
+- `chatEngine.js` — SYSTEM_PROMPT (lines 231-235), think-mode block (lines 988-1047), partial-match block (lines 1049-1082)
+- `frontend/src/components/chat/MarkdownRenderer.jsx` — line 175
+- `tools/toolParser.js` — `repairToolCalls` body (lines 783-830)
+
+### What This Does NOT Address
+- B (paragraph duplication), E (context-proportional truncation), F (heartbeat logging) — pending re-investigation per user instruction; rejection ≠ removal.
+- GGUF `tokenizer.chat_template` detection for prefilled `<think>` — not needed for GLM (verified via HF jinja); may be needed for other models in future and is a separate task.
+
+---
+
 ## 2026-05-16 — Revert B17 eogToken retry band-aid + add Tripwires 6-9 to RULES.md
 
 ### Problem

@@ -172,7 +172,7 @@ const markdownComponents = {
   },
 };
 
-const remarkPlugins = [remarkGfm, remarkMath];
+const remarkPlugins = [remarkGfm, [remarkMath, { singleDollarTextMath: false }]];
 const rehypePlugins = [
   [rehypeHighlight, { detect: true, ignoreMissing: true }],
   rehypeKatex,

@@ -780,6 +780,55 @@ function repairToolCalls(toolCalls, responseText) {
       }
     }
 
+    // Plan D: structural recovery for browser interaction tools that need an element handle.
+    if (tool === 'browser_click' || tool === 'browser_type' || tool === 'browser_hover' ||
+        tool === 'browser_fill' || tool === 'browser_select' || tool === 'browser_select_option' ||
+        tool === 'browser_drag' || tool === 'browser_press_key') {
+      const hasHandle = params.ref || params.element || params.selector || params.target ||
+                        params.startTarget || params.endTarget || params.key;
+      if (!hasHandle) {
+        issues.push(`Dropped ${tool} with no ref/element/selector/target`);
+        continue;
+      }
+    }
+
+    if (tool === 'run_command' || tool === 'execute_command' || tool === 'shell') {
+      const cmd = params.command || params.cmd || params.script;
+      if (!cmd || String(cmd).trim().length === 0) {
+        issues.push(`Dropped ${tool} with empty command`);
+        continue;
+      }
+      // Normalize alternative param names
+      if (!params.command && cmd) params.command = cmd;
+    }
+
+    if (tool === 'read_file' || tool === 'get_file_info') {
+      if (!params.filePath && !params.path && !params.file) {
+        issues.push(`Dropped ${tool} with no filePath`);
+        continue;
+      }
+      // Normalize alternative param names
+      if (!params.filePath) params.filePath = params.path || params.file;
+    }
+
+    if (tool === 'web_search') {
+      if (!params.query && !params.q) {
+        issues.push('Dropped web_search with empty query');
+        continue;
+      }
+      if (!params.query && params.q) params.query = params.q;
+    }
+
+    if (tool === 'fetch_webpage') {
+      if (!params.url) {
+        issues.push('Dropped fetch_webpage with empty url');
+        continue;
+      }
+      if (!/^https?:\/\//i.test(params.url) && !params.url.startsWith('file://')) {
+        params.url = 'https://' + params.url;
+      }
+    }
+
     repaired.push(call);
   }
 

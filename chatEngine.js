@@ -230,6 +230,10 @@ Before responding to ANY actionable request, check yourself: are you about to sa
 
 If you are thinking "I don't have access" — STOP. You DO. Use the tools.
 
+## HONESTY
+Ground every claim in evidence from the user's request, your tool results, or the code you have read.
+Do not be sycophantic for the sake of it — agreement without evidence is dishonest.
+
 ## When to use tools
 - File creation, edits, or deletion — file tools. Never paste file contents into chat as a substitute.
 - Reading or reviewing a file — read_file.
@@ -983,28 +987,54 @@ class ChatEngine extends EventEmitter {
           // so it appears in thinking blocks instead of as regular prose.
           if (_sfInThink) {
             _sfThinkBuf += ch;
-            // ALSO emit to visible stream so prose is never lost
-            if (onToken) onToken(ch);
-            _sfVisibleChars += 1;
-            // Check for close tag
+            // Plan A: thinking chars route ONLY to llm-thinking-token events.
+            // The previous design dual-emitted to onToken (visible stream), which leaked the
+            // </think> bytes as visible text byte-by-byte before the close-tag check fired.
+            // Check for close tag </think> first.
             if (_sfThinkBuf.length >= 8 && _sfThinkBuf.endsWith('</think>')) {
               const thinkContent = _sfThinkBuf.slice(0, -8);
               if (thinkContent && onStreamEvent && !_thinkingFilterEnabled) {
+                onStreamEvent('llm-thinking-token', thinkContent);
                 onStreamEvent('llm-thinking-end', {
-                  position: _sfVisibleChars - thinkContent.length,
+                  position: _sfVisibleChars,
                   length: thinkContent.length,
                   content: thinkContent
                 });
               }
-              console.log('[ChatEngine]  ` closed — thinking block: ' + (thinkContent || '').length + ' chars');
+              console.log('[ChatEngine] </think> closed — thinking block: ' + (thinkContent || '').length + ' chars');
               _sfInThink = false;
               _sfThinkBuf = '';
               continue;
             }
+            // Plan I: detect tool fence ``` inside think mode — model emitted a tool call
+            // without first closing think. Treat as implicit close; flush thinking content;
+            // re-enter fence mode so the tool call is parsed normally instead of lost as text.
+            if (_sfThinkBuf.endsWith('\n```') || _sfThinkBuf === '```') {
+              const fenceStart = _sfThinkBuf.lastIndexOf('```');
+              const thinkContent = _sfThinkBuf.slice(0, fenceStart).replace(/\n$/, '');
+              if (thinkContent && onStreamEvent && !_thinkingFilterEnabled) {
+                onStreamEvent('llm-thinking-token', thinkContent);
+                onStreamEvent('llm-thinking-end', {
+                  position: _sfVisibleChars,
+                  length: thinkContent.length,
+                  content: thinkContent
+                });
+              }
+              console.log('[ChatEngine] tool fence inside <think> — implicit close, entering fence mode');
+              _sfInThink = false;
+              _sfThinkBuf = '';
+              _sfInFence = true;
+              _sfFenceBuf = '```';
+              _sfFenceStreamPlain = false;
+              _sfFenceTickCount = 0;
+              continue;
+            }
             // Flush periodically to avoid unbounded buffer.
             // Preserve the last 7 chars (len('</think>')-1) so a close tag
-            // that starts near the 200-char boundary is never split across two flushes.
-            if (_sfThinkBuf.length > 200) {
+            // that starts near the boundary is never split across two flushes.
+            // Threshold lowered from 200 to 32 for responsive thinking-stream UI now that
+            // thinking chars route exclusively through llm-thinking-token events.
+            if (_sfThinkBuf.length > 32) {
               const CLOSE_TAG_TAIL = 7; // '</think>'.length - 1
               const toEmit = _sfThinkBuf.slice(0, -CLOSE_TAG_TAIL);
               const toKeep = _sfThinkBuf.slice(-CLOSE_TAG_TAIL);
@@ -1016,29 +1046,37 @@ class ChatEngine extends EventEmitter {
             continue;
           }
 
-          // Check for <think> open tag — buffer chars so the tag itself isn't forwarded to UI
+          // Check for <think> open or </think> close tag — buffer chars so the tag itself isn't forwarded to UI.
+          // Plan A: matching </think> in normal mode silently consumes orphan close tags so they don't leak
+          // to the visible chat stream when the model emits </think> without a preceding <think>.
           if (_sfThinkTagMatch.length > 0 || ch === '<') {
             _sfThinkTagMatch += ch;
             const OPEN_TAG = '<think>';
+            const CLOSE_TAG = '</think>';
             if (_sfThinkTagMatch === OPEN_TAG) {
-              // Full match — enter thinking mode, discard the tag
+              // Full open match — enter thinking mode, discard the tag
               _sfInThink = true;
               _sfThinkBuf = '';
               _sfThinkTagMatch = '';
               if (onStreamEvent && !_thinkingFilterEnabled) {
                 onStreamEvent('llm-thinking-start', { position: _sfVisibleChars });
               }
-              console.log('[ChatEngine]   tag detected — routing thinking to llm-thinking-token (raw text path)');
+              console.log('[ChatEngine] <think> tag detected — routing thinking to llm-thinking-token (raw text path)');
               continue;
-            } else if (!OPEN_TAG.startsWith(_sfThinkTagMatch)) {
-              // Not a match — flush buffered chars to normal processing
+            } else if (_sfThinkTagMatch === CLOSE_TAG) {
+              // Orphan </think> in normal mode — silently consume; preceding visible content stays as prose.
+              console.log('[ChatEngine] orphan </think> consumed — no preceding <think>');
+              _sfThinkTagMatch = '';
+              continue;
+            } else if (!OPEN_TAG.startsWith(_sfThinkTagMatch) && !CLOSE_TAG.startsWith(_sfThinkTagMatch)) {
+              // Not matching either tag — flush buffered chars to normal processing
               const flush = _sfThinkTagMatch.slice(0, -1);
               _sfThinkTagMatch = '';
               // Re-process flushed chars + current char through normal filter path
               if (flush) _sfProcessChunk(flush);
               // fall through with current ch below
             } else {
-              // Partial match — keep buffering
+              // Partial match for one or both tags — keep buffering
               continue;
             }
           }

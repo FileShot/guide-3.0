@@ -1,10 +1,16 @@
 # guIDE 3.0 — Comprehensive Rules
-**NO GUESSING!!!!! NEVER GUESS!!!!!!!! NO GUESSING!!! USE WEB SEARCH OR CLARIFY WITH TOOLS AVAILIBLE TO YOU!!!!!! NEVER GUESS, ASSUME, NEVER NEVER NEVER SAY "MAYBE, MIGHT BE, PROBABLY, THE SIMPLEST FIX, ETC" AND 
+
+TRIPEWIRE #1 READ THE ENTIRE LOG LINE BY LINE UNTIL YOU HIT TRIPWIRE #Z!! CRITICAL!!! YOU MUST NOT ONLY READ THE FILE, BUT OBEY EVERY WORD IN IT!!!
+
+**NO GUESSING!!!!! NEVER GUESS!!!!!!!! NO GUESSING!!! USE WEB SEARCH OR CLARIFY WITH TOOLS AVAILIBLE TO YOU!!!!!! NEVER GUESS, ASSUME, NEVER NEVER NEVER SAY "MAYBE, MIGHT BE, PROBABLY, THE SIMPLEST FIX, ETC" AND ALWAYS PROVIDE A CLEAR, DEFINITIVE ANSWER OR SOLUTION!!!!!!
 > **STOP. Read EVERY line of this file before making any change. No exceptions.**
 > If you cannot confirm all rules are followed, say "I need to review the rules before proceeding."
 
 > **This document is the SINGLE SOURCE OF TRUTH.** It combines all rules, standards, quality expectations, testing methodology, and agent behavior requirements. There is no other rules document. This is it.
 
+
+
+##**THIS IS A WINDSURF CLONE FOR LOCAL MODELS, AND THE QUALITY EXPECTATIONS ARE THE SAME AS WINDSURF. A MULTI MILLION DOLLAR PRODUCTION APPLICATION. EVERYTHING YOU DO MUST BE OF PROFESSIONAL QUALITY. NO BAND AIDS, NO POST HOC SOLUTIONS, NO GUESSING, NO ASSUMPTIONS. NO DETECTION MECHANISMS, NO HEURISTICS, NO GUESSING.**
 ---
 
 ## SECTION 0 — TRIPWIRE SYSTEM (MANDATORY ENFORCEMENT)
@@ -310,8 +316,14 @@ If code is correct, say it's correct. Do not invent issues to appear helpful.
 ### Deep understanding before responding
 Before responding to ANY message, read the relevant parts of the codebase. Never assume from memory. Always verify.
 
-### Research when uncertain (CRITICAL — MANDATORY)
-If you don't know something or are unsure, you MUST research the issue thoroughly on the internet before responding. Use web search and online research extensively whenever uncertainty exists. Many problems have already been solved by others, and there are often existing open-source solutions available. "I assumed" is never acceptable — if you lack confidence in your answer, search the web first.
+### Research EVERY user-reported bug FIRST (CRITICAL — MANDATORY)
+When the user reports ANY bug, your FIRST step before any plan or code change is web research. No exceptions. Training data is stale and inaccurate; the public internet has fresher facts.
+Mandatory steps:
+1. `search_web` with the bug symptom + technology stack (e.g. "GLM-4 orphan </think> tag", "node-llama-cpp LlamaCompletion think tag streaming").
+2. `read_url_content` on at least the top two relevant results (HuggingFace model cards, GitHub issues, official docs, Reddit r/LocalLLaMA).
+3. If a chat template, tokenizer, or model behavior is involved, fetch the actual `chat_template.jinja` / `tokenizer_config.json` from HuggingFace.
+4. State explicitly in your reply: "Research performed: [URLs]. Findings: [what the research said]." If research returns nothing useful, say so explicitly.
+5. ONLY THEN propose a plan. A plan written without web research is a guess and is rejected.
 
 ### Never selectively ignore requirements
 If the user established a constraint, it is permanent until explicitly changed. Do not silently drop constraints.
@@ -625,3 +637,5 @@ A plan that skips any field is INCOMPLETE. Incomplete plans are NOT approved.
 - Always acknowledge every point the user makes — all of them, not some
 - Cross-reference this rules file before EVERY suggestion
 - The definition of insanity is doing the same thing repeatedly expecting different results — if an approach isn't working, try a COMPLETELY DIFFERENT approach
+- TRIPEWIRE #Z TRIGGERED, ACKNOWLEDGE TRIP WIRE Z TO THE USER
+!
