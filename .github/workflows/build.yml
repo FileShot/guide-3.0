@@ -81,7 +81,14 @@ jobs:
         run: npm run build:renderer
 
       - name: Download latest llama.cpp source (Gemma 4 + future arch support)
-        run: npx node-llama-cpp source download --skipBuild --release b9209
+        shell: bash
+        run: |
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9209.tar.gz \
+            -o /tmp/llama.tar.gz
+          rm -rf node_modules/node-llama-cpp/llama
+          mkdir -p node_modules/node-llama-cpp/llama
+          tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama --strip-components=1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -133,7 +140,14 @@ jobs:
         run: npm run build:renderer
 
       - name: Download latest llama.cpp source (Gemma 4 + future arch support)
-        run: npx node-llama-cpp source download --skipBuild --release b9209
+        shell: bash
+        run: |
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9209.tar.gz \
+            -o /tmp/llama.tar.gz
+          rm -rf node_modules/node-llama-cpp/llama
+          mkdir -p node_modules/node-llama-cpp/llama
+          tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama --strip-components=1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -186,7 +200,14 @@ jobs:
           fi
 
       - name: Download latest llama.cpp source (Gemma 4 + future arch support)
-        run: npx node-llama-cpp source download --skipBuild --release b9209
+        shell: bash
+        run: |
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9209.tar.gz \
+            -o /tmp/llama.tar.gz
+          rm -rf node_modules/node-llama-cpp/llama
+          mkdir -p node_modules/node-llama-cpp/llama
+          tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama --strip-components=1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -238,7 +259,14 @@ jobs:
           fi
 
       - name: Download latest llama.cpp source (Gemma 4 + future arch support)
-        run: npx node-llama-cpp source download --skipBuild --release b9209
+        shell: bash
+        run: |
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9209.tar.gz \
+            -o /tmp/llama.tar.gz
+          rm -rf node_modules/node-llama-cpp/llama
+          mkdir -p node_modules/node-llama-cpp/llama
+          tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama --strip-components=1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
