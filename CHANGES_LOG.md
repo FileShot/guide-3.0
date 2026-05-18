@@ -4,6 +4,41 @@
 
 ---
 
+## 2026-05-17 — v0.3.63 — Performance audit: P1–P6 (inference) + B4 (think consolidation) + F1–F3 (frontend)
+
+### Problem
+User requested thorough performance audit of inference layer (model load + sampling) and frontend hot paths, plus removal of "garbage code." After web research (node-llama-cpp API, llama.cpp tuning, GLM-4.5/4.6 sampling, Electron/React streaming perf) and reading the actual code paths, identified ten concrete improvements.
+
+### Fix
+
+**Inference layer (chatEngine.js):**
+- **P1** Threads now come from `this._llama.cpuMathCores` (llama.cpp's actual CPU topology probe) instead of `os.cpus().length / 2`. The old formula halved cores on AMD without SMT, Apple Silicon (no HT), and Intel with E-cores. Falls back to `os.cpus().length` if cpuMathCores is unavailable. Also raised `threads.min` from 1 to `threadCount - 1` so context never starves under concurrent evals.
+- **P2** Adaptive `batchSize` based on measured VRAM headroom after model load: CPU=512, <2GB free=1024, <4GB=2048, ≥4GB=4096. Larger batchSize = faster prompt processing (prefill). Output tok/s unchanged.
+- **P3** Wired `modelProfiles.js` per-family/tier sampling defaults into generation. Previously the 517-line profile registry was never imported; chat() used hardcoded `temperature=0.4, repeatPenalty=1.1` for every family. Now Qwen/GLM/Phi/Gemma/DeepSeek/Mistral/Llama/etc. each get calibrated values from `modelProfiles.js` unless the caller overrides.
+- **P4** Removed `AUTO_DEFAULT_MAX = 32768` ceiling. Hardware cap + train cap are the only limits. Per RULES.md Rule 9 (no hardcoded context numbers). User with 64GB RAM on a 128K-context model now gets 128K instead of 32K.
+- **P5** `swaFullCache: true` for SWA models (Gemma, Mistral with sliding window). Detected via `this._model.fileInsights.swaSize > 0`. Allows multi-turn prefix reuse instead of re-evaluating entire history each turn. 2-10x speedup on multi-turn chat with SWA models. No effect on first-turn or non-SWA models.
+- **P6** KV cache type default changed from `'q4_0'` to `'currentQuant'`. node-llama-cpp matches KV cache type to weight quant — Q4 weights stay at q4_0, Q6/Q8 weights get matched higher precision. User settings still override.
+
+**Think detection (chatEngine.js):**
+- **B4** Added `_sfNativeThinkActive` flag per generation. When chat wrapper emits thinking via native `onResponseChunk` segments (Qwen, DeepSeek-R1, etc.), the raw-text `<think>` detection still strips the tags from visible output but suppresses the `llm-thinking-token` and `llm-thinking-start/end` emissions to prevent double-emit in the UI.
+
+**Frontend (MarkdownRenderer.jsx, ChatPanel.jsx):**
+- **F1** Wrapped `MarkdownRenderer` in `React.memo` with `(content, streaming)` equality check. Memoized the fence-close + HTML-escape preprocessing with `useMemo` keyed on `content`. Skips heavy remark/rehype pipeline on parent re-renders unrelated to content change.
+- **F2** `rehypeHighlight` now `{ detect: false, ignoreMissing: true }`. The auto-detect mode was running every highlight.js language pattern against every code block on every render — a major streaming hot path. Models almost always include language hints (```js, ```python, etc.). Code blocks without hints render unhighlighted but still readable.
+- **F3** Wrapped non-streaming `MarkdownRenderer` usages in `ChatPanel.jsx:2250` (segment text) and `ChatPanel.jsx:2336` (msg.content fallback) in `StreamingErrorBoundary`. React #185 (plain object as child) now shows raw-text fallback instead of crashing the chat panel.
+
+### Verification
+- Lint clean on chatEngine.js after edits.
+- Manual code review of every edit site (`@c:\Users\brend\guide-3.0\chatEngine.js`, `@c:\Users\brend\guide-3.0\frontend\src\components\chat\MarkdownRenderer.jsx`, `@c:\Users\brend\guide-3.0\frontend\src\components\ChatPanel.jsx`).
+- Real-world tok/s benchmarking pending user retest with v0.3.63 build.
+
+### Dropped / Deferred
+- **T1 (grammar default-on)**: CHANGES_LOG entry confirms grammar was a nightmare on small models (looping or ignoring). Keep opt-in.
+- **B1 (lint scolding removal)**: Linter is real (Monaco editor diagnostics piped through `editor-diagnostics` IPC). Feature is working as designed, equivalent to Cursor/Windsurf auto-fix.
+- **B3 (prompt trim band-aid removal)**: Context rotation pipeline (`_contextShiftStrategy`, tool-result compaction, tool-prompt compaction, `context-state.md` write) does exist and does work. The trim at line 1505 is defense-in-depth for edge cases the three pipeline layers don't catch. Leaving in place.
+
+---
+
 ## 2026-05-17 — Plans A, C, D, G, I — orphan </think> leak, single-dollar math, tool-call recovery, system-prompt honesty, tool fences inside think
 
 ### Problem

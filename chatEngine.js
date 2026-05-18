@@ -7,6 +7,8 @@ const os = require('os');
 const { pathToFileURL } = require('url');
 const { parseToolCalls, repairToolCalls, stripToolCallText } = require('./tools/toolParser');
 const { visionServer } = require('./visionServer');
+const { detectFamily, detectParamSize } = require('./modelDetection');
+const { getModelProfile } = require('./modelProfiles');
 
 /** Base max chars of each tool result injected into chat history.
  *  Actual cap is computed at runtime proportional to the model's context size
@@ -379,19 +381,17 @@ class ChatEngine extends EventEmitter {
       if (testMaxCtx > 0) {
         desiredMax = testMaxCtx;
       } else if (s.contextSize <= 0) {
-        // Auto: min(hardware cap, train cap, 32K default ceiling).
-        // 32K is a safe, reasonable default that avoids allocating massive KV caches
-        // (e.g. 8GB+ for 262K) that starve GPU offloading and slow generation.
-        // Users can manually set higher in settings if needed.
-        const AUTO_DEFAULT_MAX = 32768;
+        // P4: Auto sizing uses only hardware cap and train cap (no hardcoded ceiling).
+        // Per RULES.md Rule 9: never hardcode context numbers — compute from actual resources.
+        // The hardware cap already accounts for VRAM/RAM headroom, so it self-limits to safe sizes.
         if (hardwareCap != null && trainMaxContext != null) {
-          desiredMax = Math.min(hardwareCap, trainMaxContext, AUTO_DEFAULT_MAX);
+          desiredMax = Math.min(hardwareCap, trainMaxContext);
         } else if (hardwareCap != null) {
-          desiredMax = Math.min(hardwareCap, AUTO_DEFAULT_MAX);
+          desiredMax = hardwareCap;
         } else if (trainMaxContext != null) {
-          desiredMax = Math.min(trainMaxContext, AUTO_DEFAULT_MAX);
+          desiredMax = trainMaxContext;
         } else {
-          desiredMax = AUTO_DEFAULT_MAX;
+          desiredMax = CONTEXT_MAX_FALLBACK_NO_GGUF_FLOOR;
         }
       } else {
         desiredMax = s.contextSize;
@@ -426,9 +426,12 @@ class ChatEngine extends EventEmitter {
         },
       };
 
-      // KV cache quantization: resolve BEFORE loadModel so we can adjust fitContext
-      const ALLOWED_KV_TYPES = new Set(['q3_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'q8_0', 'f16']);
-      const rawKvType = rawLoadSettings.kvCacheType || 'q4_0';
+      // KV cache quantization: resolve BEFORE loadModel so we can adjust fitContext.
+      // P6: Default to 'currentQuant' — node-llama-cpp matches KV cache type to the model's
+      // weight quantization. Q4 weights → q4_0 KV (no quality loss). Q6/Q8 weights → matched
+      // KV (better quality than forced q4_0). User can override via settings.
+      const ALLOWED_KV_TYPES = new Set(['currentQuant', 'q3_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'q8_0', 'f16']);
+      const rawKvType = rawLoadSettings.kvCacheType || 'currentQuant';
       const kvCacheType = ALLOWED_KV_TYPES.has(rawKvType) ? rawKvType : undefined;
 
       if (s.gpuPreference === 'cpu') {
@@ -462,16 +465,39 @@ class ChatEngine extends EventEmitter {
 
       this._model = await this._llama.loadModel(loadModelOpts);
 
-      // Batch size: larger batch = faster prompt processing.
-      // GPU models benefit from 1024 (more parallel prompt processing).
-      // CPU-only models use 512 (less memory pressure).
-      const batchSize = s.gpuPreference === 'cpu' ? 512 : 1024;
+      // P1: Use node-llama-cpp's cpuMathCores (probed by llama.cpp from actual CPU topology)
+      // instead of os.cpus().length / 2 which was wrong on:
+      //   - AMD Ryzen without SMT (formula halved usable cores)
+      //   - Apple Silicon (no hyperthreading — formula halved usable cores)
+      //   - Intel with E-cores (formula misclassified E-cores)
+      // Falls back to os.cpus().length if cpuMathCores is missing or zero.
+      const cpuMathCores = (typeof this._llama.cpuMathCores === 'number' && this._llama.cpuMathCores > 0)
+        ? this._llama.cpuMathCores
+        : os.cpus().length;
+      const threadCount = Math.max(1, cpuMathCores);
 
-      // Threads: llama.cpp runs best on physical cores, not logical (HT causes cache thrashing).
-      // os.availableParallelism() may return logical cores on some platforms,
-      // so we always cap at half the logical count as a safe physical-core estimate.
-      const logicalCores = os.cpus().length;
-      const physicalCores = logicalCores > 1 ? Math.max(1, Math.floor(logicalCores / 2)) : 1;
+      // P2: Adaptive batchSize from actual VRAM headroom after model load.
+      // Larger batchSize = faster prompt processing (prefill). Output tok/s unchanged.
+      // Measured free VRAM determines safe upper bound. CPU stays conservative.
+      let vramFreeAfterModel = vramFree;
+      if (s.gpuPreference !== 'cpu') {
+        try {
+          const vs = await this._llama.getVramState();
+          vramFreeAfterModel = vs?.free || vramFree;
+        } catch (e) { console.warn('[ChatEngine] VRAM query (batchSize) failed:', e.message); }
+      }
+      let batchSize;
+      if (s.gpuPreference === 'cpu') batchSize = 512;
+      else if (vramFreeAfterModel < 2 * 1024 * 1024 * 1024) batchSize = 1024;
+      else if (vramFreeAfterModel < 4 * 1024 * 1024 * 1024) batchSize = 2048;
+      else batchSize = 4096;
+      console.log(`[ChatEngine] Perf: cpuMathCores=${cpuMathCores} (threads=${threadCount}), vramFreeAfterModel=${(vramFreeAfterModel/1e9).toFixed(2)}GB, batchSize=${batchSize}`);
+
+      // P5: SWA models (Gemma, Mistral with sliding window) — set swaFullCache to enable
+      // prefix reuse on multi-turn chats. Without this, multi-turn re-evaluates entire history.
+      const swaSize = this._model?.fileInsights?.swaSize || 0;
+      const swaFullCache = swaSize > 0;
+      if (swaFullCache) console.log(`[ChatEngine] P5: SWA detected (swaSize=${swaSize}) — swaFullCache enabled for prefix reuse`);
 
       // Compute exact context size after model loading.
       // node-llama-cpp's createContext with { min, max } uses f16 for KV estimation,
@@ -485,12 +511,7 @@ class ChatEngine extends EventEmitter {
       let computedCtxSize = desiredMax;
 
       if (kvBytesPerToken > 0 && gpuLayerRatio > 0 && s.gpuPreference !== 'cpu') {
-        // Measure actual VRAM free after model weights are loaded
-        let vramFreeAfterModel = vramFree;
-        try {
-          const vs = await this._llama.getVramState();
-          vramFreeAfterModel = vs?.free || vramFree;
-        } catch (e) { console.warn('[ChatEngine] VRAM check after model load failed:', e.message); }
+        // vramFreeAfterModel was already measured above (P2 batchSize computation)
         // KV on GPU = kvBytesPerToken * contextSize * gpuLayerRatio
         // Available for KV = vramFreeAfterModel - buffer
         // contextSize = available / (kvBytesPerToken * gpuLayerRatio)
@@ -507,19 +528,16 @@ class ChatEngine extends EventEmitter {
           flashAttention: s.gpuPreference !== 'cpu',
           ignoreMemorySafetyChecks: true,
           batchSize,
-          threads: { ideal: physicalCores, min: 1 },
+          threads: { ideal: threadCount, min: Math.max(1, threadCount - 1) },
+          swaFullCache,
           experimentalKvCacheKeyType: kvCacheType,
           experimentalKvCacheValueType: kvCacheType,
         });
       } catch (ctxErr) {
         // Fallback: if q4_0 KV type isn't actually applied by llama.cpp,
         // the real KV size is f16 (4x larger). Recompute with f16 estimate.
+        // vramFreeAfterModel was already measured above; reuse it.
         if (kvBytesPerToken > 0 && gpuLayerRatio > 0 && s.gpuPreference !== 'cpu') {
-          let vramFreeAfterModel = vramFree;
-          try {
-            const vs = await this._llama.getVramState();
-            vramFreeAfterModel = vs?.free || vramFree;
-          } catch (e) { console.warn('[ChatEngine] VRAM check (f16 fallback) failed:', e.message); }
           const kvBytesF16 = kvBytesPerToken * 4;
           const vramBuffer = 256 * 1024 * 1024;
           const maxCtxF16 = Math.floor((vramFreeAfterModel - vramBuffer) / (kvBytesF16 * gpuLayerRatio));
@@ -530,7 +548,8 @@ class ChatEngine extends EventEmitter {
             flashAttention: s.gpuPreference !== 'cpu',
             ignoreMemorySafetyChecks: true,
             batchSize,
-            threads: { ideal: physicalCores, min: 1 },
+            threads: { ideal: threadCount, min: Math.max(1, threadCount - 1) },
+            swaFullCache,
             experimentalKvCacheKeyType: kvCacheType,
             experimentalKvCacheValueType: kvCacheType,
           });
@@ -541,7 +560,7 @@ class ChatEngine extends EventEmitter {
 
       // Diagnostic: verify context creation
       const actualCtxSize = this._context?.contextSize;
-      console.log(`[ChatEngine] Context created: ctx=${actualCtxSize}, gpuLayers=${actualGpuLayers}, flashAttn=${s.gpuPreference !== 'cpu'}, batchSize=${batchSize}, threads=${physicalCores}, kvCacheType=${kvCacheType || 'default'}, requestedSize=${computedCtxSize}`);
+      console.log(`[ChatEngine] Context created: ctx=${actualCtxSize}, gpuLayers=${actualGpuLayers}, flashAttn=${s.gpuPreference !== 'cpu'}, batchSize=${batchSize}, threads=${threadCount}, swaFullCache=${swaFullCache}, kvCacheType=${kvCacheType || 'default'}, requestedSize=${computedCtxSize}`);
 
       // Graceful context degradation: log exact reason and suggest action
       const ctxDegradation = actualCtxSize < desiredMax * 0.8;
@@ -584,6 +603,18 @@ class ChatEngine extends EventEmitter {
         gpuLayers: this._model.gpuLayers || 0,
         gpuMode: s.gpuPreference === 'cpu' ? false : 'auto',
       };
+
+      // P3: Resolve per-family/tier sampling profile from modelProfiles.js for use as defaults in chat().
+      // modelProfiles.js has calibrated sampling params (temperature/topP/topK/repeatPenalty) per family
+      // (Qwen, GLM/glm, Phi, Gemma, DeepSeek, Mistral, Llama, etc.). Previously these were never wired in
+      // — chat() used a hardcoded temperature=0.4 fallback for every family.
+      const _detectedFamily = detectFamily(modelPath);
+      const _detectedSizeB = paramCount ? paramCount / 1e9 : detectParamSize(modelPath);
+      this._modelProfile = getModelProfile(_detectedFamily, _detectedSizeB);
+      this.modelInfo.family = _detectedFamily;
+      this.modelInfo.sizeB = _detectedSizeB;
+      this.modelInfo.tier = this._modelProfile._meta.tier;
+      console.log(`[ChatEngine] P3: Model profile resolved — family=${_detectedFamily}, sizeB=${_detectedSizeB.toFixed(2)}, tier=${this._modelProfile._meta.tier}, sampling=${JSON.stringify(this._modelProfile.sampling)}`);
 
       this.currentModelPath = modelPath;
       this.isReady = true;
@@ -914,6 +945,10 @@ class ChatEngine extends EventEmitter {
       let _sfInThink = false;       // currently inside <think>...</think>
       let _sfThinkBuf = '';         // buffer for detecting <think> and </think> tags across chunk boundaries
       let _sfThinkTagMatch = '';    // partial match for think tags
+      // B4: When the chat wrapper emits thinking via native onResponseChunk segments
+      // (Qwen, DeepSeek-R1, etc.), suppress raw-text <think> detection to avoid double-emit.
+      // Flag flips true on the first native segment observed in this generation.
+      let _sfNativeThinkActive = false;
       const _sfStreamedFileWrites = new Set();
       let _sfVisibleChars = 0; // tracks chars forwarded to frontend (after filter removes tool JSON)
 
@@ -993,7 +1028,8 @@ class ChatEngine extends EventEmitter {
             // Check for close tag </think> first.
             if (_sfThinkBuf.length >= 8 && _sfThinkBuf.endsWith('</think>')) {
               const thinkContent = _sfThinkBuf.slice(0, -8);
-              if (thinkContent && onStreamEvent && !_thinkingFilterEnabled) {
+              // B4: Suppress raw-text emit if native segment path already handled this content.
+              if (thinkContent && onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
                 onStreamEvent('llm-thinking-token', thinkContent);
                 onStreamEvent('llm-thinking-end', {
                   position: _sfVisibleChars,
@@ -1001,7 +1037,7 @@ class ChatEngine extends EventEmitter {
                   content: thinkContent
                 });
               }
-              console.log('[ChatEngine] </think> closed — thinking block: ' + (thinkContent || '').length + ' chars');
+              console.log(`[ChatEngine] </think> closed — thinking block: ${(thinkContent || '').length} chars${_sfNativeThinkActive ? ' (raw-text emit suppressed by B4 — native segment active)' : ''}`);
               _sfInThink = false;
               _sfThinkBuf = '';
               continue;
@@ -1012,7 +1048,8 @@ class ChatEngine extends EventEmitter {
             if (_sfThinkBuf.endsWith('\n```') || _sfThinkBuf === '```') {
               const fenceStart = _sfThinkBuf.lastIndexOf('```');
               const thinkContent = _sfThinkBuf.slice(0, fenceStart).replace(/\n$/, '');
-              if (thinkContent && onStreamEvent && !_thinkingFilterEnabled) {
+              // B4: Suppress raw-text emit if native segment path already handled this content.
+              if (thinkContent && onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
                 onStreamEvent('llm-thinking-token', thinkContent);
                 onStreamEvent('llm-thinking-end', {
                   position: _sfVisibleChars,
@@ -1038,7 +1075,8 @@ class ChatEngine extends EventEmitter {
               const CLOSE_TAG_TAIL = 7; // '</think>'.length - 1
               const toEmit = _sfThinkBuf.slice(0, -CLOSE_TAG_TAIL);
               const toKeep = _sfThinkBuf.slice(-CLOSE_TAG_TAIL);
-              if (toEmit && onStreamEvent && !_thinkingFilterEnabled) {
+              // B4: Suppress raw-text emit if native segment path already handled this content.
+              if (toEmit && onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
                 onStreamEvent('llm-thinking-token', toEmit);
               }
               _sfThinkBuf = toKeep;
@@ -1058,10 +1096,11 @@ class ChatEngine extends EventEmitter {
               _sfInThink = true;
               _sfThinkBuf = '';
               _sfThinkTagMatch = '';
-              if (onStreamEvent && !_thinkingFilterEnabled) {
+              // B4: Suppress raw-text llm-thinking-start if native segment path is active.
+              if (onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
                 onStreamEvent('llm-thinking-start', { position: _sfVisibleChars });
               }
-              console.log('[ChatEngine] <think> tag detected — routing thinking to llm-thinking-token (raw text path)');
+              console.log(`[ChatEngine] <think> tag detected${_sfNativeThinkActive ? ' (raw-text emit suppressed by B4 — native segment active)' : ' — routing to llm-thinking-token (raw text path)'}`);
               continue;
             } else if (_sfThinkTagMatch === CLOSE_TAG) {
               // Orphan </think> in normal mode — silently consume; preceding visible content stays as prose.
@@ -1419,10 +1458,11 @@ class ChatEngine extends EventEmitter {
       const genOptions = {
         signal: this._abortController.signal,
         stopOnAbortSignal: true,
-        temperature: options.temperature ?? 0.4,
-        topP: options.topP,
-        topK: options.topK,
-        repeatPenalty: { penalty: options.repeatPenalty ?? 1.1 },
+        // P3: Per-family/tier sampling defaults from modelProfiles.js. Caller's options override.
+        temperature: options.temperature ?? this._modelProfile?.sampling?.temperature ?? 0.4,
+        topP: options.topP ?? this._modelProfile?.sampling?.topP,
+        topK: options.topK ?? this._modelProfile?.sampling?.topK,
+        repeatPenalty: { penalty: options.repeatPenalty ?? this._modelProfile?.sampling?.repeatPenalty ?? 1.1 },
         seed: options.seed ?? undefined,
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
@@ -1438,12 +1478,14 @@ class ChatEngine extends EventEmitter {
           }
         },
         onResponseChunk: (chunk) => {
-          if (chunk.type === 'segment' && chunk.text && onStreamEvent && !_thinkingFilterEnabled) {
-            onStreamEvent('llm-thinking-token', chunk.text);
+          if (chunk.type === 'segment' && chunk.text && !_thinkingFilterEnabled) {
+            // B4: Mark native segment path active so raw-text detection suppresses its emit.
+            _sfNativeThinkActive = true;
+            if (onStreamEvent) onStreamEvent('llm-thinking-token', chunk.text);
             // Diagnostic: log first native thinking segment so we can confirm this path fires
             if (!this._nativeThinkLogged) {
               this._nativeThinkLogged = true;
-              console.log('[ChatEngine] ✓ Thinking via native onResponseChunk segment API (QWOPUS/distilled path)');
+              console.log('[ChatEngine] ✓ B4: Native onResponseChunk segment API active — raw-text <think> emission suppressed for this generation');
             }
           }
         },

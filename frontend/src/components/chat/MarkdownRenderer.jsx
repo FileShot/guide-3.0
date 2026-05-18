@@ -3,6 +3,7 @@
  * Uses rehype-highlight for code, remark-gfm for tables/strikethrough.
  * Code blocks render via CodeBlock component with copy/apply toolbar.
  */
+import { memo, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -173,21 +174,26 @@ const markdownComponents = {
 };
 
 const remarkPlugins = [remarkGfm, [remarkMath, { singleDollarTextMath: false }]];
+// F2: detect:false — disable highlight.js auto-language detection. The detector
+// runs every language pattern against every code block on every render, which was
+// a major streaming hot path. Models almost always include a language hint (```js,
+// ```python, etc.); blocks without a hint render unhighlighted but still readable.
 const rehypePlugins = [
-  [rehypeHighlight, { detect: true, ignoreMissing: true }],
+  [rehypeHighlight, { detect: false, ignoreMissing: true }],
   rehypeKatex,
 ];
 
-export default function MarkdownRenderer({ content, streaming }) {
-  if (!content) return null;
-
-  // R48-Layer3: Auto-close unclosed code fences for ALL content, not just streaming.
-  // When the model stops mid-fence (timeout, context shift, or preserved by D5-Rewrite),
-  // the finalized message can have unclosed fences. Without auto-closing, ReactMarkdown
-  // renders the code block as raw text. This applies the same fence-tracking logic
-  // regardless of streaming state, ensuring the display never breaks from incomplete markdown.
-  let displayContent = content;
-  {
+function MarkdownRendererImpl({ content, streaming }) {
+  // F1: Memoize the fence-close + HTML-escape pre-processing. Previously this loop ran
+  // on EVERY render (including parent re-renders unrelated to content). useMemo keyed
+  // on `content` makes it run only when content actually changes.
+  const displayContent = useMemo(() => {
+    if (!content) return '';
+    // R48-Layer3: Auto-close unclosed code fences for ALL content, not just streaming.
+    // When the model stops mid-fence (timeout, context shift, or preserved by D5-Rewrite),
+    // the finalized message can have unclosed fences. Without auto-closing, ReactMarkdown
+    // renders the code block as raw text. This applies the same fence-tracking logic
+    // regardless of streaming state, ensuring the display never breaks from incomplete markdown.
     const lines = content.split('\n');
     let openFenceLen = 0; // length of the opening fence backticks (0 = not inside a fence)
     // R51-Fix: Escape HTML entities outside code fences. When the model outputs HTML
@@ -215,11 +221,14 @@ export default function MarkdownRenderer({ content, streaming }) {
         escapedLines.push(line.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
       }
     }
-    displayContent = escapedLines.join('\n');
+    let out = escapedLines.join('\n');
     if (openFenceLen > 0) {
-      displayContent += '\n' + '`'.repeat(openFenceLen);
+      out += '\n' + '`'.repeat(openFenceLen);
     }
-  }
+    return out;
+  }, [content]);
+
+  if (!content) return null;
 
   return (
     <div className="markdown-body">
@@ -233,3 +242,13 @@ export default function MarkdownRenderer({ content, streaming }) {
     </div>
   );
 }
+
+// F1: Wrap in memo so identical (content, streaming) props skip re-render entirely.
+// During streaming, content changes every token so memo is a no-op; but post-streaming,
+// parent re-renders for other reasons (tool execution state, context usage, etc.) used to
+// re-run the full remark/rehype pipeline. memo prevents that.
+const MarkdownRenderer = memo(MarkdownRendererImpl, (prev, next) => (
+  prev.content === next.content && prev.streaming === next.streaming
+));
+
+export default MarkdownRenderer;

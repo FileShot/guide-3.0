@@ -2247,7 +2247,14 @@ export default function ChatPanel() {
 
                           if (seg.type === 'text' && seg.content && seg.content.trim()) {
 
-                            return <MarkdownRenderer key={`seg-${i}`} content={seg.content} />;
+                            // F3: Wrap in error boundary so React #185 from malformed HAST nodes
+                            // (rare but possible when streaming finalizes with edge-case markdown)
+                            // shows raw text fallback instead of crashing the chat panel.
+                            return (
+                              <StreamingErrorBoundary key={`seg-${i}`} fallbackContent={seg.content}>
+                                <MarkdownRenderer content={seg.content} />
+                              </StreamingErrorBoundary>
+                            );
 
                           }
 
@@ -2333,7 +2340,11 @@ export default function ChatPanel() {
 
                       ) : (
 
-                        <MarkdownRenderer content={msg.content} />
+                        // F3: Wrap in error boundary so React #185 from malformed HAST nodes
+                        // shows raw text fallback instead of crashing the chat panel.
+                        <StreamingErrorBoundary fallbackContent={msg.content}>
+                          <MarkdownRenderer content={msg.content} />
+                        </StreamingErrorBoundary>
 
                       )}
 
