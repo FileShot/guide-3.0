@@ -80,8 +80,8 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
-      - name: Rebuild bundled llama.cpp (Gemma 4 + latest arch support)
-        run: npx node-llama-cpp source download --release latest
+      - name: Download latest llama.cpp source (Gemma 4 + future arch support)
+        run: npx node-llama-cpp source download --skipBuild --release latest
 
       - name: Build Windows CPU installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.json
@@ -130,8 +130,8 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
-      - name: Rebuild bundled llama.cpp (Gemma 4 + latest arch support)
-        run: npx node-llama-cpp source download --release latest
+      - name: Download latest llama.cpp source (Gemma 4 + future arch support)
+        run: npx node-llama-cpp source download --skipBuild --release latest
 
       - name: Build Windows CUDA installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.cuda.json
@@ -181,8 +181,8 @@ jobs:
             sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
           fi
 
-      - name: Rebuild bundled llama.cpp (Gemma 4 + latest arch support)
-        run: npx node-llama-cpp source download --release latest
+      - name: Download latest llama.cpp source (Gemma 4 + future arch support)
+        run: npx node-llama-cpp source download --skipBuild --release latest
 
       - name: Build Linux CPU AppImage
         run: npx electron-builder --linux --x64 --config electron-builder.nosign.json
@@ -231,8 +231,8 @@ jobs:
             sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
           fi
 
-      - name: Rebuild bundled llama.cpp (Gemma 4 + latest arch support)
-        run: npx node-llama-cpp source download --release latest
+      - name: Download latest llama.cpp source (Gemma 4 + future arch support)
+        run: npx node-llama-cpp source download --skipBuild --release latest
 
       - name: Build Linux CUDA AppImage
         run: npx electron-builder --linux --x64 --config electron-builder.nosign.cuda.json
@@ -296,8 +296,8 @@ jobs:
           cp build/icon_512.png build/icon.iconset/icon_512x512.png
           iconutil -c icns build/icon.iconset -o build/icon.icns
 
-      - name: Rebuild bundled llama.cpp (Gemma 4 + latest arch support)
-        run: npx node-llama-cpp source download --release latest
+      - name: Download latest llama.cpp source (Gemma 4 + future arch support)
+        run: npx node-llama-cpp source download --skipBuild --release latest
 
       - name: Build macOS DMG (CPU, x64 + arm64)
         run: npx electron-builder --mac --x64 --arm64 --config electron-builder.nosign.json
