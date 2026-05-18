@@ -32,6 +32,13 @@ Earlier in the session I claimed GLM-4.6 was prefixing `<think>` invisibly via c
 ### Bug 2/3 deferred
 5-minute pause between fetch_webpage and prose response, and no-response-after-5-min. The log at `C:\Users\brend\AppData\Roaming\guide-ide\logs\guide-main.log` (lines 1-432) does not contain a 5-minute pause — maximum visible pause is 31 seconds. The original log was cleared by an unauthorized CI build trigger earlier in the session (mistake noted; will not repeat). User cannot reproduce on demand. Plan: capture next occurrence with logs intact, then diagnose.
 
+### CI rebuild fix (2026-05-18 follow-up)
+**Problem**: The GitHub Actions CI workflow (`.github/workflows/build.yml`) uses direct `npx electron-builder` commands — it does NOT call `scripts/build-installers.js`. Therefore the `rebuildLlamaCpp()` function added in Plan 2 was only running on local builds, not on GitHub-built release artifacts. Any user downloading the installer from GitHub Releases would still get the stale llama.cpp b8352 without Gemma 4 support.
+
+**Fix**:
+- `scripts/build-installers.js:109-112`: Corrected npx syntax from `['-n', 'node-llama-cpp', ...]` (invalid `-n` flag) to `` `${npxBin} node-llama-cpp source download --release latest` `` as a single shell command string.
+- `.github/workflows/build.yml`: Added identical `npx node-llama-cpp source download --release latest` step in all 5 build jobs (Windows CPU, Windows CUDA, Linux CPU, Linux CUDA, macOS), inserted immediately before the `electron-builder` step. No new prerequisites — the CI images already have CMake + C++ toolchains for existing native compilation paths.
+
 ### Verification
 - All four implemented changes read after edit; no syntax errors.
 - No detection-on-output, no retries, no band-aids. Pure formula and prompt changes.
