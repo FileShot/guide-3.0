@@ -80,11 +80,24 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
-      - name: Download latest llama.cpp source (Gemma 4 + future arch support)
+      - name: Get latest llama.cpp release tag
+        id: llama-tag
         shell: bash
         run: |
+          TAG=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | jq -r .tag_name)
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then TAG="b9209"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Using llama.cpp tag: $TAG"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download llama.cpp source (${{ steps.llama-tag.outputs.tag }})
+        shell: bash
+        run: |
+          LLAMA_TAG='${{ steps.llama-tag.outputs.tag }}'
           curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9209.tar.gz \
+            "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_TAG}.tar.gz" \
             -o /tmp/llama.tar.gz
           mkdir -p /tmp/llama-meta
           cp node_modules/node-llama-cpp/llama/binariesGithubRelease.json /tmp/llama-meta/ 2>/dev/null || true
@@ -95,8 +108,13 @@ jobs:
           mkdir -p node_modules/node-llama-cpp/llama
           tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama --strip-components=1
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
-          echo '{"release": "b9209"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
-          echo '{"tag": "b9209", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+          echo "{\"release\": \"${LLAMA_TAG}\"}" > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
+          echo "{\"tag\": \"${LLAMA_TAG}\", \"llamaCppGithubRepo\": \"ggml-org/llama.cpp\"}" > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compile llama.cpp from source
+        run: npx node-llama-cpp source build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -147,11 +165,24 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
-      - name: Download latest llama.cpp source (Gemma 4 + future arch support)
+      - name: Get latest llama.cpp release tag
+        id: llama-tag
         shell: bash
         run: |
+          TAG=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | jq -r .tag_name)
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then TAG="b9209"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Using llama.cpp tag: $TAG"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download llama.cpp source (${{ steps.llama-tag.outputs.tag }})
+        shell: bash
+        run: |
+          LLAMA_TAG='${{ steps.llama-tag.outputs.tag }}'
           curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9209.tar.gz \
+            "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_TAG}.tar.gz" \
             -o /tmp/llama.tar.gz
           mkdir -p /tmp/llama-meta
           cp node_modules/node-llama-cpp/llama/binariesGithubRelease.json /tmp/llama-meta/ 2>/dev/null || true
@@ -162,8 +193,13 @@ jobs:
           mkdir -p node_modules/node-llama-cpp/llama
           tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama --strip-components=1
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
-          echo '{"release": "b9209"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
-          echo '{"tag": "b9209", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+          echo "{\"release\": \"${LLAMA_TAG}\"}" > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
+          echo "{\"tag\": \"${LLAMA_TAG}\", \"llamaCppGithubRepo\": \"ggml-org/llama.cpp\"}" > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compile llama.cpp from source
+        run: npx node-llama-cpp source build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -215,11 +251,24 @@ jobs:
             sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
           fi
 
-      - name: Download latest llama.cpp source (Gemma 4 + future arch support)
+      - name: Get latest llama.cpp release tag
+        id: llama-tag
         shell: bash
         run: |
+          TAG=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | jq -r .tag_name)
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then TAG="b9209"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Using llama.cpp tag: $TAG"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download llama.cpp source (${{ steps.llama-tag.outputs.tag }})
+        shell: bash
+        run: |
+          LLAMA_TAG='${{ steps.llama-tag.outputs.tag }}'
           curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9209.tar.gz \
+            "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_TAG}.tar.gz" \
             -o /tmp/llama.tar.gz
           mkdir -p /tmp/llama-meta
           cp node_modules/node-llama-cpp/llama/binariesGithubRelease.json /tmp/llama-meta/ 2>/dev/null || true
@@ -230,8 +279,13 @@ jobs:
           mkdir -p node_modules/node-llama-cpp/llama
           tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama --strip-components=1
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
-          echo '{"release": "b9209"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
-          echo '{"tag": "b9209", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+          echo "{\"release\": \"${LLAMA_TAG}\"}" > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
+          echo "{\"tag\": \"${LLAMA_TAG}\", \"llamaCppGithubRepo\": \"ggml-org/llama.cpp\"}" > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compile llama.cpp from source
+        run: npx node-llama-cpp source build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -282,11 +336,24 @@ jobs:
             sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
           fi
 
-      - name: Download latest llama.cpp source (Gemma 4 + future arch support)
+      - name: Get latest llama.cpp release tag
+        id: llama-tag
         shell: bash
         run: |
+          TAG=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | jq -r .tag_name)
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then TAG="b9209"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Using llama.cpp tag: $TAG"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download llama.cpp source (${{ steps.llama-tag.outputs.tag }})
+        shell: bash
+        run: |
+          LLAMA_TAG='${{ steps.llama-tag.outputs.tag }}'
           curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9209.tar.gz \
+            "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_TAG}.tar.gz" \
             -o /tmp/llama.tar.gz
           mkdir -p /tmp/llama-meta
           cp node_modules/node-llama-cpp/llama/binariesGithubRelease.json /tmp/llama-meta/ 2>/dev/null || true
@@ -297,8 +364,13 @@ jobs:
           mkdir -p node_modules/node-llama-cpp/llama
           tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama --strip-components=1
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
-          echo '{"release": "b9209"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
-          echo '{"tag": "b9209", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+          echo "{\"release\": \"${LLAMA_TAG}\"}" > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
+          echo "{\"tag\": \"${LLAMA_TAG}\", \"llamaCppGithubRepo\": \"ggml-org/llama.cpp\"}" > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compile llama.cpp from source
+        run: npx node-llama-cpp source build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -364,14 +436,32 @@ jobs:
           cp build/icon_512.png build/icon.iconset/icon_512x512.png
           iconutil -c icns build/icon.iconset -o build/icon.icns
 
-      - name: Download latest llama.cpp source (Gemma 4 + future arch support)
+      - name: Get latest llama.cpp release tag
+        id: llama-tag
+        shell: bash
         run: |
+          TAG=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | jq -r .tag_name)
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then TAG="b9209"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Using llama.cpp tag: $TAG"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download llama.cpp source (${{ steps.llama-tag.outputs.tag }})
+        run: |
+          LLAMA_TAG='${{ steps.llama-tag.outputs.tag }}'
           curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9209.tar.gz \
+            "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_TAG}.tar.gz" \
             -o /tmp/llama.tar.gz
           rm -rf node_modules/node-llama-cpp/llama
           mkdir -p node_modules/node-llama-cpp/llama
           tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama --strip-components=1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compile llama.cpp from source
+        run: npx node-llama-cpp source build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

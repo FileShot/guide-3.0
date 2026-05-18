@@ -7,7 +7,7 @@ const os = require('os');
 const { pathToFileURL } = require('url');
 const { parseToolCalls, repairToolCalls, stripToolCallText } = require('./tools/toolParser');
 const { visionServer } = require('./visionServer');
-const { detectFamily, detectParamSize } = require('./modelDetection');
+const { detectFamily, detectFamilyFromArch, detectParamSize } = require('./modelDetection');
 const { getModelProfile } = require('./modelProfiles');
 
 /** Base max chars of each tool result injected into chat history.
@@ -127,12 +127,14 @@ function buildEngineLoadSettings(raw = {}) {
     gpuLayers,
     contextSize,
     requireMinContextForGpu: !!raw.requireMinContextForGpu,
-    kvCacheType: raw.kvCacheType || 'q4_0',
+    kvCacheType: raw.kvCacheType || 'f16',
   };
 }
 
 // Agent identity prompt — balanced identity, conditional tool use, anti-loop, STOP-after-tool
-const SYSTEM_PROMPT = `You are guIDE, an autonomous AI agent with direct system access and access to tools for file editing, browsing, terminal commands, and more. Tool use is not appropriate in response to greetings, casual conversations, image analysis requests, or social chat. When the user asks you to DO something actionable, you MUST use the appropriate tool. You CANNOT say "I cannot," "I don't have access," or "I'm unable to" when the user asks for action.
+const SYSTEM_PROMPT = `You are guIDE, an autonomous AI agent with direct system access and access to tools for file editing, browsing, terminal commands, and more.
+
+Use tools when the user's message requires action that you cannot accomplish through text alone. If text alone is sufficient to fully address the user's request, respond with prose only. Respond with prose when appropriate, like during casual conversation. When the user asks you to DO something actionable, you MUST use the appropriate tool. You CANNOT say "I cannot," "I don't have access," or "I'm unable to" when the user asks for action.
 
 ## How to call tools
 Output a fenced JSON block with "tool" and "params" keys. NEVER output raw JSON, braces, or backticks outside of a fenced code block. If you are not calling a tool, write normal prose with NO JSON syntax. After outputting a tool call, wait for the tool result before continuing.
@@ -320,10 +322,12 @@ class ChatEngine extends EventEmitter {
       let trainMaxContext = null;
       let totalLayersFromGguf = null;
       let ggufArchMeta = null;
+      let ggufArchString = null; // metadata.general.architecture (e.g. "chatglm", "qwen35", "gemma3")
       try {
         const gguf = await readGgufFileInfo(modelPath, { readTensorInfo: false, logWarnings: false });
         const am = gguf.architectureMetadata;
         ggufArchMeta = am || null;
+        if (gguf.metadata?.general?.architecture) ggufArchString = gguf.metadata.general.architecture;
         if (am && typeof am.context_length === 'number') trainMaxContext = am.context_length;
         if (am && typeof am.block_count === 'number') totalLayersFromGguf = am.block_count;
       } catch (e) {
@@ -447,11 +451,13 @@ class ChatEngine extends EventEmitter {
       };
 
       // KV cache quantization: resolve BEFORE loadModel so we can adjust fitContext.
-      // P6: Default to 'currentQuant' — node-llama-cpp matches KV cache type to the model's
-      // weight quantization. Q4 weights → q4_0 KV (no quality loss). Q6/Q8 weights → matched
-      // KV (better quality than forced q4_0). User can override via settings.
+      // Default 'f16' matches llama.cpp upstream and enables the fastest fused flash-attention
+      // kernel path on consumer NVIDIA GPUs (this is what LM Studio / llama-server use). Lower
+      // precision options (q8_0, q4_0, q4_1, q5_0, q5_1, q3_0) are user-selectable for trading
+      // VRAM headroom against generation speed. 'currentQuant' lets node-llama-cpp match the
+      // model's weight quantization (legacy behaviour, retained for explicit selection).
       const ALLOWED_KV_TYPES = new Set(['currentQuant', 'q3_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'q8_0', 'f16']);
-      const rawKvType = rawLoadSettings.kvCacheType || 'currentQuant';
+      const rawKvType = rawLoadSettings.kvCacheType || 'f16';
       const kvCacheType = ALLOWED_KV_TYPES.has(rawKvType) ? rawKvType : undefined;
 
       if (s.gpuPreference === 'cpu') {
@@ -541,21 +547,29 @@ class ChatEngine extends EventEmitter {
         console.log(`[ChatEngine] Context size computation: vramFreeAfterModel=${(vramFreeAfterModel/1e9).toFixed(2)}GB, kvBpt=${kvBytesPerToken}, gpuRatio=${gpuLayerRatio.toFixed(2)}, maxCtxFromVram=${maxCtxFromVram}, computedCtxSize=${computedCtxSize}`);
       }
 
+      // Build createContext options. Only attach experimentalKvCacheKeyType / ValueType when
+      // the user has selected a non-f16 KV type. Passing 'f16' explicitly is supported by
+      // node-llama-cpp but bypasses the upstream-default code path; omitting the override lets
+      // llama.cpp pick the fastest fused flash-attention kernel for the model + GPU combination.
+      const baseCtxOpts = {
+        contextSize: computedCtxSize,
+        flashAttention: s.gpuPreference !== 'cpu',
+        ignoreMemorySafetyChecks: true,
+        batchSize,
+        threads: { ideal: threadCount, min: Math.max(1, threadCount - 1) },
+        swaFullCache,
+      };
+      if (kvCacheType && kvCacheType !== 'f16') {
+        baseCtxOpts.experimentalKvCacheKeyType = kvCacheType;
+        baseCtxOpts.experimentalKvCacheValueType = kvCacheType;
+      }
+
       // Create context with computed single-number size (bypasses f16-based fitting)
       try {
-        this._context = await this._model.createContext({
-          contextSize: computedCtxSize,
-          flashAttention: s.gpuPreference !== 'cpu',
-          ignoreMemorySafetyChecks: true,
-          batchSize,
-          threads: { ideal: threadCount, min: Math.max(1, threadCount - 1) },
-          swaFullCache,
-          experimentalKvCacheKeyType: kvCacheType,
-          experimentalKvCacheValueType: kvCacheType,
-        });
+        this._context = await this._model.createContext(baseCtxOpts);
       } catch (ctxErr) {
-        // Fallback: if q4_0 KV type isn't actually applied by llama.cpp,
-        // the real KV size is f16 (4x larger). Recompute with f16 estimate.
+        // Fallback: if a quantised KV type isn't actually applied by llama.cpp for this model,
+        // the real KV size is f16 (up to 4x larger). Recompute with f16 estimate and retry.
         // vramFreeAfterModel was already measured above; reuse it.
         if (kvBytesPerToken > 0 && gpuLayerRatio > 0 && s.gpuPreference !== 'cpu') {
           const kvBytesF16 = kvBytesPerToken * 4;
@@ -563,16 +577,8 @@ class ChatEngine extends EventEmitter {
           const maxCtxF16 = Math.floor((vramFreeAfterModel - vramBuffer) / (kvBytesF16 * gpuLayerRatio));
           const fallbackCtxSize = Math.max(MIN_CONTEXT_FLOOR, Math.min(maxCtxF16, desiredMax));
           console.warn(`[ChatEngine] Context creation at ${computedCtxSize} failed (${ctxErr.message}), retrying with f16 estimate: ${fallbackCtxSize}`);
-          this._context = await this._model.createContext({
-            contextSize: fallbackCtxSize,
-            flashAttention: s.gpuPreference !== 'cpu',
-            ignoreMemorySafetyChecks: true,
-            batchSize,
-            threads: { ideal: threadCount, min: Math.max(1, threadCount - 1) },
-            swaFullCache,
-            experimentalKvCacheKeyType: kvCacheType,
-            experimentalKvCacheValueType: kvCacheType,
-          });
+          const fallbackOpts = { ...baseCtxOpts, contextSize: fallbackCtxSize };
+          this._context = await this._model.createContext(fallbackOpts);
         } else {
           throw ctxErr;
         }
@@ -628,13 +634,18 @@ class ChatEngine extends EventEmitter {
       // modelProfiles.js has calibrated sampling params (temperature/topP/topK/repeatPenalty) per family
       // (Qwen, GLM/glm, Phi, Gemma, DeepSeek, Mistral, Llama, etc.). Previously these were never wired in
       // — chat() used a hardcoded temperature=0.4 fallback for every family.
-      const _detectedFamily = detectFamily(modelPath);
+      // P3: Family detection — GGUF architecture metadata (primary) then filename (fallback).
+      // GGUF metadata.general.architecture is authoritative (e.g. "chatglm", "qwen35", "gemma3").
+      // Filename detection is kept as fallback for corrupted/missing metadata.
+      const _archFamily = detectFamilyFromArch(ggufArchString);
+      const _fileFamily = detectFamily(modelPath);
+      const _detectedFamily = _archFamily || _fileFamily;
       const _detectedSizeB = paramCount ? paramCount / 1e9 : detectParamSize(modelPath);
       this._modelProfile = getModelProfile(_detectedFamily, _detectedSizeB);
       this.modelInfo.family = _detectedFamily;
       this.modelInfo.sizeB = _detectedSizeB;
       this.modelInfo.tier = this._modelProfile._meta.tier;
-      console.log(`[ChatEngine] P3: Model profile resolved — family=${_detectedFamily}, sizeB=${_detectedSizeB.toFixed(2)}, tier=${this._modelProfile._meta.tier}, sampling=${JSON.stringify(this._modelProfile.sampling)}`);
+      console.log(`[ChatEngine] P3: Model profile resolved — family=${_detectedFamily} (arch=${ggufArchString || 'n/a'} → ${_archFamily || 'fallback'}, file=${_fileFamily}), sizeB=${_detectedSizeB.toFixed(2)}, tier=${this._modelProfile._meta.tier}, sampling=${JSON.stringify(this._modelProfile.sampling)}`);
 
       this.currentModelPath = modelPath;
       this.isReady = true;
@@ -989,6 +1000,7 @@ class ChatEngine extends EventEmitter {
       let _sfNativeThinkActive = false;
       const _sfStreamedFileWrites = new Set();
       let _sfVisibleChars = 0; // tracks chars forwarded to frontend (after filter removes tool JSON)
+      let _sfPostFenceSuppress = false; // Fix 4: suppress hallucinated prose after confirmed tool fence closes
 
       const _sfForward = (text) => {
         _sfVisibleChars += text.length;
@@ -1021,6 +1033,7 @@ class ChatEngine extends EventEmitter {
         _sfThinkTagMatch = '';
         _sfInThink = false;     // ensure think-state never bleeds into the next generation
         _sfThinkBuf = '';
+        _sfPostFenceSuppress = false; // Fix 4: reset on flush
       };
 
       const _sfFlushFence = () => {
@@ -1048,6 +1061,7 @@ class ChatEngine extends EventEmitter {
         _sfUnicodeChars = '';
         _sfInThink = false;     // ensure think-state never bleeds into the next generation
         _sfThinkBuf = '';
+        _sfPostFenceSuppress = false; // Fix 4: reset on fence flush
       };
 
       const _sfProcessChunk = (chunk) => {
@@ -1141,9 +1155,15 @@ class ChatEngine extends EventEmitter {
               console.log(`[ChatEngine] <think> tag detected${_sfNativeThinkActive ? ' (raw-text emit suppressed by B4 — native segment active)' : ' — routing to llm-thinking-token (raw text path)'}`);
               continue;
             } else if (_sfThinkTagMatch === CLOSE_TAG) {
-              // Orphan </think> in normal mode — silently consume; preceding visible content stays as prose.
-              console.log('[ChatEngine] orphan </think> consumed — no preceding <think>');
+              // Fix 5: Orphan close-think tag — GLM outputs thinking content WITHOUT an open tag,
+              // so the thinking text was forwarded as regular prose. Emit retroactive event so
+              // the frontend can move that text into the thinking panel instead of showing duplicate prose.
+              console.log('[ChatEngine] orphan </think> consumed — retroactively marking preceding text as thinking');
+              if (_sfVisibleChars > 0 && onStreamEvent) {
+                onStreamEvent('llm-thinking-retroactive', { length: _sfVisibleChars });
+              }
               _sfThinkTagMatch = '';
+              _sfVisibleChars = 0; // reset — the visible chars are now in the thinking panel
               continue;
             } else if (!OPEN_TAG.startsWith(_sfThinkTagMatch) && !CLOSE_TAG.startsWith(_sfThinkTagMatch)) {
               // Not matching either tag — flush buffered chars to normal processing
@@ -1315,6 +1335,7 @@ class ChatEngine extends EventEmitter {
               // - "name":"<snake_case>" + "params":{ (two signals together)
               if (RE_TOOL_KEY.test(_sfFenceBuf) || (RE_NAME_KEY.test(_sfFenceBuf) && RE_PARAMS_KEY.test(_sfFenceBuf))) {
                 _sfFenceBuf = '';
+                _sfPostFenceSuppress = true; // Fix 4: suppress hallucinated prose after confirmed tool fence
               } else {
                 _sfFlushFence();
               }
@@ -1331,6 +1352,50 @@ class ChatEngine extends EventEmitter {
 
           // ── Normal mode ──
           if (!_sfActive) {
+            // Fix 4: Post-fence suppression — after a confirmed tool fence closes,
+            // suppress hallucinated prose until a new fence or raw JSON opens.
+            // This preserves multi-tool sequences (multiple tool calls per generation)
+            // while hiding the model's "Please wait..." / "I'll now..." filler text.
+            if (_sfPostFenceSuppress) {
+              // Check for new fence opening (multi-tool continuation)
+              if (ch === '`' && _sfLastCharWasNewlineOrStart) {
+                _sfFenceTickCount++;
+                if (_sfFenceTickCount >= 3) {
+                  // New tool fence — stop suppressing, enter fence mode
+                  _sfPostFenceSuppress = false;
+                  _sfInFence = true;
+                  _sfFenceBuf = '```';
+                  _sfFenceTickCount = 0;
+                  _sfFenceStreamPlain = false;
+                  _sfFencePlainTick = 0;
+                  _sfLastCharWasNewlineOrStart = false;
+                  continue;
+                }
+                continue; // keep buffering backticks
+              }
+              if (_sfFenceTickCount > 0 && ch !== '`') {
+                // Not enough backticks for a fence — this is suppressed prose
+                _sfFenceTickCount = 0;
+              }
+              // Check for raw JSON tool call opening (multi-tool continuation)
+              if (ch === '{' && _sfLastCharWasNewlineOrStart) {
+                _sfPostFenceSuppress = false;
+                _sfActive = true;
+                _sfBuf = '{';
+                _sfDepth = 1;
+                _sfConfirmed = false;
+                _sfInStr = false;
+                _sfEscaped = false;
+                _sfLastCharWasNewlineOrStart = false;
+                continue;
+              }
+              // Suppress this character (hallucinated prose after tool fence)
+              _sfLastCharWasNewlineOrStart = (ch === '\n' || ch === '\r');
+              if (ch === ' ' || ch === '\t') { /* keep the flag */ }
+              else if (ch !== '\n' && ch !== '\r') _sfLastCharWasNewlineOrStart = false;
+              continue;
+            }
+
             // Detect opening ``` at line start
             if (ch === '`' && _sfLastCharWasNewlineOrStart) {
               _sfFenceTickCount++;
@@ -1471,6 +1536,7 @@ class ChatEngine extends EventEmitter {
                 _sfContentBuf = '';
               }
               _sfBuf = '';
+              _sfPostFenceSuppress = true; // Fix 4: suppress hallucinated prose after raw JSON tool call too
             } else {
               // Unconfirmed buffer reached depth 0 — flush as normal prose
               _sfFlush();
@@ -1486,9 +1552,19 @@ class ChatEngine extends EventEmitter {
 
       // Build common generation options
       // S5: reasoningEffort maps to thinkingBudget when thinkingBudget is 0 (auto)
+      // Fix 7: Respect profile thinkTokens mode — 'none' disables thinking, 'budget' provides default
+      const profileThinkMode = this._modelProfile?.thinkTokens?.mode;
+      const profileThinkBudget = this._modelProfile?.thinkTokens?.budget;
       let thinkBudget = options.thinkingBudget;
       const reasoningEffort = options.reasoningEffort;
-      if ((!thinkBudget || thinkBudget === 0) && reasoningEffort) {
+      // If the profile says this model/tier doesn't support thinking, force budget to 0
+      if (profileThinkMode === 'none') {
+        thinkBudget = 0;
+      } else if ((!thinkBudget || thinkBudget === 0) && profileThinkMode === 'budget' && profileThinkBudget) {
+        // Use profile's budget as default when user hasn't set one
+        thinkBudget = profileThinkBudget;
+      }
+      if ((!thinkBudget || thinkBudget === 0) && reasoningEffort && profileThinkMode !== 'none') {
         if (reasoningEffort === 'low') thinkBudget = 512;
         else if (reasoningEffort === 'medium') thinkBudget = 2048;
         else if (reasoningEffort === 'high') thinkBudget = 8192;
@@ -2144,19 +2220,11 @@ class ChatEngine extends EventEmitter {
             }
           }
 
-          // Only clear KV cache after write tools (which cause attention-pattern contamination).
-          // Browser tools, read_file, and other non-mutation tools do NOT contaminate the KV cache.
-          // Preserving the cache eliminates the 40-90s full-prefill penalty between tool rounds.
-          const writeToolsExecuted = parsedCalls.some(c =>
-            ['write_file', 'edit_file', 'append_to_file'].includes(c.tool)
-          );
-          if (writeToolsExecuted) {
-            genOptions.lastEvaluationContextWindow = undefined;
-            try { this._sequence?.clearHistory(); } catch (_) {}
-            console.log('[ChatEngine] KV cache cleared after write tools');
-          } else {
-            console.log('[ChatEngine] KV cache preserved — fast prefill enabled');
-          }
+          // KV cache always preserved between tool rounds.
+          // Previously cleared after write tools (attention-pattern contamination theory),
+          // but this caused 40-90s full-prefill penalties. Root cause (sampling) was fixed
+          // in the generation-speed parity fix. Preserving cache = fast prefill every round.
+          console.log('[ChatEngine] KV cache preserved — fast prefill enabled');
 
           // Reset streaming filter state for the next generation round
           _sfBuf = '';

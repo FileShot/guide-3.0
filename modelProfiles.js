@@ -242,6 +242,45 @@ const FAMILY_PROFILES = {
     },
   },
 
+  glm: {
+    base: {
+      sampling: { temperature: 0.45, topP: 0.88, topK: 30, repeatPenalty: 1.08 },
+      thinkTokens: { mode: 'budget', budget: 2048 },
+      quirks: { orphanThinkClose: true },
+    },
+    tiny: {
+      sampling: { temperature: 0.40, topP: 0.85, topK: 20, repeatPenalty: 1.12, lastTokensPenaltyCount: 512 },
+      prompt: { style: 'compact', fewShotExamples: 1 },
+      thinkTokens: { mode: 'budget', budget: 512 },
+      generation: { maxToolsPerTurn: 10 },
+      quirks: { orphanThinkClose: true, truncatesMidTool: true, poorMultiTool: true },
+    },
+    small: {
+      sampling: { temperature: 0.42, topP: 0.87, topK: 25, repeatPenalty: 1.10 },
+      prompt: { style: 'compact', fewShotExamples: 1 },
+      thinkTokens: { mode: 'budget', budget: 1024 },
+      generation: { maxToolsPerTurn: 14 },
+      quirks: { orphanThinkClose: true },
+    },
+    medium: {
+      sampling: { temperature: 0.48, topP: 0.90, topK: 30, repeatPenalty: 1.06 },
+      context: { effectiveContextSize: 16384 },
+      prompt: { style: 'full' },
+      generation: { maxToolsPerTurn: 15 },
+      thinkTokens: { mode: 'budget', budget: 2048 },
+    },
+    large: {
+      context: { effectiveContextSize: 32768, maxResponseTokens: 8192 },
+      prompt: { style: 'full' },
+      generation: { maxToolsPerTurn: 25 },
+      thinkTokens: { mode: 'budget', budget: 4096 },
+    },
+    xlarge: {
+      context: { effectiveContextSize: 65536, maxResponseTokens: 16384 },
+      generation: { maxToolsPerTurn: 50 },
+    },
+  },
+
   mistral: {
     base: {
       sampling: { temperature: 0.5, topP: 0.90, topK: 40, repeatPenalty: 1.10 },

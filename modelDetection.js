@@ -3,8 +3,75 @@
 const path = require('path');
 
 /**
+ * Map from GGUF metadata.general.architecture strings to guIDE model profile family keys.
+ * This is the authoritative detection method — GGUF architecture is always correct.
+ * Any architecture not in this map falls through to filename detection.
+ */
+const GGUF_ARCH_TO_FAMILY = {
+  // Llama family
+  llama: 'llama', llama4: 'llama', deci: 'llama', 'llama-embed': 'llama', smallthinker: 'llama',
+  // Qwen family
+  qwen: 'qwen', qwen2: 'qwen', qwen2moe: 'qwen', qwen2vl: 'qwen',
+  qwen3: 'qwen', qwen3moe: 'qwen', qwen3next: 'qwen', qwen3vl: 'qwen', qwen3vlmoe: 'qwen',
+  qwen35: 'qwen', qwen35moe: 'qwen',
+  // Phi family
+  phi2: 'phi', phi3: 'phi', phimoe: 'phi',
+  // Gemma family
+  gemma: 'gemma', gemma2: 'gemma', gemma3: 'gemma', gemma3n: 'gemma', 'gemma-embedding': 'gemma',
+  gemma4: 'gemma',
+  // DeepSeek family
+  deepseek: 'deepseek', deepseek2: 'deepseek',
+  // GLM family
+  chatglm: 'glm', glm4: 'glm', glm4moe: 'glm', 'glm-dsa': 'glm',
+  // Mistral family
+  mistral3: 'mistral', mistral4: 'mistral',
+  // Starcoder family
+  starcoder: 'starcoder', starcoder2: 'starcoder',
+  // Granite family
+  granite: 'granite', granitemoe: 'granite', granitehybrid: 'granite',
+  // InternLM family
+  internlm2: 'internlm',
+  // Olmo family
+  olmo: 'olmo', olmo2: 'olmo', olmoe: 'olmo',
+  // Exaone family
+  exaone: 'exaone', exaone4: 'exaone', 'exaone-moe': 'exaone',
+  // Bitnet family
+  bitnet: 'bitnet',
+  // LFM family
+  lfm2: 'lfm', lfm2moe: 'lfm',
+  // Falcon — uses llama profile (similar decoder-only arch)
+  falcon: 'llama', 'falcon-h1': 'llama',
+  // Nemotron — uses llama profile
+  nemotron: 'llama', nemotron_h: 'llama', nemotron_h_moe: 'llama',
+  // Command-R / Cohere — uses llama profile
+  'command-r': 'llama', cohere2: 'llama',
+  // Jamba / Mamba — uses llama profile
+  mamba: 'llama', mamba2: 'llama', jamba: 'llama',
+  // MiniCPM — uses llama profile
+  minicpm: 'llama', minicpm3: 'llama',
+  // Devstral
+  devstral: 'devstral',
+};
+
+/**
+ * Detect model family from GGUF metadata.general.architecture string.
+ * Returns a lowercase family string or null if architecture is unknown/unmapped.
+ */
+function detectFamilyFromArch(archString) {
+  if (!archString || archString === '(unknown)') return null;
+  const mapped = GGUF_ARCH_TO_FAMILY[archString];
+  if (mapped) return mapped;
+  // Fuzzy prefix fallback: e.g. unknown future "qwen4" → "qwen"
+  for (const [arch, family] of Object.entries(GGUF_ARCH_TO_FAMILY)) {
+    if (archString.startsWith(arch)) return family;
+  }
+  return null;
+}
+
+/**
  * Detect the model family from a GGUF filename.
  * Returns a lowercase family string or 'unknown'.
+ * Used as fallback when GGUF architecture metadata is unavailable.
  */
 function detectFamily(modelPath) {
   if (!modelPath) return 'unknown';
@@ -18,6 +85,7 @@ function detectFamily(modelPath) {
     ['llama', 'llama'],
     ['phi', 'phi'],
     ['gemma', 'gemma'],
+    ['glm', 'glm'],
     ['mistral', 'mistral'],
     ['mixtral', 'mistral'],
     ['granite', 'granite'],
@@ -87,4 +155,4 @@ function detectModelType(modelPath) {
   return 'llm';
 }
 
-module.exports = { detectFamily, detectParamSize, detectModelType };
+module.exports = { detectFamily, detectFamilyFromArch, detectParamSize, detectModelType };
