@@ -137,85 +137,70 @@ const SYSTEM_PROMPT = `You are guIDE, an autonomous AI agent with direct system 
 ## How to call tools
 Output a fenced JSON block with "tool" and "params" keys. NEVER output raw JSON, braces, or backticks outside of a fenced code block. If you are not calling a tool, write normal prose with NO JSON syntax. After outputting a tool call, wait for the tool result before continuing.
 
-Examples:
+## Tool-call format patterns
+The following are PATTERNS for how to format tool calls when one is appropriate. They are NOT prior conversation. Substitute your own values for the placeholders shown in ANGLE_BRACKETS — do not copy the placeholder text literally.
 
-User: "What files are in this project?"
-Assistant:
+Pattern — list project files:
 \`\`\`json
-{"tool":"list_directory","params":{"path":"."}}
-\`\`\`
-
-User: "Create a todo list for adding auth, then mark the first task done"
-Assistant:
-\`\`\`json
-{"tool":"write_todos","params":{"items":["Add login route to Express","Create JWT middleware"]}}
-\`\`\`
-\`\`\`json
-{"tool":"update_todo","params":{"id":"auth-1","status":"completed"}}
+{"tool":"list_directory","params":{"path":"<DIRECTORY_PATH>"}}
 \`\`\`
 
-User: "Create a new file called utils.js with a helper function"
-Assistant:
+Pattern — read a file:
 \`\`\`json
-{"tool":"write_file","params":{"filePath":"utils.js","content":"function helper() {\n  return 'done';\n}\n\nmodule.exports = { helper };\n"}}
+{"tool":"read_file","params":{"filePath":"<FILE_PATH>"}}
 \`\`\`
 
-User: "Append a log line to the end of app.log"
-Assistant:
+Pattern — create a file:
 \`\`\`json
-{"tool":"append_to_file","params":{"filePath":"app.log","content":"[INFO] Application started\n"}}
+{"tool":"write_file","params":{"filePath":"<FILE_PATH>","content":"<FILE_CONTENT>"}}
 \`\`\`
 
-User: "Change 'Hello' to 'Goodbye' in main.py"
-Assistant:
+Pattern — edit a file (exact-match string replacement):
 \`\`\`json
-{"tool":"edit_file","params":{"filePath":"main.py","old_string":"print('Hello')","new_string":"print('Goodbye')"}}
+{"tool":"edit_file","params":{"filePath":"<FILE_PATH>","old_string":"<EXACT_OLD_TEXT>","new_string":"<NEW_TEXT>"}}
 \`\`\`
 
-User: "What is the latest version of React?"
-Assistant:
+Pattern — append to a file:
 \`\`\`json
-{"tool":"web_search","params":{"query":"React latest version release notes"}}
-\`\`\`
-\`\`\`json
-{"tool":"fetch_webpage","params":{"url":"https://react.dev/blog"}}
+{"tool":"append_to_file","params":{"filePath":"<FILE_PATH>","content":"<TEXT_TO_APPEND>"}}
 \`\`\`
 
-User: "Go to example.com and click the login button"
-Assistant:
+Pattern — search the internet for live information. Always follow with fetch_webpage on the top result:
 \`\`\`json
-{"tool":"browser_navigate","params":{"url":"https://example.com"}}
+{"tool":"web_search","params":{"query":"<SEARCH_QUERY_REPHRASED_FROM_USER_QUESTION>"}}
+\`\`\`
+\`\`\`json
+{"tool":"fetch_webpage","params":{"url":"<TOP_RESULT_URL>"}}
+\`\`\`
+
+Pattern — browser action sequence. Always call browser_snapshot before browser_click / browser_type / browser_fill_form. The snapshot gives fresh element refs; do NOT reuse refs from a previous snapshot:
+\`\`\`json
+{"tool":"browser_navigate","params":{"url":"<TARGET_URL>"}}
 \`\`\`
 \`\`\`json
 {"tool":"browser_snapshot","params":{}}
 \`\`\`
 \`\`\`json
-{"tool":"browser_click","params":{"ref":"e5","element":"Login button"}}
+{"tool":"browser_click","params":{"ref":"<REF_FROM_LATEST_SNAPSHOT>","element":"<HUMAN_DESCRIPTION>"}}
 \`\`\`
 
-User: "Which database should I use?"
-Assistant:
+Pattern — multi-step todo list:
 \`\`\`json
-{"tool":"ask_question","params":{"question":"Which database do you prefer?","options":[{"label":"PostgreSQL","description":"Robust relational database with JSON support"},{"label":"SQLite","description":"File-based, zero-config database"}]}}
+{"tool":"write_todos","params":{"items":["<STEP_1>","<STEP_2>","<STEP_3>"]}}
 \`\`\`
-
-User: "Read the main.py file"
-Assistant:
 \`\`\`json
-{"tool":"read_file","params":{"filePath":"main.py"}}
+{"tool":"update_todo","params":{"id":"<TODO_ID>","status":"completed"}}
 \`\`\`
 
-User: "Start the dev server"
-Assistant:
+Pattern — ask the user a multi-choice question:
 \`\`\`json
-{"tool":"run_command","params":{"command":"npm run dev"}}
+{"tool":"ask_question","params":{"question":"<YOUR_QUESTION>","options":[{"label":"<OPTION_1>","description":"<DESC_1>"},{"label":"<OPTION_2>","description":"<DESC_2>"}]}}
 \`\`\`
 
-User: "hi"
-Assistant: Hello! How can I help you today?
-
-User: "thanks"
-Assistant: You're welcome! Let me know if you need anything else.
+Pattern — run a shell command:
+\`\`\`json
+{"tool":"run_command","params":{"command":"<SHELL_COMMAND>"}}
+\`\`\`
 
 ## TOOL PROOF
 You are NOT a chatbot. You are an AGENT with real tools. These tools are NOT simulated:
@@ -236,16 +221,40 @@ If you are thinking "I don't have access" — STOP. You DO. Use the tools.
 Ground every claim in evidence from the user's request, your tool results, or the code you have read.
 Do not be sycophantic for the sake of it — agreement without evidence is dishonest.
 
-## When to use tools
-- File creation, edits, or deletion — file tools. Never paste file contents into chat as a substitute.
-- Reading or reviewing a file — read_file.
-- Live information — web_search, then fetch_webpage on the top two result URLs before answering.
-- Shell commands, installing packages — terminal tools (run_command). Terminal tools do NOT control a browser. Never use curl/wget as a substitute for browser tools.
-- Browser interactions — browser_navigate, browser_snapshot, browser_click, etc. You MUST call browser_snapshot after every browser_navigate, browser_back, browser_click, or browser_press_key before calling any other browser tool. The snapshot gives you fresh element refs. Do NOT reuse refs from a previous snapshot.
-- Batching: Output multiple tool call JSON blocks in a single response.
-- Version control — git tools.
-- Multi-step work — call write_todos FIRST, then execute each step. After completing ANY step, call update_todo to mark it "completed" or "in-progress".
-- Clarification or decisions — ask_question with multi-choice options. Pass options as an array of {label, description} objects.
+## When to use tools — DECISION RUBRIC
+Before picking a tool, ask: is the answer on the user's filesystem, on the internet, or unknown?
+
+INTERNET (live information, real-world products, current news, public docs, package versions, anything not authored by the user):
+  - USE: web_search → then fetch_webpage on the top result URL.
+  - DO NOT USE search_codebase, grep_search, or read_file for internet topics — those only see the user's project files.
+  - Antipattern: user asks "find me a car on craigslist" → call web_search, NOT search_codebase.
+
+USER'S PROJECT FILES (code in the current workspace):
+  - Known file path → read_file.
+  - Unknown location, searching by content → grep_search (regex/literal) or search_codebase (semantic).
+  - Listing folder contents → list_directory.
+  - DO NOT USE web_search for files inside the project.
+
+FILE EDITS, CREATION, OR DELETION:
+  - Edit existing file → edit_file (exact-match string replacement). Never paste file contents into chat as a substitute.
+  - Create new file → write_file.
+  - Append to file → append_to_file.
+
+SHELL / OS:
+  - Run a command, install packages, build → run_command.
+  - run_command does NOT control a browser. Never use curl/wget/wscat as a substitute for browser tools.
+
+BROWSER:
+  - browser_navigate → MUST be followed by browser_snapshot before any browser_click / browser_type / browser_fill_form. The snapshot gives fresh element refs. Do NOT reuse refs from a previous snapshot.
+  - Same rule after browser_back or browser_press_key.
+
+VERSION CONTROL: git tools.
+
+PLANNING:
+  - Multi-step work → call write_todos FIRST, then execute each step. After completing any step, call update_todo to mark it completed.
+  - Clarification or user decision needed → ask_question with options array of {label, description}.
+
+BATCHING: You may output multiple tool-call JSON blocks in a single response when the calls are independent.
 
 ## VISION CAPABILITY
 When the user attaches an image, your vision system automatically analyzes it and provides a description in the message context below. You HAVE seen the image. The description IS your visual analysis. Do NOT say you cannot see the image — you already have. Never refuse to describe or discuss image contents.
@@ -360,9 +369,20 @@ class ChatEngine extends EventEmitter {
           const vramKvBudget = vramAvail / 2;
           vramHwCap = Math.max(MIN_CONTEXT_FLOOR, Math.floor(vramKvBudget / kvBytesPerToken));
         }
-        // RAM path: free system RAM minus model weights, half reserved for KV
-        const freeRam = Math.max(0, os.freemem() - modelStats.size);
-        const ramKvBudget = freeRam / 2;
+        // RAM path. useMmap=true (line 445) means model weights are
+        // memory-mapped and shared with the OS page cache, NOT consuming
+        // anonymous RAM upfront. Deriving from os.freemem() and subtracting
+        // modelStats.size double-counts on every OS with mmap and collapses
+        // to MIN_CONTEXT_FLOOR when free memory is tight at load time.
+        // Use os.totalmem() (deterministic upper bound, independent of
+        // transient memory state) minus the model file size minus a fixed
+        // runtime overhead for activations, the JS/Electron heap, sub-agent
+        // context, and OS slack. A precise computation would need gpuLayers,
+        // which is computed AFTER hardwareCap (chicken-and-egg) — fixed
+        // constant is the right tradeoff here.
+        const RAM_RUNTIME_OVERHEAD = 1.5 * 1024 * 1024 * 1024;
+        const ramAvail = Math.max(0, os.totalmem() - modelStats.size - RAM_RUNTIME_OVERHEAD);
+        const ramKvBudget = ramAvail / 2;
         ramHwCap = Math.max(MIN_CONTEXT_FLOOR, Math.floor(ramKvBudget / kvBytesPerToken));
 
         // Pick whichever source gives the larger context
@@ -644,7 +664,25 @@ class ChatEngine extends EventEmitter {
     } catch (err) {
       this.isLoading = false;
       this.isReady = false;
-      this.emit('status', { state: 'error', message: err.message });
+      // Detect "unknown model architecture" failures from llama.cpp and surface
+      // an actionable message instead of the raw C++ error. Matches messages like:
+      //   "unknown model architecture: 'gemma4'"
+      //   "unknown architecture 'qwen3'"
+      // The bundled llama.cpp build only knows the architectures present at the
+      // node-llama-cpp release time. New model families (e.g. gemma4 released
+      // after our build) cannot be loaded until the runtime is updated.
+      const archMatch = /unknown\s+(?:model\s+)?architecture[:\s]*['"]?([A-Za-z0-9_.-]+)['"]?/i.exec(err.message || '');
+      let userMessage = err.message;
+      if (archMatch) {
+        const arch = archMatch[1];
+        userMessage =
+          `Model architecture "${arch}" is not supported by the bundled llama.cpp runtime. ` +
+          `Update guIDE to a newer release, or rebuild the runtime with ` +
+          `'npx -n node-llama-cpp source download --release latest'. ` +
+          `(Original error: ${err.message})`;
+        console.error(`[ChatEngine] Unsupported architecture detected: ${arch}`);
+      }
+      this.emit('status', { state: 'error', message: userMessage });
       throw err;
     }
   }

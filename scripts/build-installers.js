@@ -91,6 +91,32 @@ function restoreBackends(moved) {
   }
 }
 
+// Pull the latest published llama.cpp release into node-llama-cpp before
+// building installers. The npm package node-llama-cpp@3.18.1 ships with
+// llama.cpp build b8352 (2026-03-15), which predates several model
+// architectures released after that date (gemma4 landed in llama.cpp
+// PR #21326 on 2026-04-02). Running 'source download --release latest'
+// downloads and compiles a fresh llama.cpp from the latest tagged release
+// so the shipped binaries support newly-released model families.
+//
+// Requirements on the build machine: cmake + C++ toolchain (MSVC on
+// Windows, clang/gcc on Unix). The existing build already needs these
+// for prebuilt-binary fallback compilation, so this adds no new
+// prerequisites.
+function rebuildLlamaCpp() {
+  log('Rebuilding bundled llama.cpp from latest release (gemma4 + future arch support)');
+  const npxBin = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+  const result = spawnSync(
+    npxBin,
+    ['-n', 'node-llama-cpp', 'source', 'download', '--release', 'latest'],
+    { cwd: ROOT, stdio: 'inherit', shell: true },
+  );
+  if (result.status !== 0) {
+    throw new Error(`llama.cpp rebuild exited with status ${result.status}`);
+  }
+  log('llama.cpp rebuild complete.');
+}
+
 function electronBuild(config) {
   log(`Running: electron-builder --config ${config}`);
   const ebBin = path.join(ROOT, 'node_modules', '.bin', 'electron-builder');
@@ -142,6 +168,11 @@ async function main() {
     }
     fs.rmSync(path.dirname(BACKUP_DIR), { recursive: true, force: true });
   }
+
+  // Pull the latest llama.cpp release before building so installers ship
+  // support for model architectures that landed after node-llama-cpp 3.18.1
+  // was published (e.g. gemma4).
+  rebuildLlamaCpp();
 
   ensureDir(DIST_DIR);
   const outputs = [];

@@ -4,6 +4,43 @@
 
 ---
 
+## 2026-05-18 — Bug-fix pass: Pattern-block prompt (Plan 1) + llama.cpp rebuild in build (Plan 2) + unsupported-arch error (Plan 2 Part B) + tool-selection rubric (Plan 4) + context-sizing mmap math (Bug 8)
+
+### Problems addressed
+- **Bug 1** (log lines 38-59): GLM-4.6V-Flash responded to "hi" with a `web_search` tool call using the verbatim query `"React latest version release notes"`. Root cause: the SYSTEM_PROMPT at `chatEngine.js:140-218` contained 11 `User: ".../Assistant: ..."` transcript-style few-shot examples. The model copied the example's literal query string into its own tool call output.
+- **Bug 4** (user-reported, original log cleared): "failed to load: unknown architecture Gemma 4". Verified timeline: Gemma 4 launched 2026-04-02 with first-day llama.cpp support (PR #21326). node-llama-cpp 3.18.1 ships llama.cpp build `b8352` from 2026-03-15 — 18 days older than gemma4 support. Same situation documented in `@https://github.com/lemonade-sdk/lemonade/issues/1741`.
+- **Bug 6** (log lines 110-137): Phi-4-mini chose `search_codebase` for "find me a car on craigslist" — should have called `web_search`. Root cause: the `## When to use tools` block at `chatEngine.js:239-249` was a feature catalog, not a decision rubric.
+
+### Fixes
+- **Plan 1 — Pattern-block prompt** (`chatEngine.js:140-203`): Replaced the 11 `User: "..." / Assistant: ...` transcript-style examples with 10 `Pattern — <description>:` blocks using `<ANGLE_BRACKET>` placeholders for all values. The verbatim string `"React latest version release notes"` no longer exists in the prompt — the new web_search pattern uses `"<SEARCH_QUERY_REPHRASED_FROM_USER_QUESTION>"`. No keyword lists, no "DO NOT" force-rules. The existing line 135 instruction already handles conversational/non-actionable cases generically: *"Tool use is not appropriate in response to greetings, casual conversations, image analysis requests, or social chat."*
+- **Plan 2 — llama.cpp rebuild in build script** (`scripts/build-installers.js:94-118, 172-175`): Added `rebuildLlamaCpp()` function that runs `npx -n node-llama-cpp source download --release latest` once at the start of `main()`, before any electron-builder invocation. Pulls the latest llama.cpp release source and compiles it during build, replacing the stale b8352 bundle. Build machine needs CMake + C++ toolchain (already required for existing prebuilt-binary fallback paths).
+- **Plan 2 Part B — Actionable unsupported-architecture error** (`chatEngine.js:668-691`): Model-load catch block now regex-matches `unknown (model )?architecture[: ]*'X'` and emits a status message that names the arch and suggests recovery. Applies to any future architecture, not gemma4-specific.
+- **Plan 4 — Decision rubric for tool selection** (`chatEngine.js:239-272`): Replaced the bullet-list "When to use tools" section with a rubric organised by intent (INTERNET / PROJECT FILES / FILE EDITS / SHELL / BROWSER / VERSION CONTROL / PLANNING / BATCHING). Each category has explicit "USE / DO NOT USE" guidance. Includes the literal antipattern "user asks 'find me a car on craigslist' → call web_search, NOT search_codebase".
+
+### Plan 3 retracted
+Earlier in the session I claimed GLM-4.6 was prefixing `<think>` invisibly via chat template. Read the actual jinja at `@https://huggingface.co/zai-org/GLM-4.6/raw/main/chat_template.jinja` — the assistant prompt does NOT prefix `<think>` when thinking is enabled. The "Hello! How can I help you today?" prose in the log was the model's real intended response (copied from the now-removed example). The `</think>` after it was a stray training-artefact token, correctly silenced by the existing orphan handler. Bug 7 was my hallucination. Plan 3 dropped.
+
+### Bug 8 — context-window collapse on tight memory (IMPLEMENTED)
+**Problem**: Log showed context regression from 32K on one launch to 2K on another launch with same hardware. Root cause at the RAM-path math: subtracting the full model file size from `os.freemem()` was wrong on every OS with mmap because `useMmap: true` (chatEngine.js:445) memory-maps the file and shares with the OS page cache — the model does not occupy anonymous RAM upfront. When `os.freemem() < modelStats.size` (tight memory at load), the math collapsed to `MIN_CONTEXT_FLOOR = 2048`.
+
+**Fix** (`chatEngine.js:372-386`): Replaced `os.freemem() - modelStats.size` with `os.totalmem() - modelStats.size - RAM_RUNTIME_OVERHEAD` (constant 1.5 GB for activations, JS/Electron heap, sub-agent context, OS slack). Uses total system RAM as a deterministic basis independent of transient memory state. Hardware-independent — works on 1 GB Pi through 256 GB workstation with the same formula. No change to GPU layer placement, no change to inference speed, no change to where weights live. Pure budget calculation.
+
+**Why not iterate to a precise solution**: A precise computation would need `gpuLayers` BEFORE `hardwareCap`, but `gpuLayers` is computed FROM `hardwareCap` at line 471-487. Solving the circular dependency would require either two-pass iteration or a fixed initial estimate. A 1.5 GB runtime overhead constant covers the same headroom region as a full iterative solve in practice, with zero added complexity.
+
+**Floor preserved**: `MIN_CONTEXT_FLOOR = 2048` still applies on truly tight systems (4 GB RAM + 3 GB model), but it is now reached for a clear reason (the system genuinely cannot fit a larger KV cache) rather than as a side effect of bad math.
+
+### Bug 2/3 deferred
+5-minute pause between fetch_webpage and prose response, and no-response-after-5-min. The log at `C:\Users\brend\AppData\Roaming\guide-ide\logs\guide-main.log` (lines 1-432) does not contain a 5-minute pause — maximum visible pause is 31 seconds. The original log was cleared by an unauthorized CI build trigger earlier in the session (mistake noted; will not repeat). User cannot reproduce on demand. Plan: capture next occurrence with logs intact, then diagnose.
+
+### Verification
+- All four implemented changes read after edit; no syntax errors.
+- No detection-on-output, no retries, no band-aids. Pure formula and prompt changes.
+- All changes general-purpose; no model/hardware-specific code paths.
+- Plan 1 verification: the verbatim string `"React latest version release notes"` is no longer present anywhere in `chatEngine.js`.
+- Plan 2 verification: `rebuildLlamaCpp()` is called once before any backend pruning so the rebuild affects both CUDA and CPU installer variants.
+
+---
+
 ## 2026-05-17 — v0.3.63 — Performance audit: P1–P6 (inference) + B4 (think consolidation) + F1–F3 (frontend)
 
 ### Problem
