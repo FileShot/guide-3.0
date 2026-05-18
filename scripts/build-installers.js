@@ -107,8 +107,7 @@ function rebuildLlamaCpp() {
   log('Rebuilding bundled llama.cpp from latest release (gemma4 + future arch support)');
   const npxBin = process.platform === 'win32' ? 'npx.cmd' : 'npx';
   const result = spawnSync(
-    npxBin,
-    ['-n', 'node-llama-cpp', 'source', 'download', '--release', 'latest'],
+    `${npxBin} node-llama-cpp source download --release latest`,
     { cwd: ROOT, stdio: 'inherit', shell: true },
   );
   if (result.status !== 0) {
