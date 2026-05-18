@@ -56,6 +56,28 @@ Earlier in the session I claimed GLM-4.6 was prefixing `<think>` invisibly via c
 
 **Result**: All 5 build jobs (Windows CPU/CUDA, Linux CPU/CUDA, macOS) + release step passed. `v0.3.70` installers published.
 
+**Note**: `v0.3.70` installers were broken at runtime because the manual `tar` extraction step used `rm -rf node_modules/node-llama-cpp/llama` before extracting the upstream tarball, which deleted `node-llama-cpp`-specific metadata files (`binariesGithubRelease.json`, `llama.cpp.info.json`, `package.json`, `gitRelease.bundle`) that the runtime requires. The upstream llama.cpp tarball does not contain these files. This caused every model load to fail with `ENOENT: no such file or directory, open '...binariesGithubRelease.json'`.
+
+---
+
+## 2026-05-18 — v0.3.71 — CRITICAL FIX: Preserve node-llama-cpp metadata during CI source update
+
+### Problem
+The CI workflow's manual `curl + tar` source download step for llama.cpp b9209 (added in v0.3.70) used `rm -rf node_modules/node-llama-cpp/llama` before extraction. This deleted `node-llama-cpp`-specific metadata files (`binariesGithubRelease.json`, `llama.cpp.info.json`, `package.json`, `gitRelease.bundle`) that are bundled with the npm package but not present in the upstream llama.cpp tarball. The app crashes at runtime with `ENOENT` when `node-llama-cpp/dist/config.js:36` tries to read `binariesGithubRelease.json` at module load time.
+
+### Fix
+`.github/workflows/build.yml` (all 5 build jobs): Updated the download step to:
+1. Copy metadata files to `/tmp/llama-meta/` before `rm -rf`
+2. Extract the b9209 tarball
+3. Restore metadata files from `/tmp/llama-meta/`
+4. Update `binariesGithubRelease.json` to `{"release": "b9209"}`
+5. Update `llama.cpp.info.json` to `{"tag": "b9209", "llamaCppGithubRepo": "ggml-org/llama.cpp"}`
+
+This ensures the runtime metadata accurately reflects the updated source version while preserving all `node-llama-cpp`-specific files required for operation.
+
+### Result
+All 5 build jobs + release step passed. `v0.3.71` installers published and functional.
+
 ---
 
 ## 2026-05-17 — v0.3.63 — Performance audit: P1–P6 (inference) + B4 (think consolidation) + F1–F3 (frontend)
