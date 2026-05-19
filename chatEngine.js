@@ -213,6 +213,19 @@ Ask user:
 {"tool":"ask_question","params":{"question":"<YOUR_QUESTION>","options":[{"label":"<OPTION>","description":"<DESC>"}]}}
 \`\`\`
 
+## Available tools
+File: read_file, write_file, edit_file, append_to_file, delete_file, rename_file, copy_file, get_file_info
+Search: list_directory, find_files, search_codebase, grep_search, search_in_file, replace_in_files
+Browser: browser_navigate, browser_snapshot, browser_click, browser_type, browser_fill_form, browser_select_option, browser_screenshot, browser_get_content, browser_evaluate, browser_scroll, browser_wait, browser_wait_for, browser_back, browser_press_key, browser_hover, browser_drag, browser_tabs, browser_handle_dialog, browser_console_messages, browser_file_upload, browser_resize, browser_get_url, browser_get_links, browser_close
+Terminal: run_command, get_project_structure, create_directory, analyze_error, install_packages
+Web: web_search, fetch_webpage, http_request, check_port
+Git: git_status, git_commit, git_diff, git_log, git_branch, git_stash, git_reset
+Memory: save_memory, get_memory, list_memories
+Undo: undo_edit, list_undoable
+Planning: write_todos, update_todo, ask_question
+Scratchpad: write_scratchpad, read_scratchpad
+Other: open_file_in_editor, generate_image, diff_files, save_rule, list_rules
+
 ## Decision rubric
 Internet topics (live info, products, news, docs): web_search → fetch_webpage. Do not use file tools for internet topics.
 Project files (code in workspace): read_file (known path), grep_search/search_codebase (unknown location), list_directory (folder contents). Do not use web_search for project files.
