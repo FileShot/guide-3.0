@@ -531,19 +531,26 @@ function deepMerge(target, source) {
 // ─── Profile Resolution ───
 function getModelProfile(family, paramSize) {
   const tier = getSizeTier(paramSize);
-  const familyDef = FAMILY_PROFILES[family] || FAMILY_PROFILES.llama;
+  const familyDef = FAMILY_PROFILES[family];
 
   // Merge order: BASE_DEFAULTS → family.base → family[tier]
-  let profile = deepMerge(BASE_DEFAULTS, familyDef.base || {});
-  if (familyDef[tier]) {
-    profile = deepMerge(profile, familyDef[tier]);
+  // Unknown families get BASE_DEFAULTS directly (neutral, hardware-computed defaults)
+  // rather than FAMILY_PROFILES.llama which imposes llama-specific sampling on every unknown model.
+  let profile;
+  if (familyDef) {
+    profile = deepMerge(BASE_DEFAULTS, familyDef.base || {});
+    if (familyDef[tier]) {
+      profile = deepMerge(profile, familyDef[tier]);
+    }
+  } else {
+    profile = { ...BASE_DEFAULTS };
   }
 
   profile._meta = {
     family: family || 'unknown',
     paramSize: paramSize || 0,
     tier,
-    profileSource: FAMILY_PROFILES[family] ? family : 'llama (fallback)',
+    profileSource: familyDef ? family : 'base-defaults (no vendor profile)',
   };
 
   return profile;

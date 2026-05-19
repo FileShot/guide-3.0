@@ -325,6 +325,7 @@ class ChatEngine extends EventEmitter {
       let totalLayersFromGguf = null;
       let ggufArchMeta = null;
       let ggufArchString = null; // metadata.general.architecture (e.g. "chatglm", "qwen35", "gemma3")
+      let ggufChatTemplate = null; // tokenizer.chat_template — Jinja template string from GGUF metadata
       try {
         const gguf = await readGgufFileInfo(modelPath, { readTensorInfo: false, logWarnings: false });
         const am = gguf.architectureMetadata;
@@ -332,6 +333,13 @@ class ChatEngine extends EventEmitter {
         if (gguf.metadata?.general?.architecture) ggufArchString = gguf.metadata.general.architecture;
         if (am && typeof am.context_length === 'number') trainMaxContext = am.context_length;
         if (am && typeof am.block_count === 'number') totalLayersFromGguf = am.block_count;
+        // Tier 1: Extract chat template from GGUF metadata for auto-detection.
+        // tokenizer.chat_template is a Jinja2 string embedded in the GGUF file.
+        // It's the authoritative source for what the model's chat format supports.
+        // Models with thinking capability include `enable_thinking` as a Jinja variable.
+        if (gguf.metadata?.tokenizer?.chat_template) {
+          ggufChatTemplate = gguf.metadata.tokenizer.chat_template;
+        }
       } catch (e) {
         console.warn(`[ChatEngine] readGgufFileInfo: ${e.message}`);
       }
@@ -643,11 +651,28 @@ class ChatEngine extends EventEmitter {
         gpuMode: s.gpuPreference === 'cpu' ? false : 'auto',
       };
 
-      // P3: Resolve per-family/tier sampling profile from modelProfiles.js for use as defaults in chat().
-      // modelProfiles.js has calibrated sampling params (temperature/topP/topK/repeatPenalty) per family
-      // (Qwen, GLM/glm, Phi, Gemma, DeepSeek, Mistral, Llama, etc.). Previously these were never wired in
-      // — chat() used a hardcoded temperature=0.4 fallback for every family.
-      // P3: Family detection — GGUF architecture metadata (primary) then filename (fallback).
+      // ─── Three-Tier Model Profile Resolution ───
+      // Tier 1: GGUF metadata auto-detection (what the file tells us about itself)
+      // Tier 2: Vendor profile overrides (curated settings from model vendor documentation)
+      // Tier 3: BASE_DEFAULTS (neutral fallback when neither source provides info)
+      //
+      // This system is future-proof: a brand-new model with an unknown architecture
+      // string and unknown filename will still work correctly because Tier 1 detects
+      // capabilities directly from the GGUF file's embedded chat template, and Tier 3
+      // provides neutral defaults. Vendor profiles (Tier 2) are optional enhancements
+      // that optimize sampling for families with documented vendor recommendations.
+
+      // Tier 1: Auto-detect thinking support from the GGUF chat template.
+      // The Jinja chat template is embedded in every GGUF file under tokenizer.chat_template.
+      // If it contains `enable_thinking` as a variable, the model supports thinking mode.
+      // This is future-proof: any model that adds thinking will include this variable.
+      // No manual profile entry is required for thinking to work on new models.
+      const _templateSupportsThinking = ggufChatTemplate
+        ? /enable_thinking/.test(ggufChatTemplate)
+        : false;
+      console.log(`[ChatEngine] Tier 1: chat_template auto-detect — templatePresent=${!!ggufChatTemplate}, supportsThinking=${_templateSupportsThinking}`);
+
+      // Tier 2: Family detection — GGUF architecture metadata (primary) then filename (fallback).
       // GGUF metadata.general.architecture is authoritative (e.g. "chatglm", "qwen35", "gemma3").
       // Filename detection is kept as fallback for corrupted/missing metadata.
       const _archFamily = detectFamilyFromArch(ggufArchString);
@@ -656,20 +681,38 @@ class ChatEngine extends EventEmitter {
       const _detectedSizeB = paramCount ? paramCount / 1e9 : detectParamSize(modelPath);
       this._modelProfile = getModelProfile(_detectedFamily, _detectedSizeB);
 
-      // Fix B: Pass enable_thinking to chat template kwargs so Qwen 3.5 small models
-      // (which disable thinking by default in their Jinja template) activate thinking.
-      // When the profile says thinkTokens.mode='budget' or 'strip' and the user hasn't
-      // disabled thinking in settings, pass enable_thinking=true. This is silently
-      // ignored by models whose templates don't reference the kwarg.
+      // Merge Tier 1 auto-detection into the profile.
+      // If the chat template says the model supports thinking but the vendor profile
+      // says mode='none' (e.g. an old profile for a non-thinking variant), the template
+      // wins — it's the ground truth from the actual model file.
+      // If the vendor profile says mode='budget' but the template has no enable_thinking,
+      // the vendor profile wins — some models think without the template variable.
       const _profileThinkMode = this._modelProfile?.thinkTokens?.mode;
+      if (_templateSupportsThinking && _profileThinkMode === 'none') {
+        // Template says thinking is supported but profile says none — template wins
+        this._modelProfile.thinkTokens.mode = 'budget';
+        this._modelProfile.thinkTokens.budget = this._modelProfile.thinkTokens.budget || 2048;
+        console.log(`[ChatEngine] Tier 1 override: chat_template supports thinking but profile said 'none' — upgraded to 'budget'`);
+      } else if (_templateSupportsThinking && _profileThinkMode !== 'budget' && _profileThinkMode !== 'strip') {
+        // Unknown model with template thinking support — activate budget mode
+        this._modelProfile.thinkTokens.mode = 'budget';
+        this._modelProfile.thinkTokens.budget = this._modelProfile.thinkTokens.budget || 2048;
+        console.log(`[ChatEngine] Tier 1 auto-detect: chat_template supports thinking — set thinkTokens.mode='budget'`);
+      }
+
+      // Pass enable_thinking to chat template kwargs.
+      // When the model supports thinking (Tier 1 or Tier 2) and the user hasn't disabled
+      // thinking in settings, pass enable_thinking=true. This is silently ignored by
+      // models whose templates don't reference the kwarg.
+      const _resolvedThinkMode = this._modelProfile?.thinkTokens?.mode;
       const _chatTemplateKwargs = {};
-      if (s.enableThinking && _profileThinkMode !== 'none') {
+      if (s.enableThinking && _resolvedThinkMode !== 'none') {
         _chatTemplateKwargs.enable_thinking = true;
-      } else if (_profileThinkMode === 'none' || !s.enableThinking) {
+      } else if (_resolvedThinkMode === 'none' || !s.enableThinking) {
         _chatTemplateKwargs.enable_thinking = false;
       }
       this._chat = new LlamaChat({ contextSequence: this._sequence, chatTemplateKwargs: _chatTemplateKwargs });
-      console.log(`[ChatEngine] Fix B: chatTemplateKwargs=${JSON.stringify(_chatTemplateKwargs)}, profileThinkMode=${_profileThinkMode}, enableThinking=${s.enableThinking}`);
+      console.log(`[ChatEngine] chatTemplateKwargs=${JSON.stringify(_chatTemplateKwargs)}, resolvedThinkMode=${_resolvedThinkMode}, enableThinking=${s.enableThinking}, templateSupportsThinking=${_templateSupportsThinking}`);
 
       this._chatHistory = [{ type: 'system', text: SYSTEM_PROMPT }];
       this._lastEvaluation = null;
