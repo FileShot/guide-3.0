@@ -197,29 +197,42 @@ const FAMILY_PROFILES = {
   },
 
   gemma: {
+    // Official Google Gemma 4 recommended settings from https://ai.google.dev/gemma/docs/core/model_card_4
+    // temperature=1.0, topP=0.95, topK=64 across all use cases
+    // Thinking: controlled via <|think|> token in chat template (handled by llama.cpp)
+    // Non-thinking (E2B/E4B): empty thought block emitted automatically
     base: {
-      sampling: { temperature: 0.45, topP: 0.88, topK: 30, repeatPenalty: 1.12 },
-      thinkTokens: { mode: 'budget', budget: 1024 },
+      sampling: { temperature: 1.0, topP: 0.95, topK: 64, repeatPenalty: 1.0 },
+      thinkTokens: { mode: 'budget', budget: 2048 },
     },
     tiny: {
-      sampling: { temperature: 0.35, topP: 0.80, topK: 15, repeatPenalty: 1.18, lastTokensPenaltyCount: 512 },
+      sampling: { temperature: 1.0, topP: 0.95, topK: 64, repeatPenalty: 1.05, lastTokensPenaltyCount: 256 },
       prompt: { style: 'compact', fewShotExamples: 1 },
-      thinkTokens: { mode: 'budget', budget: 128 },
+      thinkTokens: { mode: 'budget', budget: 256 },
       generation: { maxToolsPerTurn: 10 },
       quirks: { truncatesMidTool: true, poorMultiTool: true },
     },
     small: {
-      sampling: { temperature: 0.40, topP: 0.85, topK: 20, repeatPenalty: 1.15 },
+      sampling: { temperature: 1.0, topP: 0.95, topK: 64, repeatPenalty: 1.0 },
       prompt: { style: 'compact', fewShotExamples: 1 },
-      thinkTokens: { mode: 'budget', budget: 256 },
+      thinkTokens: { mode: 'budget', budget: 512 },
       generation: { maxToolsPerTurn: 14 },
     },
     medium: {
+      sampling: { temperature: 1.0, topP: 0.95, topK: 64, repeatPenalty: 1.0 },
       context: { effectiveContextSize: 16384 },
       prompt: { style: 'full' },
+      thinkTokens: { mode: 'budget', budget: 2048 },
     },
     large: {
+      sampling: { temperature: 1.0, topP: 0.95, topK: 64, repeatPenalty: 1.0 },
       context: { effectiveContextSize: 32768, maxResponseTokens: 8192 },
+      thinkTokens: { mode: 'budget', budget: 4096 },
+    },
+    xlarge: {
+      sampling: { temperature: 1.0, topP: 0.95, topK: 64, repeatPenalty: 1.0 },
+      context: { effectiveContextSize: 65536, maxResponseTokens: 16384 },
+      thinkTokens: { mode: 'budget', budget: 8192 },
     },
   },
 

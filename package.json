@@ -1,6 +1,6 @@
 {
   "name": "guide-ide",
-  "version": "0.3.72",
+  "version": "0.3.76",
   "description": "guIDE Local First IDE",
   "main": "electron-main.js",
   "scripts": {
@@ -35,7 +35,7 @@
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "mime-types": "^2.1.35",
-    "node-llama-cpp": "^3.5.0",
+    "node-llama-cpp": "^3.18.1",
     "node-pty": "^1.0.0",
     "playwright": "^1.59.1",
     "prettier": "^3.5.3",
