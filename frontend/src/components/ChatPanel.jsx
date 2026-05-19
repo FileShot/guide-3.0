@@ -1781,7 +1781,7 @@ export default function ChatPanel() {
 
     : modelInfo
 
-      ? (modelInfo.family || modelInfo.name || '').split('/').pop().slice(0, 20)
+      ? (modelInfo.name || modelInfo.family || '').split('/').pop().slice(0, 20)
 
       : 'No Model';
 
@@ -4620,7 +4620,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                     <div className="text-[10px] text-vsc-text-dim flex items-center gap-2 mt-0.5">
 
-                      {currentModel.family && <span>{currentModel.family}</span>}
+                      {currentModel.family && <span>{currentModel.family.charAt(0).toUpperCase() + currentModel.family.slice(1)}</span>}
 
                       {currentModel.contextSize && <span>{currentModel.contextSize} ctx</span>}
 

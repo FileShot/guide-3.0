@@ -58,16 +58,6 @@ const BASE_DEFAULTS = {
     stopStrings: [],
     maxToolsPerTurn: 14,
   },
-  quirks: {
-    loopsFrequently: false,
-    truncatesMidTool: false,
-    overlyVerbose: false,
-    refusesOften: false,
-    halluccinatesToolResults: false,
-    needsExplicitStop: false,
-    emitsSpecialTokens: false,
-    poorMultiTool: false,
-  },
 };
 
 // ─── Family Profiles ───
@@ -80,7 +70,6 @@ const FAMILY_PROFILES = {
       sampling: { temperature: 0.6, topP: 0.95, topK: 20, repeatPenalty: 1.0, presencePenalty: 0 },
       samplingInstruct: { temperature: 0.7, topP: 0.8, topK: 20, repeatPenalty: 1.0, presencePenalty: 1.5 },
       thinkTokens: { mode: 'budget', budget: 2048 },
-      quirks: { emitsSpecialTokens: true },
     },
     tiny: {
       sampling: { temperature: 0.6, topP: 0.95, topK: 20, repeatPenalty: 1.0, presencePenalty: 0, lastTokensPenaltyCount: 512 },
@@ -88,7 +77,6 @@ const FAMILY_PROFILES = {
       prompt: { style: 'compact', fewShotExamples: 1 },
       thinkTokens: { mode: 'budget', budget: 1024 },
       generation: { maxToolsPerTurn: 10 },
-      quirks: { truncatesMidTool: true, poorMultiTool: true },
     },
     small: {
       sampling: { temperature: 0.6, topP: 0.95, topK: 20, repeatPenalty: 1.0, presencePenalty: 0, lastTokensPenaltyCount: 512 },
@@ -96,7 +84,6 @@ const FAMILY_PROFILES = {
       prompt: { style: 'compact', fewShotExamples: 1 },
       thinkTokens: { mode: 'budget', budget: 2048 },
       generation: { maxToolsPerTurn: 14 },
-      quirks: { poorMultiTool: true },
     },
     medium: {
       sampling: { temperature: 0.6, topP: 0.95, topK: 20, repeatPenalty: 1.0, presencePenalty: 0 },
@@ -112,7 +99,7 @@ const FAMILY_PROFILES = {
       context: { effectiveContextSize: 32768, maxResponseTokens: 8192 },
       prompt: { style: 'full' },
       generation: { maxToolsPerTurn: 25 },
-      thinkTokens: { _thinkBudgetWhenActive: 2048 },
+      thinkTokens: { mode: 'budget', budget: 2048 },
     },
     xlarge: {
       sampling: { temperature: 0.6, topP: 0.95, topK: 20, repeatPenalty: 1.0, presencePenalty: 0 },
@@ -120,7 +107,7 @@ const FAMILY_PROFILES = {
       context: { effectiveContextSize: 65536, maxResponseTokens: 16384 },
       prompt: { style: 'full' },
       generation: { maxToolsPerTurn: 50 },
-      thinkTokens: { _thinkBudgetWhenActive: 4096 },
+      thinkTokens: { mode: 'budget', budget: 4096 },
     },
   },
 
@@ -134,7 +121,6 @@ const FAMILY_PROFILES = {
       prompt: { style: 'compact', fewShotExamples: 2 },
       thinkTokens: { mode: 'none', budget: 0 },
       generation: { maxToolsPerTurn: 10 },
-      quirks: { truncatesMidTool: true, poorMultiTool: true, loopsFrequently: true },
     },
     small: {
       sampling: { temperature: 0.4, topP: 0.85, topK: 20, repeatPenalty: 1.12 },
@@ -162,21 +148,18 @@ const FAMILY_PROFILES = {
     base: {
       sampling: { temperature: 0.35, topP: 0.80, topK: 20, repeatPenalty: 1.20, frequencyPenalty: 0.05, lastTokensPenaltyCount: 256 },
       thinkTokens: { mode: 'budget', budget: 1024 },
-      quirks: { loopsFrequently: true, overlyVerbose: true },
     },
     tiny: {
       sampling: { temperature: 0.30, topP: 0.75, topK: 15, repeatPenalty: 1.25, lastTokensPenaltyCount: 512 },
       prompt: { style: 'compact' },
       thinkTokens: { mode: 'budget', budget: 128 },
       generation: { maxToolsPerTurn: 10 },
-      quirks: { loopsFrequently: true, truncatesMidTool: true, poorMultiTool: true },
     },
     small: {
       sampling: { temperature: 0.35, topP: 0.80, topK: 20, repeatPenalty: 1.20 },
       prompt: { style: 'compact' },
       thinkTokens: { mode: 'budget', budget: 256 },
       generation: { maxToolsPerTurn: 14 },
-      quirks: { loopsFrequently: true, overlyVerbose: true },
     },
     medium: {
       sampling: { temperature: 0.40, topP: 0.85, topK: 25, repeatPenalty: 1.15 },
@@ -189,7 +172,6 @@ const FAMILY_PROFILES = {
       context: { effectiveContextSize: 32768, maxResponseTokens: 8192 },
       prompt: { style: 'full' },
       generation: { maxToolsPerTurn: 20 },
-      quirks: { loopsFrequently: false },
     },
     xlarge: {
       context: { effectiveContextSize: 65536, maxResponseTokens: 16384 },
@@ -210,7 +192,6 @@ const FAMILY_PROFILES = {
       prompt: { style: 'compact', fewShotExamples: 1 },
       thinkTokens: { mode: 'budget', budget: 256 },
       generation: { maxToolsPerTurn: 10 },
-      quirks: { truncatesMidTool: true, poorMultiTool: true },
     },
     small: {
       sampling: { temperature: 1.0, topP: 0.95, topK: 64, repeatPenalty: 1.0 },
@@ -246,7 +227,6 @@ const FAMILY_PROFILES = {
       prompt: { style: 'compact' },
       thinkTokens: { mode: 'budget', budget: 128 },
       generation: { maxToolsPerTurn: 10 },
-      quirks: { overlyVerbose: true, truncatesMidTool: true },
     },
     small: {
       sampling: { temperature: 0.5, topP: 0.88, topK: 25, repeatPenalty: 1.08 },
@@ -270,21 +250,18 @@ const FAMILY_PROFILES = {
     base: {
       sampling: { temperature: 0.45, topP: 0.88, topK: 30, repeatPenalty: 1.08 },
       thinkTokens: { mode: 'budget', budget: 2048 },
-      quirks: { orphanThinkClose: true },
     },
     tiny: {
       sampling: { temperature: 0.40, topP: 0.85, topK: 20, repeatPenalty: 1.12, lastTokensPenaltyCount: 512 },
       prompt: { style: 'compact', fewShotExamples: 1 },
       thinkTokens: { mode: 'budget', budget: 512 },
       generation: { maxToolsPerTurn: 10 },
-      quirks: { orphanThinkClose: true, truncatesMidTool: true, poorMultiTool: true },
     },
     small: {
       sampling: { temperature: 0.42, topP: 0.87, topK: 25, repeatPenalty: 1.10 },
       prompt: { style: 'compact', fewShotExamples: 1 },
       thinkTokens: { mode: 'budget', budget: 1024 },
       generation: { maxToolsPerTurn: 14 },
-      quirks: { orphanThinkClose: true },
     },
     medium: {
       sampling: { temperature: 0.48, topP: 0.90, topK: 30, repeatPenalty: 1.06 },
@@ -329,7 +306,6 @@ const FAMILY_PROFILES = {
     base: {
       sampling: { temperature: 0.5, topP: 0.88, topK: 30, repeatPenalty: 1.10 },
       thinkTokens: { mode: 'budget', budget: 1024 },
-      quirks: { refusesOften: true },
       retry: { onRefusal: 'add-permission' },
     },
     small: {
@@ -345,7 +321,6 @@ const FAMILY_PROFILES = {
     base: {
       sampling: { temperature: 0.35, topP: 0.85, topK: 25, repeatPenalty: 1.12 },
       thinkTokens: { mode: 'budget', budget: 1024 },
-      quirks: { poorMultiTool: true },
     },
     small: {
       context: { effectiveContextSize: 32768 },
@@ -360,7 +335,6 @@ const FAMILY_PROFILES = {
     base: {
       sampling: { temperature: 0.35, topP: 0.85, topK: 25, repeatPenalty: 1.12 },
       thinkTokens: { mode: 'budget', budget: 1024 },
-      quirks: { poorMultiTool: true },
     },
     small: {
       context: { effectiveContextSize: 32768 },

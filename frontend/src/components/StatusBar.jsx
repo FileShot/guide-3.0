@@ -332,7 +332,7 @@ export default function StatusBar() {
           <button className="statusbar-item" onClick={() => setActiveActivity('settings')} title={modelInfo ? `${modelInfo.name} (${modelInfo.contextSize?.toLocaleString?.() ?? modelInfo.contextSize} ctx${modelInfo.contextSizeRequested === 'auto' && modelInfo.contextTrainMax ? `, train max ${modelInfo.contextTrainMax.toLocaleString()}` : ''})` : 'No model'}>
             <Cpu size={12} className="mr-1" />
             {modelLoaded && modelInfo ? (
-              <span className="truncate max-w-[120px]">{modelInfo.family || modelInfo.name}</span>
+              <span className="truncate max-w-[120px]">{modelInfo.name || modelInfo.family}</span>
             ) : (
               <span className="opacity-70">No Model</span>
             )}

@@ -886,39 +886,6 @@ function _inferFilePath(text, content, lang) {
   return 'output.txt';
 }
 
-// ─── Fallback File Operation Detection ───
-function _detectFallbackFileOperations(responseText, userMessage, lastDroppedFilePaths) {
-  if (!responseText) return [];
-  const calls = [];
-  const codeBlockRe = /```(\w+)?\n([\s\S]*?)```/g;
-  let m;
-  while ((m = codeBlockRe.exec(responseText)) !== null) {
-    const lang = m[1] || '';
-    const content = m[2];
-    if (content.length < 50) continue;
-    // Skip code blocks preceded by editorial/fix phrases in the model's response
-    const nearBefore = responseText.slice(Math.max(0, m.index - 120), m.index);
-    if (/(?:replace\s+(?:line|with)|fix[:\s]|instead\s+of|example[:\s]|install\b|pip\s+install|npm\s+install)/i.test(nearBefore)) continue;
-    // Look for a file path reference near or before this code block
-    const beforeBlock = responseText.slice(Math.max(0, m.index - 300), m.index);
-    const pathReG = /\b([\w/\\.-]+\.(?:js|ts|jsx|tsx|py|html|css|json|md|yaml|yml))\b/gi;
-    let pathMatch = null;
-    let _pm;
-    while ((_pm = pathReG.exec(beforeBlock)) !== null) pathMatch = _pm;
-    if (pathMatch) {
-      calls.push({ tool: 'write_file', params: { filePath: pathMatch[1], content } });
-    }
-  }
-  // Check dropped paths from previous iteration
-  if (lastDroppedFilePaths && lastDroppedFilePaths.length > 0) {
-    for (const fp of lastDroppedFilePaths) {
-      const recovered = _recoverWriteFileContent(responseText, fp);
-      if (recovered) calls.push(recovered);
-    }
-  }
-  return calls;
-}
-
 // ─── Strip Tool Call Text ───
 // Removes tool call JSON blocks from model output text, leaving only prose.
 // Uses the same structural patterns that parseToolCalls detects.
@@ -1044,5 +1011,4 @@ module.exports = {
   stripToolCallText,
   _recoverWriteFileContent,
   _inferFilePath,
-  _detectFallbackFileOperations,
 };

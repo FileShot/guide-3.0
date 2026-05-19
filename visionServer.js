@@ -1,6 +1,8 @@
 'use strict';
 
-const { spawn, execSync } = require('child_process');
+const { spawn, execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 const http = require('http');
 const https = require('https');
 const path = require('path');
@@ -95,7 +97,7 @@ class VisionServer {
     }
 
     // Find or auto-download llama-server binary
-    let binaryPath = options.binaryPath || this._binaryPath || this._findBinary();
+    let binaryPath = options.binaryPath || this._binaryPath || await this._findBinary();
     if (!binaryPath) {
       console.log('[VisionServer] llama-server binary not found — attempting auto-download');
       try {
@@ -129,10 +131,10 @@ class VisionServer {
     if (visionGpuLayers == null) {
       // Auto-compute: try to fit in available VRAM
       try {
-        const { execSync } = require('child_process');
         // Use nvidia-smi to get free VRAM (works on Windows/Linux)
-        const result = execSync('nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits', { encoding: 'utf8', timeout: 5000 }).trim();
-        const freeVramMiB = parseInt(result.split('\n')[0]);
+        // Non-blocking: execFileAsync prevents event loop freeze on slow nvidia-smi
+        const { stdout } = await execFileAsync('nvidia-smi', ['--query-gpu=memory.free', '--format=csv,noheader,nounits'], { encoding: 'utf8', timeout: 5000 });
+        const freeVramMiB = parseInt(stdout.trim().split('\n')[0]);
         // Rough estimate: each model layer uses modelSize/totalLayers MiB
         // For a 4B Q4 model: ~2.7GB / 32 layers ≈ 84MB per layer
         // Leave 512MB for KV cache + activations
@@ -605,7 +607,7 @@ class VisionServer {
     return null;
   }
 
-  _findBinary() {
+  async _findBinary() {
     const candidates = [];
 
     // 1. App resources directory (bundled with installer)
@@ -631,13 +633,13 @@ class VisionServer {
       candidates.push(path.join(exeDir, process.platform === 'win32' ? 'llama-server.exe' : 'llama-server'));
     } catch (e) { /* no execPath */ }
 
-    // 4. System PATH
+    // 4. System PATH (non-blocking)
     try {
-      const whereResult = execSync(
-        process.platform === 'win32' ? 'where llama-server.exe 2>nul' : 'which llama-server 2>/dev/null',
-        { encoding: 'utf8', timeout: 3000 }
-      ).trim();
-      if (whereResult) candidates.push(whereResult.split(/[\r\n]/)[0].trim());
+      const cmd = process.platform === 'win32' ? 'where' : 'which';
+      const arg = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
+      const { stdout } = await execFileAsync(cmd, [arg], { encoding: 'utf8', timeout: 3000 });
+      const firstLine = stdout.trim().split(/[\r\n]/)[0]?.trim();
+      if (firstLine) candidates.push(firstLine);
     } catch (e) { /* not in PATH */ }
 
     for (const candidate of candidates) {
