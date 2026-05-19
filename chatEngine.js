@@ -245,7 +245,8 @@ Images are automatically captioned. When you receive an image description, that 
 - If output is truncated, continue from the interruption point. Do not restart.
 - If stuck or uncertain, call ask_question. Never guess — guessing causes errors.
 - When the user provides information via ask_question, it is part of your context. Use it immediately.
-- Ground every claim in evidence. Agreement without evidence is dishonest.`;
+- Ground every claim in evidence. Agreement without evidence is dishonest.
+- Never emit [Tool Results] or [System: Tool Results] blocks. The system injects real tool results after you call a tool. Only emit tool calls and prose — never fabricate tool output.`;
 
 class ChatEngine extends EventEmitter {
   constructor() {
@@ -1104,6 +1105,7 @@ class ChatEngine extends EventEmitter {
         _sfUnicodeChars = '';
         _sfInThink = false;     // ensure think-state never bleeds into the next generation
         _sfThinkBuf = '';
+        _sfFenceInThink = false; // Fix 4: fence that opened inside think mode
         _sfPostFenceSuppress = false; // Fix 4: reset on fence flush
       };
 
@@ -1137,23 +1139,20 @@ class ChatEngine extends EventEmitter {
               _sfThinkBuf = '';
               continue;
             }
-            // Plan I: detect tool fence ``` inside think mode — model emitted a tool call
-            // without first closing think. Treat as implicit close; flush thinking content;
-            // re-enter fence mode so the tool call is parsed normally instead of lost as text.
+            // Plan I: detect code fence ``` inside think mode.
+            // The model may be (a) emitting a tool call without closing think, OR
+            // (b) demonstrating thinking tags as examples inside a code fence.
+            // For (a): implicit close + route as tool call. For (b): keep thinking open.
+            // We defer the decision until the fence closes and we can inspect its content.
             if (_sfThinkBuf.endsWith('\n```') || _sfThinkBuf === '```') {
               const fenceStart = _sfThinkBuf.lastIndexOf('```');
-              const thinkContent = _sfThinkBuf.slice(0, fenceStart).replace(/\n$/, '');
-              // B4: Suppress raw-text emit if native segment path already handled this content.
-              if (thinkContent && onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
-                onStreamEvent('llm-thinking-token', thinkContent);
-                onStreamEvent('llm-thinking-end', {
-                  position: _sfVisibleChars,
-                  length: thinkContent.length,
-                  content: thinkContent
-                });
+              const thinkBeforeFence = _sfThinkBuf.slice(0, fenceStart).replace(/\n$/, '');
+              // Flush any thinking content before the fence
+              if (thinkBeforeFence && onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
+                onStreamEvent('llm-thinking-token', thinkBeforeFence);
               }
-              console.log('[ChatEngine] tool fence inside <think> — implicit close, entering fence mode');
-              _sfInThink = false;
+              console.log('[ChatEngine] code fence inside  thinking — deferring close decision until fence content is known');
+              _sfFenceInThink = true;
               _sfThinkBuf = '';
               _sfInFence = true;
               _sfFenceBuf = '```';
@@ -1373,14 +1372,38 @@ class ChatEngine extends EventEmitter {
                 onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
                 _sfContentStreamActive = false;
               }
-              // Suppress only if this looks like a tool call schema:
-              // - "tool":"<name>" (strongest signal), OR
-              // - "name":"<snake_case>" + "params":{ (two signals together)
-              if (RE_TOOL_KEY.test(_sfFenceBuf) || (RE_NAME_KEY.test(_sfFenceBuf) && RE_PARAMS_KEY.test(_sfFenceBuf))) {
-                _sfFenceBuf = '';
-                _sfPostFenceSuppress = true; // Fix 4: suppress hallucinated prose after confirmed tool fence
+              // Fix 4: If this fence opened inside a thinking block, decide based on content.
+              if (_sfFenceInThink) {
+                _sfFenceInThink = false;
+                const isToolFence = RE_TOOL_KEY.test(_sfFenceBuf) || (RE_NAME_KEY.test(_sfFenceBuf) && RE_PARAMS_KEY.test(_sfFenceBuf));
+                if (isToolFence) {
+                  // Case (a): tool call inside think — implicit close, route as tool call
+                  console.log('[ChatEngine] fence-in-think: tool call detected — implicit think close');
+                  if (_sfThinkBuf && onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
+                    onStreamEvent('llm-thinking-token', _sfThinkBuf);
+                    onStreamEvent('llm-thinking-end', { position: _sfVisibleChars, length: _sfThinkBuf.length, content: _sfThinkBuf });
+                  }
+                  _sfInThink = false;
+                  _sfThinkBuf = '';
+                  _sfFenceBuf = '';
+                  _sfPostFenceSuppress = true;
+                } else {
+                  // Case (b): prose fence inside think — emit as thinking content, stay in think
+                  console.log('[ChatEngine] fence-in-think: non-tool fence — emitting as thinking content');
+                  if (onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
+                    onStreamEvent('llm-thinking-token', _sfFenceBuf);
+                  }
+                  _sfFenceBuf = '';
+                  // Stay in think mode — _sfInThink remains true
+                }
               } else {
-                _sfFlushFence();
+                // Normal fence close (not inside think)
+                if (RE_TOOL_KEY.test(_sfFenceBuf) || (RE_NAME_KEY.test(_sfFenceBuf) && RE_PARAMS_KEY.test(_sfFenceBuf))) {
+                  _sfFenceBuf = '';
+                  _sfPostFenceSuppress = true;
+                } else {
+                  _sfFlushFence();
+                }
               }
               _sfInFence = false;
               _sfFileWriteDetected = false;
@@ -2173,10 +2196,24 @@ class ChatEngine extends EventEmitter {
 
           this._chatHistory.push({
             type: 'user',
-            text: `${userInterruptPrefix}[Tool Results]\n${toolResultLines.join('\n')}${relatedSection}\n\nContinue with the remaining steps of the task. Call the next tool if more work is needed, or explain the result if the task is complete.`
+            text: `${userInterruptPrefix}[System: Tool Results]\n${toolResultLines.join('\n')}${relatedSection}\n\nContinue with the remaining steps of the task. Call the next tool if more work is needed, or explain the result if the task is complete.`
           });
           console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${!!this._pendingUserMessage}`);
-          console.log(`[ChatEngine] Tool result summary: ${toolResultLines.join(' | ')}`);
+          // Log compact summaries — browser snapshots bloat logs with full DOM
+          const compactSummaries = toolResultLines.map(line => {
+            const colonIdx = line.indexOf(':');
+            if (colonIdx === -1) return line;
+            const toolName = line.substring(0, colonIdx);
+            if (toolName === 'browser_snapshot' || toolName === 'browser_navigate') {
+              try {
+                const resultStr = line.substring(colonIdx + 1).trim();
+                const parsed = JSON.parse(resultStr);
+                return `${toolName}: URL=${parsed.url || '?'}, title="${(parsed.title || '').slice(0, 80)}", elements=${parsed.elements?.length || 0}`;
+              } catch { return `${toolName}: (snapshot — see full result in tool output)`; }
+            }
+            return line.length > 200 ? line.substring(0, 200) + '...' : line;
+          });
+          console.log(`[ChatEngine] Tool result summary: ${compactSummaries.join(' | ')}`);
 
           // ─── Context compaction between tool rounds ───
           // Root cause of slow prefill: each round re-prefills the ENTIRE history.
@@ -2187,7 +2224,7 @@ class ChatEngine extends EventEmitter {
           if (this._chatHistory.length > 6) {
             const toolResultIndices = [];
             for (let i = 0; i < this._chatHistory.length; i++) {
-              if (this._chatHistory[i].type === 'user' && this._chatHistory[i].text.startsWith('[Tool Results]')) {
+              if (this._chatHistory[i].type === 'user' && (this._chatHistory[i].text.startsWith('[System: Tool Results]') || this._chatHistory[i].text.startsWith('[Tool Results]'))) {
                 toolResultIndices.push(i);
               }
             }

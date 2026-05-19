@@ -208,7 +208,8 @@ const { TEMPLATES } = require('./server/templateHandlers');
 // ─── Initialize services ────────────────────────────────────────────
 const llmEngine = new ChatEngine();
 const webSearch = new WebSearch();
-const mcpToolServer = new MCPToolServer({ projectPath: null, webSearch });
+const ragEngine = new RAGEngine();
+const mcpToolServer = new MCPToolServer({ projectPath: null, webSearch, ragEngine });
 const gitManager = new GitManager();
 const memoryStore = new MemoryStore();
 const longTermMemory = new LongTermMemory();
@@ -217,7 +218,6 @@ const modelManager = new ModelManager(modelsBasePath);
 const sessionStore = new SessionStore(path.join(userDataPath, 'sessions'));
 const cloudLLM = new CloudLLMService();
 const modelDownloader = new ModelDownloader(path.join(ROOT_DIR, 'models'));
-const ragEngine = new RAGEngine();
 const settingsManager = new SettingsManager(userDataPath);
 const firstRunSetup = new FirstRunSetup(settingsManager);
 const accountManager = new AccountManager(settingsManager);
@@ -322,6 +322,9 @@ const ctx = {
   },
   _readConfig: () => currentSettings,
 };
+
+// ─── App metadata ───────────────────────────────────────────────────
+ipcMain.handle('get-app-version', () => app.getVersion());
 
 // ─── Rules/Skills API ───────────────────────────────────────────────
 ipcMain.handle('rules-list', () => rulesManager.listRules());

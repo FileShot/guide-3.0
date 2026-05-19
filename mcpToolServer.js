@@ -355,6 +355,196 @@ class MCPToolServer {
       }
     }
 
+    // rename_file: normalize oldPath/newPath aliases
+    if (toolName === 'rename_file') {
+      if (normalized.oldPath == null) {
+        if (typeof normalized.sourcePath === 'string') {
+          normalized.oldPath = normalized.sourcePath;
+          delete normalized.sourcePath;
+        } else if (typeof normalized.src === 'string') {
+          normalized.oldPath = normalized.src;
+          delete normalized.src;
+        } else if (typeof normalized.source === 'string') {
+          normalized.oldPath = normalized.source;
+          delete normalized.source;
+        } else if (typeof normalized.from === 'string') {
+          normalized.oldPath = normalized.from;
+          delete normalized.from;
+        }
+      }
+      if (normalized.newPath == null) {
+        if (typeof normalized.destinationPath === 'string') {
+          normalized.newPath = normalized.destinationPath;
+          delete normalized.destinationPath;
+        } else if (typeof normalized.dst === 'string') {
+          normalized.newPath = normalized.dst;
+          delete normalized.dst;
+        } else if (typeof normalized.destination === 'string') {
+          normalized.newPath = normalized.destination;
+          delete normalized.destination;
+        } else if (typeof normalized.to === 'string') {
+          normalized.newPath = normalized.to;
+          delete normalized.to;
+        }
+      }
+    }
+
+    // copy_file: normalize source/destination aliases
+    if (toolName === 'copy_file') {
+      if (normalized.source == null) {
+        if (typeof normalized.sourcePath === 'string') {
+          normalized.source = normalized.sourcePath;
+          delete normalized.sourcePath;
+        } else if (typeof normalized.src === 'string') {
+          normalized.source = normalized.src;
+          delete normalized.src;
+        } else if (typeof normalized.from === 'string') {
+          normalized.source = normalized.from;
+          delete normalized.from;
+        } else if (typeof normalized.origin === 'string') {
+          normalized.source = normalized.origin;
+          delete normalized.origin;
+        }
+      }
+      if (normalized.destination == null) {
+        if (typeof normalized.destinationPath === 'string') {
+          normalized.destination = normalized.destinationPath;
+          delete normalized.destinationPath;
+        } else if (typeof normalized.dst === 'string') {
+          normalized.destination = normalized.dst;
+          delete normalized.dst;
+        } else if (typeof normalized.to === 'string') {
+          normalized.destination = normalized.to;
+          delete normalized.to;
+        } else if (typeof normalized.target === 'string') {
+          normalized.destination = normalized.target;
+          delete normalized.target;
+        }
+      }
+    }
+
+    // diff_files: normalize fileA/fileB aliases
+    if (toolName === 'diff_files') {
+      if (normalized.fileA == null) {
+        if (typeof normalized.file1 === 'string') {
+          normalized.fileA = normalized.file1;
+          delete normalized.file1;
+        } else if (typeof normalized.pathA === 'string') {
+          normalized.fileA = normalized.pathA;
+          delete normalized.pathA;
+        } else if (typeof normalized.first === 'string') {
+          normalized.fileA = normalized.first;
+          delete normalized.first;
+        } else if (typeof normalized.source === 'string') {
+          normalized.fileA = normalized.source;
+          delete normalized.source;
+        }
+      }
+      if (normalized.fileB == null) {
+        if (typeof normalized.file2 === 'string') {
+          normalized.fileB = normalized.file2;
+          delete normalized.file2;
+        } else if (typeof normalized.pathB === 'string') {
+          normalized.fileB = normalized.pathB;
+          delete normalized.pathB;
+        } else if (typeof normalized.second === 'string') {
+          normalized.fileB = normalized.second;
+          delete normalized.second;
+        } else if (typeof normalized.destination === 'string') {
+          normalized.fileB = normalized.destination;
+          delete normalized.destination;
+        }
+      }
+    }
+
+    // replace_in_files: normalize searchText/replaceText/path aliases
+    if (toolName === 'replace_in_files') {
+      if (normalized.searchText == null) {
+        if (typeof normalized.find === 'string') {
+          normalized.searchText = normalized.find;
+          delete normalized.find;
+        } else if (typeof normalized.query === 'string') {
+          normalized.searchText = normalized.query;
+          delete normalized.query;
+        } else if (typeof normalized.search === 'string') {
+          normalized.searchText = normalized.search;
+          delete normalized.search;
+        } else if (typeof normalized.pattern === 'string') {
+          normalized.searchText = normalized.pattern;
+          delete normalized.pattern;
+        }
+      }
+      if (normalized.replaceText == null) {
+        if (typeof normalized.replace === 'string') {
+          normalized.replaceText = normalized.replace;
+          delete normalized.replace;
+        } else if (typeof normalized.replacement === 'string') {
+          normalized.replaceText = normalized.replacement;
+          delete normalized.replacement;
+        }
+      }
+      if (normalized.path == null && typeof normalized.dirPath === 'string') {
+        normalized.path = normalized.dirPath;
+        delete normalized.dirPath;
+      }
+    }
+
+    // grep_search: normalize pattern/filePattern aliases
+    if (toolName === 'grep_search') {
+      if (normalized.pattern == null) {
+        if (typeof normalized.query === 'string') {
+          normalized.pattern = normalized.query;
+          delete normalized.query;
+        } else if (typeof normalized.search === 'string') {
+          normalized.pattern = normalized.search;
+          delete normalized.search;
+        } else if (typeof normalized.regex === 'string') {
+          normalized.pattern = normalized.regex;
+          delete normalized.regex;
+        }
+      }
+      if (normalized.filePattern == null) {
+        if (typeof normalized.glob === 'string') {
+          normalized.filePattern = normalized.glob;
+          delete normalized.glob;
+        } else if (typeof normalized.filter === 'string') {
+          normalized.filePattern = normalized.filter;
+          delete normalized.filter;
+        } else if (typeof normalized.include === 'string') {
+          normalized.filePattern = normalized.include;
+          delete normalized.include;
+        }
+      }
+    }
+
+    // search_in_file: normalize filePath/pattern aliases
+    if (toolName === 'search_in_file') {
+      if (normalized.filePath == null) {
+        if (typeof normalized.path === 'string') {
+          normalized.filePath = normalized.path;
+          delete normalized.path;
+        } else if (typeof normalized.file === 'string') {
+          normalized.filePath = normalized.file;
+          delete normalized.file;
+        } else if (typeof normalized.file_path === 'string') {
+          normalized.filePath = normalized.file_path;
+          delete normalized.file_path;
+        }
+      }
+      if (normalized.pattern == null) {
+        if (typeof normalized.query === 'string') {
+          normalized.pattern = normalized.query;
+          delete normalized.query;
+        } else if (typeof normalized.search === 'string') {
+          normalized.pattern = normalized.search;
+          delete normalized.search;
+        } else if (typeof normalized.regex === 'string') {
+          normalized.pattern = normalized.regex;
+          delete normalized.regex;
+        }
+      }
+    }
+
     return normalized;
   }
 
@@ -503,7 +693,7 @@ class MCPToolServer {
       },
       {
         name: 'run_command',
-        description: 'Execute a shell command in the project directory and return the output. Default timeout 60 seconds, maximum 5 minutes. On Windows, runs in cmd.exe — use CMD commands (del, rmdir /s /q, copy, move, type, echo). PowerShell cmdlets (Remove-Item, Get-ChildItem, etc.) are not available unless you prefix the command with "powershell -Command".',
+        description: 'Execute a shell command in the project directory and return the output. Default timeout 60 seconds, maximum 5 minutes. On Windows, runs in cmd.exe — use CMD commands (del, rmdir /s /q, copy, move, type, echo, curl, netstat, findstr). PowerShell cmdlets (Remove-Item, Get-ChildItem, Invoke-RestMethod, etc.) do NOT work — the "powershell -Command" prefix fails because cmd.exe mangles the nested quotes and the command echoes instead of executing. If PowerShell is truly needed, write a .ps1 file with write_file and run "powershell -File script.ps1".',
         parameters: {
           command: { type: 'string', description: 'Command to execute', required: true },
           cwd: { type: 'string', description: 'Working directory', required: false },

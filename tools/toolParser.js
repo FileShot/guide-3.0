@@ -120,8 +120,39 @@ const VALID_TOOLS = new Set([
 ]);
 
 // ─── JSON Repair Utilities ───
+function stripJsonComments(raw) {
+  if (!raw || typeof raw !== 'string') return raw;
+  let result = '';
+  let inStr = false;
+  let escaped = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (escaped) { escaped = false; result += ch; continue; }
+    if (ch === '\\' && inStr) { escaped = true; result += ch; continue; }
+    if (ch === '"') { inStr = !inStr; result += ch; continue; }
+    if (!inStr) {
+      // Single-line comment: // → skip to end of line
+      if (ch === '/' && raw[i + 1] === '/') {
+        while (i < raw.length && raw[i] !== '\n') i++;
+        if (i < raw.length) result += '\n';
+        continue;
+      }
+      // Multi-line comment: /* → skip to */
+      if (ch === '/' && raw[i + 1] === '*') {
+        i += 2;
+        while (i < raw.length - 1 && !(raw[i] === '*' && raw[i + 1] === '/')) i++;
+        i += 1; // skip the closing /
+        continue;
+      }
+    }
+    result += ch;
+  }
+  return result;
+}
+
 function sanitizeJson(raw) {
   if (!raw || typeof raw !== 'string') return raw;
+  raw = stripJsonComments(raw);
   console.log(`[ToolParser] sanitizeJson START: rawLen=${raw.length}`);
   let result = '';
   let inStr = false;
