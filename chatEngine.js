@@ -278,7 +278,23 @@ class ChatEngine extends EventEmitter {
    * @param {object} [rawLoadSettings] â€” from settingsManager.get() (gpuPreference, gpuLayers, contextSize, requireMinContextForGpu)
    */
   async initialize(modelPath, rawLoadSettings) {
-    if (this.isLoading) throw new Error('Already loading a model');
+    // If a load is already in progress, wait for it to finish, then proceed with this new request.
+    // This prevents "Already loading a model" errors when the user switches models quickly.
+    if (this._loadPromise) {
+      console.log('[ChatEngine] Model load already in progress — queuing new request');
+      try { await this._loadPromise; } catch (_) { /* previous load failed — proceed */ }
+    }
+
+    // Build a new promise for this load so subsequent requests can await it
+    this._loadPromise = this._doInitialize(modelPath, rawLoadSettings);
+    try {
+      return await this._loadPromise;
+    } finally {
+      this._loadPromise = null;
+    }
+  }
+
+  async _doInitialize(modelPath, rawLoadSettings) {
     this.isLoading = true;
     this.emit('status', { state: 'loading', message: 'Loading model...' });
 
@@ -450,13 +466,20 @@ class ChatEngine extends EventEmitter {
         // so the GPU-proportional portion of the KV cache must fit in VRAM alongside
         // the model weights. This creates a circular dependency: gpuLayers depends on
         // kvOnGpu which depends on gpuLayers. We solve it by iterating until stable.
+        //
+        // CRITICAL: We reserve VRAM for MIN_VIABLE_CONTEXT (4096 tokens) of KV cache,
+        // NOT the full desiredMax. Using desiredMax (e.g. 112K tokens = 14GB KV) when
+        // VRAM is only 3.45GB causes the iteration to oscillate between 0 and max layers
+        // and never converge. After model load, the actual context size is computed from
+        // remaining VRAM — this reservation just ensures we don't starve the KV cache.
         const totalLayers = totalLayersFromGguf || 32;
         const bytesPerLayer = modelStats.size / totalLayers;
-        const kvBytesForFullCtx = (kvBytesPerToken || 0) * desiredMax;
+        const MIN_VIABLE_CONTEXT = 4096;
+        const kvBytesForMinCtx = (kvBytesPerToken || 0) * MIN_VIABLE_CONTEXT;
         const vramOverhead = 512 * 1024 * 1024; // 512MB for activations/buffers
         let computedGpuLayers = totalLayers; // start optimistic
         for (let i = 0; i < 10; i++) {
-          const kvOnGpu = kvBytesForFullCtx * (computedGpuLayers / totalLayers);
+          const kvOnGpu = kvBytesForMinCtx * (computedGpuLayers / totalLayers);
           const availableForModel = vramFree - kvOnGpu - vramOverhead;
           const newGpuLayers = availableForModel > 0
             ? Math.max(0, Math.min(Math.floor(availableForModel / bytesPerLayer), totalLayers))
@@ -464,8 +487,8 @@ class ChatEngine extends EventEmitter {
           if (newGpuLayers === computedGpuLayers) break; // converged
           computedGpuLayers = newGpuLayers;
         }
-        const kvOnGpuFinal = kvBytesForFullCtx * (computedGpuLayers / totalLayers);
-        console.log(`[ChatEngine] GPU layer computation: vramFree=${(vramFree/1e9).toFixed(2)}GB, kvFullCtx=${(kvBytesForFullCtx/1e9).toFixed(2)}GB, kvOnGpu=${(kvOnGpuFinal/1e9).toFixed(2)}GB, overhead=0.50GB, bytesPerLayer=${(bytesPerLayer/1e6).toFixed(1)}MB, gpuLayers=${computedGpuLayers}/${totalLayers}`);
+        const kvOnGpuFinal = kvBytesForMinCtx * (computedGpuLayers / totalLayers);
+        console.log(`[ChatEngine] GPU layer computation: vramFree=${(vramFree/1e9).toFixed(2)}GB, kvMinCtx=${(kvBytesForMinCtx/1e6).toFixed(1)}MB, kvOnGpu=${(kvOnGpuFinal/1e6).toFixed(1)}MB, overhead=0.50GB, bytesPerLayer=${(bytesPerLayer/1e6).toFixed(1)}MB, gpuLayers=${computedGpuLayers}/${totalLayers}`);
         loadModelOpts.gpuLayers = computedGpuLayers;
       }
 
@@ -2714,9 +2737,16 @@ class ChatEngine extends EventEmitter {
     let lastItemTokens = chatHistory.length > 1 ? estimateTokens(lastItem) : 0;
     let effectiveLastItem = lastItem;
 
-    // If system + lastItem exceeds budget, truncate lastItem (keeps end)
-    if (chatHistory.length > 1 && systemTokens + lastItemTokens > budget) {
-      const availableForLastItem = budget - systemTokens - 20;
+    // If system + lastItem exceeds budget, try progressively:
+    // 1. Truncate lastItem (current behavior)
+    // 2. Replace system prompt with minimal version
+    // 3. Truncate both to absolute minimum
+    // Only fail if even the absolute minimum doesn't fit.
+    let effectiveSystemItem = systemItem;
+    let systemTokensAdjusted = systemTokens;
+
+    if (chatHistory.length > 1 && systemTokensAdjusted + lastItemTokens > budget) {
+      const availableForLastItem = budget - systemTokensAdjusted - 20;
       if (availableForLastItem > 100) {
         const fullText = getItemText(lastItem);
         const isToolOrSystemInject = RE_TOOL_OR_SYSTEM_INJECT.test(fullText);
@@ -2741,10 +2771,62 @@ class ChatEngine extends EventEmitter {
         lastItemTokens = truncTokens + 10;
         console.log(`[ChatEngine] Context shift: truncated lastItem from ${fullText.length} to ${truncatedText.length} chars (${isToolOrSystemInject ? 'head' : 'tail'})`);
       }
+
+      // If still doesn't fit after truncation, fall back to minimal system prompt
+      if (systemTokensAdjusted + lastItemTokens > budget) {
+        const MINIMAL_SYSTEM = 'You are a helpful AI assistant. Respond concisely.';
+        const minimalSystemItem = systemItem.response
+          ? { ...systemItem, response: [MINIMAL_SYSTEM] }
+          : { ...systemItem, text: MINIMAL_SYSTEM };
+        const minimalSystemTokens = tokenize(MINIMAL_SYSTEM) + 10;
+        const availableWithMinimal = budget - minimalSystemTokens - 20;
+
+        if (availableWithMinimal > 100) {
+          effectiveSystemItem = minimalSystemItem;
+          systemTokensAdjusted = minimalSystemTokens;
+          console.log(`[ChatEngine] Context shift: replaced system prompt with minimal version (${systemTokens} → ${minimalSystemTokens} tokens)`);
+
+          // Re-truncate lastItem with the freed-up space
+          const fullText = getItemText(lastItem);
+          if (minimalSystemTokens + lastItemTokens > budget) {
+            const isToolOrSystemInject = RE_TOOL_OR_SYSTEM_INJECT.test(fullText);
+            let keepChars = Math.floor(availableWithMinimal * 3);
+            let truncatedText = isToolOrSystemInject ? fullText.slice(0, keepChars) : fullText.slice(-keepChars);
+            let truncTokens = tokenize(truncatedText);
+            let iterations = 0;
+            while (truncTokens > availableWithMinimal && keepChars > 100 && iterations < 5) {
+              keepChars = Math.floor(keepChars * 0.75);
+              truncatedText = isToolOrSystemInject ? fullText.slice(0, keepChars) : fullText.slice(-keepChars);
+              truncTokens = tokenize(truncatedText);
+              iterations++;
+            }
+            if (lastItem.response) {
+              effectiveLastItem = { ...lastItem, response: [truncatedText] };
+            } else {
+              effectiveLastItem = { ...lastItem, text: truncatedText };
+            }
+            lastItemTokens = truncTokens + 10;
+          }
+        } else {
+          // Absolute minimum: minimal system + heavily truncated last item
+          effectiveSystemItem = minimalSystemItem;
+          systemTokensAdjusted = minimalSystemTokens;
+          const fullText = getItemText(lastItem);
+          const floorChars = Math.min(200, fullText.length);
+          const truncatedText = fullText.slice(-floorChars);
+          if (lastItem.response) {
+            effectiveLastItem = { ...lastItem, response: [truncatedText] };
+          } else {
+            effectiveLastItem = { ...lastItem, text: truncatedText };
+          }
+          lastItemTokens = tokenize(truncatedText) + 10;
+          console.log(`[ChatEngine] Context shift: extreme compression — minimal system + ${floorChars} char lastItem floor`);
+        }
+      }
     }
 
     // Pure sliding window: keep most recent messages that fit, no pinning
-    let used = systemTokens + lastItemTokens;
+    let used = systemTokensAdjusted + lastItemTokens;
     const keptIndices = new Set();
 
     for (let i = chatHistory.length - 2; i >= 1; i--) {
@@ -2755,7 +2837,7 @@ class ChatEngine extends EventEmitter {
     }
 
     const droppedCount = (chatHistory.length - 2) - keptIndices.size;
-    const newHistory = [systemItem];
+    const newHistory = [effectiveSystemItem];
     for (let i = 1; i <= chatHistory.length - 2; i++) {
       if (keptIndices.has(i)) newHistory.push(chatHistory[i]);
     }

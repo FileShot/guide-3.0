@@ -1403,8 +1403,8 @@ export default function ChatPanel() {
 
           } else if (seg.type === 'thinking') {
 
-            messageContent += seg.content;
-
+            // Thinking content stays in segments for FinalizedThinkingBlock rendering.
+            // It is NOT appended to messageContent — that would duplicate it in the main message display.
             messageSegments.push({ type: 'thinking', content: seg.content });
 
           } else if (seg.type === 'tool') {

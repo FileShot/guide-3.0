@@ -87,7 +87,7 @@ jobs:
         run: npm run build:renderer
 
       - name: Download & build llama.cpp (latest, CPU)
-        run: npx --no node-llama-cpp source download --release "b8779" --gpu false --noUsageExample
+        run: npx --no node-llama-cpp source download --release "b9253" --gpu false --noUsageExample
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -151,7 +151,7 @@ jobs:
           method: 'network'
 
       - name: Download & build llama.cpp (latest, CUDA)
-        run: npx --no node-llama-cpp source download --release "b8779" --gpu cuda --noUsageExample
+        run: npx --no node-llama-cpp source download --release "b9253" --gpu cuda --noUsageExample
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -214,7 +214,7 @@ jobs:
           fi
 
       - name: Download & build llama.cpp (latest, CPU)
-        run: npx --no node-llama-cpp source download --release "b8779" --gpu false --noUsageExample
+        run: npx --no node-llama-cpp source download --release "b9253" --gpu false --noUsageExample
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -282,7 +282,7 @@ jobs:
           method: 'network'
 
       - name: Download & build llama.cpp (latest, CUDA)
-        run: npx --no node-llama-cpp source download --release "b8779" --gpu cuda --noUsageExample
+        run: npx --no node-llama-cpp source download --release "b9253" --gpu cuda --noUsageExample
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -352,7 +352,7 @@ jobs:
           iconutil -c icns build/icon.iconset -o build/icon.icns
 
       - name: Download & build llama.cpp (latest, Metal)
-        run: npx --no node-llama-cpp source download --release "b8779" --gpu auto --noUsageExample
+        run: npx --no node-llama-cpp source download --release "b9253" --gpu auto --noUsageExample
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

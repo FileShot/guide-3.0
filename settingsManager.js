@@ -20,7 +20,7 @@ const EventEmitter = require('events');
 const SETTINGS_DEFAULTS = {
   // LLM / Inference
   temperature: 0.4,
-  maxResponseTokens: 2048,
+  maxResponseTokens: 0, // 0 = auto (use all available context space)
   contextSize: 0, // 0 = auto (hardware-aware ceiling); fixed values like 16000 also work
   topP: 0.95,
   topK: 40,

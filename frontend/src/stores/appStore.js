@@ -1776,7 +1776,7 @@ const useAppStore = create((set, get) => ({
 
       temperature: 0.4,
 
-      maxResponseTokens: 2048,
+      maxResponseTokens: 0, // 0 = auto (use all available context space)
 
       contextSize: 0,
 
@@ -1910,7 +1910,7 @@ const useAppStore = create((set, get) => ({
 
     const DEFAULTS = {
 
-      temperature: 0.4, maxResponseTokens: 2048, contextSize: 0,
+      temperature: 0.4, maxResponseTokens: 0, contextSize: 0,
 
       topP: 0.95, topK: 40, repeatPenalty: 1.1, seed: -1,
 

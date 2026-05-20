@@ -577,50 +577,40 @@ If the pipeline has bugs, it gets destroyed and rebuilt using a different approa
 
 Every plan for a code change MUST answer ALL of the following. No exceptions. No skipping. If any field is missing, the plan is incomplete and must not be approved.
 
-```
-PLAN: [short title]
-=====
-EXACT LINES OF CHANGE:
-  - File: [absolute path]
-  - Function: [name]
-  - Line range: [start]-[end]
-  - What changes: [specific description]
+Every plan must be written in **plain language that a human can understand on first reading**. No acronym-heavy formats. No cheerleading. No false confidence. Be honest about what you know and what you don't know.
 
-WHAT: [what the change does — one sentence]
-WHERE: [file, function, line range]
-WHEN: [when this code runs — at startup? per-request? per-tool-round?]
-WHY: [root cause this addresses — NOT the symptom, the CAUSE]
-HOW: [mechanism — how the code change produces the intended effect]
+### Required structure for each bug fix plan:
 
-EDGE CASES:
-  - [edge case 1]: [how it's handled]
-  - [edge case 2]: [how it's handled]
+**1. The Bug**
+Describe what the user actually sees. Use the user's own words if they've described it. Reference specific log lines.
 
-FALSE POSITIVES:
-  - Could this trigger when nothing is wrong? [yes/no + explanation]
-  - Could this block a legitimate action? [yes/no + explanation]
+**2. The Evidence**
+Quote the exact log lines that show the problem. Reference the exact file and line numbers where the relevant code lives.
 
-BAND-AID CHECK:
-  - Does this fix what happens AFTER the problem occurs? [yes/no]
-  - Or does this PREVENT the problem from occurring? [yes/no]
-  - If "after" — this is a band-aid. Redesign.
+**3. The Cause**
+Explain the chain of events from trigger to symptom. Trace through every function and file involved. If you're not sure about something, say so.
 
-PRODUCTION QUALITY CHECK:
-  - Is this ONLY a proper production solution? [yes/no]
-  - Test-specific? [yes/no — BANNED if yes]
-  - Use-case-specific? [yes/no — BANNED if yes]
-  - Model-specific? [yes/no — BANNED if yes]
-  - Hardware-specific? [yes/no — BANNED if yes]
-  - On par with $1M software (Windsurf/Cursor quality)? [yes/no + justification]
-  - Uses any banned mechanisms? [yes/no — list any from Section 4/11]
+**4. How Other Tools Handle This**
+Research how Ollama, LM Studio, llama.cpp CLI, or other tools handle the same scenario. If they handle it differently, explain how. If they have the same problem, say so.
 
-AI PERSPECTIVE:
-  - If I (the AI) were running inside guIDE, would this change help me
-    make better decisions? [yes/no + what I would experience differently]
-  - Would I understand why my tool call was blocked/modified? [yes/no]
-```
+**5. The Fix**
+Describe exactly what code changes are needed. Include file paths, line numbers, and what the old code does vs what the new code should do. Be specific enough that someone could implement it without asking follow-up questions.
 
-A plan that skips any field is INCOMPLETE. Incomplete plans are NOT approved.
+**6. What Could Go Wrong**
+List real risks. Not "this is perfect and has no edge cases" — that's never true. What models might behave differently? What hardware configurations might break? What user workflows might be affected?
+
+**7. What's Been Tried Before**
+Check the git log and CHANGES_LOG. If this fix or a similar one has been attempted before, explain why it failed then and why it would work now. If you haven't checked, say so.
+
+### What NOT to include:
+- Self-congratulation ("this is a production-grade fix")
+- False certainty ("no edge cases exist")
+- Band-aid denial ("this is not a band-aid" — let the evidence speak)
+- The words "WHAT:", "WHERE:", "WHEN:", "WHY:", "HOW:" as section headers — use plain language instead
+- Any claim that a fix "prevents the problem" without explaining the mechanism
+
+### The plan must be written to a markdown file
+Do not repeat the plan in chat. Write it to a `.md` file and tell the user where it is. The chat response should be a brief summary pointing to the file.
 
 ---
 

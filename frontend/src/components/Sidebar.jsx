@@ -1413,7 +1413,8 @@ function SettingsPanel() {
         <SettingSlider label="Temperature" value={settings.temperature} min={0} max={2} step={0.05}
           onChange={v => updateSetting('temperature', v)} tooltip="Lower = more focused, higher = more creative" />
         <SettingNumberField label="Max Response Tokens" value={settings.maxResponseTokens}
-          min={256} max={8192} step={256} onChange={v => updateSetting('maxResponseTokens', v)} />
+          min={0} max={8192} step={256} onChange={v => updateSetting('maxResponseTokens', v)}
+          hint="0 = auto — use all available context space for generation" />
         <div>
           <SettingNumberField label="Context Size" value={settings.contextSize}
             min={0} max={131072} step={1024} onChange={v => updateSettingWithReload('contextSize', v)}
