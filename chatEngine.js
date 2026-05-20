@@ -923,6 +923,12 @@ class ChatEngine extends EventEmitter {
     }
 
     // Layer 4: Tool prompt (available tools and their descriptions)
+    // Hoist useCompact and effectiveToolPrompt so they're accessible in the
+    // generation-space trimming section (line ~1746) regardless of which
+    // branch sets them. Without this, ReferenceError when toolPrompt is absent.
+    let useCompact = false;
+    let effectiveToolPrompt = '';
+
     if (options.askOnly) {
       // Ask mode: no tools available — just set the base prompt with mode instruction
       this._chatHistory[0].text = basePrompt;
@@ -943,8 +949,8 @@ class ChatEngine extends EventEmitter {
       // (not just when ctx<8192 — a 13K tool prompt in 14K ctx is equally disastrous)
       // Decision is based on CONTEXT SIZE, not model parameters — small models in 2026
       // have huge context windows (128K+), so model size doesn't determine prompt style.
-      const useCompact = compactToolPrompt && (contextTokens < 8192 || toolPct > 40);
-      let effectiveToolPrompt = useCompact ? compactToolPrompt : toolPrompt;
+      useCompact = compactToolPrompt && (contextTokens < 8192 || toolPct > 40);
+      effectiveToolPrompt = useCompact ? compactToolPrompt : toolPrompt;
 
       // If even the compact prompt is too large, progressively trim it
       if (useCompact && typeof effectiveToolPrompt === 'string') {
@@ -1045,6 +1051,7 @@ class ChatEngine extends EventEmitter {
       const _sfStreamedFileWrites = new Set();
       let _sfVisibleChars = 0; // tracks chars forwarded to frontend (after filter removes tool JSON)
       let _sfPostFenceSuppress = false; // Fix 4: suppress hallucinated prose after confirmed tool fence closes
+      let _sfFenceInThink = false; // Fix 4: fence that opened inside think mode
 
       const _sfForward = (text) => {
         _sfVisibleChars += text.length;
@@ -2343,6 +2350,11 @@ class ChatEngine extends EventEmitter {
           _sfInThink = false;
           _sfThinkBuf = '';
           _sfThinkTagMatch = '';
+          _sfFenceInThink = false;
+          _sfPostFenceSuppress = false;
+          _sfFenceStreamPlain = false;
+          _sfFencePlainTick = 0;
+          _sfNativeThinkActive = false;
 
           // Generate continuation — model sees tool results and can issue more tool calls
           // Recalculate maxTokens for this round — tool results consumed context space
