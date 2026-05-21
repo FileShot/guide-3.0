@@ -149,6 +149,32 @@ function computeUnifiedVramBudget({
   return { gpuLayers: fixedGpuLayers ?? 0, contextSize: Math.max(minContext, Math.min(desiredMaxContext, minContext)) };
 }
 
+/**
+ * GLM chatglm templates omit `<think>` in add_generation_prompt when enable_thinking=true.
+ * node-llama-cpp noPrefixTrigger force-opens the thought segment at generation start (HarmonyChatWrapper pattern).
+ * Lives in chatEngine.js (not a separate module) so electron-builder `*.js` root glob always ships it.
+ */
+function createGlmThinkingJinjaChatWrapper(JinjaTemplateChatWrapper, LlamaText) {
+  return class GlmThinkingJinjaChatWrapper extends JinjaTemplateChatWrapper {
+    generateContextState(options) {
+      const state = super.generateContextState(options);
+      const thinkingEnabled = this.additionalRenderParameters?.enable_thinking === true;
+      const thoughtSeg = this.settings?.segments?.thought;
+      if (!thinkingEnabled || thoughtSeg?.prefix == null) {
+        return state;
+      }
+      return {
+        ...state,
+        noPrefixTrigger: {
+          type: 'segment',
+          segmentType: 'thought',
+          inject: LlamaText(thoughtSeg.prefix),
+        },
+      };
+    }
+  };
+}
+
 /** Approximate chars per token for English tool prompts. */
 const TOOL_PROMPT_CHARS_PER_TOKEN = 3.5;
 
@@ -472,8 +498,7 @@ class ChatEngine extends EventEmitter {
 
     try {
       const llamaCppPath = this._getNodeLlamaCppPath();
-      const { getLlama, LlamaChat, readGgufFileInfo, JinjaTemplateChatWrapper, LlamaText, SpecialTokensText } = await import(pathToFileURL(llamaCppPath).href);
-      const { createGlmThinkingJinjaChatWrapper } = await import(pathToFileURL(path.join(__dirname, 'chatWrappers', 'glmJinjaChatWrapper.js')).href);
+      const { getLlama, LlamaChat, readGgufFileInfo, JinjaTemplateChatWrapper, LlamaText } = await import(pathToFileURL(llamaCppPath).href);
 
       const s = buildEngineLoadSettings(rawLoadSettings || {});
       this.gpuPreference = s.gpuPreference;
@@ -911,7 +936,7 @@ class ChatEngine extends EventEmitter {
         };
         try {
           const WrapperClass = needsGlmForcedOpen
-            ? createGlmThinkingJinjaChatWrapper(JinjaTemplateChatWrapper, LlamaText, SpecialTokensText)
+            ? createGlmThinkingJinjaChatWrapper(JinjaTemplateChatWrapper, LlamaText)
             : JinjaTemplateChatWrapper;
           chatWrapperOpt = new WrapperClass(jinjaOpts);
           const thoughtSeg = chatWrapperOpt.settings?.segments?.thought;

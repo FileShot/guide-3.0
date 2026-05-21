@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-05-21 — v0.3.88 HOTFIX: Model load broken — chatWrappers not packaged
+
+### Problem (v0.3.87 production)
+Every model load failed:
+```
+Cannot find module '...\chatWrappers\glmJinjaChatWrapper.js' imported from chatEngine.js
+```
+Phi auto-load and manual load both broken. guIDE v0.3.87 unusable.
+
+### Cause
+1. `glmJinjaChatWrapper.js` placed in `chatWrappers/` but `electron-builder.nosign*.json` `files` array did not include `chatWrappers/**/*` (only `*.js` root, `tools/**`, etc.).
+2. Dynamic `import()` of that file ran at the **start** of `loadModel()` for **every** model — not lazy / not GLM-only.
+
+### Fix
+- Inlined `createGlmThinkingJinjaChatWrapper` into `chatEngine.js` (always shipped via `*.js` glob).
+- Removed dynamic import of external module.
+- Added `chatWrappers/**/*` to both electron-builder configs for any future modules.
+
+### Rules violated in v0.3.87 ship
+Tripwire 8 (full pipeline not traced to packaged install), Tripwire 5 (no post-code verify in installed app), Rule 6 (not end-to-end), Rule 7 (shipped without load proof).
+
+---
+
 ## 2026-05-21 — v0.3.87: GPU layer priority, abort gate, enable_thinking wiring
 
 ### Problem (v0.3.86 test session)
