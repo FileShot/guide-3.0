@@ -81,7 +81,7 @@ jobs:
         run: npm run build:renderer
 
       - name: Build Windows CPU installer
-        run: npx electron-builder --win --x64 --config electron-builder.nosign.json
+        run: npx electron-builder --win --x64 --config electron-builder.nosign.json --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -128,7 +128,7 @@ jobs:
         run: npm run build:renderer
 
       - name: Build Windows CUDA installer
-        run: npx electron-builder --win --x64 --config electron-builder.nosign.cuda.json
+        run: npx electron-builder --win --x64 --config electron-builder.nosign.cuda.json --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -176,7 +176,7 @@ jobs:
           fi
 
       - name: Build Linux CPU AppImage
-        run: npx electron-builder --linux --x64 --config electron-builder.nosign.json
+        run: npx electron-builder --linux --x64 --config electron-builder.nosign.json --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -223,7 +223,7 @@ jobs:
           fi
 
       - name: Build Linux CUDA AppImage
-        run: npx electron-builder --linux --x64 --config electron-builder.nosign.cuda.json
+        run: npx electron-builder --linux --x64 --config electron-builder.nosign.cuda.json --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -254,6 +254,9 @@ jobs:
         run: |
           node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
 
+      - name: Install setuptools (provides distutils for node-gyp)
+        run: pip install setuptools
+
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
@@ -282,7 +285,7 @@ jobs:
           iconutil -c icns build/icon.iconset -o build/icon.icns
 
       - name: Build macOS DMG (CPU, x64 + arm64)
-        run: npx electron-builder --mac --x64 --arm64 --config electron-builder.nosign.json
+        run: npx electron-builder --mac --x64 --arm64 --config electron-builder.nosign.json --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -321,6 +324,7 @@ jobs:
             artifacts/mac-cpu/*
           draft: false
           prerelease: false
+          make_latest: true
           generate_release_notes: true
           name: ${{ needs.prepare.outputs.release_name }}
         env:

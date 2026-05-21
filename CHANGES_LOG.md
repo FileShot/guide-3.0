@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-05-21 — v0.3.89 — Release CI fix + B01/B02/B11/B12 bundle
+
+### Release
+- Bump to **0.3.89** (includes B01 VRAM balance, B02/B03 GLM thinking, B11/B12 tool prompt consolidation).
+- CI: Mac job — `pip install setuptools` for node-gyp distutils (Python 3.12).
+- CI: All electron-builder steps use `--publish never` — artifacts upload only; single published release from release job (no draft spam).
+- CI: `make_latest: true` on final GitHub Release step.
+
+---
+
 ## 2026-05-21 — B11/B12: Tool prompt consolidation + schema fixes
 
 ### Problem
