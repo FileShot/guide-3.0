@@ -86,11 +86,11 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
-      - name: Download latest llama.cpp source (b9253, Gemma 4)
+      - name: Download latest llama.cpp source (b8954, Gemma 4)
         shell: bash
         run: |
           curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9253.tar.gz \
+            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b8954.tar.gz \
             -o /tmp/llama.tar.gz
           mkdir -p /tmp/llama-meta
           cp node_modules/node-llama-cpp/llama/binariesGithubRelease.json /tmp/llama-meta/ 2>/dev/null || true
@@ -101,9 +101,9 @@ jobs:
           mkdir -p node_modules/node-llama-cpp/llama/llama.cpp
           tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama/llama.cpp --strip-components=1
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
-          echo '{"release": "b9253"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
-          echo '{"tag": "b9253", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
-          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b9253" --quiet
+          echo '{"release": "b8954"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
+          echo '{"tag": "b8954", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b8954" --quiet
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -171,11 +171,11 @@ jobs:
           cuda: '13.1.0'
           method: 'network'
 
-      - name: Download latest llama.cpp source (b9253, Gemma 4, CUDA)
+      - name: Download latest llama.cpp source (b8954, Gemma 4, CUDA)
         shell: bash
         run: |
           curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9253.tar.gz \
+            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b8954.tar.gz \
             -o /tmp/llama.tar.gz
           mkdir -p /tmp/llama-meta
           cp node_modules/node-llama-cpp/llama/binariesGithubRelease.json /tmp/llama-meta/ 2>/dev/null || true
@@ -186,9 +186,9 @@ jobs:
           mkdir -p node_modules/node-llama-cpp/llama/llama.cpp
           tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama/llama.cpp --strip-components=1
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
-          echo '{"release": "b9253"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
-          echo '{"tag": "b9253", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
-          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b9253" --quiet
+          echo '{"release": "b8954"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
+          echo '{"tag": "b8954", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b8954" --quiet
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -260,7 +260,7 @@ jobs:
       - name: Download & build llama.cpp (latest, CPU)
         run: |
           curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9253.tar.gz \
+            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b8954.tar.gz \
             -o /tmp/llama.tar.gz
           mkdir -p /tmp/llama-meta
           cp node_modules/node-llama-cpp/llama/binariesGithubRelease.json /tmp/llama-meta/ 2>/dev/null || true
@@ -271,9 +271,9 @@ jobs:
           mkdir -p node_modules/node-llama-cpp/llama/llama.cpp
           tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama/llama.cpp --strip-components=1
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
-          echo '{"release": "b9253"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
-          echo '{"tag": "b9253", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
-          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b9253" --quiet
+          echo '{"release": "b8954"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
+          echo '{"tag": "b8954", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b8954" --quiet
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -348,7 +348,7 @@ jobs:
       - name: Download & build llama.cpp (latest, CUDA)
         run: |
           curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9253.tar.gz \
+            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b8954.tar.gz \
             -o /tmp/llama.tar.gz
           mkdir -p /tmp/llama-meta
           cp node_modules/node-llama-cpp/llama/binariesGithubRelease.json /tmp/llama-meta/ 2>/dev/null || true
@@ -359,9 +359,9 @@ jobs:
           mkdir -p node_modules/node-llama-cpp/llama/llama.cpp
           tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama/llama.cpp --strip-components=1
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
-          echo '{"release": "b9253"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
-          echo '{"tag": "b9253", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
-          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b9253" --quiet
+          echo '{"release": "b8954"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
+          echo '{"tag": "b8954", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b8954" --quiet
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -440,7 +440,7 @@ jobs:
       - name: Download & build llama.cpp (latest, Metal)
         run: |
           curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9253.tar.gz \
+            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b8954.tar.gz \
             -o /tmp/llama.tar.gz
           mkdir -p /tmp/llama-meta
           cp node_modules/node-llama-cpp/llama/binariesGithubRelease.json /tmp/llama-meta/ 2>/dev/null || true
@@ -451,9 +451,9 @@ jobs:
           mkdir -p node_modules/node-llama-cpp/llama/llama.cpp
           tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama/llama.cpp --strip-components=1
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
-          echo '{"release": "b9253"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
-          echo '{"tag": "b9253", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
-          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b9253" --quiet
+          echo '{"release": "b8954"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
+          echo '{"tag": "b8954", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b8954" --quiet
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
