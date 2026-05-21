@@ -103,6 +103,7 @@ jobs:
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
           echo '{"release": "b9253"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
           echo '{"tag": "b9253", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+          cd node_modules/node-llama-cpp/llama && git init && git add -A && git commit -m "b9253" --quiet
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -187,6 +188,7 @@ jobs:
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
           echo '{"release": "b9253"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
           echo '{"tag": "b9253", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+          cd node_modules/node-llama-cpp/llama && git init && git add -A && git commit -m "b9253" --quiet
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -271,6 +273,7 @@ jobs:
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
           echo '{"release": "b9253"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
           echo '{"tag": "b9253", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+          cd node_modules/node-llama-cpp/llama && git init && git add -A && git commit -m "b9253" --quiet
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -358,6 +361,7 @@ jobs:
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
           echo '{"release": "b9253"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
           echo '{"tag": "b9253", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+          cd node_modules/node-llama-cpp/llama && git init && git add -A && git commit -m "b9253" --quiet
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -449,6 +453,7 @@ jobs:
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
           echo '{"release": "b9253"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
           echo '{"tag": "b9253", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+          cd node_modules/node-llama-cpp/llama && git init && git add -A && git commit -m "b9253" --quiet
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
