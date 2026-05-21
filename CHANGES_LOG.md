@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-05-21 — v0.3.87: GPU layer priority, abort gate, enable_thinking wiring
+
+### Problem (v0.3.86 test session)
+1. **gpuLayers=0** on GLM 4.6/4.7 (6–23GB models on 4GB VRAM) — unified budget scored `contextSize * 1000 + gpuLayers`, always preferring CPU-only + mega context.
+2. **Tools executed after user stop** — `parseToolCalls` ran on partial output when `stopReason=abort`.
+3. **`enable_thinking` never reached Jinja template** — passed as `chatTemplateKwargs` to `LlamaChat` constructor, but `LlamaChatOptions` has no such field (silently ignored). GLM thinking leaked because template never opened reasoning segments natively.
+4. **Tool prompt bloat at huge context** — 131K ctx allowed full 15K-char catalog (35% = 45K tokens).
+
+### Fix
+**`chatEngine.js`**
+- `computeUnifiedVramBudget`: score partial GPU as `gpuLayers * 1e6 + contextSize`; prefer `bestPartial` over `bestCpuOnly`.
+- Cap `desiredMax` from VRAM when model weights exceed free VRAM — prevents RAM hwCap inflating to 100K+ and forcing gpuLayers=0.
+- Gate tool parse/execute when `stopReason === 'abort' | 'cancelled'`.
+- Build `JinjaTemplateChatWrapper` with `additionalRenderParameters: { enable_thinking }` and explicit `redacted_thinking` segments; store as `_chatWrapper` for sub-agents.
+- Custom Jinja wrapper only when `templateSupportsThinking && enable_thinking=true`; all other models stay `chatWrapper=auto`.
+- `buildBudgetProportionalToolPrompt`: absolute cap `maxToolBudgetTokens = 4096`.
+
+### Deferred
+- Remove `_sfProcessChunk` think-tag state machine after GLM 4.6/4.7 verify native segments in logs.
+- node-llama-cpp upgrade if template still omits forced-open `<think>` on GLM 4.6 (llama.cpp #21465).
+
+---
+
 ## 2026-05-21 — P2 bugs: mmproj, continuation, validation, ENOENT, GPU cache, _send
 
 ### Fixes

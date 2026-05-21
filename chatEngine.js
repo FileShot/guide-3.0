@@ -96,7 +96,8 @@ function computeUnifiedVramBudget({
   }
 
   const bytesPerLayer = modelSizeBytes / totalLayers;
-  let best = { gpuLayers: 0, contextSize: minContext, score: minContext };
+  let bestPartial = null; // gpuLayers > 0 — preferred whenever any layers fit
+  let bestCpuOnly = null;  // gpuLayers === 0 — fallback only
 
   const layerMax = fixedGpuLayers != null ? fixedGpuLayers : totalLayers;
   const layerMin = fixedGpuLayers != null ? fixedGpuLayers : 0;
@@ -115,21 +116,37 @@ function computeUnifiedVramBudget({
         if (vramBoundedCtx > 0) maxCtx = Math.min(maxCtx, vramBoundedCtx);
       }
     } else {
-      maxCtx = desiredMaxContext;
+      // CPU-only weights: KV may spill to RAM — cap context to remaining VRAM-equivalent budget
+      maxCtx = Math.floor(availForKv / kvBytesPerToken);
     }
 
     const contextSize = Math.max(minContext, Math.min(maxCtx, desiredMaxContext));
     const kvOnGpu = kvBytesPerToken * contextSize * gpuRatio;
     if (modelVram + kvOnGpu + vramOverheadBytes > vramFree) continue;
 
-    const score = contextSize * 1000 + gpuLayers;
-    if (score > best.score) {
-      best = { gpuLayers, contextSize, score };
+    if (gpuLayers > 0) {
+      // Prioritize GPU offload over raw context size (Ollama-style).
+      // Score: layers dominate; context is secondary tiebreaker.
+      const score = gpuLayers * 1_000_000 + contextSize;
+      if (!bestPartial || score > bestPartial.score) {
+        bestPartial = { gpuLayers, contextSize, score };
+      }
+    } else {
+      const score = contextSize;
+      if (!bestCpuOnly || score > bestCpuOnly.score) {
+        bestCpuOnly = { gpuLayers: 0, contextSize, score };
+      }
     }
   }
 
-  if (best.score <= minContext && fixedGpuLayers == null) return fallback;
-  return { gpuLayers: best.gpuLayers, contextSize: best.contextSize };
+  if (bestPartial) {
+    return { gpuLayers: bestPartial.gpuLayers, contextSize: bestPartial.contextSize };
+  }
+  if (bestCpuOnly) {
+    return { gpuLayers: bestCpuOnly.gpuLayers, contextSize: bestCpuOnly.contextSize };
+  }
+  if (fixedGpuLayers == null) return fallback;
+  return { gpuLayers: fixedGpuLayers ?? 0, contextSize: Math.max(minContext, Math.min(desiredMaxContext, minContext)) };
 }
 
 /** Approximate chars per token for English tool prompts. */
@@ -149,10 +166,14 @@ function buildBudgetProportionalToolPrompt({
   compactToolPrompt = '',
   minGenerationReserve = 512,
   maxToolBudgetPct = 0.35,
+  maxToolBudgetTokens = 4096,
 }) {
   const consumedTokens = Math.ceil((basePromptChars + historyChars + userMessageChars) / TOOL_PROMPT_CHARS_PER_TOKEN);
   const promptBudgetTokens = Math.max(256, contextTokens - minGenerationReserve - consumedTokens);
-  const maxToolTokens = Math.floor(promptBudgetTokens * maxToolBudgetPct);
+  const maxToolTokens = Math.min(
+    Math.floor(promptBudgetTokens * maxToolBudgetPct),
+    maxToolBudgetTokens,
+  );
   const maxToolChars = Math.floor(maxToolTokens * TOOL_PROMPT_CHARS_PER_TOKEN);
 
   const fullToolTokens = Math.ceil((toolPrompt?.length || 0) / TOOL_PROMPT_CHARS_PER_TOKEN);
@@ -451,7 +472,8 @@ class ChatEngine extends EventEmitter {
 
     try {
       const llamaCppPath = this._getNodeLlamaCppPath();
-      const { getLlama, LlamaChat, readGgufFileInfo } = await import(pathToFileURL(llamaCppPath).href);
+      const { getLlama, LlamaChat, readGgufFileInfo, JinjaTemplateChatWrapper, LlamaText, SpecialTokensText } = await import(pathToFileURL(llamaCppPath).href);
+      const { createGlmThinkingJinjaChatWrapper } = await import(pathToFileURL(path.join(__dirname, 'chatWrappers', 'glmJinjaChatWrapper.js')).href);
 
       const s = buildEngineLoadSettings(rawLoadSettings || {});
       this.gpuPreference = s.gpuPreference;
@@ -575,7 +597,20 @@ class ChatEngine extends EventEmitter {
       }
 
       const minBase = s.requireMinContextForGpu ? MIN_CONTEXT_WHEN_GPU_REQUIRED : MIN_CONTEXT_FLOOR;
-      const contextMin = Math.min(minBase, desiredMax);
+      let contextMin = Math.min(minBase, desiredMax);
+
+      // When model weights exceed VRAM, RAM hwCap can inflate desiredMax to 100K+ and the
+      // unified budget picks gpuLayers=0 with a mega KV cache. Cap desiredMax from VRAM so
+      // partial GPU offload remains viable on 4GB GPUs.
+      if (s.gpuPreference !== 'cpu' && kvBytesPerToken > 0 && modelStats.size > vramFree * 0.85) {
+        const vramKvBudget = vramFree - VRAM_GENERATION_OVERHEAD - VRAM_KV_BUFFER;
+        const vramCtxCap = Math.max(MIN_CONTEXT_FLOOR, Math.floor(vramKvBudget / kvBytesPerToken));
+        if (desiredMax > vramCtxCap) {
+          console.log(`[ChatEngine] Model (${(modelStats.size / 1e9).toFixed(2)}GB) exceeds VRAM (${(vramFree / 1e9).toFixed(2)}GB free) — capping desiredMax ${desiredMax} → ${vramCtxCap} to preserve GPU layer budget`);
+          desiredMax = vramCtxCap;
+          contextMin = Math.min(minBase, desiredMax);
+        }
+      }
 
       console.log(
         `[ChatEngine] Context sizing: train=${trainMaxContext}, hwCap=${hardwareCap} (source=${kvSourceMem}, kvBytesPerToken=${kvBytesPerToken}), user=${s.contextSize <= 0 ? 'auto' : s.contextSize}, test=${testMaxCtx || 'none'} → desiredMax=${desiredMax}`,
@@ -853,8 +888,44 @@ class ChatEngine extends EventEmitter {
       } else {
         _chatTemplateKwargs.enable_thinking = false;
       }
-      this._chat = new LlamaChat({ contextSequence: this._sequence, chatTemplateKwargs: _chatTemplateKwargs });
-      console.log(`[ChatEngine] chatTemplateKwargs=${JSON.stringify(_chatTemplateKwargs)}, resolvedThinkMode=${_resolvedThinkMode}, enableThinking=${s.enableThinking}, templateSupportsThinking=${_templateSupportsThinking}`);
+      this._chatTemplateKwargs = _chatTemplateKwargs;
+      this._ggufChatTemplate = ggufChatTemplate;
+
+      // LlamaChatOptions has no chatTemplateKwargs field — passing it to the constructor
+      // was silently ignored. Only override 'auto' when we must wire enable_thinking into
+      // Jinja additionalRenderParameters. All other models keep node-llama-cpp auto resolution
+      // (QwenChatWrapper, DeepSeekChatWrapper, etc.) unchanged.
+      let chatWrapperOpt = 'auto';
+      const needsThinkingJinja = ggufChatTemplate && _templateSupportsThinking && _chatTemplateKwargs.enable_thinking;
+      const needsGlmForcedOpen = needsThinkingJinja && (_detectedFamily === 'glm' || ggufArchString === 'chatglm');
+
+      if (needsThinkingJinja) {
+        const jinjaOpts = {
+          template: ggufChatTemplate,
+          tokenizer: this._model.tokenizer,
+          additionalRenderParameters: { ..._chatTemplateKwargs },
+          segments: {
+            thoughtTemplate: '<think>{{content}}</think>',
+            reopenThoughtAfterFunctionCalls: false,
+          },
+        };
+        try {
+          const WrapperClass = needsGlmForcedOpen
+            ? createGlmThinkingJinjaChatWrapper(JinjaTemplateChatWrapper, LlamaText, SpecialTokensText)
+            : JinjaTemplateChatWrapper;
+          chatWrapperOpt = new WrapperClass(jinjaOpts);
+          const thoughtSeg = chatWrapperOpt.settings?.segments?.thought;
+          console.log(`[ChatEngine] Custom Jinja wrapper (thinking): enable_thinking=true, thoughtSegment=${!!thoughtSeg}, forcedOpen=${needsGlmForcedOpen}, reopenAfterFC=${thoughtSeg?.reopenAfterFunctionCalls ?? false}`);
+        } catch (jinjaErr) {
+          console.warn(`[ChatEngine] Custom Jinja wrapper failed — falling back to auto: ${jinjaErr.message}`);
+          chatWrapperOpt = 'auto';
+        }
+      } else {
+        console.log(`[ChatEngine] chatWrapper=auto (node-llama-cpp resolves specialized wrapper); enable_thinking=${_chatTemplateKwargs.enable_thinking}`);
+      }
+      this._chatWrapper = chatWrapperOpt;
+      this._chat = new LlamaChat({ contextSequence: this._sequence, chatWrapper: chatWrapperOpt });
+      console.log(`[ChatEngine] chatTemplateKwargs=${JSON.stringify(_chatTemplateKwargs)}, wrapper=${chatWrapperOpt === 'auto' ? 'auto' : chatWrapperOpt.wrapperName}, resolvedThinkMode=${_resolvedThinkMode}, enableThinking=${s.enableThinking}, templateSupportsThinking=${_templateSupportsThinking}`);
 
       this._chatHistory = [{ type: 'system', text: SYSTEM_PROMPT }];
       this._lastEvaluation = null;
@@ -2034,8 +2105,11 @@ class ChatEngine extends EventEmitter {
       }
       console.log(`[ChatEngine] ─── MODEL RESPONSE ─── "${_rawResp}"`);
 
+      const _genStopReason = result.metadata?.stopReason;
+      const _userAbortedGeneration = _genStopReason === 'abort' || _genStopReason === 'cancelled';
+
       // Raw-text tool call loop: parse tool calls from model output, execute, continue
-      if (executeToolFn) {
+      if (executeToolFn && !_userAbortedGeneration) {
         // Flush any buffered content from the streaming filter before parsing
         _sfFlush();
         _sfFlushFence();
@@ -2615,6 +2689,8 @@ class ChatEngine extends EventEmitter {
 
         }
 
+      } else if (executeToolFn && _userAbortedGeneration) {
+        console.log(`[ChatEngine] Skipping tool parse/execute — generation stopReason=${_genStopReason} (user stopped)`);
       }
 
       this._lastEvaluation = result.lastEvaluation;
@@ -2756,8 +2832,10 @@ class ChatEngine extends EventEmitter {
     try {
       subContext = await this._model.createContext({ contextSize: subCtxSize });
       const subSequence = subContext.getSequence();
-      const subChatKwargs = this._chatTemplateKwargs || {};
-      const subChat = new LlamaChat({ contextSequence: subSequence, chatTemplateKwargs: subChatKwargs });
+      const subChat = new LlamaChat({
+        contextSequence: subSequence,
+        chatWrapper: this._chatWrapper || 'auto',
+      });
       const subHistory = [
         { type: 'system', text: `You are a focused sub-agent. Complete the task below fully and return your results in clear text.\n\nTask: ${task}` },
         { type: 'user', text: task },
