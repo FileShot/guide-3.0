@@ -70,12 +70,6 @@ jobs:
       - name: Install setuptools (provides distutils for node-gyp)
         run: pip install setuptools
 
-      - name: Install cmake and ninja
-        run: |
-          choco install cmake.install --version=4.2.1
-          choco install cmake --version=4.2.1
-          choco install ninja
-
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
@@ -85,32 +79,6 @@ jobs:
 
       - name: Build renderer
         run: npm run build:renderer
-
-      - name: Download latest llama.cpp source (b8954, Gemma 4)
-        shell: bash
-        run: |
-          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b8954.tar.gz \
-            -o /tmp/llama.tar.gz
-          mkdir -p /tmp/llama-meta
-          cp node_modules/node-llama-cpp/llama/binariesGithubRelease.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/llama.cpp.info.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/package.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/gitRelease.bundle /tmp/llama-meta/ 2>/dev/null || true
-          rm -rf node_modules/node-llama-cpp/llama/llama.cpp
-          mkdir -p node_modules/node-llama-cpp/llama/llama.cpp
-          tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama/llama.cpp --strip-components=1
-          cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
-          echo '{"release": "b8954"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
-          echo '{"tag": "b8954", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
-          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b8954" --quiet
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build llama.cpp native addon (CPU)
-        run: npx --no node-llama-cpp source build --gpu false --noUsageExample
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Windows CPU installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.json
@@ -149,12 +117,6 @@ jobs:
       - name: Install setuptools (provides distutils for node-gyp)
         run: pip install setuptools
 
-      - name: Install cmake and ninja
-        run: |
-          choco install cmake.install --version=4.2.1
-          choco install cmake --version=4.2.1
-          choco install ninja
-
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
@@ -164,40 +126,6 @@ jobs:
 
       - name: Build renderer
         run: npm run build:renderer
-
-      - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.35
-        with:
-          cuda: '13.1.0'
-          method: 'network'
-
-      - name: Download latest llama.cpp source (b8954, Gemma 4, CUDA)
-        shell: bash
-        run: |
-          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b8954.tar.gz \
-            -o /tmp/llama.tar.gz
-          mkdir -p /tmp/llama-meta
-          cp node_modules/node-llama-cpp/llama/binariesGithubRelease.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/llama.cpp.info.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/package.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/gitRelease.bundle /tmp/llama-meta/ 2>/dev/null || true
-          rm -rf node_modules/node-llama-cpp/llama/llama.cpp
-          mkdir -p node_modules/node-llama-cpp/llama/llama.cpp
-          tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama/llama.cpp --strip-components=1
-          cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
-          echo '{"release": "b8954"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
-          echo '{"tag": "b8954", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
-          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b8954" --quiet
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build llama.cpp native addon (CUDA)
-        run: npx --no node-llama-cpp source build --gpu cuda --noUsageExample
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CUDACXX: "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1/bin/nvcc.bat"
-          CUDA_PATH: "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1"
 
       - name: Build Windows CUDA installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.cuda.json
@@ -228,16 +156,6 @@ jobs:
         run: |
           node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
 
-      - name: Install cmake, ninja, and setuptools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build
-          wget -c https://github.com/Kitware/CMake/releases/download/v4.2.1/cmake-4.2.1-linux-x86_64.tar.gz
-          sudo tar --strip-components=1 -C /usr/local -xzf cmake-4.2.1-linux-x86_64.tar.gz
-          rm -f ./cmake-4.2.1-linux-x86_64.tar.gz
-          cmake --version
-          pip install setuptools
-
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
@@ -256,31 +174,6 @@ jobs:
           else
             sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
           fi
-
-      - name: Download & build llama.cpp (latest, CPU)
-        run: |
-          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b8954.tar.gz \
-            -o /tmp/llama.tar.gz
-          mkdir -p /tmp/llama-meta
-          cp node_modules/node-llama-cpp/llama/binariesGithubRelease.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/llama.cpp.info.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/package.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/gitRelease.bundle /tmp/llama-meta/ 2>/dev/null || true
-          rm -rf node_modules/node-llama-cpp/llama/llama.cpp
-          mkdir -p node_modules/node-llama-cpp/llama/llama.cpp
-          tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama/llama.cpp --strip-components=1
-          cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
-          echo '{"release": "b8954"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
-          echo '{"tag": "b8954", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
-          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b8954" --quiet
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build llama.cpp native addon (Linux CPU)
-        run: npx --no node-llama-cpp source build --gpu false --noUsageExample
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Linux CPU AppImage
         run: npx electron-builder --linux --x64 --config electron-builder.nosign.json
@@ -310,16 +203,6 @@ jobs:
         run: |
           node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
 
-      - name: Install cmake, ninja, and setuptools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build
-          wget -c https://github.com/Kitware/CMake/releases/download/v4.2.1/cmake-4.2.1-linux-x86_64.tar.gz
-          sudo tar --strip-components=1 -C /usr/local -xzf cmake-4.2.1-linux-x86_64.tar.gz
-          rm -f ./cmake-4.2.1-linux-x86_64.tar.gz
-          cmake --version
-          pip install setuptools
-
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
@@ -338,39 +221,6 @@ jobs:
           else
             sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
           fi
-
-      - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.35
-        with:
-          cuda: '13.1.0'
-          method: 'network'
-
-      - name: Download & build llama.cpp (latest, CUDA)
-        run: |
-          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b8954.tar.gz \
-            -o /tmp/llama.tar.gz
-          mkdir -p /tmp/llama-meta
-          cp node_modules/node-llama-cpp/llama/binariesGithubRelease.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/llama.cpp.info.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/package.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/gitRelease.bundle /tmp/llama-meta/ 2>/dev/null || true
-          rm -rf node_modules/node-llama-cpp/llama/llama.cpp
-          mkdir -p node_modules/node-llama-cpp/llama/llama.cpp
-          tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama/llama.cpp --strip-components=1
-          cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
-          echo '{"release": "b8954"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
-          echo '{"tag": "b8954", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
-          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b8954" --quiet
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build llama.cpp native addon (Linux CUDA)
-        run: npx --no node-llama-cpp source build --gpu cuda --noUsageExample
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CUDACXX: /usr/local/cuda/bin/nvcc
-          CUDA_PATH: /usr/local/cuda
 
       - name: Build Linux CUDA AppImage
         run: npx electron-builder --linux --x64 --config electron-builder.nosign.cuda.json
@@ -404,12 +254,6 @@ jobs:
         run: |
           node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
 
-      - name: Install cmake, ninja, and setuptools
-        run: |
-          brew install cmake ninja
-          cmake --version
-          pip install setuptools
-
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
@@ -436,31 +280,6 @@ jobs:
           sips -z 512 512   build/icon_512.png --out build/icon.iconset/icon_256x256@2x.png
           cp build/icon_512.png build/icon.iconset/icon_512x512.png
           iconutil -c icns build/icon.iconset -o build/icon.icns
-
-      - name: Download & build llama.cpp (latest, Metal)
-        run: |
-          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            https://github.com/ggml-org/llama.cpp/archive/refs/tags/b8954.tar.gz \
-            -o /tmp/llama.tar.gz
-          mkdir -p /tmp/llama-meta
-          cp node_modules/node-llama-cpp/llama/binariesGithubRelease.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/llama.cpp.info.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/package.json /tmp/llama-meta/ 2>/dev/null || true
-          cp node_modules/node-llama-cpp/llama/gitRelease.bundle /tmp/llama-meta/ 2>/dev/null || true
-          rm -rf node_modules/node-llama-cpp/llama/llama.cpp
-          mkdir -p node_modules/node-llama-cpp/llama/llama.cpp
-          tar -xzf /tmp/llama.tar.gz -C node_modules/node-llama-cpp/llama/llama.cpp --strip-components=1
-          cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
-          echo '{"release": "b8954"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
-          echo '{"tag": "b8954", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
-          cd node_modules/node-llama-cpp/llama/llama.cpp && git init && git config user.email "ci@guide.dev" && git config user.name "CI" && git add -A && git commit -m "b8954" --quiet
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build llama.cpp native addon (macOS Metal)
-        run: npx --no node-llama-cpp source build --gpu auto --noUsageExample
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build macOS DMG (CPU, x64 + arm64)
         run: npx electron-builder --mac --x64 --arm64 --config electron-builder.nosign.json
