@@ -490,6 +490,24 @@ class MCPToolServer {
     }
 
     // grep_search: normalize pattern/filePattern aliases
+    if (toolName === 'write_scratchpad' || toolName === 'read_scratchpad') {
+      if (normalized.name == null && typeof normalized.key === 'string') {
+        normalized.name = normalized.key;
+        delete normalized.key;
+      }
+    }
+
+    if (toolName === 'edit_file') {
+      if (normalized.oldText == null && typeof normalized.old_string === 'string') {
+        normalized.oldText = normalized.old_string;
+        delete normalized.old_string;
+      }
+      if (normalized.newText == null && typeof normalized.new_string === 'string') {
+        normalized.newText = normalized.new_string;
+        delete normalized.new_string;
+      }
+    }
+
     if (toolName === 'grep_search') {
       if (normalized.pattern == null) {
         if (typeof normalized.query === 'string') {
@@ -3126,9 +3144,10 @@ class MCPToolServer {
   // ─── Scratchpad Tools ────────────────────────────────────────────────────
 
   _writeScratchpad(params) {
-    const { key, content } = params;
+    const key = params.name || params.key;
+    const { content } = params;
     if (!key || typeof key !== 'string') {
-      return { success: false, error: 'key must be a non-empty string' };
+      return { success: false, error: 'name must be a non-empty string' };
     }
     const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
     const scratchDir = this._scratchDir || path.join(this.projectRoot || '.', '.guide-scratch');
@@ -3143,9 +3162,9 @@ class MCPToolServer {
   }
 
   _readScratchpad(params) {
-    const { key } = params;
+    const key = params.name || params.key;
     if (!key || typeof key !== 'string') {
-      return { success: false, error: 'key must be a non-empty string' };
+      return { success: false, error: 'name must be a non-empty string' };
     }
     const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
     const scratchDir = this._scratchDir || path.join(this.projectRoot || '.', '.guide-scratch');
@@ -3369,7 +3388,9 @@ class MCPToolServer {
     // is not tailored to any specific use case.
     let header = '## Tools\n';
     header += 'To call a tool, output a ```json block:\n```json\n{"tool":"<name>","params":{...}}\n```\n';
-    header += 'Example:\n```json\n{"tool":"read_file","params":{"filePath":"index.html"}}\n```\n\n';
+    header += 'Examples:\n```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
+    header += '```json\n{"tool":"edit_file","params":{"filePath":"src/app.js","oldText":"const x = 1","newText":"const x = 2"}}\n```\n';
+    header += '```json\n{"tool":"list_directory","params":{"dirPath":"."}}\n```\n\n';
     if (this.projectPath) {
       header += `Project: ${this.projectPath}\n\n`;
     }
@@ -3483,27 +3504,45 @@ class MCPToolServer {
   }
 
   _buildToolPrompt(tools) {
-    let prompt = '## Tools\nCall tools with:\n```json\n{"tool":"tool_name","params":{"param":"value"}}\n```\n';
-    prompt += 'To create or write a file, put the complete content inside write_file params — never in the chat response:\n```json\n{"tool":"write_file","params":{"filePath":"index.html","content":"<html><body>Hello</body></html>"}}\n```\n';
-    prompt += 'You HAVE the tools listed below — use them. NEVER say "I can\'t", "I don\'t have access", or "I can\'t browse" when a tool is available.\n';
-    prompt += 'NEVER output full file content as code blocks in chat — use write_file, edit_file, or append_to_file.\n';
-    prompt += 'NEVER provide manual instructions — USE the tools to do the work.\n';
-    prompt += '\n### Tool-call formatting — strict\n';
-    prompt += 'Every tool call is ONE ```json fenced block containing ONE JSON object. All arguments go under a `params` object. Keys and string values use plain double quotes. Do not escape quotes inside a JSON string value. Do not repeat the same key twice in one object. To perform N actions, emit N separate ```json blocks — never merge them and never pass an array of paths.\n';
-    prompt += 'RIGHT — one action per fenced block, params present, clean quoting:\n```json\n{"tool":"create_directory","params":{"path":"src"}}\n```\n```json\n{"tool":"write_file","params":{"filePath":".gitignore","content":"node_modules\\n.env\\n"}}\n```\n';
-    prompt += 'If a prior tool call came back with `PARSE_FAILED`, re-emit that exact tool call cleanly using the RIGHT shape above — do not skip the action.\n\n';
+    let prompt = '## Tools\nCall tools with one ```json fenced block per action:\n```json\n{"tool":"tool_name","params":{"param":"value"}}\n```\n';
+    prompt += 'Examples (use exact parameter names shown in each tool listing below):\n';
+    prompt += '```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
+    prompt += '```json\n{"tool":"write_file","params":{"filePath":"index.html","content":"<html><body>Hello</body></html>"}}\n```\n';
+    prompt += '```json\n{"tool":"edit_file","params":{"filePath":"src/app.js","oldText":"const x = 1","newText":"const x = 2"}}\n```\n';
+    prompt += '```json\n{"tool":"list_directory","params":{"dirPath":"."}}\n```\n';
+    prompt += 'You HAVE the tools listed below — use them. Do not say you cannot access files, the terminal, or the network when a tool can perform the task.\n';
+    prompt += 'Do not output full file content as chat prose — use write_file, edit_file, or append_to_file.\n';
+    prompt += 'Do not give manual step-by-step instructions when a tool can perform the action.\n';
+    prompt += '\n### Tool-call formatting\n';
+    prompt += 'Each tool call is ONE ```json block with ONE JSON object. All arguments go under `params`. Use plain double quotes. To perform N actions, emit N separate blocks.\n';
+    prompt += '```json\n{"tool":"create_directory","params":{"path":"src"}}\n```\n';
+    prompt += '```json\n{"tool":"write_file","params":{"filePath":".gitignore","content":"node_modules\\n.env\\n"}}\n```\n\n';
     if (this.projectPath) {
-      prompt += `Project directory: ${this.projectPath}\nUse relative file paths (e.g. "output.md") — they resolve to the project directory.\n`;
+      prompt += `Project directory: ${this.projectPath}\nUse relative paths (e.g. "src/main.js") — they resolve to the project directory.\n\n`;
     }
-    prompt += '\n';
 
     const categories = {
-      'File Operations — for creating, reading, modifying, or deleting files and directories': ['read_file', 'write_file', 'edit_file', 'delete_file', 'rename_file', 'create_directory', 'list_directory', 'find_files', 'search_codebase', 'grep_search', 'get_project_structure', 'get_file_info', 'replace_in_files', 'undo_edit', 'install_packages'],
-      'Terminal — for running commands, installing packages, checking services': ['run_command'],
-      'Browser — for browsing websites, filling forms, clicking elements, taking screenshots': ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_fill_form', 'browser_select_option', 'browser_screenshot', 'browser_evaluate', 'browser_scroll', 'browser_back', 'browser_hover', 'browser_press_key', 'browser_get_url', 'browser_get_content', 'browser_get_links', 'browser_wait_for', 'browser_tabs', 'browser_handle_dialog', 'browser_drag', 'browser_console_messages', 'browser_close', 'browser_file_upload', 'browser_resize', 'browser_list_elements'],
-      'Web — for searching the web or fetching webpage content': ['web_search', 'fetch_webpage'],
-      'Git — for version control operations': ['git_status', 'git_commit', 'git_diff', 'git_log', 'git_branch'],
-      'Context & Memory — for saving and retrieving information across sessions': ['save_memory', 'get_memory', 'list_memories', 'analyze_error'],
+      'File operations': [
+        'read_file', 'write_file', 'edit_file', 'append_to_file', 'delete_file', 'rename_file', 'copy_file',
+        'get_file_info', 'list_directory', 'find_files', 'create_directory', 'get_project_structure',
+        'open_file_in_editor', 'diff_files', 'undo_edit', 'list_undoable',
+      ],
+      'Search': ['grep_search', 'search_in_file', 'search_codebase', 'replace_in_files'],
+      'Terminal & packages': ['run_command', 'check_port', 'install_packages', 'analyze_error'],
+      'Web': ['web_search', 'fetch_webpage', 'http_request'],
+      'Browser': [
+        'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_fill_form',
+        'browser_select_option', 'browser_screenshot', 'browser_get_content', 'browser_evaluate',
+        'browser_scroll', 'browser_wait', 'browser_wait_for', 'browser_back', 'browser_press_key',
+        'browser_hover', 'browser_drag', 'browser_tabs', 'browser_handle_dialog', 'browser_console_messages',
+        'browser_file_upload', 'browser_resize', 'browser_get_url', 'browser_get_links', 'browser_close',
+      ],
+      'Git': ['git_status', 'git_commit', 'git_diff', 'git_log', 'git_branch', 'git_stash', 'git_reset'],
+      'Memory': ['save_memory', 'get_memory', 'list_memories'],
+      'Planning & questions': ['write_todos', 'update_todo', 'ask_question'],
+      'Scratchpad': ['write_scratchpad', 'read_scratchpad'],
+      'Rules': ['save_rule', 'list_rules'],
+      'Other': ['generate_image'],
     };
 
     const toolMap = {};
@@ -3536,19 +3575,18 @@ class MCPToolServer {
       prompt += '\n';
     }
 
-    prompt += `### Common Patterns
-- **Web lookup (mandatory)**: web_search → fetch_webpage(1st result url) → fetch_webpage(2nd result url) if two or more hits → answer from fetched text — same continuation, no asking the user to fetch, do not stop at snippets alone, do not interleave list_directory with this chain unless the user asked about project files
-- **Web research (interactive UI)**: browser_navigate (returns snapshot) → browser_click/type using [ref=N] (returns snapshot) → continue interacting. No need for separate browser_snapshot calls.
-- **Create & verify**: write_file → browser_navigate("file:///abs/path")
-- **Edit existing file**: read_file → edit_file (oldText/newText)
-- **Form filling**: browser_navigate (returns snapshot with form refs) → browser_type each field → browser_click submit button. Each action returns the updated page.
+    prompt += `### Common patterns
+- **Web lookup**: web_search → fetch_webpage for top result URL(s) → answer from fetched text in the same continuation
+- **Project files**: read_file (known path), grep_search or search_codebase (unknown location), list_directory (folder listing)
+- **Edit existing file**: read_file → edit_file with exact oldText/newText from the file
+- **Browser**: browser_navigate → interact using refs from the snapshot (browser_click, browser_type, etc.)
+- **New file**: write_file with full content in params; append_to_file for additional sections
 
-### Important Rules
-- Your browser is REAL Chromium — no CAPTCHA restrictions
-- browser_navigate, browser_click, and browser_type all return the page snapshot automatically. Do NOT call browser_snapshot after these — it's redundant and wastes context.
-- After web_search, fetch required URLs in the same continuation — NEVER ask "Would you like me to fetch"
-- If an error occurs, retry with a different approach — do NOT give up
-- NEVER output file contents, configuration, or any substantive artifact as a code block in chat — use the appropriate tool to create or modify it
+### Rules
+- Use tool results as ground truth; do not fabricate tool output
+- After web_search, fetch page content before answering from snippets alone
+- If a tool fails, read the error and retry once with corrected parameters
+- Do not output substantive file content as chat prose — use file tools
 `;
     return prompt;
   }

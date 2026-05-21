@@ -43,6 +43,7 @@ const SETTINGS_DEFAULTS = {
   gpuLayers: -1,
   requireMinContextForGpu: false,
   gpuConstrainedContext: true,  // When GPU layers < 30% of total, cap context to VRAM-bounded size for faster generation
+  vramBalance: 'balanced', // auto gpuLayers=-1: balanced | speed | context
   kvCacheType: 'f16', // KV cache quantization — f16 matches llama.cpp upstream default and enables the fastest fused flash-attention path on consumer NVIDIA GPUs (matches LM Studio / llama-server). Lower-precision options (q8_0, q4_0) save VRAM at a measurable speed cost; user-overridable.
   // Editor
   fontSize: 14,

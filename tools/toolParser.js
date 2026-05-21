@@ -467,8 +467,17 @@ function normalizeToolCall(parsed) {
   if (params.filename && !params.filePath) { params.filePath = params.filename; delete params.filename; }
   if (params.old_text && !params.oldText) { params.oldText = params.old_text; delete params.old_text; }
   if (params.new_text && !params.newText) { params.newText = params.new_text; delete params.new_text; }
+  if (params.old_string && !params.oldText) { params.oldText = params.old_string; delete params.old_string; }
+  if (params.new_string && !params.newText) { params.newText = params.new_string; delete params.new_string; }
   if (params.dir_path && !params.dirPath) { params.dirPath = params.dir_path; delete params.dir_path; }
   if (params.directory && !params.dirPath) { params.dirPath = params.directory; delete params.directory; }
+  if (params.path && !params.dirPath && !params.filePath && toolName === 'list_directory') {
+    params.dirPath = params.path;
+    delete params.path;
+  }
+  if (params.name && !params.key && (toolName === 'write_scratchpad' || toolName === 'read_scratchpad')) {
+    // definition uses name; keep as name (executor accepts name || key)
+  }
 
   // Browser-specific: selector → ref, value → text, href → url
   if (toolName.startsWith('browser_')) {

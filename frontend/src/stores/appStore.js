@@ -1825,6 +1825,7 @@ const useAppStore = create((set, get) => ({
       gpuLayers: -1,            // -1 = auto
 
       requireMinContextForGpu: false,
+      vramBalance: 'balanced',
 
       kvCacheType: 'q4_0',      // 'f16' | 'q8_0' | 'q4_0' | 'q3_0' | 'q4_1' | 'off' — lower = more context, less precision
 
@@ -1926,7 +1927,7 @@ const useAppStore = create((set, get) => ({
 
       systemPrompt: '', customInstructions: '', guideInstructionsPath: '',
 
-      gpuPreference: 'auto', gpuLayers: -1, requireMinContextForGpu: false,
+      gpuPreference: 'auto', gpuLayers: -1, requireMinContextForGpu: false, vramBalance: 'balanced',
 
       fontSize: 14, fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
 

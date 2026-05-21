@@ -1336,7 +1336,7 @@ function SettingsPanel() {
 
   const updateSettingWithReload = useCallback((key, value) => {
     updateSetting(key, value);
-    const requiresReload = key === 'contextSize' || key === 'gpuLayers' || key === 'gpuPreference' || key === 'requireMinContextForGpu' || key === 'kvCacheType' || key === 'enableThinking' || key === 'gpuConstrainedContext';
+    const requiresReload = key === 'contextSize' || key === 'gpuLayers' || key === 'gpuPreference' || key === 'requireMinContextForGpu' || key === 'kvCacheType' || key === 'enableThinking' || key === 'gpuConstrainedContext' || key === 'vramBalance';
     if (requiresReload) triggerModelReload(key);
   }, [updateSetting, triggerModelReload]);
 
@@ -1592,6 +1592,25 @@ function SettingsPanel() {
             min={-1} max={200} step={1} onChange={v => updateSettingWithReload('gpuLayers', v)}
             hint="-1 = auto. More layers = faster but more VRAM" />
           <div className="text-[10px] text-yellow-400/80 mt-0.5">Requires model reload to apply</div>
+        </div>
+        <div className="mb-3">
+          <label className="text-[11px] text-vsc-text-dim block mb-1">VRAM Balance (auto layers only)</label>
+          <div className="flex gap-1">
+            {[
+              { v: 'balanced', l: 'Balanced' },
+              { v: 'speed', l: 'Speed' },
+              { v: 'context', l: 'Context' },
+            ].map(opt => (
+              <button key={opt.v}
+                className={`flex-1 px-2 py-1 text-[10px] rounded border transition-colors ${
+                  (settings.vramBalance || 'balanced') === opt.v
+                    ? 'bg-vsc-accent border-vsc-accent text-white'
+                    : 'bg-vsc-bg border-vsc-panel-border text-vsc-text-dim hover:border-vsc-accent/50'}`}
+                onClick={() => updateSettingWithReload('vramBalance', opt.v)}
+              >{opt.l}</button>
+            ))}
+          </div>
+          <div className="text-[10px] text-vsc-text-dim mt-1">Balanced: max GPU layers with usable context. Speed: max layers (legacy). Context: prefer longest window.</div>
         </div>
         <SettingToggle label="Require Min Context for GPU" value={settings.requireMinContextForGpu}
           onChange={v => updateSettingWithReload('requireMinContextForGpu', v)}

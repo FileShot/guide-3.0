@@ -61,16 +61,96 @@ const MIN_CONTEXT_WHEN_GPU_REQUIRED = 4096;
 const VRAM_GENERATION_OVERHEAD = 512 * 1024 * 1024;
 /** Safety buffer subtracted from free VRAM before KV allocation. */
 const VRAM_KV_BUFFER = 256 * 1024 * 1024;
+const GiB = 1024 * 1024 * 1024;
 
 /**
- * Unified VRAM budget (Ollama-style): pick (gpuLayers, contextSize) in one pass.
- * Iterates layer counts and picks the pair that maximizes context while fitting in VRAM.
- * When fixedGpuLayers is set, only computes the best context for that layer count (post-load).
+ * Runtime minimum usable context for auto mode — tiered by total VRAM (bytes), not GPU model.
+ */
+function computeAutoTargetContext({ vramTotal, vramFree, kvBytesPerToken, desiredMaxContext, trainMaxContext }) {
+  let tierTarget = 4096;
+  if (vramTotal >= 48 * GiB) tierTarget = 65536;
+  else if (vramTotal >= 24 * GiB) tierTarget = 32768;
+  else if (vramTotal >= 8 * GiB) tierTarget = 8192;
+
+  let cap = tierTarget;
+  if (trainMaxContext != null) cap = Math.min(cap, trainMaxContext);
+  cap = Math.min(cap, desiredMaxContext);
+
+  if (kvBytesPerToken > 0 && vramFree > 0) {
+    const kvBudget = Math.max(0, vramFree - VRAM_GENERATION_OVERHEAD - VRAM_KV_BUFFER);
+    const vramBounded = Math.floor(kvBudget / kvBytesPerToken / 2);
+    if (vramBounded > 0) cap = Math.min(cap, vramBounded);
+  }
+
+  return Math.max(MIN_CONTEXT_FLOOR, cap);
+}
+
+/** Descending unique context targets for step-down when VRAM is tight. */
+function buildContextTargetSteps(autoTarget, minContext) {
+  const seen = new Set();
+  const targets = [];
+  for (const t of [autoTarget, MIN_CONTEXT_WHEN_GPU_REQUIRED, MIN_CONTEXT_FLOOR, minContext]) {
+    const v = Math.floor(t);
+    if (v > 0 && !seen.has(v)) {
+      seen.add(v);
+      targets.push(v);
+    }
+  }
+  return targets.sort((a, b) => b - a);
+}
+
+/**
+ * For one gpuLayers count: max context that fits in vramFree, or null.
+ * @returns {{ gpuLayers: number, maxCtx: number, contextSize: number } | null}
+ */
+function computeLayerVramFit({
+  vramFree,
+  modelSizeBytes,
+  totalLayers,
+  gpuLayers,
+  kvBytesPerToken,
+  desiredMaxContext,
+  minContext,
+  vramOverheadBytes,
+  vramBufferBytes,
+  gpuConstrainedContext,
+}) {
+  if (!vramFree || vramFree <= 0 || !totalLayers || !modelSizeBytes || !kvBytesPerToken) {
+    return null;
+  }
+  const bytesPerLayer = modelSizeBytes / totalLayers;
+  const gpuRatio = totalLayers > 0 ? gpuLayers / totalLayers : 0;
+  const modelVram = gpuLayers * bytesPerLayer;
+  const availForKv = vramFree - modelVram - vramOverheadBytes - vramBufferBytes;
+  if (availForKv <= 0) return null;
+
+  let maxCtx;
+  if (gpuRatio > 0) {
+    maxCtx = Math.floor(availForKv / (kvBytesPerToken * gpuRatio));
+    if (gpuConstrainedContext && gpuRatio < 0.3) {
+      const vramBoundedCtx = Math.floor(availForKv / kvBytesPerToken);
+      if (vramBoundedCtx > 0) maxCtx = Math.min(maxCtx, vramBoundedCtx);
+    }
+  } else {
+    maxCtx = Math.floor(availForKv / kvBytesPerToken);
+  }
+
+  const contextSize = Math.max(minContext, Math.min(maxCtx, desiredMaxContext));
+  const kvOnGpu = kvBytesPerToken * contextSize * gpuRatio;
+  if (modelVram + kvOnGpu + vramOverheadBytes > vramFree) return null;
+
+  return { gpuLayers, maxCtx, contextSize };
+}
+
+/**
+ * Unified VRAM budget: pick (gpuLayers, contextSize) from runtime VRAM + GGUF metadata.
+ * Post-load (fixedGpuLayers): context only. Pre-load: mode from vramBalance setting.
  *
- * @returns {{ gpuLayers: number, contextSize: number }}
+ * @returns {{ gpuLayers: number, contextSize: number, budgetMeta?: object }}
  */
 function computeUnifiedVramBudget({
   vramFree,
+  vramTotal = 0,
   modelSizeBytes,
   totalLayers,
   kvBytesPerToken,
@@ -80,6 +160,8 @@ function computeUnifiedVramBudget({
   vramBufferBytes = VRAM_KV_BUFFER,
   gpuConstrainedContext = true,
   fixedGpuLayers = null,
+  vramBalance = 'balanced',
+  trainMaxContext = null,
 }) {
   const fallback = {
     gpuLayers: fixedGpuLayers ?? 0,
@@ -95,84 +177,132 @@ function computeUnifiedVramBudget({
     };
   }
 
-  const bytesPerLayer = modelSizeBytes / totalLayers;
-  let bestPartial = null; // gpuLayers > 0 — preferred whenever any layers fit
-  let bestCpuOnly = null;  // gpuLayers === 0 — fallback only
+  const fitParams = {
+    vramFree,
+    modelSizeBytes,
+    totalLayers,
+    kvBytesPerToken,
+    desiredMaxContext,
+    minContext,
+    vramOverheadBytes,
+    vramBufferBytes,
+    gpuConstrainedContext,
+  };
 
-  const layerMax = fixedGpuLayers != null ? fixedGpuLayers : totalLayers;
-  const layerMin = fixedGpuLayers != null ? fixedGpuLayers : 0;
+  // Post-load: layers locked — maximize context for that layer count only.
+  if (fixedGpuLayers != null) {
+    const fit = computeLayerVramFit({ ...fitParams, gpuLayers: fixedGpuLayers });
+    return {
+      gpuLayers: fixedGpuLayers,
+      contextSize: fit?.contextSize ?? fallback.contextSize,
+    };
+  }
 
-  for (let gpuLayers = layerMax; gpuLayers >= layerMin; gpuLayers--) {
-    const gpuRatio = totalLayers > 0 ? gpuLayers / totalLayers : 0;
-    const modelVram = gpuLayers * bytesPerLayer;
-    const availForKv = vramFree - modelVram - vramOverheadBytes - vramBufferBytes;
-    if (availForKv <= 0) continue;
+  const mode = vramBalance === 'speed' || vramBalance === 'context' ? vramBalance : 'balanced';
+  const autoTarget = computeAutoTargetContext({
+    vramTotal: vramTotal || vramFree,
+    vramFree,
+    kvBytesPerToken,
+    desiredMaxContext,
+    trainMaxContext,
+  });
+  const targetSteps = buildContextTargetSteps(autoTarget, minContext);
 
-    let maxCtx;
-    if (gpuRatio > 0) {
-      maxCtx = Math.floor(availForKv / (kvBytesPerToken * gpuRatio));
-      if (gpuConstrainedContext && gpuRatio < 0.3) {
-        const vramBoundedCtx = Math.floor(availForKv / kvBytesPerToken);
-        if (vramBoundedCtx > 0) maxCtx = Math.min(maxCtx, vramBoundedCtx);
+  // Speed: v0.3.87 layer-dominant scoring (unchanged behavior for speed mode).
+  if (mode === 'speed') {
+    let bestPartial = null;
+    let bestCpuOnly = null;
+    for (let gpuLayers = totalLayers; gpuLayers >= 0; gpuLayers--) {
+      const fit = computeLayerVramFit({ ...fitParams, gpuLayers });
+      if (!fit) continue;
+      if (gpuLayers > 0) {
+        const score = gpuLayers * 1_000_000 + fit.contextSize;
+        if (!bestPartial || score > bestPartial.score) {
+          bestPartial = { ...fit, score };
+        }
+      } else {
+        const score = fit.contextSize;
+        if (!bestCpuOnly || score > bestCpuOnly.score) {
+          bestCpuOnly = { ...fit, score };
+        }
       }
-    } else {
-      // CPU-only weights: KV may spill to RAM — cap context to remaining VRAM-equivalent budget
-      maxCtx = Math.floor(availForKv / kvBytesPerToken);
     }
-
-    const contextSize = Math.max(minContext, Math.min(maxCtx, desiredMaxContext));
-    const kvOnGpu = kvBytesPerToken * contextSize * gpuRatio;
-    if (modelVram + kvOnGpu + vramOverheadBytes > vramFree) continue;
-
-    if (gpuLayers > 0) {
-      // Prioritize GPU offload over raw context size (Ollama-style).
-      // Score: layers dominate; context is secondary tiebreaker.
-      const score = gpuLayers * 1_000_000 + contextSize;
-      if (!bestPartial || score > bestPartial.score) {
-        bestPartial = { gpuLayers, contextSize, score };
-      }
-    } else {
-      const score = contextSize;
-      if (!bestCpuOnly || score > bestCpuOnly.score) {
-        bestCpuOnly = { gpuLayers: 0, contextSize, score };
-      }
-    }
-  }
-
-  if (bestPartial) {
-    return { gpuLayers: bestPartial.gpuLayers, contextSize: bestPartial.contextSize };
-  }
-  if (bestCpuOnly) {
-    return { gpuLayers: bestCpuOnly.gpuLayers, contextSize: bestCpuOnly.contextSize };
-  }
-  if (fixedGpuLayers == null) return fallback;
-  return { gpuLayers: fixedGpuLayers ?? 0, contextSize: Math.max(minContext, Math.min(desiredMaxContext, minContext)) };
-}
-
-/**
- * GLM chatglm templates omit `<think>` in add_generation_prompt when enable_thinking=true.
- * node-llama-cpp noPrefixTrigger force-opens the thought segment at generation start (HarmonyChatWrapper pattern).
- * Lives in chatEngine.js (not a separate module) so electron-builder `*.js` root glob always ships it.
- */
-function createGlmThinkingJinjaChatWrapper(JinjaTemplateChatWrapper, LlamaText) {
-  return class GlmThinkingJinjaChatWrapper extends JinjaTemplateChatWrapper {
-    generateContextState(options) {
-      const state = super.generateContextState(options);
-      const thinkingEnabled = this.additionalRenderParameters?.enable_thinking === true;
-      const thoughtSeg = this.settings?.segments?.thought;
-      if (!thinkingEnabled || thoughtSeg?.prefix == null) {
-        return state;
-      }
+    if (bestPartial) {
       return {
-        ...state,
-        noPrefixTrigger: {
-          type: 'segment',
-          segmentType: 'thought',
-          inject: LlamaText(thoughtSeg.prefix),
+        gpuLayers: bestPartial.gpuLayers,
+        contextSize: bestPartial.contextSize,
+        budgetMeta: { mode, autoTarget, targetUsed: null },
+      };
+    }
+    if (bestCpuOnly) {
+      return {
+        gpuLayers: 0,
+        contextSize: bestCpuOnly.contextSize,
+        budgetMeta: { mode, autoTarget, targetUsed: null },
+      };
+    }
+    return { ...fallback, budgetMeta: { mode, autoTarget, targetUsed: null } };
+  }
+
+  // Context: maximize contextSize among fits meeting target; tie-break higher gpuLayers.
+  if (mode === 'context') {
+    for (const target of targetSteps) {
+      let best = null;
+      for (let gpuLayers = 1; gpuLayers <= totalLayers; gpuLayers++) {
+        const fit = computeLayerVramFit({ ...fitParams, gpuLayers });
+        if (!fit || fit.maxCtx < target) continue;
+        if (!best || fit.contextSize > best.contextSize
+          || (fit.contextSize === best.contextSize && fit.gpuLayers > best.gpuLayers)) {
+          best = { ...fit, targetUsed: target };
+        }
+      }
+      if (best) {
+        return {
+          gpuLayers: best.gpuLayers,
+          contextSize: best.contextSize,
+          budgetMeta: { mode, autoTarget, targetUsed: best.targetUsed },
+        };
+      }
+    }
+    const cpuFit = computeLayerVramFit({ ...fitParams, gpuLayers: 0 });
+    if (cpuFit) {
+      return {
+        gpuLayers: 0,
+        contextSize: cpuFit.contextSize,
+        budgetMeta: { mode, autoTarget, targetUsed: MIN_CONTEXT_FLOOR, cpuFallback: true },
+      };
+    }
+    return { ...fallback, budgetMeta: { mode, autoTarget, targetUsed: null } };
+  }
+
+  // Balanced (default): highest gpuLayers where maxCtx >= target; step down target if needed.
+  for (const target of targetSteps) {
+    for (let gpuLayers = totalLayers; gpuLayers >= 1; gpuLayers--) {
+      const fit = computeLayerVramFit({ ...fitParams, gpuLayers });
+      if (!fit || fit.maxCtx < target) continue;
+      const contextSize = Math.max(minContext, Math.min(fit.maxCtx, desiredMaxContext));
+      return {
+        gpuLayers,
+        contextSize,
+        budgetMeta: {
+          mode,
+          autoTarget,
+          targetUsed: target,
+          targetSteppedDown: target < autoTarget,
         },
       };
     }
-  };
+  }
+
+  const cpuFit = computeLayerVramFit({ ...fitParams, gpuLayers: 0 });
+  if (cpuFit) {
+    return {
+      gpuLayers: 0,
+      contextSize: cpuFit.contextSize,
+      budgetMeta: { mode, autoTarget, targetUsed: null, cpuFallback: true },
+    };
+  }
+  return { ...fallback, budgetMeta: { mode, autoTarget, targetUsed: null } };
 }
 
 /** Approximate chars per token for English tool prompts. */
@@ -220,15 +350,22 @@ function buildBudgetProportionalToolPrompt({
 
   let built = '';
   let partsUsed = 0;
+  const headerPart = parts[0] || '';
   for (const part of parts) {
     const next = built + part;
     if (next.length > maxToolChars && built.length > 0) break;
     built = next;
     partsUsed++;
   }
-  if (!built && parts[0]) {
-    built = parts[0];
+  if (!built && headerPart) {
+    built = headerPart.length > maxToolChars ? headerPart.slice(0, maxToolChars) : headerPart;
     partsUsed = 1;
+  } else if (headerPart && !built.startsWith(headerPart)) {
+    // Always preserve format header even when budget is tight
+    const body = built.slice(headerPart.length);
+    const maxBody = Math.max(0, maxToolChars - headerPart.length);
+    built = headerPart + (maxBody > 0 ? body.slice(0, maxBody) : '');
+    partsUsed = Math.max(partsUsed, 1);
   }
   if (partsUsed < parts.length) {
     built += '\n…and more tools available\n';
@@ -312,125 +449,35 @@ function buildEngineLoadSettings(raw = {}) {
     contextSize,
     requireMinContextForGpu: !!raw.requireMinContextForGpu,
     gpuConstrainedContext: raw.gpuConstrainedContext !== false, // default true
+    vramBalance: raw.vramBalance === 'speed' || raw.vramBalance === 'context' ? raw.vramBalance : 'balanced',
     kvCacheType: raw.kvCacheType || 'f16',
     enableThinking: raw.enableThinking !== false, // default true
   };
 }
 
-// Agent identity prompt — primacy-ordered: identity → format → examples → rubric → rules
-const SYSTEM_PROMPT = `You are guIDE, an AI agent with tools for file editing, browsing, terminal commands, and more.
+// Agent identity prompt — behavior and grounding only; tool format/catalog live in getToolPrompt()
+const SYSTEM_PROMPT = `You are guIDE, an AI assistant embedded in a general-purpose IDE. You help users with software projects: reading and writing code, running commands, searching the web, using the browser, and answering questions.
 
-## When to use tools vs. prose
-- If text alone fully addresses the user's request, respond with prose.
-- When the user asks for action you cannot accomplish through text alone, use the appropriate tool.
-- You have real tools — never say "I cannot," "I don't have access," or "I'm unable to" when action is needed. Use the tools instead.
+## How to respond
+- If the user's message is conversational (greetings, thanks, clarifying questions, opinions) and needs no action, reply in plain prose only. Do not call tools.
+- If the user asks you to do something you cannot do with text alone — create or change files, run commands, search the project or web, use the browser, inspect git state, etc. — use the appropriate tool from the ## Tools section below.
+- You have real tools. When action is required, use them. Do not say you cannot access files, the terminal, or the network when a tool can perform the task.
 
-## Tool-call format
-Output a fenced JSON block with "tool" and "params" keys:
-\`\`\`json
-{"tool":"<TOOL_NAME>","params":{<PARAMETERS>}}
-\`\`\`
-Never output raw JSON, braces, or backticks outside a fenced block. If not calling a tool, write normal prose with no JSON syntax. After a tool call, wait for the result before continuing.
+## Tools (required reading)
+Tool definitions, call format, parameter schemas, and examples are in the ## Tools section appended below this message. Follow that section exactly for tool names, parameter names, and JSON format. Do not invent tool names or parameter names.
 
-## Tool-call patterns
-These are FORMAT patterns — substitute your own values for ANGLE_BRACKETS.
+After calling a tool, wait for the result before continuing. Never output fabricated tool results or blocks labeled [Tool Results] or [System: Tool Results] — the system injects real results.
 
-List directory:
-\`\`\`json
-{"tool":"list_directory","params":{"path":"<DIRECTORY_PATH>"}}
-\`\`\`
+## Grounding
+- Base answers on tool results, file contents, and user-provided context — not assumptions.
+- If you need information only the user can provide, ask in prose or use ask_question when offered in ## Tools.
+- If a tool fails, read the error, adjust, and retry once with corrected parameters; then explain or ask the user.
 
-Read file:
-\`\`\`json
-{"tool":"read_file","params":{"filePath":"<FILE_PATH>"}}
-\`\`\`
+## Images
+When you receive an image description from the vision system, treat it as what you observed. Do not use read_file on image files to "see" them.
 
-Create file:
-\`\`\`json
-{"tool":"write_file","params":{"filePath":"<FILE_PATH>","content":"<FILE_CONTENT>"}}
-\`\`\`
-
-Edit file (exact string replacement):
-\`\`\`json
-{"tool":"edit_file","params":{"filePath":"<FILE_PATH>","old_string":"<EXACT_OLD_TEXT>","new_string":"<NEW_TEXT>"}}
-\`\`\`
-
-Append to file:
-\`\`\`json
-{"tool":"append_to_file","params":{"filePath":"<FILE_PATH>","content":"<TEXT_TO_APPEND>"}}
-\`\`\`
-
-Web search (always follow with fetch_webpage):
-\`\`\`json
-{"tool":"web_search","params":{"query":"<SEARCH_QUERY>"}}
-\`\`\`
-\`\`\`json
-{"tool":"fetch_webpage","params":{"url":"<TOP_RESULT_URL>"}}
-\`\`\`
-
-Browser (always snapshot before click/type/fill — refs expire after each snapshot):
-\`\`\`json
-{"tool":"browser_navigate","params":{"url":"<TARGET_URL>"}}
-\`\`\`
-\`\`\`json
-{"tool":"browser_snapshot","params":{}}
-\`\`\`
-\`\`\`json
-{"tool":"browser_click","params":{"ref":"<REF_FROM_SNAPSHOT>","element":"<DESCRIPTION>"}}
-\`\`\`
-
-Shell command:
-\`\`\`json
-{"tool":"run_command","params":{"command":"<SHELL_COMMAND>"}}
-\`\`\`
-
-Todo list:
-\`\`\`json
-{"tool":"write_todos","params":{"items":["<STEP_1>","<STEP_2>"]}}
-\`\`\`
-\`\`\`json
-{"tool":"update_todo","params":{"id":"<TODO_ID>","status":"completed"}}
-\`\`\`
-
-Ask user:
-\`\`\`json
-{"tool":"ask_question","params":{"question":"<YOUR_QUESTION>","options":[{"label":"<OPTION>","description":"<DESC>"}]}}
-\`\`\`
-
-## Available tools
-File: read_file, write_file, edit_file, append_to_file, delete_file, rename_file, copy_file, get_file_info
-Search: list_directory, find_files, search_codebase, grep_search, search_in_file, replace_in_files
-Browser: browser_navigate, browser_snapshot, browser_click, browser_type, browser_fill_form, browser_select_option, browser_screenshot, browser_get_content, browser_evaluate, browser_scroll, browser_wait, browser_wait_for, browser_back, browser_press_key, browser_hover, browser_drag, browser_tabs, browser_handle_dialog, browser_console_messages, browser_file_upload, browser_resize, browser_get_url, browser_get_links, browser_close
-Terminal: run_command, get_project_structure, create_directory, analyze_error, install_packages
-Web: web_search, fetch_webpage, http_request, check_port
-Git: git_status, git_commit, git_diff, git_log, git_branch, git_stash, git_reset
-Memory: save_memory, get_memory, list_memories
-Undo: undo_edit, list_undoable
-Planning: write_todos, update_todo, ask_question
-Scratchpad: write_scratchpad, read_scratchpad
-Other: open_file_in_editor, generate_image, diff_files, save_rule, list_rules
-
-## Decision rubric
-Internet topics (live info, products, news, docs): web_search → fetch_webpage. Do not use file tools for internet topics.
-Project files (code in workspace): read_file (known path), grep_search/search_codebase (unknown location), list_directory (folder contents). Do not use web_search for project files.
-File changes: edit_file for existing files, write_file for new files, append_to_file for appending. Never paste file contents into chat as a substitute.
-Shell/OS: run_command. Does not control a browser — never use curl/wget as a substitute for browser tools.
-Browser: browser_navigate → browser_snapshot → browser_click/type/fill. Snapshot before every interaction — refs expire.
-Planning: write_todos for multi-step work, ask_question when you need clarification or a user decision.
-Batching: Multiple independent tool calls may go in one response.
-
-## Vision
-Images are automatically captioned. When you receive an image description, that is the image content — you have seen it. Do not call read_file on image files.
-
-## Operating rules
-- Do not repeat the same tool call with the same arguments. If a call fails, adjust arguments; if it still fails after one retry, ask the user.
-- After a tool returns, use its result and continue. Do not re-ask for information the tool provided.
-- Ground web answers in fetched page content, not training memory.
-- If output is truncated, continue from the interruption point. Do not restart.
-- If stuck or uncertain, call ask_question. Never guess — guessing causes errors.
-- When the user provides information via ask_question, it is part of your context. Use it immediately.
-- Ground every claim in evidence. Agreement without evidence is dishonest.
-- Never emit [Tool Results] or [System: Tool Results] blocks. The system injects real tool results after you call a tool. Only emit tool calls and prose — never fabricate tool output.`;
+## Planning
+For multi-step work, you may use planning tools from ## Tools when they fit the task. For simple requests, act directly without unnecessary planning overhead.`;
 
 class ChatEngine extends EventEmitter {
   constructor() {
@@ -498,7 +545,7 @@ class ChatEngine extends EventEmitter {
 
     try {
       const llamaCppPath = this._getNodeLlamaCppPath();
-      const { getLlama, LlamaChat, readGgufFileInfo, JinjaTemplateChatWrapper, LlamaText } = await import(pathToFileURL(llamaCppPath).href);
+      const { getLlama, LlamaChat, readGgufFileInfo, JinjaTemplateChatWrapper } = await import(pathToFileURL(llamaCppPath).href);
 
       const s = buildEngineLoadSettings(rawLoadSettings || {});
       this.gpuPreference = s.gpuPreference;
@@ -680,15 +727,22 @@ class ChatEngine extends EventEmitter {
         const totalLayers = totalLayersFromGguf || 32;
         const budget = computeUnifiedVramBudget({
           vramFree,
+          vramTotal,
           modelSizeBytes: modelStats.size,
           totalLayers,
           kvBytesPerToken: kvBytesPerToken || 0,
           desiredMaxContext: desiredMax,
           minContext: contextMin,
           gpuConstrainedContext: s.gpuConstrainedContext !== false,
+          vramBalance: s.vramBalance,
+          trainMaxContext: trainMaxContext ?? null,
         });
         const kvOnGpuFinal = (kvBytesPerToken || 0) * budget.contextSize * (budget.gpuLayers / totalLayers);
-        console.log(`[ChatEngine] Unified VRAM budget: vramFree=${(vramFree/1e9).toFixed(2)}GB, gpuLayers=${budget.gpuLayers}/${totalLayers}, estCtx=${budget.contextSize}, kvOnGpu=${(kvOnGpuFinal/1e6).toFixed(1)}MB, overhead=${(VRAM_GENERATION_OVERHEAD/1e9).toFixed(2)}GB`);
+        const meta = budget.budgetMeta;
+        const metaStr = meta
+          ? `, mode=${meta.mode}, autoTarget=${meta.autoTarget}${meta.targetUsed != null ? `, targetUsed=${meta.targetUsed}` : ''}${meta.targetSteppedDown ? ', targetSteppedDown=true' : ''}${meta.cpuFallback ? ', cpuFallback=true' : ''}`
+          : '';
+        console.log(`[ChatEngine] Unified VRAM budget: vramFree=${(vramFree / 1e9).toFixed(2)}GB, vramTotal=${(vramTotal / 1e9).toFixed(2)}GB, gpuLayers=${budget.gpuLayers}/${totalLayers}, estCtx=${budget.contextSize}, kvOnGpu=${(kvOnGpuFinal / 1e6).toFixed(1)}MB, overhead=${(VRAM_GENERATION_OVERHEAD / 1e9).toFixed(2)}GB${metaStr}`);
         loadModelOpts.gpuLayers = budget.gpuLayers;
         this._preLoadContextEstimate = budget.contextSize;
       }
@@ -744,6 +798,7 @@ class ChatEngine extends EventEmitter {
         // Post-load: refine context using measured VRAM and locked gpuLayers (same unified budget).
         const postBudget = computeUnifiedVramBudget({
           vramFree: vramFreeAfterModel,
+          vramTotal,
           modelSizeBytes: modelStats.size,
           totalLayers: totalLayersForCtx,
           kvBytesPerToken,
@@ -751,6 +806,7 @@ class ChatEngine extends EventEmitter {
           minContext: contextMin,
           gpuConstrainedContext: s.gpuConstrainedContext !== false,
           fixedGpuLayers: actualGpuLayers,
+          trainMaxContext: trainMaxContext ?? null,
         });
         computedCtxSize = postBudget.contextSize;
         console.log(`[ChatEngine] Post-load unified context: vramFreeAfterModel=${(vramFreeAfterModel/1e9).toFixed(2)}GB, kvBpt=${kvBytesPerToken}, gpuRatio=${gpuLayerRatio.toFixed(2)}, computedCtxSize=${computedCtxSize}${this._preLoadContextEstimate != null ? `, preLoadEst=${this._preLoadContextEstimate}` : ''}`);
@@ -785,6 +841,7 @@ class ChatEngine extends EventEmitter {
           const kvBytesF16 = kvBytesPerToken * 4;
           const fallbackBudget = computeUnifiedVramBudget({
             vramFree: vramFreeAfterModel,
+            vramTotal,
             modelSizeBytes: modelStats.size,
             totalLayers: totalLayersForCtx,
             kvBytesPerToken: kvBytesF16,
@@ -792,6 +849,7 @@ class ChatEngine extends EventEmitter {
             minContext: contextMin,
             gpuConstrainedContext: s.gpuConstrainedContext !== false,
             fixedGpuLayers: actualGpuLayers,
+            trainMaxContext: trainMaxContext ?? null,
           });
           const fallbackCtxSize = fallbackBudget.contextSize;
           console.warn(`[ChatEngine] Context creation at ${computedCtxSize} failed (${ctxErr.message}), retrying with f16 KV estimate: ${fallbackCtxSize}`);
@@ -922,7 +980,6 @@ class ChatEngine extends EventEmitter {
       // (QwenChatWrapper, DeepSeekChatWrapper, etc.) unchanged.
       let chatWrapperOpt = 'auto';
       const needsThinkingJinja = ggufChatTemplate && _templateSupportsThinking && _chatTemplateKwargs.enable_thinking;
-      const needsGlmForcedOpen = needsThinkingJinja && (_detectedFamily === 'glm' || ggufArchString === 'chatglm');
 
       if (needsThinkingJinja) {
         const jinjaOpts = {
@@ -935,12 +992,9 @@ class ChatEngine extends EventEmitter {
           },
         };
         try {
-          const WrapperClass = needsGlmForcedOpen
-            ? createGlmThinkingJinjaChatWrapper(JinjaTemplateChatWrapper, LlamaText)
-            : JinjaTemplateChatWrapper;
-          chatWrapperOpt = new WrapperClass(jinjaOpts);
+          chatWrapperOpt = new JinjaTemplateChatWrapper(jinjaOpts);
           const thoughtSeg = chatWrapperOpt.settings?.segments?.thought;
-          console.log(`[ChatEngine] Custom Jinja wrapper (thinking): enable_thinking=true, thoughtSegment=${!!thoughtSeg}, forcedOpen=${needsGlmForcedOpen}, reopenAfterFC=${thoughtSeg?.reopenAfterFunctionCalls ?? false}`);
+          console.log(`[ChatEngine] Custom Jinja wrapper (thinking): enable_thinking=true, thoughtSegment=${!!thoughtSeg}, reopenAfterFC=${thoughtSeg?.reopenAfterFunctionCalls ?? false}`);
         } catch (jinjaErr) {
           console.warn(`[ChatEngine] Custom Jinja wrapper failed — falling back to auto: ${jinjaErr.message}`);
           chatWrapperOpt = 'auto';
@@ -1235,6 +1289,7 @@ class ChatEngine extends EventEmitter {
 
       this._chatHistory[0].text = basePrompt + '\n\n' + effectiveToolPrompt;
       console.log(`[ChatEngine] Tool prompt injected (${effectiveToolPrompt.length} chars, mode=${budgetResult.mode}, budget=${budgetResult.budgetTokens} tok, ctx=${contextTokens}, finalPct=${finalPct}%, parts=${budgetResult.partsUsed ?? 'n/a'})`);
+      console.log(`[ChatEngine] Prompt assembly: systemChars=${basePrompt.length}, toolChars=${effectiveToolPrompt.length}, totalSystemChars=${basePrompt.length + effectiveToolPrompt.length}, historyMsgs=${this._chatHistory.length - 1}`);
     } else if (functions && Object.keys(functions).length > 0) {
       this._chatHistory[0].text = basePrompt + this._buildToolPrompt(functions);
       console.log(`[ChatEngine] Functions provided (fallback): ${Object.keys(functions).length} tools`);
@@ -1314,6 +1369,7 @@ class ChatEngine extends EventEmitter {
       // (Qwen, DeepSeek-R1, etc.), suppress raw-text <think> detection to avoid double-emit.
       // Flag flips true on the first native segment observed in this generation.
       let _sfNativeThinkActive = false;
+      let _sfNativeThinkChars = 0; // B03: native thought segment chars (not in fullResponse)
       const _sfStreamedFileWrites = new Set();
       let _sfVisibleChars = 0; // tracks chars forwarded to frontend (after filter removes tool JSON)
       let _sfPostFenceSuppress = false; // Fix 4: suppress hallucinated prose after confirmed tool fence closes
@@ -1459,26 +1515,31 @@ class ChatEngine extends EventEmitter {
             const OPEN_TAG = '<think>';
             const CLOSE_TAG = '</think>';
             if (_sfThinkTagMatch === OPEN_TAG) {
+              _sfThinkTagMatch = '';
+              if (_sfNativeThinkActive) {
+                console.log('[ChatEngine] <think> open tag consumed (native segments active — tag stripped)');
+                continue;
+              }
               // Full open match — enter thinking mode, discard the tag
               _sfInThink = true;
               _sfThinkBuf = '';
-              _sfThinkTagMatch = '';
-              // B4: Suppress raw-text llm-thinking-start if native segment path is active.
-              if (onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
+              if (onStreamEvent && !_thinkingFilterEnabled) {
                 onStreamEvent('llm-thinking-start', { position: _sfVisibleChars });
               }
-              console.log(`[ChatEngine] <think> tag detected${_sfNativeThinkActive ? ' (raw-text emit suppressed by B4 — native segment active)' : ' — routing to llm-thinking-token (raw text path)'}`);
+              console.log('[ChatEngine] <think> tag detected — routing to llm-thinking-token (raw text path)');
               continue;
             } else if (_sfThinkTagMatch === CLOSE_TAG) {
-              // Fix 5: Orphan close-think tag — GLM outputs thinking content WITHOUT an open tag,
-              // so the thinking text was forwarded as regular prose. Emit retroactive event so
-              // the frontend can move that text into the thinking panel instead of showing duplicate prose.
+              _sfThinkTagMatch = '';
+              if (_sfNativeThinkActive) {
+                console.log('[ChatEngine] orphan </think> consumed (native segments active — tag stripped, no retroactive move)');
+                continue;
+              }
+              // Orphan close-think tag — model emitted reasoning without open tag (pre-native-segment path).
               console.log('[ChatEngine] orphan </think> consumed — retroactively marking preceding text as thinking');
               if (_sfVisibleChars > 0 && onStreamEvent) {
                 onStreamEvent('llm-thinking-retroactive', { length: _sfVisibleChars });
               }
-              _sfThinkTagMatch = '';
-              _sfVisibleChars = 0; // reset — the visible chars are now in the thinking panel
+              _sfVisibleChars = 0;
               continue;
             } else if (!OPEN_TAG.startsWith(_sfThinkTagMatch) && !CLOSE_TAG.startsWith(_sfThinkTagMatch)) {
               // Not matching either tag — flush buffered chars to normal processing
@@ -1933,8 +1994,12 @@ class ChatEngine extends EventEmitter {
         seed: options.seed ?? undefined,
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
-          fullResponse += chunk;
-          _sfProcessChunk(chunk);
+          // When native segments are active, visible text is routed via onResponseChunk only
+          // (SegmentHandler fires both; processing both duplicates UI + fullResponse).
+          if (!_sfNativeThinkActive) {
+            fullResponse += chunk;
+            _sfProcessChunk(chunk);
+          }
           tokensSinceLastUsageReport++;
           genTokenCount++;
           if (onContextUsage && tokensSinceLastUsageReport >= 50) {
@@ -1946,17 +2011,17 @@ class ChatEngine extends EventEmitter {
         },
         onResponseChunk: (chunk) => {
           if (_thinkingFilterEnabled) return;
-          if (chunk.type !== 'segment') return;
+          const text = chunk.text || '';
 
-          // node-llama-cpp segment types: "thought" (reasoning) | "comment" (visible reply).
-          // Segment content is NOT duplicated to onTextChunk — must route here.
+          // node-llama-cpp CLI: segmentType === 'thought' → reasoning; segmentType == null → [response].
           if (chunk.segmentType === 'thought') {
             _sfNativeThinkActive = true;
+            if (text) _sfNativeThinkChars += text.length;
             if (chunk.segmentStartTime && onStreamEvent) {
               onStreamEvent('llm-thinking-start', { position: _sfVisibleChars });
             }
-            if (chunk.text && onStreamEvent) {
-              onStreamEvent('llm-thinking-token', chunk.text);
+            if (text && onStreamEvent) {
+              onStreamEvent('llm-thinking-token', text);
             }
             if (chunk.segmentEndTime && onStreamEvent) {
               onStreamEvent('llm-thinking-end', {
@@ -1969,10 +2034,21 @@ class ChatEngine extends EventEmitter {
               this._nativeThinkLogged = true;
               console.log('[ChatEngine] ✓ B4: Native onResponseChunk thought segments active — raw-text <think> emission suppressed for this generation');
             }
-          } else if (chunk.text) {
-            // "comment" and any other non-thought segment → visible stream + tool-parse buffer
-            fullResponse += chunk.text;
-            _sfProcessChunk(chunk.text);
+            return;
+          }
+
+          // Main visible response stream (type/segmentType undefined — not a named segment).
+          if (text && chunk.segmentType == null) {
+            fullResponse += text;
+            _sfProcessChunk(text);
+            tokensSinceLastUsageReport++;
+            genTokenCount++;
+            if (onContextUsage && tokensSinceLastUsageReport >= 50) {
+              tokensSinceLastUsageReport = 0;
+              const used = this._sequence.nextTokenIndex;
+              const total = this._context.contextSize;
+              onContextUsage({ used, total });
+            }
           }
         },
       };
@@ -2725,7 +2801,7 @@ class ChatEngine extends EventEmitter {
       }
       const stopReason = result.metadata?.stopReason || 'natural';
 
-      console.log(`[ChatEngine] Generation complete. Tool calls: ${totalToolCalls}, stopReason=${stopReason}, responseLen=${fullResponse.length}`);
+      console.log(`[ChatEngine] Generation complete. Tool calls: ${totalToolCalls}, stopReason=${stopReason}, responseLen=${fullResponse.length}, thoughtLen=${_sfNativeThinkChars}, visibleLen=${_sfVisibleChars}`);
 
       // Inference speed diagnostic
       const ctxUsedTokens = this._sequence?.nextTokenIndex || 0;
@@ -2735,7 +2811,7 @@ class ChatEngine extends EventEmitter {
       const ctxPct = totalCtx > 0 ? Math.round((ctxUsedTokens / totalCtx) * 100) : 0;
       const totalGenElapsed = (Date.now() - genStartTime) / 1000;
       const avgTokPerSec = totalGenElapsed > 0 && genTokenCount > 0 ? (genTokenCount / totalGenElapsed).toFixed(1) : '?';
-      console.log(`[ChatEngine] Inference diagnostic: ctx=${ctxUsedTokens}/${totalCtx} (${ctxPct}%), gpuLayers=${gpuLayers}/${totalLayers}, responseLen=${fullResponse.length}, genTokens=${genTokenCount}, totalTime=${totalGenElapsed.toFixed(1)}s, avgTok/s=${avgTokPerSec}, model=${this.modelInfo?.name}`);
+      console.log(`[ChatEngine] Inference diagnostic: ctx=${ctxUsedTokens}/${totalCtx} (${ctxPct}%), gpuLayers=${gpuLayers}/${totalLayers}, responseLen=${fullResponse.length}, thoughtLen=${_sfNativeThinkChars}, visibleLen=${_sfVisibleChars}, genTokens=${genTokenCount}, totalTime=${totalGenElapsed.toFixed(1)}s, avgTok/s=${avgTokPerSec}, model=${this.modelInfo?.name}`);
       // Memory monitoring: check VRAM/RAM pressure after generation
       if (this.gpuPreference !== 'cpu') {
         try {
@@ -2758,9 +2834,11 @@ class ChatEngine extends EventEmitter {
         } catch (e) { console.warn('[ChatEngine] Memory post-gen check failed:', e.message); }
       }
 
-      // Emit error to UI when generation produced nothing useful (but NOT if user manually stopped)
-      if (!fullResponse.trim() && stopReason !== 'cancelled' && stopReason !== 'abort' && onStreamEvent) {
-        console.warn(`[ChatEngine] Empty response warning: stopReason=${stopReason}, contextTokens=${contextTokens}`);
+      // Emit error only when neither visible response nor native thinking was produced
+      const hadVisibleOutput = !!fullResponse.trim() || _sfVisibleChars > 0;
+      const hadThinkingOutput = _sfNativeThinkChars > 0;
+      if (!hadVisibleOutput && !hadThinkingOutput && stopReason !== 'cancelled' && stopReason !== 'abort' && onStreamEvent) {
+        console.warn(`[ChatEngine] Empty response warning: stopReason=${stopReason}, contextTokens=${contextTokens}, thoughtLen=0, visibleLen=${_sfVisibleChars}`);
         onStreamEvent('generation-error', {
           message: 'Model produced no output',
           suggestion: contextTokens < 4096

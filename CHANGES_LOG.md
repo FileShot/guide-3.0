@@ -4,6 +4,65 @@
 
 ---
 
+## 2026-05-21 — B11/B12: Tool prompt consolidation + schema fixes
+
+### Problem
+Duplicate tool format/examples in `SYSTEM_PROMPT` and `getToolPrompt()` caused spurious tool calls on casual chat (B12). `write_scratchpad`/`read_scratchpad` definition used `name` but executor required `key` (B11). `_buildToolPrompt` categories omitted 19 tools (relegated to catch-all) and referenced undefined `browser_list_elements`.
+
+### Fix
+**`chatEngine.js`**
+- Slim `SYSTEM_PROMPT`: identity, when-to-use prose vs tools, pointer to ## Tools section — no duplicated format/examples/catalog.
+- `buildBudgetProportionalToolPrompt`: always preserve compact header part when budget-trimmed.
+- Prompt assembly logging: systemChars, toolChars, totalSystemChars.
+
+**`mcpToolServer.js`**
+- `_writeScratchpad` / `_readScratchpad`: accept `params.name || params.key`.
+- `_normalizeFsParams`: scratchpad name/key alias; edit_file old_string/new_string → oldText/newText.
+- `_buildToolPrompt`: all 69 tools in explicit categories; correct param examples (oldText, dirPath); general-purpose wording; removed ghost `browser_list_elements`.
+- `getCompactToolHint` header: read_file, edit_file, list_directory examples.
+
+**`tools/toolParser.js`**
+- Aliases: old_string/new_string, list_directory path, scratchpad name.
+
+---
+
+## 2026-05-21 — B02/B03: GLM thinking — remove forcedOpen, fix native segment routing
+
+### Problem
+Pre-v0.3.87: thinking mixed with prose in plain chat (no segment split). v0.3.87+ `forcedOpen` injected opening `<think>` and trapped output in thought segment / thinking dropdown. `onResponseChunk` ignored `segmentType==null` [response] chunks. Orphan retroactive handler moved visible text back into thinking UI.
+
+Diagnostic (`scripts/glm-thinking-diagnostic.mjs`): Mode B (enable_thinking, no forcedOpen) splits thought/response; Mode C (forcedOpen) inverts or traps content.
+
+### Fix
+**`chatEngine.js`**
+- Removed `createGlmThinkingJinjaChatWrapper` / forcedOpen — Jinja + `enable_thinking:true` only.
+- `onResponseChunk`: route `segmentType==='thought'` → thinking UI; `segmentType==null` → main chat + fullResponse (matches node-llama-cpp CLI).
+- `onTextChunk`: skip visible routing when `_sfNativeThinkActive` (avoid SegmentHandler double-fire).
+- Orphan/inline think tags: strip only when native segments active — no retroactive move.
+- B03: track `thoughtLen` vs `responseLen`; skip false empty-response error when thinking was streamed.
+
+---
+
+## 2026-05-21 — B01: VRAM balance allocator (context collapse at 2048)
+
+### Problem
+Auto load (`gpuLayers=-1`) picked max GPU layers with `gpuLayers * 1e6 + contextSize` scoring, accepting `MIN_CONTEXT_FLOOR` (2048) context whenever full offload barely fit — unusable context on constrained VRAM.
+
+### Fix
+**`chatEngine.js`**
+- Split KV fit math into `computeLayerVramFit`.
+- `computeAutoTargetContext`: tier by `vramTotal` bytes (4096 / 8192 / 32768 / 65536), capped by runtime KV estimate.
+- `computeUnifiedVramBudget`: `balanced` mode picks **highest gpuLayers where maxCtx >= target** (target steps down if needed); `speed` preserves v0.3.87 layer-first scoring; `context` maximizes context among fits.
+- Post-load path unchanged structurally: fixed layers → max context from remaining VRAM.
+
+**`settingsManager.js`**, **`Sidebar.jsx`**, **`appStore.js`**
+- New setting `vramBalance`: `balanced` | `speed` | `context` (default `balanced`).
+
+### Not changed
+- Manual `gpuLayers >= 0`, CPU mode, tool prompt, electron-builder packaging.
+
+---
+
 ## 2026-05-21 — v0.3.88 HOTFIX: Model load broken — chatWrappers not packaged
 
 ### Problem (v0.3.87 production)
