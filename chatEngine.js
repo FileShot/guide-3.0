@@ -114,13 +114,14 @@ function computeLayerVramFit({
   vramOverheadBytes,
   vramBufferBytes,
   gpuConstrainedContext,
+  weightsAlreadyLoaded = false,
 }) {
   if (!vramFree || vramFree <= 0 || !totalLayers || !modelSizeBytes || !kvBytesPerToken) {
     return null;
   }
   const bytesPerLayer = modelSizeBytes / totalLayers;
   const gpuRatio = totalLayers > 0 ? gpuLayers / totalLayers : 0;
-  const modelVram = gpuLayers * bytesPerLayer;
+  const modelVram = weightsAlreadyLoaded ? 0 : gpuLayers * bytesPerLayer;
   const availForKv = vramFree - modelVram - vramOverheadBytes - vramBufferBytes;
   if (availForKv <= 0) return null;
 
@@ -189,9 +190,9 @@ function computeUnifiedVramBudget({
     gpuConstrainedContext,
   };
 
-  // Post-load: layers locked — maximize context for that layer count only.
+  // Post-load: layers locked, weights already in VRAM — maximize context for available memory.
   if (fixedGpuLayers != null) {
-    const fit = computeLayerVramFit({ ...fitParams, gpuLayers: fixedGpuLayers });
+    const fit = computeLayerVramFit({ ...fitParams, gpuLayers: fixedGpuLayers, weightsAlreadyLoaded: true });
     return {
       gpuLayers: fixedGpuLayers,
       contextSize: fit?.contextSize ?? fallback.contextSize,
@@ -1994,12 +1995,8 @@ class ChatEngine extends EventEmitter {
         seed: options.seed ?? undefined,
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
-          // When native segments are active, visible text is routed via onResponseChunk only
-          // (SegmentHandler fires both; processing both duplicates UI + fullResponse).
-          if (!_sfNativeThinkActive) {
-            fullResponse += chunk;
-            _sfProcessChunk(chunk);
-          }
+          fullResponse += chunk;
+          _sfProcessChunk(chunk);
           tokensSinceLastUsageReport++;
           genTokenCount++;
           if (onContextUsage && tokensSinceLastUsageReport >= 50) {
@@ -2011,9 +2008,9 @@ class ChatEngine extends EventEmitter {
         },
         onResponseChunk: (chunk) => {
           if (_thinkingFilterEnabled) return;
-          const text = chunk.text || '';
+          if (chunk.type !== 'segment') return;
 
-          // node-llama-cpp CLI: segmentType === 'thought' → reasoning; segmentType == null → [response].
+          const text = chunk.text || '';
           if (chunk.segmentType === 'thought') {
             _sfNativeThinkActive = true;
             if (text) _sfNativeThinkChars += text.length;
@@ -2037,18 +2034,9 @@ class ChatEngine extends EventEmitter {
             return;
           }
 
-          // Main visible response stream (type/segmentType undefined — not a named segment).
-          if (text && chunk.segmentType == null) {
+          if (text) {
             fullResponse += text;
             _sfProcessChunk(text);
-            tokensSinceLastUsageReport++;
-            genTokenCount++;
-            if (onContextUsage && tokensSinceLastUsageReport >= 50) {
-              tokensSinceLastUsageReport = 0;
-              const used = this._sequence.nextTokenIndex;
-              const total = this._context.contextSize;
-              onContextUsage({ used, total });
-            }
           }
         },
       };
@@ -2874,8 +2862,6 @@ class ChatEngine extends EventEmitter {
     console.log(`[ChatEngine] cancelGeneration called: reason=${reason || 'cancelled'}`);
     if (this._abortController) {
       this._abortController.abort(reason || 'cancelled');
-    } else {
-      console.warn('[ChatEngine] cancelGeneration: no abortController exists');
     }
   }
 
