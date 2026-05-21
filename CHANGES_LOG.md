@@ -4,6 +4,78 @@
 
 ---
 
+## 2026-05-21 — P2 bugs: mmproj, continuation, validation, ENOENT, GPU cache, _send
+
+### Fixes
+- **`visionServer.js`** — Reject mmproj when model `embedding_length` unknown or mmproj dimension mismatches. Accept `embeddingLength` from chatEngine GGUF metadata.
+- **`chatEngine.js`** — Continuation tool-results message states tools already executed. Validation failures pushed to history when repair drops all calls. `getGPUInfo` returns cached reading on transient nvidia-smi failure.
+- **`electron-main.js`** — `/api/files/read` returns `{ missing: true }` on ENOENT. `_send` drops silently when window destroyed.
+
+### Deferred
+- Bug 1 (Gemma 4), Bug 8 (CUDA prebuilt matrix) — require llama.cpp/CI binary update.
+
+---
+
+## 2026-05-21 — P1 Bug 5 + Bug 7: Tool budget + load state machine
+
+### Bug 5 — Tool prompt bloat
+**`chatEngine.js`** — `buildBudgetProportionalToolPrompt()` computes remaining prompt budget from context − history − user message − generation reserve. Appends `getCompactToolHint()` category parts until budget exhausted; uses full catalog only when it fits.
+
+**`electron-main.js`** — Passes `compactToolParts` array (not minimal-only join).
+
+### Bug 7 — Model load race
+**`chatEngine.js`** — `_loadState`: idle | loading | ready | disposing. `waitForReady()` for session/clear. `chat()` rejects during loading/disposing with explicit message.
+
+**`electron-main.js`** — ai-chat checks load state; session/clear awaits `waitForReady()`.
+
+---
+
+## 2026-05-21 — P1 Bug 4: Unified VRAM budget (context collapse)
+
+### Problem
+GPU layer allocation and context sizing were two separate passes with hardcoded `MIN_VIABLE_CONTEXT=4096`, causing severe context collapse on 4GB VRAM.
+
+### Fix
+**`chatEngine.js`** — Added `computeUnifiedVramBudget()` that iterates layer counts and picks the (gpuLayers, contextSize) pair maximizing context within VRAM. Pre-load sets gpuLayers; post-load refines context with measured `vramFreeAfterModel`. Fix D gpu-constrained cap absorbed into the same function.
+
+---
+
+## 2026-05-21 — P0: Gate enable_thinking + Phi profile + inject-user-message IPC
+
+### Problem
+Phi-4-mini-instruct logged `templateSupportsThinking=false` but received `enable_thinking=true` and `Thinking budget: 2048`, causing run-on degeneration. Mid-stream user input failed with `No handler registered for 'inject-user-message'`.
+
+### Root cause
+1. `chatTemplateKwargs.enable_thinking` was set whenever profile `thinkTokens.mode !== 'none'`, without checking whether the GGUF chat template declares `enable_thinking`.
+2. User `reasoningEffort` / `thinkingBudget` settings applied even on non-thinking-capable models.
+3. Phi family profile incorrectly had `thinkTokens: { mode: 'budget' }`.
+4. `preload.js` exposed `injectUserMessage` but `electron-main.js` had no matching `ipcMain.handle`.
+
+### Fix
+**`chatEngine.js`** — Store `_templateSupportsThinking` and `_thinkingCapable`. Pass `enable_thinking=true` only when template declares it AND user enabled thinking AND profile mode ≠ none. Downgrade profile think budget to `none` for instruct families when template lacks `enable_thinking` (native-segment families deepseek/qwen/glm/gemma exempt). Force `thinkBudget=0` at generation when `!_thinkingCapable`.
+
+**`modelProfiles.js`** — Phi family `thinkTokens.mode` → `'none'` at all tiers.
+
+**`electron-main.js`** — Added `ipcMain.handle('inject-user-message', ...)`.
+
+---
+
+## 2026-05-21 — P0 Fix #1: Route onResponseChunk by segmentType (thought vs comment)
+
+### Problem
+DeepSeek-R1 and other native-segment models produced empty or nonsense visible replies (`"Great! Let's keep going."`) while thinking content appeared correctly. GLM double-response issues were partially masked by orphan-tag retroactive handling.
+
+### Root cause
+`onResponseChunk` in `chatEngine.js` sent **every** segment chunk to `llm-thinking-token`, ignoring `chunk.segmentType`. node-llama-cpp defines `ChatModelSegmentType = "thought" | "comment"`. Visible assistant text arrives as `"comment"` segments and is **not** duplicated to `onTextChunk` — so misrouting it to thinking left the visible stream empty.
+
+### Fix
+**`chatEngine.js` `onResponseChunk` handler** — route `segmentType === 'thought'` to thinking events (`llm-thinking-start/token/end` on segment boundaries). Route other segment types (including `"comment"`) through `_sfProcessChunk` and append to `fullResponse` for tool parsing. Raw `<think>` tag parser retained for GLM/JinjaTemplate models that do not use native segments; removal deferred until GLM/DeepSeek verified.
+
+### Verification
+- Pending manual test: DeepSeek-R1 visible reply after thinking block; GLM no duplicate prose.
+
+---
+
 ## 2026-05-18 — Generation-speed parity with llama.cpp upstream / LM Studio (Causes 1 + 3)
 
 ### Problem

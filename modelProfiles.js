@@ -147,18 +147,18 @@ const FAMILY_PROFILES = {
   phi: {
     base: {
       sampling: { temperature: 0.35, topP: 0.80, topK: 20, repeatPenalty: 1.20, frequencyPenalty: 0.05, lastTokensPenaltyCount: 256 },
-      thinkTokens: { mode: 'budget', budget: 1024 },
+      thinkTokens: { mode: 'none', budget: 0 },
     },
     tiny: {
       sampling: { temperature: 0.30, topP: 0.75, topK: 15, repeatPenalty: 1.25, lastTokensPenaltyCount: 512 },
       prompt: { style: 'compact' },
-      thinkTokens: { mode: 'budget', budget: 128 },
+      thinkTokens: { mode: 'none', budget: 0 },
       generation: { maxToolsPerTurn: 10 },
     },
     small: {
       sampling: { temperature: 0.35, topP: 0.80, topK: 20, repeatPenalty: 1.20 },
       prompt: { style: 'compact' },
-      thinkTokens: { mode: 'budget', budget: 256 },
+      thinkTokens: { mode: 'none', budget: 0 },
       generation: { maxToolsPerTurn: 14 },
     },
     medium: {

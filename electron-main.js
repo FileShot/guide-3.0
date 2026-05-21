@@ -291,9 +291,8 @@ async function openProjectPath(projectPath) {
 function _send(event, data) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(event, data);
-  } else {
-    console.warn(`[electron-main] _send: mainWindow not available for event '${event}'`);
   }
+  // Drop silently during shutdown — window destroyed is expected, not an error.
 }
 
 const ctx = {
@@ -382,6 +381,10 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
   }
 
   // ── Local model path ─────────────────────────────────────────────────
+  if (llmEngine.isLoading || llmEngine.getStatus().loadState === 'loading' || llmEngine.getStatus().loadState === 'disposing') {
+    console.warn('[electron-main] ai-chat: model load in progress');
+    return { error: 'Model is loading — please wait and try again.' };
+  }
   if (!llmEngine.isReady) {
     console.warn('[electron-main] ai-chat: no model loaded');
     return { error: 'No model loaded. Please load a model first.' };
@@ -400,13 +403,15 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     const toolDefs = mcpToolServer.getToolDefinitions();
     const functions = askOnly ? {} : ChatEngine.convertToolDefs(toolDefs);
     let toolPrompt = askOnly ? '' : mcpToolServer.getToolPrompt();
-    let compactToolPrompt = askOnly ? '' : mcpToolServer.getCompactToolHint('default', { minimal: true }).join('');
+    const compactToolParts = askOnly ? [] : mcpToolServer.getCompactToolHint('default');
+    let compactToolPrompt = compactToolParts.join('');
 
     // Sub-agents: append spawn_subagent tool definition when enabled
     if (enableSubAgents && toolPrompt) {
       const subAgentTool = '\n- **spawn_subagent** — Delegate a focused sub-task to an isolated sub-agent that shares the same loaded model but runs in a fresh context. Use for long research tasks, code analysis, or any work that should not pollute the main context. Params: task (string, required) — description of what the sub-agent should do; contextSize (number, optional) — token budget for sub-agent.';
       toolPrompt += subAgentTool;
       compactToolPrompt += '\n- spawn_subagent(task): run focused sub-task in fresh context';
+      compactToolParts.push('\n- spawn_subagent(task): run focused sub-task in fresh context\n');
     }
 
     // Inject current file context into the user message so the model can see the active file
@@ -431,6 +436,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       functions,
       toolPrompt,
       compactToolPrompt,
+      compactToolParts,
       executeToolFn: async (toolName, params) => {
         if (toolName === 'spawn_subagent') {
           if (!enableSubAgents) return { success: false, error: 'Sub-agents are disabled. Enable in Settings > Agentic Behavior.' };
@@ -508,6 +514,13 @@ ipcMain.handle('force-send-queued', async () => {
   console.log('[electron-main] force-send-queued');
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
+  return { success: true };
+});
+
+ipcMain.handle('inject-user-message', (_e, payload) => {
+  const text = typeof payload === 'string' ? payload : payload?.text;
+  console.log(`[electron-main] inject-user-message: len=${String(text ?? '').length}`);
+  llmEngine.injectUserMessage(text);
   return { success: true };
 });
 
@@ -687,9 +700,16 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       const filePath = q.path;
       if (!filePath) return { _status: 400, error: 'path required' };
       const fullPath = path.isAbsolute(filePath) ? filePath : path.join(currentProjectPath || '', filePath);
-      const content = fs.readFileSync(fullPath, 'utf8');
-      const ext = path.extname(fullPath).slice(1);
-      return { content, path: fullPath, extension: ext, name: path.basename(fullPath) };
+      try {
+        const content = fs.readFileSync(fullPath, 'utf8');
+        const ext = path.extname(fullPath).slice(1);
+        return { content, path: fullPath, extension: ext, name: path.basename(fullPath) };
+      } catch (err) {
+        if (err.code === 'ENOENT') {
+          return { content: null, path: fullPath, missing: true, name: path.basename(fullPath) };
+        }
+        throw err;
+      }
     }
     if (p === '/api/files/write' && method === 'POST') {
       const { filePath, content } = body;
@@ -1234,6 +1254,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       ctx.agenticCancelled = true;
       if (ctx.resetPause) ctx.resetPause();
       try { llmEngine.cancelGeneration(); } catch (_) {}
+      await llmEngine.waitForReady();
       await new Promise(r => setTimeout(r, 100));
       await llmEngine.resetSession();
       if (ctx.mcpToolServer) {

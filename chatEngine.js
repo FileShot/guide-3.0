@@ -57,6 +57,143 @@ function filterWebWorkspaceToolConflict(calls) {
 const MIN_CONTEXT_FLOOR = 2048;
 /** When requireMinContextForGpu is true, prefer at least this before accepting GPU offload. */
 const MIN_CONTEXT_WHEN_GPU_REQUIRED = 4096;
+/** VRAM reserved for activations, CUDA context, and allocator overhead during generation. */
+const VRAM_GENERATION_OVERHEAD = 512 * 1024 * 1024;
+/** Safety buffer subtracted from free VRAM before KV allocation. */
+const VRAM_KV_BUFFER = 256 * 1024 * 1024;
+
+/**
+ * Unified VRAM budget (Ollama-style): pick (gpuLayers, contextSize) in one pass.
+ * Iterates layer counts and picks the pair that maximizes context while fitting in VRAM.
+ * When fixedGpuLayers is set, only computes the best context for that layer count (post-load).
+ *
+ * @returns {{ gpuLayers: number, contextSize: number }}
+ */
+function computeUnifiedVramBudget({
+  vramFree,
+  modelSizeBytes,
+  totalLayers,
+  kvBytesPerToken,
+  desiredMaxContext,
+  minContext = MIN_CONTEXT_FLOOR,
+  vramOverheadBytes = VRAM_GENERATION_OVERHEAD,
+  vramBufferBytes = VRAM_KV_BUFFER,
+  gpuConstrainedContext = true,
+  fixedGpuLayers = null,
+}) {
+  const fallback = {
+    gpuLayers: fixedGpuLayers ?? 0,
+    contextSize: Math.max(minContext, Math.min(desiredMaxContext, minContext)),
+  };
+  if (!vramFree || vramFree <= 0 || !totalLayers || totalLayers <= 0 || !modelSizeBytes) {
+    return fallback;
+  }
+  if (!kvBytesPerToken || kvBytesPerToken <= 0) {
+    return {
+      gpuLayers: fixedGpuLayers ?? totalLayers,
+      contextSize: desiredMaxContext,
+    };
+  }
+
+  const bytesPerLayer = modelSizeBytes / totalLayers;
+  let best = { gpuLayers: 0, contextSize: minContext, score: minContext };
+
+  const layerMax = fixedGpuLayers != null ? fixedGpuLayers : totalLayers;
+  const layerMin = fixedGpuLayers != null ? fixedGpuLayers : 0;
+
+  for (let gpuLayers = layerMax; gpuLayers >= layerMin; gpuLayers--) {
+    const gpuRatio = totalLayers > 0 ? gpuLayers / totalLayers : 0;
+    const modelVram = gpuLayers * bytesPerLayer;
+    const availForKv = vramFree - modelVram - vramOverheadBytes - vramBufferBytes;
+    if (availForKv <= 0) continue;
+
+    let maxCtx;
+    if (gpuRatio > 0) {
+      maxCtx = Math.floor(availForKv / (kvBytesPerToken * gpuRatio));
+      if (gpuConstrainedContext && gpuRatio < 0.3) {
+        const vramBoundedCtx = Math.floor(availForKv / kvBytesPerToken);
+        if (vramBoundedCtx > 0) maxCtx = Math.min(maxCtx, vramBoundedCtx);
+      }
+    } else {
+      maxCtx = desiredMaxContext;
+    }
+
+    const contextSize = Math.max(minContext, Math.min(maxCtx, desiredMaxContext));
+    const kvOnGpu = kvBytesPerToken * contextSize * gpuRatio;
+    if (modelVram + kvOnGpu + vramOverheadBytes > vramFree) continue;
+
+    const score = contextSize * 1000 + gpuLayers;
+    if (score > best.score) {
+      best = { gpuLayers, contextSize, score };
+    }
+  }
+
+  if (best.score <= minContext && fixedGpuLayers == null) return fallback;
+  return { gpuLayers: best.gpuLayers, contextSize: best.contextSize };
+}
+
+/** Approximate chars per token for English tool prompts. */
+const TOOL_PROMPT_CHARS_PER_TOKEN = 3.5;
+
+/**
+ * Size tool catalog to remaining prompt budget (Bug 5).
+ * Appends compact category parts until budget exhausted; falls back to full if it fits.
+ */
+function buildBudgetProportionalToolPrompt({
+  contextTokens,
+  basePromptChars,
+  historyChars = 0,
+  userMessageChars = 0,
+  toolPrompt = '',
+  compactToolParts = null,
+  compactToolPrompt = '',
+  minGenerationReserve = 512,
+  maxToolBudgetPct = 0.35,
+}) {
+  const consumedTokens = Math.ceil((basePromptChars + historyChars + userMessageChars) / TOOL_PROMPT_CHARS_PER_TOKEN);
+  const promptBudgetTokens = Math.max(256, contextTokens - minGenerationReserve - consumedTokens);
+  const maxToolTokens = Math.floor(promptBudgetTokens * maxToolBudgetPct);
+  const maxToolChars = Math.floor(maxToolTokens * TOOL_PROMPT_CHARS_PER_TOKEN);
+
+  const fullToolTokens = Math.ceil((toolPrompt?.length || 0) / TOOL_PROMPT_CHARS_PER_TOKEN);
+  if (toolPrompt && fullToolTokens <= maxToolTokens) {
+    return { prompt: toolPrompt, mode: 'full', budgetTokens: maxToolTokens, usedTokens: fullToolTokens };
+  }
+
+  const parts = Array.isArray(compactToolParts) && compactToolParts.length > 0
+    ? compactToolParts
+    : (compactToolPrompt ? [compactToolPrompt] : []);
+
+  if (parts.length === 0) {
+    const trimmed = toolPrompt && toolPrompt.length > maxToolChars
+      ? toolPrompt.slice(0, maxToolChars) + '\n…and more tools available\n'
+      : (toolPrompt || '');
+    return { prompt: trimmed, mode: 'trimmed-full', budgetTokens: maxToolTokens, usedTokens: Math.ceil(trimmed.length / TOOL_PROMPT_CHARS_PER_TOKEN) };
+  }
+
+  let built = '';
+  let partsUsed = 0;
+  for (const part of parts) {
+    const next = built + part;
+    if (next.length > maxToolChars && built.length > 0) break;
+    built = next;
+    partsUsed++;
+  }
+  if (!built && parts[0]) {
+    built = parts[0];
+    partsUsed = 1;
+  }
+  if (partsUsed < parts.length) {
+    built += '\n…and more tools available\n';
+  }
+  return {
+    prompt: built,
+    mode: 'budget-parts',
+    budgetTokens: maxToolTokens,
+    partsUsed,
+    usedTokens: Math.ceil(built.length / TOOL_PROMPT_CHARS_PER_TOKEN),
+  };
+}
 
 /**
  * Normalize settings / IPC payload for model load. Matches settingsManager defaults when fields are missing.
@@ -254,6 +391,9 @@ class ChatEngine extends EventEmitter {
     console.log('[ChatEngine] constructor START');
     this.isReady = false;
     this.isLoading = false;
+    /** @type {'idle'|'loading'|'ready'|'disposing'} */
+    this._loadState = 'idle';
+    this._loadPromise = null;
     this.modelInfo = null;
     this.currentModelPath = null;
     this.gpuPreference = 'auto';
@@ -268,14 +408,23 @@ class ChatEngine extends EventEmitter {
     this._lastEvaluation = null;
     this._abortController = null;
     this._pendingUserMessage = null; // injected by user interrupt during tool loop
+    this._templateSupportsThinking = false;
+    this._thinkingCapable = false;
     this._recentlyWrittenFiles = new Map(); // filePath → content written in current chat() call
     this._sessionId = 0; // increments on resetSession to detect stale tool results
     console.log('[ChatEngine] constructor DONE');
   }
 
+  async waitForReady() {
+    if (this._loadPromise) {
+      try { await this._loadPromise; } catch (_) { /* load failed */ }
+    }
+    return this.isReady && this._loadState === 'ready';
+  }
+
   /**
    * @param {string} modelPath
-   * @param {object} [rawLoadSettings] â€” from settingsManager.get() (gpuPreference, gpuLayers, contextSize, requireMinContextForGpu)
+   * @param {object} [rawLoadSettings] — from settingsManager.get() (gpuPreference, gpuLayers, contextSize, requireMinContextForGpu)
    */
   async initialize(modelPath, rawLoadSettings) {
     // If a load is already in progress, wait for it to finish, then proceed with this new request.
@@ -295,7 +444,9 @@ class ChatEngine extends EventEmitter {
   }
 
   async _doInitialize(modelPath, rawLoadSettings) {
+    this._loadState = 'loading';
     this.isLoading = true;
+    this.isReady = false;
     this.emit('status', { state: 'loading', message: 'Loading model...' });
 
     try {
@@ -305,7 +456,11 @@ class ChatEngine extends EventEmitter {
       const s = buildEngineLoadSettings(rawLoadSettings || {});
       this.gpuPreference = s.gpuPreference;
 
-      if (this._model) await this._dispose();
+      if (this._model) {
+        this._loadState = 'disposing';
+        await this._dispose();
+        this._loadState = 'loading';
+      }
 
       let trainMaxContext = null;
       let totalLayersFromGguf = null;
@@ -461,35 +616,21 @@ class ChatEngine extends EventEmitter {
       } else if (s.gpuLayers >= 0) {
         loadModelOpts.gpuLayers = s.gpuLayers;
       } else {
-        // Compute GPU layers iteratively.
-        // llama.cpp allocates the KV cache on the same device as each model layer,
-        // so the GPU-proportional portion of the KV cache must fit in VRAM alongside
-        // the model weights. This creates a circular dependency: gpuLayers depends on
-        // kvOnGpu which depends on gpuLayers. We solve it by iterating until stable.
-        //
-        // CRITICAL: We reserve VRAM for MIN_VIABLE_CONTEXT (4096 tokens) of KV cache,
-        // NOT the full desiredMax. Using desiredMax (e.g. 112K tokens = 14GB KV) when
-        // VRAM is only 3.45GB causes the iteration to oscillate between 0 and max layers
-        // and never converge. After model load, the actual context size is computed from
-        // remaining VRAM — this reservation just ensures we don't starve the KV cache.
+        // Unified VRAM budget: pick gpuLayers + estimated context in one pass (Bug 4).
         const totalLayers = totalLayersFromGguf || 32;
-        const bytesPerLayer = modelStats.size / totalLayers;
-        const MIN_VIABLE_CONTEXT = 4096;
-        const kvBytesForMinCtx = (kvBytesPerToken || 0) * MIN_VIABLE_CONTEXT;
-        const vramOverhead = 512 * 1024 * 1024; // 512MB for activations/buffers
-        let computedGpuLayers = totalLayers; // start optimistic
-        for (let i = 0; i < 10; i++) {
-          const kvOnGpu = kvBytesForMinCtx * (computedGpuLayers / totalLayers);
-          const availableForModel = vramFree - kvOnGpu - vramOverhead;
-          const newGpuLayers = availableForModel > 0
-            ? Math.max(0, Math.min(Math.floor(availableForModel / bytesPerLayer), totalLayers))
-            : 0;
-          if (newGpuLayers === computedGpuLayers) break; // converged
-          computedGpuLayers = newGpuLayers;
-        }
-        const kvOnGpuFinal = kvBytesForMinCtx * (computedGpuLayers / totalLayers);
-        console.log(`[ChatEngine] GPU layer computation: vramFree=${(vramFree/1e9).toFixed(2)}GB, kvMinCtx=${(kvBytesForMinCtx/1e6).toFixed(1)}MB, kvOnGpu=${(kvOnGpuFinal/1e6).toFixed(1)}MB, overhead=0.50GB, bytesPerLayer=${(bytesPerLayer/1e6).toFixed(1)}MB, gpuLayers=${computedGpuLayers}/${totalLayers}`);
-        loadModelOpts.gpuLayers = computedGpuLayers;
+        const budget = computeUnifiedVramBudget({
+          vramFree,
+          modelSizeBytes: modelStats.size,
+          totalLayers,
+          kvBytesPerToken: kvBytesPerToken || 0,
+          desiredMaxContext: desiredMax,
+          minContext: contextMin,
+          gpuConstrainedContext: s.gpuConstrainedContext !== false,
+        });
+        const kvOnGpuFinal = (kvBytesPerToken || 0) * budget.contextSize * (budget.gpuLayers / totalLayers);
+        console.log(`[ChatEngine] Unified VRAM budget: vramFree=${(vramFree/1e9).toFixed(2)}GB, gpuLayers=${budget.gpuLayers}/${totalLayers}, estCtx=${budget.contextSize}, kvOnGpu=${(kvOnGpuFinal/1e6).toFixed(1)}MB, overhead=${(VRAM_GENERATION_OVERHEAD/1e9).toFixed(2)}GB`);
+        loadModelOpts.gpuLayers = budget.gpuLayers;
+        this._preLoadContextEstimate = budget.contextSize;
       }
 
       this._model = await this._llama.loadModel(loadModelOpts);
@@ -539,29 +680,21 @@ class ChatEngine extends EventEmitter {
       const gpuLayerRatio = totalLayersForCtx > 0 ? actualGpuLayers / totalLayersForCtx : 0;
       let computedCtxSize = desiredMax;
 
-      if (kvBytesPerToken > 0 && gpuLayerRatio > 0 && s.gpuPreference !== 'cpu') {
-        // vramFreeAfterModel was already measured above (P2 batchSize computation)
-        // KV on GPU = kvBytesPerToken * contextSize * gpuLayerRatio
-        // Available for KV = vramFreeAfterModel - buffer
-        // contextSize = available / (kvBytesPerToken * gpuLayerRatio)
-        const vramBuffer = 256 * 1024 * 1024; // 256MB safety buffer
-        const maxCtxFromVram = Math.floor((vramFreeAfterModel - vramBuffer) / (kvBytesPerToken * gpuLayerRatio));
-        computedCtxSize = Math.max(MIN_CONTEXT_FLOOR, Math.min(maxCtxFromVram, desiredMax));
-        console.log(`[ChatEngine] Context size computation: vramFreeAfterModel=${(vramFreeAfterModel/1e9).toFixed(2)}GB, kvBpt=${kvBytesPerToken}, gpuRatio=${gpuLayerRatio.toFixed(2)}, maxCtxFromVram=${maxCtxFromVram}, computedCtxSize=${computedCtxSize}`);
-
-        // Fix D: GPU-constrained context cap. When only a small fraction of layers
-        // fit on GPU (gpuRatio < 0.3), the formula above allows massive context because
-        // only the GPU fraction of KV needs VRAM — but the remaining KV lives in system
-        // RAM, and every generation step traverses CPU layers with that massive KV cache,
-        // causing significant slowdown. Cap context to what fits in VRAM for the full KV
-        // (not just the GPU fraction) to keep generation fast. Toggleable via setting.
-        if (s.gpuConstrainedContext && gpuLayerRatio < 0.3 && kvBytesPerToken > 0) {
-          const vramBoundedCtx = Math.floor((vramFreeAfterModel - vramBuffer) / kvBytesPerToken);
-          if (vramBoundedCtx > 0 && vramBoundedCtx < computedCtxSize) {
-            console.log(`[ChatEngine] Fix D: GPU-constrained context cap: ${vramBoundedCtx} (from ${computedCtxSize}) — gpuRatio=${gpuLayerRatio.toFixed(2)}, only ${actualGpuLayers}/${totalLayersForCtx} layers on GPU`);
-            computedCtxSize = Math.max(MIN_CONTEXT_FLOOR, vramBoundedCtx);
-          }
-        }
+      if (kvBytesPerToken > 0 && s.gpuPreference !== 'cpu') {
+        // Post-load: refine context using measured VRAM and locked gpuLayers (same unified budget).
+        const postBudget = computeUnifiedVramBudget({
+          vramFree: vramFreeAfterModel,
+          modelSizeBytes: modelStats.size,
+          totalLayers: totalLayersForCtx,
+          kvBytesPerToken,
+          desiredMaxContext: desiredMax,
+          minContext: contextMin,
+          gpuConstrainedContext: s.gpuConstrainedContext !== false,
+          fixedGpuLayers: actualGpuLayers,
+        });
+        computedCtxSize = postBudget.contextSize;
+        console.log(`[ChatEngine] Post-load unified context: vramFreeAfterModel=${(vramFreeAfterModel/1e9).toFixed(2)}GB, kvBpt=${kvBytesPerToken}, gpuRatio=${gpuLayerRatio.toFixed(2)}, computedCtxSize=${computedCtxSize}${this._preLoadContextEstimate != null ? `, preLoadEst=${this._preLoadContextEstimate}` : ''}`);
+        this._preLoadContextEstimate = null;
       }
 
       // Build createContext options. Only attach experimentalKvCacheKeyType / ValueType when
@@ -588,12 +721,20 @@ class ChatEngine extends EventEmitter {
         // Fallback: if a quantised KV type isn't actually applied by llama.cpp for this model,
         // the real KV size is f16 (up to 4x larger). Recompute with f16 estimate and retry.
         // vramFreeAfterModel was already measured above; reuse it.
-        if (kvBytesPerToken > 0 && gpuLayerRatio > 0 && s.gpuPreference !== 'cpu') {
+        if (kvBytesPerToken > 0 && s.gpuPreference !== 'cpu') {
           const kvBytesF16 = kvBytesPerToken * 4;
-          const vramBuffer = 256 * 1024 * 1024;
-          const maxCtxF16 = Math.floor((vramFreeAfterModel - vramBuffer) / (kvBytesF16 * gpuLayerRatio));
-          const fallbackCtxSize = Math.max(MIN_CONTEXT_FLOOR, Math.min(maxCtxF16, desiredMax));
-          console.warn(`[ChatEngine] Context creation at ${computedCtxSize} failed (${ctxErr.message}), retrying with f16 estimate: ${fallbackCtxSize}`);
+          const fallbackBudget = computeUnifiedVramBudget({
+            vramFree: vramFreeAfterModel,
+            modelSizeBytes: modelStats.size,
+            totalLayers: totalLayersForCtx,
+            kvBytesPerToken: kvBytesF16,
+            desiredMaxContext: desiredMax,
+            minContext: contextMin,
+            gpuConstrainedContext: s.gpuConstrainedContext !== false,
+            fixedGpuLayers: actualGpuLayers,
+          });
+          const fallbackCtxSize = fallbackBudget.contextSize;
+          console.warn(`[ChatEngine] Context creation at ${computedCtxSize} failed (${ctxErr.message}), retrying with f16 KV estimate: ${fallbackCtxSize}`);
           const fallbackOpts = { ...baseCtxOpts, contextSize: fallbackCtxSize };
           this._context = await this._model.createContext(fallbackOpts);
         } else {
@@ -663,6 +804,7 @@ class ChatEngine extends EventEmitter {
       const _templateSupportsThinking = ggufChatTemplate
         ? /enable_thinking/.test(ggufChatTemplate)
         : false;
+      this._templateSupportsThinking = _templateSupportsThinking;
       console.log(`[ChatEngine] Tier 1: chat_template auto-detect — templatePresent=${!!ggufChatTemplate}, supportsThinking=${_templateSupportsThinking}`);
 
       // Tier 2: Family detection — GGUF architecture metadata (primary) then filename (fallback).
@@ -675,11 +817,9 @@ class ChatEngine extends EventEmitter {
       this._modelProfile = getModelProfile(_detectedFamily, _detectedSizeB);
 
       // Merge Tier 1 auto-detection into the profile.
-      // If the chat template says the model supports thinking but the vendor profile
-      // says mode='none' (e.g. an old profile for a non-thinking variant), the template
-      // wins — it's the ground truth from the actual model file.
-      // If the vendor profile says mode='budget' but the template has no enable_thinking,
-      // the vendor profile wins — some models think without the template variable.
+      // Template wins when it declares enable_thinking but profile says none.
+      // When template lacks enable_thinking, instruct-family profiles are downgraded to none
+      // (native-segment families deepseek/qwen/glm/gemma keep profile budget for segment API).
       const _profileThinkMode = this._modelProfile?.thinkTokens?.mode;
       if (_templateSupportsThinking && _profileThinkMode === 'none') {
         // Template says thinking is supported but profile says none — template wins
@@ -691,17 +831,26 @@ class ChatEngine extends EventEmitter {
         this._modelProfile.thinkTokens.mode = 'budget';
         this._modelProfile.thinkTokens.budget = this._modelProfile.thinkTokens.budget || 2048;
         console.log(`[ChatEngine] Tier 1 auto-detect: chat_template supports thinking — set thinkTokens.mode='budget'`);
+      } else if (!_templateSupportsThinking && _profileThinkMode !== 'none') {
+        // Instruct models (phi, llama, mistral, etc.) must not get thought budgets when the
+        // GGUF chat template has no enable_thinking variable. Native-segment families keep budget.
+        const _NATIVE_THINK_FAMILIES = new Set(['deepseek', 'qwen', 'glm', 'gemma']);
+        if (!_NATIVE_THINK_FAMILIES.has(_detectedFamily)) {
+          this._modelProfile.thinkTokens.mode = 'none';
+          this._modelProfile.thinkTokens.budget = 0;
+          console.log(`[ChatEngine] Template has no enable_thinking — disabled think budget for instruct family '${_detectedFamily}'`);
+        }
       }
 
-      // Pass enable_thinking to chat template kwargs.
-      // When the model supports thinking (Tier 1 or Tier 2) and the user hasn't disabled
-      // thinking in settings, pass enable_thinking=true. This is silently ignored by
-      // models whose templates don't reference the kwarg.
+      // Pass enable_thinking to chat template kwargs ONLY when the GGUF template declares it.
+      // Never pass enable_thinking=true to instruct models whose templates lack the variable
+      // (e.g. Phi-4-mini-instruct) — that corrupts generation and wastes context on fake "thinking".
       const _resolvedThinkMode = this._modelProfile?.thinkTokens?.mode;
+      this._thinkingCapable = _resolvedThinkMode !== 'none';
       const _chatTemplateKwargs = {};
-      if (s.enableThinking && _resolvedThinkMode !== 'none') {
+      if (s.enableThinking && _templateSupportsThinking && _resolvedThinkMode !== 'none') {
         _chatTemplateKwargs.enable_thinking = true;
-      } else if (_resolvedThinkMode === 'none' || !s.enableThinking) {
+      } else {
         _chatTemplateKwargs.enable_thinking = false;
       }
       this._chat = new LlamaChat({ contextSequence: this._sequence, chatTemplateKwargs: _chatTemplateKwargs });
@@ -717,10 +866,13 @@ class ChatEngine extends EventEmitter {
       this.currentModelPath = modelPath;
       this.isReady = true;
       this.isLoading = false;
+      this._loadState = 'ready';
 
       // Check vision availability — do NOT auto-start. Vision starts on-demand when an image needs captioning.
       try {
-        const visionCheck = visionServer.checkAvailability(modelPath);
+        const visionCheck = visionServer.checkAvailability(modelPath, {
+          embeddingLength: ggufArchMeta?.embedding_length ?? null,
+        });
         if (visionCheck.available) {
           console.log(`[ChatEngine] Vision: mmproj found at ${visionCheck.mmprojPath} — vision available (will start on first image)`);
           this.modelInfo.visionAvailable = true;
@@ -742,6 +894,7 @@ class ChatEngine extends EventEmitter {
     } catch (err) {
       this.isLoading = false;
       this.isReady = false;
+      this._loadState = 'idle';
       // Detect "unknown model architecture" failures from llama.cpp and surface
       // an actionable message instead of the raw C++ error. Matches messages like:
       //   "unknown model architecture: 'gemma4'"
@@ -779,9 +932,12 @@ class ChatEngine extends EventEmitter {
   }
 
   async chat(userMessage, options = {}) {
+    if (this._loadState === 'loading' || this._loadState === 'disposing') {
+      throw new Error('Model is loading — please wait a moment and try again.');
+    }
     if (!this.isReady || !this._chat) throw new Error('Model not ready');
 
-    const { onToken, onComplete, onContextUsage, onToolCall, onStreamEvent, systemPrompt, functions, toolPrompt, compactToolPrompt, executeToolFn, guideInstructionsPath } = options;
+    const { onToken, onComplete, onContextUsage, onToolCall, onStreamEvent, systemPrompt, functions, toolPrompt, compactToolPrompt, compactToolParts, executeToolFn, guideInstructionsPath } = options;
 
       // Inject attachment content into user message
       const attachments = Array.isArray(options.attachments) ? options.attachments : [];
@@ -956,42 +1112,33 @@ class ChatEngine extends EventEmitter {
       // Ask mode: no tools available — just set the base prompt with mode instruction
       this._chatHistory[0].text = basePrompt;
     } else if (toolPrompt) {
-      // Estimate token cost of tool prompt (~3.5 chars/token for English)
-      const toolPromptTokens = Math.ceil(toolPrompt.length / 3.5);
+      const historyChars = this._chatHistory.slice(1).reduce((sum, m) => sum + (String(m.text || '').length), 0);
+      const userMessageChars = effectiveUserMessage.length;
+      const budgetResult = buildBudgetProportionalToolPrompt({
+        contextTokens,
+        basePromptChars: basePrompt.length,
+        historyChars,
+        userMessageChars,
+        toolPrompt,
+        compactToolParts,
+        compactToolPrompt,
+      });
+      effectiveToolPrompt = budgetResult.prompt;
+      useCompact = budgetResult.mode !== 'full';
+
+      const finalPct = Math.round((budgetResult.usedTokens / contextTokens) * 100);
+      const toolPromptTokens = Math.ceil(toolPrompt.length / TOOL_PROMPT_CHARS_PER_TOKEN);
       const toolPct = Math.round((toolPromptTokens / contextTokens) * 100);
 
-      // Emit warning to UI when tool prompt consumes too much context
       if (toolPct > 50 && onStreamEvent) {
         onStreamEvent('generation-warning', {
-          message: `Tool prompt uses ${toolPct}% of context (${toolPromptTokens.toLocaleString()}/${contextTokens.toLocaleString()} tokens)`,
-          suggestion: 'Responses may be limited. Try a smaller model, reduce context in settings, or start a new session.',
+          message: `Full tool catalog would use ${toolPct}% of context (${toolPromptTokens.toLocaleString()}/${contextTokens.toLocaleString()} tokens)`,
+          suggestion: 'Using budget-proportional tool list. Try a smaller model, reduce context in settings, or start a new session.',
         });
       }
 
-      // Use compact prompt when tool prompt would consume >40% of context
-      // (not just when ctx<8192 — a 13K tool prompt in 14K ctx is equally disastrous)
-      // Decision is based on CONTEXT SIZE, not model parameters — small models in 2026
-      // have huge context windows (128K+), so model size doesn't determine prompt style.
-      useCompact = compactToolPrompt && (contextTokens < 8192 || toolPct > 40);
-      effectiveToolPrompt = useCompact ? compactToolPrompt : toolPrompt;
-
-      // If even the compact prompt is too large, progressively trim it
-      if (useCompact && typeof effectiveToolPrompt === 'string') {
-        const compactPct = Math.round((Math.ceil(effectiveToolPrompt.length / 3.5) / contextTokens) * 100);
-        if (compactPct > 50) {
-          // Strip everything after the first 8 tool descriptions — keep format header + core tools
-          const lines = effectiveToolPrompt.split('\n');
-          const toolLineIdx = [];
-          lines.forEach((l, i) => { if (l.startsWith('- **')) toolLineIdx.push(i); });
-          if (toolLineIdx.length > 8) {
-            effectiveToolPrompt = lines.slice(0, toolLineIdx[8]).join('\n') + '\n…and more tools available\n';
-          }
-        }
-      }
-
       this._chatHistory[0].text = basePrompt + '\n\n' + effectiveToolPrompt;
-      const finalPct = Math.round((Math.ceil(effectiveToolPrompt.length / 3.5) / contextTokens) * 100);
-      console.log(`[ChatEngine] Tool prompt injected (${effectiveToolPrompt.length} chars${useCompact ? ', compact' : ''}, ctx=${contextTokens}, finalPct=${finalPct}%, compactAvailable=${!!compactToolPrompt})`);
+      console.log(`[ChatEngine] Tool prompt injected (${effectiveToolPrompt.length} chars, mode=${budgetResult.mode}, budget=${budgetResult.budgetTokens} tok, ctx=${contextTokens}, finalPct=${finalPct}%, parts=${budgetResult.partsUsed ?? 'n/a'})`);
     } else if (functions && Object.keys(functions).length > 0) {
       this._chatHistory[0].text = basePrompt + this._buildToolPrompt(functions);
       console.log(`[ChatEngine] Functions provided (fallback): ${Object.keys(functions).length} tools`);
@@ -1653,8 +1800,8 @@ class ChatEngine extends EventEmitter {
       const profileThinkBudget = this._modelProfile?.thinkTokens?.budget;
       let thinkBudget = options.thinkingBudget;
       const reasoningEffort = options.reasoningEffort;
-      // If the profile says this model/tier doesn't support thinking, force budget to 0
-      if (profileThinkMode === 'none') {
+      // No thought budget on models that don't support thinking (template + profile gate at load)
+      if (!this._thinkingCapable || profileThinkMode === 'none') {
         thinkBudget = 0;
       } else if ((!thinkBudget || thinkBudget === 0) && profileThinkMode === 'budget' && profileThinkBudget) {
         // Use profile's budget as default when user hasn't set one
@@ -1702,15 +1849,34 @@ class ChatEngine extends EventEmitter {
           }
         },
         onResponseChunk: (chunk) => {
-          if (chunk.type === 'segment' && chunk.text && !_thinkingFilterEnabled) {
-            // B4: Mark native segment path active so raw-text detection suppresses its emit.
+          if (_thinkingFilterEnabled) return;
+          if (chunk.type !== 'segment') return;
+
+          // node-llama-cpp segment types: "thought" (reasoning) | "comment" (visible reply).
+          // Segment content is NOT duplicated to onTextChunk — must route here.
+          if (chunk.segmentType === 'thought') {
             _sfNativeThinkActive = true;
-            if (onStreamEvent) onStreamEvent('llm-thinking-token', chunk.text);
-            // Diagnostic: log first native thinking segment so we can confirm this path fires
+            if (chunk.segmentStartTime && onStreamEvent) {
+              onStreamEvent('llm-thinking-start', { position: _sfVisibleChars });
+            }
+            if (chunk.text && onStreamEvent) {
+              onStreamEvent('llm-thinking-token', chunk.text);
+            }
+            if (chunk.segmentEndTime && onStreamEvent) {
+              onStreamEvent('llm-thinking-end', {
+                position: _sfVisibleChars,
+                length: 0,
+                content: '',
+              });
+            }
             if (!this._nativeThinkLogged) {
               this._nativeThinkLogged = true;
-              console.log('[ChatEngine] ✓ B4: Native onResponseChunk segment API active — raw-text <think> emission suppressed for this generation');
+              console.log('[ChatEngine] ✓ B4: Native onResponseChunk thought segments active — raw-text <think> emission suppressed for this generation');
             }
+          } else if (chunk.text) {
+            // "comment" and any other non-thought segment → visible stream + tool-parse buffer
+            fullResponse += chunk.text;
+            _sfProcessChunk(chunk.text);
           }
         },
       };
@@ -1883,7 +2049,14 @@ class ChatEngine extends EventEmitter {
           console.warn(`[ChatEngine] ⚠ 0 tool calls parsed — model output preview: "${fullResponse.replace(/\n/g, '\\n')}"`);
         }
         if (parsedCalls.length > 0) {
-          const { repaired } = repairToolCalls(parsedCalls, fullResponse);
+          const { repaired, issues } = repairToolCalls(parsedCalls, fullResponse);
+          if (repaired.length === 0 && issues.length > 0) {
+            console.warn(`[ChatEngine] All ${parsedCalls.length} tool call(s) failed validation — feeding errors back to model`);
+            this._chatHistory.push({
+              type: 'user',
+              text: `[System: Tool Validation Failed]\n${issues.join('\n')}\n\nRetry with valid tool parameters.`,
+            });
+          }
           parsedCalls = filterWebWorkspaceToolConflict(repaired);
           console.log(`[ChatEngine] Tool calls after repair/filter: ${parsedCalls.length} — [${parsedCalls.map(c => c.tool).join(', ')}]`);
         }
@@ -2226,7 +2399,7 @@ class ChatEngine extends EventEmitter {
 
           this._chatHistory.push({
             type: 'user',
-            text: `${userInterruptPrefix}[System: Tool Results]\n${toolResultLines.join('\n')}${relatedSection}\n\nContinue with the remaining steps of the task. Call the next tool if more work is needed, or explain the result if the task is complete.`
+            text: `${userInterruptPrefix}[System: Tool Results]\nThe tools below have ALREADY been executed. Do not repeat these actions or re-narrate work that is already complete. Summarize outcomes or proceed to the next step only.\n\n${toolResultLines.join('\n')}${relatedSection}\n\nContinue with any remaining steps. Call the next tool if more work is needed, or explain the result if the task is complete.`
           });
           console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${!!this._pendingUserMessage}`);
           // Log compact summaries — browser snapshots bloat logs with full DOM
@@ -2623,6 +2796,14 @@ class ChatEngine extends EventEmitter {
 
   async resetSession() {
     console.log('[ChatEngine] resetSession START');
+    if (this._loadPromise) {
+      console.log('[ChatEngine] resetSession: awaiting in-flight model load');
+      try { await this._loadPromise; } catch (_) { /* load failed */ }
+    }
+    if (this._loadState === 'loading' || this._loadState === 'disposing') {
+      console.warn('[ChatEngine] resetSession skipped — model load in progress');
+      return;
+    }
     this._sessionId++;
     this._chatHistory = [{ type: 'system', text: SYSTEM_PROMPT }];
     this._lastEvaluation = null;
@@ -2636,6 +2817,7 @@ class ChatEngine extends EventEmitter {
     const status = {
       isReady: this.isReady,
       isLoading: this.isLoading,
+      loadState: this._loadState,
       modelInfo: this.modelInfo,
       currentModelPath: this.currentModelPath,
       gpuPreference: this.gpuPreference,
@@ -2665,7 +2847,7 @@ class ChatEngine extends EventEmitter {
       );
       const [name, memTotal, memUsed, memFree, utilGpu, temp] = stdout.trim().split(',').map(s => s.trim());
       console.log(`[ChatEngine] getGPUInfo: name=${name}, memTotal=${memTotal}, memUsed=${memUsed}, memFree=${memFree}`);
-      return {
+      const info = {
         name,
         memoryTotal: parseFloat(memTotal),
         memoryUsed: parseFloat(memUsed),
@@ -2673,7 +2855,13 @@ class ChatEngine extends EventEmitter {
         gpuUtilization: parseFloat(utilGpu),
         temperature: parseFloat(temp),
       };
+      this._cachedGpuInfo = info;
+      return info;
     } catch (e) {
+      if (this._cachedGpuInfo) {
+        console.log(`[ChatEngine] getGPUInfo failed (${e.message}) — returning cached reading`);
+        return this._cachedGpuInfo;
+      }
       console.warn(`[ChatEngine] getGPUInfo failed: ${e.message}`);
       return { name: 'Unknown', memoryTotal: 0, memoryUsed: 0, memoryFree: 0, gpuUtilization: 0, temperature: 0 };
     }
@@ -2681,8 +2869,11 @@ class ChatEngine extends EventEmitter {
 
   async dispose() {
     console.log('[ChatEngine] dispose START');
+    this._loadState = 'disposing';
     await this._dispose();
     this.isReady = false;
+    this.isLoading = false;
+    this._loadState = 'idle';
     this.modelInfo = null;
     this.currentModelPath = null;
     this.emit('status', { state: 'idle', message: 'Model unloaded' });

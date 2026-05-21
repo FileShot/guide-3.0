@@ -47,14 +47,14 @@ class VisionServer {
    * Check if vision is available for the given model.
    * Returns { available: boolean, reason: string, mmprojPath: string|null }
    */
-  checkAvailability(modelPath) {
+  checkAvailability(modelPath, options = {}) {
     console.log(`[VisionServer] Checking vision availability for: ${modelPath}`);
     if (!modelPath) {
       return { available: false, reason: 'No model path', mmprojPath: null };
     }
 
-    // mmproj is ALWAYS in the same directory as the model GGUF
-    const mmprojPath = this._findMmproj(modelPath);
+    const embeddingLength = options.embeddingLength ?? null;
+    const mmprojPath = this._findMmproj(modelPath, embeddingLength);
     if (!mmprojPath) {
       console.log('[VisionServer] No mmproj file found in model directory — vision unavailable for this model');
       return { available: false, reason: 'No mmproj file found in model directory', mmprojPath: null };
@@ -522,14 +522,21 @@ class VisionServer {
     }
   }
 
-  _findMmproj(modelPath) {
+  _findMmproj(modelPath, knownEmbeddingLength = null) {
     if (!modelPath) return null;
     try {
       const modelDir = path.dirname(modelPath);
 
       // Read the model's embedding dimension for mmproj compatibility validation
-      const modelEmbdLen = this._readGgufEmbdLength(modelPath);
+      const modelEmbdLen = knownEmbeddingLength || this._readGgufEmbdLength(modelPath);
       console.log(`[VisionServer] Model embedding_length: ${modelEmbdLen || 'unknown'} (from ${path.basename(modelPath)})`);
+
+      // Without a known embedding dimension we cannot validate mmproj compatibility —
+      // do not attach a random sibling mmproj (Bug 9).
+      if (!modelEmbdLen) {
+        console.log('[VisionServer] embedding_length unknown — vision unavailable until dimension is known');
+        return null;
+      }
 
       // Priority order: exact mmproj name patterns
       const patterns = [
@@ -561,13 +568,14 @@ class VisionServer {
             );
             if (match) {
               const fullPath = path.join(dir, match);
-              // Validate mmproj embedding dimension matches model
-              if (modelEmbdLen) {
-                const mmprojEmbdLen = this._readGgufEmbdLength(fullPath);
-                if (mmprojEmbdLen && mmprojEmbdLen !== modelEmbdLen) {
-                  console.warn(`[VisionServer] mmproj ${path.basename(fullPath)} has n_embd=${mmprojEmbdLen} but model has n_embd=${modelEmbdLen} — SKIPPING (mismatch)`);
-                  continue; // skip this mmproj, try next pattern or directory
-                }
+              const mmprojEmbdLen = this._readGgufEmbdLength(fullPath);
+              if (mmprojEmbdLen && mmprojEmbdLen !== modelEmbdLen) {
+                console.warn(`[VisionServer] mmproj ${path.basename(fullPath)} has n_embd=${mmprojEmbdLen} but model has n_embd=${modelEmbdLen} — SKIPPING (mismatch)`);
+                continue;
+              }
+              if (!mmprojEmbdLen) {
+                console.warn(`[VisionServer] mmproj ${path.basename(fullPath)} has unknown n_embd — SKIPPING`);
+                continue;
               }
               console.log(`[VisionServer] Found compatible mmproj: ${fullPath}`);
               return fullPath;
