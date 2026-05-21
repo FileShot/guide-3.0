@@ -106,6 +106,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build llama.cpp native addon (CPU)
+        run: npx --no node-llama-cpp source build --gpu false --noUsageExample
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build Windows CPU installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.json
         env:
@@ -185,6 +190,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build llama.cpp native addon (CUDA)
+        run: npx --no node-llama-cpp source build --gpu cuda --noUsageExample
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CUDACXX: "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1/bin/nvcc.bat"
+          CUDA_PATH: "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.1"
+
       - name: Build Windows CUDA installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.cuda.json
         env:
@@ -259,6 +271,11 @@ jobs:
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
           echo '{"release": "b9253"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
           echo '{"tag": "b9253", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build llama.cpp native addon (Linux CPU)
+        run: npx --no node-llama-cpp source build --gpu false --noUsageExample
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -344,6 +361,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build llama.cpp native addon (Linux CUDA)
+        run: npx --no node-llama-cpp source build --gpu cuda --noUsageExample
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CUDACXX: /usr/local/cuda/bin/nvcc
+          CUDA_PATH: /usr/local/cuda
+
       - name: Build Linux CUDA AppImage
         run: npx electron-builder --linux --x64 --config electron-builder.nosign.cuda.json
         env:
@@ -425,6 +449,11 @@ jobs:
           cp /tmp/llama-meta/* node_modules/node-llama-cpp/llama/ 2>/dev/null || true
           echo '{"release": "b9253"}' > node_modules/node-llama-cpp/llama/binariesGithubRelease.json
           echo '{"tag": "b9253", "llamaCppGithubRepo": "ggml-org/llama.cpp"}' > node_modules/node-llama-cpp/llama/llama.cpp.info.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build llama.cpp native addon (macOS Metal)
+        run: npx --no node-llama-cpp source build --gpu auto --noUsageExample
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
