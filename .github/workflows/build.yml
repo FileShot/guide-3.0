@@ -86,7 +86,8 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
-      - name: Download & build llama.cpp (latest, CPU)
+      - name: Download latest llama.cpp source (b9253, Gemma 4)
+        shell: bash
         run: |
           curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9253.tar.gz \
@@ -164,7 +165,8 @@ jobs:
           cuda: '13.1.0'
           method: 'network'
 
-      - name: Download & build llama.cpp (latest, CUDA)
+      - name: Download latest llama.cpp source (b9253, Gemma 4, CUDA)
+        shell: bash
         run: |
           curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             https://github.com/ggml-org/llama.cpp/archive/refs/tags/b9253.tar.gz \
