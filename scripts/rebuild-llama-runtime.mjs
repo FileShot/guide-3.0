@@ -7,7 +7,7 @@
  *
  * Env:
  *   LLAMA_CPP_RELEASE — llama.cpp tag (default b9253)
- *   GITHUB_TOKEN — optional, avoids GitHub API rate limits in CI
+ *   GITHUB_TOKEN — optional, passed to curl for tarball download
  */
 'use strict';
 
@@ -102,7 +102,7 @@ const profileEnv = PROFILES[profileName];
 
 log(`profile=${profileName} release=${RELEASE} platform=${process.platform}`);
 
-runNlc(['source', 'download', '--release', RELEASE], profileEnv);
+run('node', [path.join('scripts', 'download-llama-cpp-tarball.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
 run('node', [path.join('scripts', 'verify-llama-gemma4.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
 runNlc(['source', 'build'], profileEnv);
 run('node', [path.join('scripts', 'verify-llama-gemma4.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
