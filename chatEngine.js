@@ -479,6 +479,30 @@ function buildEngineLoadSettings(raw = {}) {
   };
 }
 
+/**
+ * Mode C (independent harness): open the thought segment at generation start via
+ * noPrefixTrigger. Used only for custom Jinja + enable_thinking wrappers — not for
+ * chatWrapper=auto (QwenChatWrapper, Phi instruct, etc.).
+ */
+function createThinkingOpenJinjaWrapper(JinjaTemplateChatWrapper, LlamaText) {
+  return class ThinkingOpenJinjaChatWrapper extends JinjaTemplateChatWrapper {
+    generateContextState(options) {
+      const state = super.generateContextState(options);
+      if (this.additionalRenderParameters?.enable_thinking !== true) return state;
+      const thoughtSeg = this.settings?.segments?.thought;
+      if (thoughtSeg?.prefix == null) return state;
+      return {
+        ...state,
+        noPrefixTrigger: {
+          type: 'segment',
+          segmentType: 'thought',
+          inject: LlamaText(thoughtSeg.prefix),
+        },
+      };
+    }
+  };
+}
+
 // Agent identity prompt — behavior and grounding only; tool format/catalog live in getToolPrompt()
 const SYSTEM_PROMPT = `You are guIDE, an AI assistant embedded in a general-purpose IDE. You help users with software projects: reading and writing code, running commands, searching the web, using the browser, and answering questions.
 
@@ -569,7 +593,8 @@ class ChatEngine extends EventEmitter {
 
     try {
       const llamaCppPath = this._getNodeLlamaCppPath();
-      const { getLlama, LlamaChat, readGgufFileInfo, JinjaTemplateChatWrapper } = await import(pathToFileURL(llamaCppPath).href);
+      const { getLlama, LlamaChat, readGgufFileInfo, JinjaTemplateChatWrapper, LlamaText } = await import(pathToFileURL(llamaCppPath).href);
+      const ThinkingOpenJinjaChatWrapper = createThinkingOpenJinjaWrapper(JinjaTemplateChatWrapper, LlamaText);
 
       const s = buildEngineLoadSettings(rawLoadSettings || {});
       this.gpuPreference = s.gpuPreference;
@@ -1016,9 +1041,9 @@ class ChatEngine extends EventEmitter {
           },
         };
         try {
-          chatWrapperOpt = new JinjaTemplateChatWrapper(jinjaOpts);
+          chatWrapperOpt = new ThinkingOpenJinjaChatWrapper(jinjaOpts);
           const thoughtSeg = chatWrapperOpt.settings?.segments?.thought;
-          console.log(`[ChatEngine] Custom Jinja wrapper (thinking): enable_thinking=true, thoughtSegment=${!!thoughtSeg}, reopenAfterFC=${thoughtSeg?.reopenAfterFunctionCalls ?? false}`);
+          console.log(`[ChatEngine] Custom Jinja wrapper (thinking, thought open at gen start): enable_thinking=true, thoughtSegment=${!!thoughtSeg}, reopenAfterFC=${thoughtSeg?.reopenAfterFunctionCalls ?? false}`);
         } catch (jinjaErr) {
           console.warn(`[ChatEngine] Custom Jinja wrapper failed — falling back to auto: ${jinjaErr.message}`);
           chatWrapperOpt = 'auto';
@@ -1284,22 +1309,10 @@ class ChatEngine extends EventEmitter {
     // branch sets them. Without this, ReferenceError when toolPrompt is absent.
     let useCompact = false;
     let effectiveToolPrompt = '';
-    // Jinja + native FC: prose tool catalog in system breaks enable_thinking segment routing (see glm-production-prompt-diagnostic.mjs).
-    const _jinjaNativeFcNoProseTools = !!(
-      this._jinjaThoughtSegments &&
-      !options.askOnly &&
-      functions &&
-      Object.keys(functions).length > 0 &&
-      !options.enableGrammar
-    );
 
     if (options.askOnly) {
       // Ask mode: no tools available — just set the base prompt with mode instruction
       this._chatHistory[0].text = basePrompt;
-    } else if (_jinjaNativeFcNoProseTools) {
-      this._chatHistory[0].text = basePrompt;
-      console.log(`[ChatEngine] Jinja thinking + native FC: omitted prose tool catalog from system (${Object.keys(functions).length} tools via generateResponse.functions)`);
-      console.log(`[ChatEngine] Prompt assembly: systemChars=${basePrompt.length}, toolChars=0, totalSystemChars=${basePrompt.length}, historyMsgs=${this._chatHistory.length - 1}`);
     } else if (toolPrompt) {
       const historyChars = this._chatHistory.slice(1).reduce((sum, m) => sum + (String(m.text || '').length), 0);
       const userMessageChars = effectiveUserMessage.length;
@@ -1395,8 +1408,10 @@ class ChatEngine extends EventEmitter {
 
       // enableThinkingFilter — when true, suppress thinking tokens from UI output
       const _thinkingFilterEnabled = !!options.enableThinkingFilter;
-      // Raw <think> tag parser: only for non-Jinja models. Phi/instruct must not use it; GLM uses native segments.
-      const _sfRawThinkTagsEnabled = this._templateSupportsThinking && !this._jinjaThoughtSegments;
+      // Raw <think> tag parser for all thinking-capable templates. Per-chunk B4 suppresses
+      // when native onResponseChunk thought segments are active (_sfNativeThinkActive). GLM Jinja often
+      // emits tags via onTextChunk without segment events — disabling the parser here caused tag leaks.
+      const _sfRawThinkTagsEnabled = !!this._templateSupportsThinking;
 
       // Think-tag tracking for reasoning models.
       // These models output <think>...</think> in raw text (LlamaCompletion mode).
@@ -1571,8 +1586,16 @@ class ChatEngine extends EventEmitter {
               continue;
             } else if (_sfThinkTagMatch === CLOSE_TAG) {
               _sfThinkTagMatch = '';
-              if (_sfNativeThinkActive || this._jinjaThoughtSegments) {
-                console.log('[ChatEngine] orphan </think> consumed (native/jinja path — tag stripped, no retroactive move)');
+              if (_sfNativeThinkActive) {
+                console.log('[ChatEngine] orphan </think> consumed (native segments active — tag stripped)');
+                continue;
+              }
+              if (this._jinjaThoughtSegments && _sfVisibleChars > 0) {
+                console.log('[ChatEngine] orphan </think> after visible prose — retroactive thinking move (Jinja segments did not activate)');
+                if (onStreamEvent && !_thinkingFilterEnabled) {
+                  onStreamEvent('llm-thinking-retroactive', { length: _sfVisibleChars });
+                }
+                _sfVisibleChars = 0;
                 continue;
               }
               // Orphan close-think tag — model emitted reasoning without open tag (pre-native-segment path).
@@ -2160,7 +2183,7 @@ class ChatEngine extends EventEmitter {
         console.warn(`[ChatEngine]   ctx state: usedTokens=${usedTokens}, contextSize=${contextSize}, chatHistory=${this._chatHistory.length} msgs`);
 
         // Progressive trimming: try compact prompt first, then trim compact, then trim history
-        if (!_jinjaNativeFcNoProseTools && compactToolPrompt && !useCompact) {
+        if (compactToolPrompt && !useCompact) {
           // Step 1: Switch to compact prompt
           const compactTokens = Math.ceil(compactToolPrompt.length / 3.5);
           const savedTokens = Math.ceil(effectiveToolPrompt.length / 3.5) - compactTokens;
@@ -2172,7 +2195,7 @@ class ChatEngine extends EventEmitter {
         }
 
         // Step 2: If still too large, trim compact prompt aggressively
-        if (!_jinjaNativeFcNoProseTools && typeof effectiveToolPrompt === 'string' && effectiveToolPrompt.length > 500) {
+        if (typeof effectiveToolPrompt === 'string' && effectiveToolPrompt.length > 500) {
           const lines = effectiveToolPrompt.split('\n');
           const toolLineIdx = [];
           lines.forEach((l, i) => { if (l.startsWith('- **')) toolLineIdx.push(i); });

@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-05-22 — v0.3.95 — GLM thinking Mode C + restore prose tool catalog
+
+### Problem
+- GLM (Jinja + `enable_thinking`) used Mode B wrapper: zero native thought segments, answer/thinking duplicated, `</think>` leaked to chat.
+- v0.3.94 `_jinjaNativeFcNoProseTools` dropped markdown ## Tools from system while native FC remained (models lost format examples / full catalog layout).
+
+### Fix
+- **`chatEngine.js`**: `ThinkingOpenJinjaChatWrapper` — Mode C `noPrefixTrigger` opens thought segment at generation start (same as `scripts/glm-thinking-diagnostic.mjs` mode C).
+- Removed `_jinjaNativeFcNoProseTools`; prose `toolPrompt` restored for all models on normal tool path.
+- Raw `<think>` parser stays on for thinking templates; B4 suppresses when native segments active; orphan-close retroactive when Jinja segments never fire.
+
+---
+
 ## 2026-05-22 — v0.3.94 — Gemma4 CI/runtime + Phi thinking gate
 
 ### Problem
