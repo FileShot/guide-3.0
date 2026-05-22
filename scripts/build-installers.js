@@ -91,27 +91,17 @@ function restoreBackends(moved) {
   }
 }
 
-// Pull the latest published llama.cpp release into node-llama-cpp before
-// building installers. The npm package node-llama-cpp@3.18.1 ships with
-// llama.cpp build b8352 (2026-03-15), which predates several model
-// architectures released after that date (gemma4 landed in llama.cpp
-// PR #21326 on 2026-04-02). Running 'source download --release latest'
-// downloads and compiles a fresh llama.cpp from the latest tagged release
-// so the shipped binaries support newly-released model families.
-//
-// Requirements on the build machine: cmake + C++ toolchain (MSVC on
-// Windows, clang/gcc on Unix). The existing build already needs these
-// for prebuilt-binary fallback compilation, so this adds no new
-// prerequisites.
-function rebuildLlamaCpp() {
-  log('Rebuilding bundled llama.cpp from latest release (gemma4 + future arch support)');
-  const npxBin = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+// Download pinned llama.cpp, compile native addon, verify gemma4 (same as CI).
+function rebuildLlamaCpp(buildCuda) {
+  const profile = buildCuda ? 'cuda' : 'default';
+  log(`Rebuilding llama.cpp runtime (profile=${profile}, gemma4 verify)`);
   const result = spawnSync(
-    `${npxBin} node-llama-cpp source download --release b9209`,
-    { cwd: ROOT, stdio: 'inherit', shell: true },
+    process.execPath,
+    [path.join(__dirname, 'rebuild-llama-runtime.mjs'), '--profile', profile],
+    { cwd: ROOT, stdio: 'inherit', env: { ...process.env, LLAMA_CPP_RELEASE: process.env.LLAMA_CPP_RELEASE || 'b9253' } },
   );
   if (result.status !== 0) {
-    throw new Error(`llama.cpp rebuild exited with status ${result.status}`);
+    throw new Error(`rebuild-llama-runtime.mjs exited with status ${result.status}`);
   }
   log('llama.cpp rebuild complete.');
 }
@@ -171,7 +161,7 @@ async function main() {
   // Pull the latest llama.cpp release before building so installers ship
   // support for model architectures that landed after node-llama-cpp 3.18.1
   // was published (e.g. gemma4).
-  rebuildLlamaCpp();
+  rebuildLlamaCpp(buildCuda);
 
   ensureDir(DIST_DIR);
   const outputs = [];

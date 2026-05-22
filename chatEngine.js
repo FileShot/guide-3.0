@@ -1284,10 +1284,22 @@ class ChatEngine extends EventEmitter {
     // branch sets them. Without this, ReferenceError when toolPrompt is absent.
     let useCompact = false;
     let effectiveToolPrompt = '';
+    // Jinja + native FC: prose tool catalog in system breaks enable_thinking segment routing (see glm-production-prompt-diagnostic.mjs).
+    const _jinjaNativeFcNoProseTools = !!(
+      this._jinjaThoughtSegments &&
+      !options.askOnly &&
+      functions &&
+      Object.keys(functions).length > 0 &&
+      !options.enableGrammar
+    );
 
     if (options.askOnly) {
       // Ask mode: no tools available — just set the base prompt with mode instruction
       this._chatHistory[0].text = basePrompt;
+    } else if (_jinjaNativeFcNoProseTools) {
+      this._chatHistory[0].text = basePrompt;
+      console.log(`[ChatEngine] Jinja thinking + native FC: omitted prose tool catalog from system (${Object.keys(functions).length} tools via generateResponse.functions)`);
+      console.log(`[ChatEngine] Prompt assembly: systemChars=${basePrompt.length}, toolChars=0, totalSystemChars=${basePrompt.length}, historyMsgs=${this._chatHistory.length - 1}`);
     } else if (toolPrompt) {
       const historyChars = this._chatHistory.slice(1).reduce((sum, m) => sum + (String(m.text || '').length), 0);
       const userMessageChars = effectiveUserMessage.length;
@@ -1383,6 +1395,8 @@ class ChatEngine extends EventEmitter {
 
       // enableThinkingFilter — when true, suppress thinking tokens from UI output
       const _thinkingFilterEnabled = !!options.enableThinkingFilter;
+      // Raw <think> tag parser: only for non-Jinja models. Phi/instruct must not use it; GLM uses native segments.
+      const _sfRawThinkTagsEnabled = this._templateSupportsThinking && !this._jinjaThoughtSegments;
 
       // Think-tag tracking for reasoning models.
       // These models output <think>...</think> in raw text (LlamaCompletion mode).
@@ -1469,11 +1483,11 @@ class ChatEngine extends EventEmitter {
         for (let i = 0; i < chunk.length; i++) {
           const ch = chunk[i];
 
-          // Think-tag detection for reasoning models.
+          // Think-tag detection for reasoning models (non-Jinja only).
           // These models output thinking in raw text (LlamaCompletion mode).
           // We detect these tags and route thinking content to llm-thinking-token events
           // so it appears in thinking blocks instead of as regular prose.
-          if (_sfInThink) {
+          if (_sfRawThinkTagsEnabled && _sfInThink) {
             _sfThinkBuf += ch;
             // Plan A: thinking chars route ONLY to llm-thinking-token events.
             // The previous design dual-emitted to onToken (visible stream), which leaked the
@@ -1537,7 +1551,7 @@ class ChatEngine extends EventEmitter {
           // Check for <think> open or </think> close tag — buffer chars so the tag itself isn't forwarded to UI.
           // Plan A: matching </think> in normal mode silently consumes orphan close tags so they don't leak
           // to the visible chat stream when the model emits </think> without a preceding <think>.
-          if (_sfThinkTagMatch.length > 0 || ch === '<') {
+          if (_sfRawThinkTagsEnabled && (_sfThinkTagMatch.length > 0 || ch === '<')) {
             _sfThinkTagMatch += ch;
             const OPEN_TAG = '<think>';
             const CLOSE_TAG = '</think>';
@@ -1557,8 +1571,8 @@ class ChatEngine extends EventEmitter {
               continue;
             } else if (_sfThinkTagMatch === CLOSE_TAG) {
               _sfThinkTagMatch = '';
-              if (_sfNativeThinkActive) {
-                console.log('[ChatEngine] orphan </think> consumed (native segments active — tag stripped, no retroactive move)');
+              if (_sfNativeThinkActive || this._jinjaThoughtSegments) {
+                console.log('[ChatEngine] orphan </think> consumed (native/jinja path — tag stripped, no retroactive move)');
                 continue;
               }
               // Orphan close-think tag — model emitted reasoning without open tag (pre-native-segment path).
@@ -2146,7 +2160,7 @@ class ChatEngine extends EventEmitter {
         console.warn(`[ChatEngine]   ctx state: usedTokens=${usedTokens}, contextSize=${contextSize}, chatHistory=${this._chatHistory.length} msgs`);
 
         // Progressive trimming: try compact prompt first, then trim compact, then trim history
-        if (compactToolPrompt && !useCompact) {
+        if (!_jinjaNativeFcNoProseTools && compactToolPrompt && !useCompact) {
           // Step 1: Switch to compact prompt
           const compactTokens = Math.ceil(compactToolPrompt.length / 3.5);
           const savedTokens = Math.ceil(effectiveToolPrompt.length / 3.5) - compactTokens;
@@ -2158,7 +2172,7 @@ class ChatEngine extends EventEmitter {
         }
 
         // Step 2: If still too large, trim compact prompt aggressively
-        if (typeof effectiveToolPrompt === 'string' && effectiveToolPrompt.length > 500) {
+        if (!_jinjaNativeFcNoProseTools && typeof effectiveToolPrompt === 'string' && effectiveToolPrompt.length > 500) {
           const lines = effectiveToolPrompt.split('\n');
           const toolLineIdx = [];
           lines.forEach((l, i) => { if (l.startsWith('- **')) toolLineIdx.push(i); });

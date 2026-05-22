@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-05-22 — v0.3.94 — Gemma4 CI/runtime + Phi thinking gate
+
+### Problem
+- Release installers (v0.3.85+) shipped npm prebuilt llama.cpp **b8390** without `gemma4` arch; main CI jobs never ran `source build`.
+- `build-installers.js` only ran `source download` (no compile).
+- Phi: raw `<think>` parser ran on non-thinking templates.
+
+### Fix
+- **`scripts/rebuild-llama-runtime.mjs`**: pin `LLAMA_CPP_RELEASE` (default **b9253**), `source download` + `source build`, profiles `default|haswell|cuda|cuda-haswell`.
+- **`scripts/verify-llama-gemma4.mjs`**: fail build if `llama-arch.cpp` lacks `gemma4`.
+- **`.github/workflows/build.yml`**: all 9 platform jobs call rebuild script after `npm ci`; main `cuda` jobs install CUDA toolkit; workflow `GITHUB_TOKEN` + pinned release.
+- **`scripts/build-installers.js`**: uses rebuild script (download + build + verify).
+- **`chatEngine.js`**: `_sfRawThinkTagsEnabled = templateSupportsThinking && !jinjaThoughtSegments`; GLM Jinja+native FC omits prose tool catalog (already present).
+
+---
+
 ## 2026-05-22 — v0.3.93 — GLM thinking routing + schema-aware tool params
 
 ### Problem
