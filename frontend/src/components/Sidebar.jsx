@@ -1341,6 +1341,18 @@ function SettingsPanel() {
     if (requiresReload) triggerModelReload(key);
   }, [updateSetting, triggerModelReload]);
 
+  const applyThinkingMode = useCallback(async (mode) => {
+    updateSetting('thinkingMode', mode);
+    if (window.electronAPI?.setThinkingMode) {
+      const result = await window.electronAPI.setThinkingMode(mode);
+      if (result?.success) {
+        addNotification({ type: 'info', message: `Thinking mode → ${mode} (conversation reset)` });
+      } else {
+        addNotification({ type: 'error', message: `Mode switch failed: ${result?.error || 'unknown'}` });
+      }
+    }
+  }, [updateSetting, addNotification]);
+
   useEffect(() => {
     return () => {
       if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
@@ -1508,9 +1520,31 @@ function SettingsPanel() {
         <SettingToggle label="Enable Thinking (Chat Template)" value={settings.enableThinking !== false}
           onChange={v => updateSettingWithReload('enableThinking', v)}
           hint="Pass enable_thinking to chat template. Required for Qwen 3.5 small models to think." />
+        <div className="mb-2">
+          <label className="text-[11px] text-vsc-text-dim block mb-1">
+            Thinking Wrapper Mode
+            <span className="ml-1 text-vsc-text-muted">(applies immediately, resets conversation)</span>
+          </label>
+          <select
+            className="w-full bg-vsc-input border border-vsc-border rounded text-[11px] text-vsc-text px-2 py-1 focus:outline-none focus:border-vsc-focus"
+            value={settings.thinkingMode || 'C'}
+            onChange={e => applyThinkingMode(e.target.value)}
+          >
+            <option value="C">C — ThinkingOpen (inject &lt;think&gt; prefix)</option>
+            <option value="B">B — Jinja, no prefix (raw enable_thinking=true)</option>
+            <option value="auto">auto — node-llama-cpp auto resolver</option>
+            <option value="off">off — Jinja, thinking disabled</option>
+          </select>
+          <p className="text-[10px] text-vsc-text-muted mt-1">
+            C = GLM default (forces model into thinking state). B = raw Jinja wrapper. auto = Qwen/Phi path. off = disable thinking via template.
+          </p>
+        </div>
         <SettingToggle label="Filter Thinking Tokens" value={settings.enableThinkingFilter}
           onChange={v => updateSetting('enableThinkingFilter', v)}
           hint="Strip thinking tags from output" />
+        <SettingToggle label="Tools Enabled" value={settings.toolsEnabled !== false}
+          onChange={v => updateSetting('toolsEnabled', v)}
+          hint="When off, no tool definitions are passed to the model. Useful for testing thinking display in isolation." />
         <SettingToggle label="Grammar-Constrained Tool Calls" value={settings.enableGrammar}
           onChange={v => updateSetting('enableGrammar', v)}
           hint="Forces valid tool calls. May cause hangs on small models." />

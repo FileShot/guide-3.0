@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-05-22 — v0.3.97 — Remove retroactive thinking handler; restore Mode C for all cases; add toolsEnabled toggle; restore tool call examples
+
+### Problem
+- GLM with 69 tools: Mode C (noPrefixTrigger) was gated off when tools present → no `<think>` prefix injected → model outputs answer first → orphan `</think>` → retroactive handler scrambled chat content
+- `llm-thinking-retroactive` IPC path moved answer text into thinking panel instead of actual thinking content
+- Tool calling degraded: no few-shot examples in system prompt after v0.3.78 removal
+- No way to test thinking display with/without tools from the UI
+
+### Fix
+- **`chatEngine.js`**: Removed tool-presence gate for Mode C (`ThinkingOpenJinjaChatWrapper`). Mode C now runs for ALL cases regardless of tool count.
+- **`chatEngine.js`**: Removed `llm-thinking-retroactive` IPC emission from both the `_jinjaThoughtSegments` path and the orphan-close path. Orphan `</think>` is now silently consumed (the open tag was injected as prefix — it was never in the stream).
+- **`chatEngine.js`**: `this._jinjaThoughtSegments` flag retired (set to false always; was only used by retroactive path which is removed).
+- **`chatEngine.js`**: Re-added few-shot tool call pattern examples to `SYSTEM_PROMPT`. Patterns cover file create/edit, terminal, web search, browser, project search, and conversational (no-tool) cases.
+- **`chatEngine.js`**: Added `_toolsEnabled` guard — when `options.toolsEnabled === false`, tool prompt and native FC are both skipped.
+- **`electron-main.js`**: Pass `toolsEnabled: settings.toolsEnabled !== false` to `llmEngine.chat()`.
+- **`settingsManager.js`**: Added `toolsEnabled: true` default.
+- **`frontend/src/stores/appStore.js`**: Removed `retroactiveThinkingMove` action (no longer called).
+- **`frontend/src/App.jsx`**: Removed `llm-thinking-retroactive` IPC case handler.
+- **`frontend/src/components/Sidebar.jsx`**: Added "Tools Enabled" toggle and "Thinking Wrapper Mode" dropdown (A/B/C/off) in Thinking & Reasoning settings section. Mode changes apply immediately without model reload via `setThinkingMode` IPC.
+- **`chatEngine.js`**: Added `setWrapperMode(mode)` method — swaps `LlamaChat` wrapper on the loaded sequence, resets history, no model reload needed. Saved `_LlamaChat`, `_JinjaTemplateChatWrapper`, `_ThinkingOpenJinjaChatWrapper` as instance refs at load time. Added `thinkingMode` to `buildEngineLoadSettings`.
+- **`electron-main.js`**: Added `set-thinking-mode` IPC handler.
+- **`preload.js`**: Exposed `setThinkingMode(mode)` on `window.electronAPI`.
+- **`settingsManager.js`**: Added `thinkingMode: 'C'` default.
+
+---
+
 ## 2026-05-22 — v0.3.96 — GLM Mode C only without native FC; block reload while streaming
 
 ### Problem

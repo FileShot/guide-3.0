@@ -31,6 +31,8 @@ const SETTINGS_DEFAULTS = {
   reasoningEffort: 'medium',
   enableThinking: true,        // Pass enable_thinking=true to chat template (Qwen 3.5 small models disable thinking by default; this activates it)
   enableThinkingFilter: false,
+  thinkingMode: 'C',           // Chat wrapper mode: 'C'=ThinkingOpen prefix injection (default), 'B'=raw Jinja no prefix, 'auto'=node-llama-cpp auto, 'off'=Jinja thinking disabled
+  toolsEnabled: true,          // When false, no tool definitions are passed to the model — useful for testing thinking display without tools
   // Agentic Behavior
   maxIterations: 0,
   generationTimeoutSec: 0,

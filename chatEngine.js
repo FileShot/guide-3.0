@@ -476,6 +476,8 @@ function buildEngineLoadSettings(raw = {}) {
     vramBalance: raw.vramBalance === 'speed' || raw.vramBalance === 'context' ? raw.vramBalance : 'balanced',
     kvCacheType: raw.kvCacheType || 'f16',
     enableThinking: raw.enableThinking !== false, // default true
+    // 'C' = ThinkingOpenJinja (prefix injection), 'B' = raw Jinja (no prefix), 'auto' = node-llama-cpp auto, 'off' = Jinja enable_thinking=false
+    thinkingMode: raw.thinkingMode || 'C',
   };
 }
 
@@ -489,12 +491,6 @@ function createThinkingOpenJinjaWrapper(JinjaTemplateChatWrapper, LlamaText) {
     generateContextState({ chatHistory, availableFunctions, documentFunctionParams }) {
       const state = super.generateContextState({ chatHistory, availableFunctions, documentFunctionParams });
       if (this.additionalRenderParameters?.enable_thinking !== true) return state;
-      // Mode C (forced thought open) + native function calling: GLM never leaves the thought
-      // segment — all prose streams to llm-thinking-token, visibleLen=0 (v0.3.95 logs).
-      // Keep Mode C only for generations without native FC (ask-only, etc.).
-      if (availableFunctions && Object.keys(availableFunctions).length > 0) {
-        return state;
-      }
       const thoughtSeg = this.settings?.segments?.thought;
       if (thoughtSeg?.prefix == null) return state;
       return {
@@ -531,7 +527,32 @@ After calling a tool, wait for the result before continuing. Never output fabric
 When you receive an image description from the vision system, treat it as what you observed. Do not use read_file on image files to "see" them.
 
 ## Planning
-For multi-step work, you may use planning tools from ## Tools when they fit the task. For simple requests, act directly without unnecessary planning overhead.`;
+For multi-step work, you may use planning tools from ## Tools when they fit the task. For simple requests, act directly without unnecessary planning overhead.
+
+## Only call a tool when required. Never call a tool when plain prose is sufficient.
+
+Examples of when to call tools:
+
+Pattern — user wants to create or write a file:
+Call write_file with the target path and the full file content. Do not output the content as a markdown code block.
+
+Pattern — user asks to edit or modify an existing file:
+Call read_file to get the current content, then call edit_file or write_file with the updated version.
+
+Pattern — user asks to run a command, script, or terminal operation:
+Call run_terminal_command with the command string. Do not describe what the command would do — run it.
+
+Pattern — user asks to search the web, find current information, or look up something online:
+Call web_search with a rephrased query. Do not generate an answer from memory if the information may be outdated.
+
+Pattern — user asks to open, navigate, or interact with a website or browser:
+Call browser_navigate first, then use browser_click, browser_type, etc. as needed.
+
+Pattern — user wants to find files in the project, list a directory, or search codebase:
+Call list_directory, search_codebase, or find_files as appropriate. Do not guess at file contents.
+
+Pattern — user asks a conversational question or makes a greeting:
+Reply in prose only. Do not call any tool.`;
 
 class ChatEngine extends EventEmitter {
   constructor() {
@@ -601,6 +622,10 @@ class ChatEngine extends EventEmitter {
       const llamaCppPath = this._getNodeLlamaCppPath();
       const { getLlama, LlamaChat, readGgufFileInfo, JinjaTemplateChatWrapper, LlamaText } = await import(pathToFileURL(llamaCppPath).href);
       const ThinkingOpenJinjaChatWrapper = createThinkingOpenJinjaWrapper(JinjaTemplateChatWrapper, LlamaText);
+      // Save class refs so setWrapperMode can recreate wrappers without a model reload
+      this._LlamaChat = LlamaChat;
+      this._JinjaTemplateChatWrapper = JinjaTemplateChatWrapper;
+      this._ThinkingOpenJinjaChatWrapper = ThinkingOpenJinjaChatWrapper;
 
       const s = buildEngineLoadSettings(rawLoadSettings || {});
       this.gpuPreference = s.gpuPreference;
@@ -1035,32 +1060,37 @@ class ChatEngine extends EventEmitter {
       // (QwenChatWrapper, DeepSeekChatWrapper, etc.) unchanged.
       let chatWrapperOpt = 'auto';
       const needsThinkingJinja = ggufChatTemplate && _templateSupportsThinking && _chatTemplateKwargs.enable_thinking;
+      this._currentThinkingMode = s.thinkingMode;
 
-      if (needsThinkingJinja) {
+      if (needsThinkingJinja && s.thinkingMode !== 'auto') {
         const jinjaOpts = {
           template: ggufChatTemplate,
           tokenizer: this._model.tokenizer,
-          additionalRenderParameters: { ..._chatTemplateKwargs },
+          additionalRenderParameters: { ..._chatTemplateKwargs, enable_thinking: s.thinkingMode !== 'off' },
           segments: {
             thoughtTemplate: '<think>{{content}}</think>',
             reopenThoughtAfterFunctionCalls: false,
           },
         };
         try {
-          chatWrapperOpt = new ThinkingOpenJinjaChatWrapper(jinjaOpts);
-          const thoughtSeg = chatWrapperOpt.settings?.segments?.thought;
-          console.log(`[ChatEngine] Custom Jinja wrapper (thinking, thought open at gen start): enable_thinking=true, thoughtSegment=${!!thoughtSeg}, reopenAfterFC=${thoughtSeg?.reopenAfterFunctionCalls ?? false}`);
+          if (s.thinkingMode === 'B' || s.thinkingMode === 'off') {
+            chatWrapperOpt = new JinjaTemplateChatWrapper(jinjaOpts);
+            console.log(`[ChatEngine] Custom Jinja wrapper (mode ${s.thinkingMode}, no prefix injection): enable_thinking=${s.thinkingMode !== 'off'}`);
+          } else {
+            // Mode C (default): ThinkingOpenJinjaChatWrapper with noPrefixTrigger
+            chatWrapperOpt = new ThinkingOpenJinjaChatWrapper(jinjaOpts);
+            const thoughtSeg = chatWrapperOpt.settings?.segments?.thought;
+            console.log(`[ChatEngine] Custom Jinja wrapper (mode C, thought open at gen start): enable_thinking=true, thoughtSegment=${!!thoughtSeg}`);
+          }
         } catch (jinjaErr) {
           console.warn(`[ChatEngine] Custom Jinja wrapper failed — falling back to auto: ${jinjaErr.message}`);
           chatWrapperOpt = 'auto';
         }
       } else {
-        console.log(`[ChatEngine] chatWrapper=auto (node-llama-cpp resolves specialized wrapper); enable_thinking=${_chatTemplateKwargs.enable_thinking}`);
+        console.log(`[ChatEngine] chatWrapper=auto (mode=${s.thinkingMode}); enable_thinking=${_chatTemplateKwargs.enable_thinking}`);
       }
       this._chatWrapper = chatWrapperOpt;
-      // Log-only: custom Jinja thinking wrapper in use (GLM, etc.). Routing uses per-generation
-      // _sfNativeThinkActive, not this flag — tag parser stays enabled when native segments absent.
-      this._jinjaThoughtSegments = !!(needsThinkingJinja && chatWrapperOpt !== 'auto');
+      this._jinjaThoughtSegments = false; // retired — retroactive handler removed
       this._chat = new LlamaChat({ contextSequence: this._sequence, chatWrapper: chatWrapperOpt });
       console.log(`[ChatEngine] chatTemplateKwargs=${JSON.stringify(_chatTemplateKwargs)}, wrapper=${chatWrapperOpt === 'auto' ? 'auto' : chatWrapperOpt.wrapperName}, resolvedThinkMode=${_resolvedThinkMode}, enableThinking=${s.enableThinking}, templateSupportsThinking=${_templateSupportsThinking}`);
 
@@ -1316,7 +1346,11 @@ class ChatEngine extends EventEmitter {
     let useCompact = false;
     let effectiveToolPrompt = '';
 
-    if (options.askOnly) {
+    const _toolsEnabled = options.toolsEnabled !== false;
+    if (!_toolsEnabled) {
+      console.log('[ChatEngine] Tools disabled by setting — skipping tool prompt and native FC');
+      this._chatHistory[0].text = basePrompt;
+    } else if (options.askOnly) {
       // Ask mode: no tools available — just set the base prompt with mode instruction
       this._chatHistory[0].text = basePrompt;
     } else if (toolPrompt) {
@@ -1596,20 +1630,11 @@ class ChatEngine extends EventEmitter {
                 console.log('[ChatEngine] orphan </think> consumed (native segments active — tag stripped)');
                 continue;
               }
-              if (this._jinjaThoughtSegments && _sfVisibleChars > 0) {
-                console.log('[ChatEngine] orphan </think> after visible prose — retroactive thinking move (Jinja segments did not activate)');
-                if (onStreamEvent && !_thinkingFilterEnabled) {
-                  onStreamEvent('llm-thinking-retroactive', { length: _sfVisibleChars });
-                }
-                _sfVisibleChars = 0;
-                continue;
-              }
-              // Orphan close-think tag — model emitted reasoning without open tag (pre-native-segment path).
-              console.log('[ChatEngine] orphan </think> consumed — retroactively marking preceding text as thinking');
-              if (_sfVisibleChars > 0 && onStreamEvent) {
-                onStreamEvent('llm-thinking-retroactive', { length: _sfVisibleChars });
-              }
-              _sfVisibleChars = 0;
+              // Orphan </think> — tag was preceded by no <think> open in stream.
+              // Silently consume. Mode C injects <think> as prefix before generation;
+              // if the model emits </think> without a matching open visible in the stream,
+              // this is expected (the open was injected, not streamed). Do not move chat text.
+              console.log('[ChatEngine] orphan </think> consumed (no retroactive move)');
               continue;
             } else if (!OPEN_TAG.startsWith(_sfThinkTagMatch) && !CLOSE_TAG.startsWith(_sfThinkTagMatch)) {
               // Not matching either tag — flush buffered chars to normal processing
@@ -2157,6 +2182,7 @@ class ChatEngine extends EventEmitter {
       const _useNativeFunctions = !!(
         functions && Object.keys(functions).length > 0 &&
         !options.askOnly &&
+        _toolsEnabled &&
         !genOptions.grammar
       );
       if (_useNativeFunctions) {
@@ -3114,6 +3140,48 @@ class ChatEngine extends EventEmitter {
       try { this._sequence.clearHistory(); } catch (e) { console.warn('[ChatEngine] resetSession clearHistory failed:', e.message); }
     }
     console.log(`[ChatEngine] resetSession DONE: newSessionId=${this._sessionId}`);
+  }
+
+  /**
+   * Swap the chat wrapper on the fly without reloading the model.
+   * Resets conversation history so the new wrapper context is clean.
+   * Modes: 'C' = ThinkingOpen (prefix injection), 'B' = raw Jinja (no prefix),
+   *        'auto' = node-llama-cpp auto resolver, 'off' = Jinja enable_thinking=false
+   */
+  async setWrapperMode(mode) {
+    if (!this.isReady || !this._sequence) throw new Error('No model loaded');
+    if (!this._LlamaChat) throw new Error('LlamaChat class not available — model may need to be reloaded once');
+    const template = this._ggufChatTemplate;
+    let chatWrapperOpt = 'auto';
+    if (template && mode !== 'auto') {
+      const jinjaOpts = {
+        template,
+        tokenizer: this._model.tokenizer,
+        additionalRenderParameters: { ...this._chatTemplateKwargs, enable_thinking: mode !== 'off' },
+        segments: { thoughtTemplate: '<think>{{content}}</think>', reopenThoughtAfterFunctionCalls: false },
+      };
+      try {
+        if (mode === 'C' && this._ThinkingOpenJinjaChatWrapper) {
+          chatWrapperOpt = new this._ThinkingOpenJinjaChatWrapper(jinjaOpts);
+        } else if ((mode === 'B' || mode === 'off') && this._JinjaTemplateChatWrapper) {
+          chatWrapperOpt = new this._JinjaTemplateChatWrapper(jinjaOpts);
+        }
+      } catch (err) {
+        console.warn(`[ChatEngine] setWrapperMode: wrapper creation failed for mode=${mode}: ${err.message}`);
+        chatWrapperOpt = 'auto';
+      }
+    }
+    this._chatWrapper = chatWrapperOpt;
+    this._chat = new this._LlamaChat({ contextSequence: this._sequence, chatWrapper: chatWrapperOpt });
+    this._chatHistory = [{ type: 'system', text: SYSTEM_PROMPT }];
+    this._lastEvaluation = null;
+    this._sessionId++;
+    this._currentThinkingMode = mode;
+    if (this._sequence) {
+      try { this._sequence.clearHistory(); } catch (_) {}
+    }
+    console.log(`[ChatEngine] setWrapperMode DONE: mode=${mode}, wrapper=${chatWrapperOpt === 'auto' ? 'auto' : chatWrapperOpt.wrapperName ?? '?'}, sessionId=${this._sessionId}`);
+    return { success: true, mode, wrapper: chatWrapperOpt === 'auto' ? 'auto' : (chatWrapperOpt.wrapperName ?? mode) };
   }
 
   getStatus() {

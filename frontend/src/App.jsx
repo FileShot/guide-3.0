@@ -132,12 +132,6 @@ export default function App() {
 
         break;
 
-      case 'llm-thinking-retroactive':
-
-        s.retroactiveThinkingMove(data);
-
-        break;
-
       case 'llm-tool-generating':
 
         s.setChatGeneratingTool(data);

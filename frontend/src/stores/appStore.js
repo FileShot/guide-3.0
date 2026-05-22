@@ -671,61 +671,6 @@ const useAppStore = create((set, get) => ({
 
 
 
-  // Fix 5: Retroactive thinking move — GLM outputs thinking content WITHOUT an open tag,
-  // so the thinking text was forwarded as regular prose. When the orphan close tag is detected,
-  // the backend emits llm-thinking-retroactive. This action moves the previously-forwarded
-  // text from chatStreamingText into chatThinkingText and converts the last text segment
-  // into a thinking segment.
-  retroactiveThinkingMove: (data) => {
-    const store = get();
-    const len = data?.length || 0;
-    if (len === 0) return;
-
-    // Flush pending text buffer first
-    if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
-    let currentText = store.chatStreamingText;
-    if (store._textTokenBuffer) {
-      currentText += store._textTokenBuffer;
-    }
-
-    // Take the last N chars of streaming text and move them to thinking
-    const moveText = currentText.slice(-len);
-    const remainingText = currentText.slice(0, -len);
-
-    // Convert the last text segments into a thinking segment
-    const segs = store.streamingSegments;
-    let newSegs = [...segs];
-    // Find and convert the last text segment(s) that correspond to the moved chars
-    let charsAccounted = 0;
-    for (let i = newSegs.length - 1; i >= 0 && charsAccounted < len; i--) {
-      if (newSegs[i].type === 'text') {
-        const segLen = newSegs[i].content.length;
-        const needed = len - charsAccounted;
-        if (needed >= segLen) {
-          // Convert entire segment to thinking
-          newSegs[i] = { ...newSegs[i], type: 'thinking' };
-          charsAccounted += segLen;
-        } else {
-          // Split: part becomes thinking, part stays text
-          const splitPoint = segLen - needed;
-          const textPart = newSegs[i].content.slice(0, splitPoint);
-          const thinkPart = newSegs[i].content.slice(splitPoint);
-          newSegs[i] = { type: 'text', content: textPart };
-          newSegs.splice(i + 1, 0, { type: 'thinking', content: thinkPart });
-          charsAccounted += needed;
-        }
-      }
-    }
-
-    set({
-      chatStreamingText: remainingText,
-      chatThinkingText: store.chatThinkingText + moveText,
-      streamingSegments: newSegs,
-      _textTokenBuffer: null,
-      _textTokenTimer: null,
-    });
-  },
-
   setChatGeneratingTool: (tool) => set({ chatGeneratingTool: tool }),
 
   setChatContextUsage: (usage) => set({ chatContextUsage: usage }),

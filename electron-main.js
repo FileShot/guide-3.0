@@ -460,6 +460,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       seed: settings.seed >= 0 ? settings.seed : undefined,
       thinkingBudget: settings.thinkingBudget,
       enableThinkingFilter: settings.enableThinkingFilter,
+      toolsEnabled: settings.toolsEnabled !== false,
       enableGrammar: settings.enableGrammar,
       maxIterations: settings.maxIterations || 0,
       generationTimeoutSec: settings.generationTimeoutSec || 0,
@@ -486,6 +487,18 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
 ipcMain.handle('revert-context', (_e, messages) => {
   llmEngine.revertContext(Array.isArray(messages) ? messages : []);
   return { success: true };
+});
+
+// Swap chat wrapper mode on the fly without reloading the model.
+// Resets conversation. Modes: 'C' (ThinkingOpen), 'B' (Jinja no prefix), 'auto', 'off'
+ipcMain.handle('set-thinking-mode', async (_e, mode) => {
+  try {
+    const result = await llmEngine.setWrapperMode(mode);
+    return result;
+  } catch (err) {
+    console.error(`[electron-main] set-thinking-mode error: ${err.message}`);
+    return { success: false, error: err.message };
+  }
 });
 
 // Handle answer from frontend for ask_question tool

@@ -63,6 +63,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   forceSendQueued: () => ipcRenderer.invoke('force-send-queued'),
   injectUserMessage: (text) => ipcRenderer.invoke('inject-user-message', { text }),
   revertContext: (messages) => ipcRenderer.invoke('revert-context', messages),
+  setThinkingMode: (mode) => ipcRenderer.invoke('set-thinking-mode', mode),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
 
   // ── Terminal ──────────────────────────────────────────
