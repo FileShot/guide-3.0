@@ -18,7 +18,8 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const RELEASE = process.env.LLAMA_CPP_RELEASE || 'b9253';
+// Must match node-llama-cpp@3.18.1 addon glue (b9253 breaks: cpu_get_num_math undeclared).
+const RELEASE = process.env.LLAMA_CPP_RELEASE || 'b8954';
 
 const PROFILES = {
   default: {},

@@ -37,7 +37,7 @@ ok('llama-arch.cpp includes gemma4');
 if (fs.existsSync(INFO_JSON)) {
   const info = JSON.parse(fs.readFileSync(INFO_JSON, 'utf8'));
   const tag = info.tag || '(unknown)';
-  const min = process.env.LLAMA_CPP_RELEASE || 'b9253';
+  const min = process.env.LLAMA_CPP_RELEASE || 'b8954';
   ok(`llama.cpp.info.json tag=${tag} (expected pin ${min})`);
 } else {
   fail(`missing ${INFO_JSON}`);

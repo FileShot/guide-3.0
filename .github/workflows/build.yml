@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 env:
-  LLAMA_CPP_RELEASE: b9253
+  LLAMA_CPP_RELEASE: b8954
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:

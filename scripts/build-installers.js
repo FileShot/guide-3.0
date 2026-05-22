@@ -98,7 +98,7 @@ function rebuildLlamaCpp(buildCuda) {
   const result = spawnSync(
     process.execPath,
     [path.join(__dirname, 'rebuild-llama-runtime.mjs'), '--profile', profile],
-    { cwd: ROOT, stdio: 'inherit', env: { ...process.env, LLAMA_CPP_RELEASE: process.env.LLAMA_CPP_RELEASE || 'b9253' } },
+    { cwd: ROOT, stdio: 'inherit', env: { ...process.env, LLAMA_CPP_RELEASE: process.env.LLAMA_CPP_RELEASE || 'b8954' } },
   );
   if (result.status !== 0) {
     throw new Error(`rebuild-llama-runtime.mjs exited with status ${result.status}`);
