@@ -2179,16 +2179,23 @@ class ChatEngine extends EventEmitter {
       // Native function calling: pass functions to LlamaChat so the wrapper uses grammar-constrained
       // function call tokens instead of prose JSON. Falls back to prose parse if stopReason !== 'functionCalls'.
       // Mutually exclusive with grammar — skip when grammar is already set.
+      // Mode C (ThinkingOpenJinja + noPrefixTrigger) + native FC traps the entire reply in the
+      // thought segment with visibleLen=0 — log-proven on GLM-4.6V-Flash. Tools still work via prose
+      // tool prompt + parseToolCalls; only node-llama-cpp native FC tokens are disabled.
+      const _modeCWrapper = this._currentThinkingMode === 'C';
       const _useNativeFunctions = !!(
         functions && Object.keys(functions).length > 0 &&
         !options.askOnly &&
         _toolsEnabled &&
+        !_modeCWrapper &&
         !genOptions.grammar
       );
       if (_useNativeFunctions) {
         genOptions.functions = functions;
         genOptions.documentFunctionParams = true;
         console.log(`[ChatEngine] Native function calling active: ${Object.keys(functions).length} tools`);
+      } else if (_modeCWrapper && functions && Object.keys(functions).length > 0 && _toolsEnabled && !options.askOnly) {
+        console.log(`[ChatEngine] Mode C: native FC disabled (${Object.keys(functions).length} tools via prose prompt only — avoids thought-segment trap)`);
       }
 
       // Add lastEvaluation context window if available

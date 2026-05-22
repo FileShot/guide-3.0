@@ -1313,6 +1313,10 @@ function SettingsPanel() {
 
   const triggerModelReload = useCallback((reasonLabel) => {
     if (!modelInfo?.path || modelLoading || reloadInFlightRef.current) return;
+    if (chatStreaming) {
+      addNotification({ type: 'warning', message: 'Stop or wait for generation to finish before reloading the model.', duration: 4000 });
+      return;
+    }
     if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
     reloadTimerRef.current = setTimeout(() => {
       if (!modelInfo?.path || reloadInFlightRef.current) return;
@@ -1342,16 +1346,25 @@ function SettingsPanel() {
   }, [updateSetting, triggerModelReload]);
 
   const applyThinkingMode = useCallback(async (mode) => {
-    updateSetting('thinkingMode', mode);
-    if (window.electronAPI?.setThinkingMode) {
-      const result = await window.electronAPI.setThinkingMode(mode);
-      if (result?.success) {
-        addNotification({ type: 'info', message: `Thinking mode → ${mode} (conversation reset)` });
-      } else {
-        addNotification({ type: 'error', message: `Mode switch failed: ${result?.error || 'unknown'}` });
-      }
+    if (chatStreaming) {
+      addNotification({ type: 'warning', message: 'Stop or wait for generation to finish before changing thinking mode.', duration: 4000 });
+      return;
     }
-  }, [updateSetting, addNotification]);
+    const next = { ...settings, thinkingMode: mode };
+    updateSetting('thinkingMode', mode);
+    try {
+      const r = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(next),
+      });
+      if (!r.ok) throw new Error('Failed to save thinking mode');
+      addNotification({ type: 'info', message: `Thinking mode → ${mode} — reloading model…`, duration: 2500 });
+      triggerModelReload('thinkingMode');
+    } catch (e) {
+      addNotification({ type: 'error', message: e.message || 'Failed to save thinking mode' });
+    }
+  }, [settings, updateSetting, triggerModelReload, chatStreaming, addNotification]);
 
   useEffect(() => {
     return () => {
@@ -1523,7 +1536,7 @@ function SettingsPanel() {
         <div className="mb-2">
           <label className="text-[11px] text-vsc-text-dim block mb-1">
             Thinking Wrapper Mode
-            <span className="ml-1 text-vsc-text-muted">(applies immediately, resets conversation)</span>
+            <span className="ml-1 text-vsc-text-muted">(reloads model — shows loading spinner)</span>
           </label>
           <select
             className="w-full bg-vsc-input border border-vsc-border rounded text-[11px] text-vsc-text px-2 py-1 focus:outline-none focus:border-vsc-focus"

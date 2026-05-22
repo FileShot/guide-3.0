@@ -846,6 +846,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     }
     if (p === '/api/settings' && method === 'POST') {
       settingsManager.setAll(body);
+      settingsManager.flush();
       currentSettings = settingsManager.getAll();
       return { success: true };
     }

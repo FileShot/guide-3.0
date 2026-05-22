@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-05-22 — v0.3.98 — Fix Mode C thought-segment trap; fix gray UI on mode switch; persist thinkingMode
+
+### Problem (log-proven, user session v0.3.97)
+- GLM Mode C + 69 native tools: `Thought-segment trap: 34 chars in thought, 0 in visible chat` — answer trapped in thinking dropdown, empty main chat.
+- Changing thinking mode via dropdown called `setWrapperMode` on main thread → Jinja recompile blocked Electron → entire UI gray for minutes.
+- `thinkingMode` did not persist after restart when app killed before 3s settings flush.
+
+### Fix
+- **`chatEngine.js`**: Disable native function calling when `thinkingMode === 'C'`. Tools remain via prose tool prompt + `parseToolCalls`.
+- **`Sidebar.jsx`**: Thinking mode change saves settings then `triggerModelReload` (loading spinner) instead of `setThinkingMode` IPC. Block reload/mode change while `chatStreaming`.
+- **`electron-main.js`**: `settingsManager.flush()` after POST `/api/settings` so thinkingMode persists immediately.
+
+---
+
 ## 2026-05-22 — v0.3.97 — Remove retroactive thinking handler; restore Mode C for all cases; add toolsEnabled toggle; restore tool call examples
 
 ### Problem
