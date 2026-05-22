@@ -122,7 +122,10 @@ function computeLayerVramFit({
   const bytesPerLayer = modelSizeBytes / totalLayers;
   const gpuRatio = totalLayers > 0 ? gpuLayers / totalLayers : 0;
   const modelVram = weightsAlreadyLoaded ? 0 : gpuLayers * bytesPerLayer;
-  const availForKv = vramFree - modelVram - vramOverheadBytes - vramBufferBytes;
+  // Post-load: overhead/buffer already consumed during load — do not double-subtract.
+  const effectiveOverhead = weightsAlreadyLoaded ? 0 : vramOverheadBytes;
+  const effectiveBuffer = weightsAlreadyLoaded ? 0 : vramBufferBytes;
+  const availForKv = vramFree - modelVram - effectiveOverhead - effectiveBuffer;
   if (availForKv <= 0) return null;
 
   let maxCtx;
@@ -138,7 +141,7 @@ function computeLayerVramFit({
 
   const contextSize = Math.max(minContext, Math.min(maxCtx, desiredMaxContext));
   const kvOnGpu = kvBytesPerToken * contextSize * gpuRatio;
-  if (modelVram + kvOnGpu + vramOverheadBytes > vramFree) return null;
+  if (modelVram + kvOnGpu + effectiveOverhead > vramFree) return null;
 
   return { gpuLayers, maxCtx, contextSize };
 }
@@ -193,9 +196,28 @@ function computeUnifiedVramBudget({
   // Post-load: layers locked, weights already in VRAM — maximize context for available memory.
   if (fixedGpuLayers != null) {
     const fit = computeLayerVramFit({ ...fitParams, gpuLayers: fixedGpuLayers, weightsAlreadyLoaded: true });
+    if (fit) {
+      return { gpuLayers: fixedGpuLayers, contextSize: fit.contextSize };
+    }
+    // fit returned null (measured free < remaining overhead) — re-run layer search without pre-load overhead.
+    const postLoadRefit = computeUnifiedVramBudget({
+      vramFree,
+      vramTotal: vramTotal || vramFree,
+      modelSizeBytes,
+      totalLayers,
+      kvBytesPerToken,
+      desiredMaxContext,
+      minContext,
+      vramOverheadBytes,
+      vramBufferBytes,
+      gpuConstrainedContext,
+      fixedGpuLayers: null,
+      vramBalance,
+      trainMaxContext,
+    });
     return {
-      gpuLayers: fixedGpuLayers,
-      contextSize: fit?.contextSize ?? fallback.contextSize,
+      gpuLayers: postLoadRefit.gpuLayers,
+      contextSize: postLoadRefit.contextSize,
     };
   }
 
@@ -1004,6 +1026,10 @@ class ChatEngine extends EventEmitter {
         console.log(`[ChatEngine] chatWrapper=auto (node-llama-cpp resolves specialized wrapper); enable_thinking=${_chatTemplateKwargs.enable_thinking}`);
       }
       this._chatWrapper = chatWrapperOpt;
+      // True when the Jinja template natively emits thought segments (GLM, DeepSeek-R1 via Jinja).
+      // When true: onResponseChunk handles all routing; onTextChunk skips _sfProcessChunk to
+      // prevent the raw-tag state machine racing with native segment events.
+      this._jinjaThoughtSegments = !!(needsThinkingJinja && chatWrapperOpt !== 'auto');
       this._chat = new LlamaChat({ contextSequence: this._sequence, chatWrapper: chatWrapperOpt });
       console.log(`[ChatEngine] chatTemplateKwargs=${JSON.stringify(_chatTemplateKwargs)}, wrapper=${chatWrapperOpt === 'auto' ? 'auto' : chatWrapperOpt.wrapperName}, resolvedThinkMode=${_resolvedThinkMode}, enableThinking=${s.enableThinking}, templateSupportsThinking=${_templateSupportsThinking}`);
 
@@ -1537,7 +1563,7 @@ class ChatEngine extends EventEmitter {
               }
               // Orphan close-think tag — model emitted reasoning without open tag (pre-native-segment path).
               console.log('[ChatEngine] orphan </think> consumed — retroactively marking preceding text as thinking');
-              if (_sfVisibleChars > 0 && onStreamEvent) {
+              if (_sfVisibleChars > 0 && onStreamEvent && !this._jinjaThoughtSegments) {
                 onStreamEvent('llm-thinking-retroactive', { length: _sfVisibleChars });
               }
               _sfVisibleChars = 0;
@@ -1983,11 +2009,15 @@ class ChatEngine extends EventEmitter {
         stopOnAbortSignal: true,
         // P3 + Fix C: Per-family/tier sampling defaults from modelProfiles.js. Caller's options override.
         // When thinking is off, samplingInstruct is used (if defined) for instruct-mode settings.
-        temperature: options.temperature ?? _samplingProfile?.temperature ?? 0.4,
+        temperature: (options.temperature != null && !options.temperatureIsDefault)
+          ? options.temperature
+          : (_samplingProfile?.temperature ?? options.temperature ?? 0.4),
         topP: options.topP ?? _samplingProfile?.topP,
         topK: options.topK ?? _samplingProfile?.topK,
         repeatPenalty: {
-          penalty: options.repeatPenalty ?? _samplingProfile?.repeatPenalty ?? 1.1,
+          penalty: (options.repeatPenalty != null && !options.repeatPenaltyIsDefault)
+            ? options.repeatPenalty
+            : (_samplingProfile?.repeatPenalty ?? options.repeatPenalty ?? 1.1),
           frequencyPenalty: options.frequencyPenalty ?? _samplingProfile?.frequencyPenalty ?? 0,
           presencePenalty: options.presencePenalty ?? _samplingProfile?.presencePenalty ?? 0,
           lastTokens: _samplingProfile?.lastTokensPenaltyCount ?? 128,
@@ -1995,6 +2025,21 @@ class ChatEngine extends EventEmitter {
         seed: options.seed ?? undefined,
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
+          if (!chunk) return;
+          console.log(`[StreamDiag] onTextChunk len=${chunk.length} jinjaMode=${this._jinjaThoughtSegments}`);
+          // Jinja thought-segment models: visible/thought routing handled entirely in onResponseChunk.
+          // Accumulate fullResponse for end-of-turn tool parse but skip _sfProcessChunk to prevent
+          // the raw-tag state machine racing with native segment events and causing doubled output.
+          if (this._jinjaThoughtSegments) {
+            fullResponse += chunk;
+            tokensSinceLastUsageReport++;
+            genTokenCount++;
+            if (onContextUsage && tokensSinceLastUsageReport >= 50) {
+              tokensSinceLastUsageReport = 0;
+              onContextUsage({ used: this._sequence.nextTokenIndex, total: this._context.contextSize });
+            }
+            return;
+          }
           fullResponse += chunk;
           _sfProcessChunk(chunk);
           tokensSinceLastUsageReport++;
@@ -2008,35 +2053,41 @@ class ChatEngine extends EventEmitter {
         },
         onResponseChunk: (chunk) => {
           if (_thinkingFilterEnabled) return;
-          if (chunk.type !== 'segment') return;
-
           const text = chunk.text || '';
-          if (chunk.segmentType === 'thought') {
+          if (!text) return;
+
+          // Thought segments → thinking UI only (never to visible chat stream)
+          if (chunk.type === 'segment' && chunk.segmentType === 'thought') {
             _sfNativeThinkActive = true;
-            if (text) _sfNativeThinkChars += text.length;
+            _sfNativeThinkChars += text.length;
             if (chunk.segmentStartTime && onStreamEvent) {
               onStreamEvent('llm-thinking-start', { position: _sfVisibleChars });
             }
-            if (text && onStreamEvent) {
-              onStreamEvent('llm-thinking-token', text);
-            }
+            if (onStreamEvent) onStreamEvent('llm-thinking-token', text);
             if (chunk.segmentEndTime && onStreamEvent) {
-              onStreamEvent('llm-thinking-end', {
-                position: _sfVisibleChars,
-                length: 0,
-                content: '',
-              });
+              onStreamEvent('llm-thinking-end', { position: _sfVisibleChars, length: 0, content: '' });
             }
             if (!this._nativeThinkLogged) {
               this._nativeThinkLogged = true;
-              console.log('[ChatEngine] ✓ B4: Native onResponseChunk thought segments active — raw-text <think> emission suppressed for this generation');
+              console.log('[ChatEngine] Native thought segments active for this generation');
             }
             return;
           }
 
-          if (text) {
+          // Everything else is visible text:
+          //   chunk.type === 'segment' && segmentType === 'comment'  (DeepSeek visible reply)
+          //   chunk.type === undefined  (main response text, per LlamaChat.d.ts lines 23-30)
+          if (this._jinjaThoughtSegments) {
+            // Jinja models: onTextChunk skipped _sfProcessChunk, so route visible text here.
             fullResponse += text;
-            _sfProcessChunk(text);
+            _sfForward(text);
+          } else {
+            // Non-Jinja: visible main text already handled via onTextChunk → _sfProcessChunk.
+            // Only route segment-typed visible text (e.g. 'comment') that onTextChunk missed.
+            if (chunk.type === 'segment') {
+              fullResponse += text;
+              _sfProcessChunk(text);
+            }
           }
         },
       };
@@ -2056,6 +2107,8 @@ class ChatEngine extends EventEmitter {
       // node-llama-cpp's LlamaJsonSchemaGrammar to force valid JSON tool calls.
       // Disabled by default — small models may loop or hang with grammar constraints.
       // User has total control via settings toggle.
+      // NOTE: grammar and native functions are mutually exclusive (LlamaChat.d.ts:317-324).
+      //       Native functions take precedence when both are requested.
       if (options.enableGrammar && functions && Object.keys(functions).length > 0) {
         try {
           const llamaCppPath = this._getNodeLlamaCppPath();
@@ -2073,6 +2126,20 @@ class ChatEngine extends EventEmitter {
         } catch (grammarErr) {
           console.warn(`[ChatEngine] Grammar setup failed (node-llama-cpp may not support it): ${grammarErr.message}`);
         }
+      }
+
+      // Native function calling: pass functions to LlamaChat so the wrapper uses grammar-constrained
+      // function call tokens instead of prose JSON. Falls back to prose parse if stopReason !== 'functionCalls'.
+      // Mutually exclusive with grammar — skip when grammar is already set.
+      const _useNativeFunctions = !!(
+        functions && Object.keys(functions).length > 0 &&
+        !options.askOnly &&
+        !genOptions.grammar
+      );
+      if (_useNativeFunctions) {
+        genOptions.functions = functions;
+        genOptions.documentFunctionParams = true;
+        console.log(`[ChatEngine] Native function calling active: ${Object.keys(functions).length} tools`);
       }
 
       // Add lastEvaluation context window if available
@@ -2197,11 +2264,53 @@ class ChatEngine extends EventEmitter {
       const _genStopReason = result.metadata?.stopReason;
       const _userAbortedGeneration = _genStopReason === 'abort' || _genStopReason === 'cancelled';
 
-      // Raw-text tool call loop: parse tool calls from model output, execute, continue
+      // Tool call dispatch — native function calling path first, prose JSON fallback second.
       if (executeToolFn && !_userAbortedGeneration) {
-        // Flush any buffered content from the streaming filter before parsing
         _sfFlush();
         _sfFlushFence();
+
+        // ── Native function calling path ──────────────────────────────────────────────
+        // Used when: wrapper supports function call grammar AND stopReason === 'functionCalls'.
+        // Falls through to prose parse if neither condition is met (zero regression risk).
+        if (_useNativeFunctions && result.metadata?.stopReason === 'functionCalls' && result.functionCalls?.length) {
+          const _nativeSessionId = this._sessionId;
+          let pendingCalls = result.functionCalls;
+          while (pendingCalls && pendingCalls.length > 0) {
+            if (this._sessionId !== _nativeSessionId) break;
+            if (_userAbortedGeneration) break;
+            this._chatHistory = result.lastEvaluation.cleanHistory;
+            for (const fc of pendingCalls) {
+              const toolName = fc.functionName;
+              const toolParams = fc.params ?? {};
+              totalToolCalls++;
+              console.log(`[ChatEngine] Native tool call #${totalToolCalls}: ${toolName}(${JSON.stringify(toolParams)})`);
+              if (onStreamEvent) onStreamEvent('tool-executing', [{ tool: toolName, params: toolParams }]);
+              const _toolStart = Date.now();
+              let toolResult;
+              try { toolResult = await executeToolFn(toolName, toolParams); }
+              catch (e) { toolResult = { success: false, error: e.message }; }
+              console.log(`[ChatEngine] Native tool ${toolName} completed in ${Date.now() - _toolStart}ms`);
+              if (onToolCall) onToolCall({ name: toolName, params: toolParams, result: toolResult });
+              if (onStreamEvent) onStreamEvent('mcp-tool-results', [{ tool: toolName, result: toolResult }]);
+              // Inject result into the cleanHistory function call item so LlamaChat can continue
+              const lastItem = this._chatHistory[this._chatHistory.length - 1];
+              if (lastItem?.type === 'model') {
+                const fcItem = lastItem.response.find(r => r.type === 'functionCall' && r.name === toolName && r.result == null);
+                if (fcItem) fcItem.result = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
+              }
+            }
+            const ctxAvailNow = contextSize - (this._sequence?.nextTokenIndex || 0);
+            genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, ctxAvailNow);
+            result = await this._chat.generateResponse(this._chatHistory, genOptions);
+            this._chatHistory = result.lastEvaluation.cleanHistory;
+            pendingCalls = result.metadata?.stopReason === 'functionCalls' ? result.functionCalls : null;
+          }
+          // Update lastEvaluation for next turn context reuse
+          this._lastEvaluation = result.lastEvaluation;
+        }
+        // ── Prose JSON fallback path (unchanged) ──────────────────────────────────────
+        // Used when native functions not active or stopReason !== 'functionCalls'.
+        else {
 
         let roundStart = 0;
         let parsedCalls = []; // Hoisted to function scope for refusal correction access
@@ -2777,6 +2886,7 @@ class ChatEngine extends EventEmitter {
           }
 
         }
+        } // end prose JSON fallback path
 
       } else if (executeToolFn && _userAbortedGeneration) {
         console.log(`[ChatEngine] Skipping tool parse/execute — generation stopReason=${_genStopReason} (user stopped)`);

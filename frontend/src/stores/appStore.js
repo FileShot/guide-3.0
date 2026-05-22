@@ -1775,6 +1775,7 @@ const useAppStore = create((set, get) => ({
       // LLM / Inference
 
       temperature: 0.4,
+      _defaultTemperature: 0.4,
 
       maxResponseTokens: 0, // 0 = auto (use all available context space)
 
@@ -1785,6 +1786,7 @@ const useAppStore = create((set, get) => ({
       topK: 40,
 
       repeatPenalty: 1.1,
+      _defaultRepeatPenalty: 1.1,
 
       seed: -1,
 
