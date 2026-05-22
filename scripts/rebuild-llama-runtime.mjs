@@ -75,20 +75,25 @@ function parseProfile(argv) {
   return p;
 }
 
+const NLC_CLI = path.join(ROOT, 'node_modules', 'node-llama-cpp', 'dist', 'cli', 'cli.js');
+
 function run(cmd, args, extraEnv = {}) {
   log(`${cmd} ${args.join(' ')}`);
   const env = { ...process.env, ...extraEnv };
-  const r = spawnSync(cmd, args, { cwd: ROOT, env, stdio: 'inherit', shell: process.platform === 'win32' });
+  const r = spawnSync(cmd, args, { cwd: ROOT, env, stdio: 'inherit', shell: false });
   if (r.status !== 0) {
     console.error(`[rebuild-llama] exited ${r.status}: ${cmd} ${args.join(' ')}`);
+    if (r.stderr) console.error(r.stderr.toString());
     process.exit(r.status ?? 1);
   }
 }
 
-function npxArgs(subcmd) {
-  return process.platform === 'win32'
-    ? ['--no-install', 'node-llama-cpp', ...subcmd]
-    : ['--no', 'node-llama-cpp', ...subcmd];
+function runNlc(subcmd, extraEnv = {}) {
+  if (!fs.existsSync(NLC_CLI)) {
+    console.error(`[rebuild-llama] missing CLI at ${NLC_CLI}`);
+    process.exit(1);
+  }
+  run(process.execPath, [NLC_CLI, ...subcmd], extraEnv);
 }
 
 const profileName = parseProfile(process.argv.slice(2));
@@ -96,9 +101,9 @@ const profileEnv = PROFILES[profileName];
 
 log(`profile=${profileName} release=${RELEASE} platform=${process.platform}`);
 
-run('npx', npxArgs(['source', 'download', '--release', RELEASE]), profileEnv);
+runNlc(['source', 'download', '--release', RELEASE], profileEnv);
 run('node', [path.join('scripts', 'verify-llama-gemma4.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
-run('npx', npxArgs(['source', 'build']), profileEnv);
+runNlc(['source', 'build'], profileEnv);
 run('node', [path.join('scripts', 'verify-llama-gemma4.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
 
 log('done');
