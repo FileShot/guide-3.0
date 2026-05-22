@@ -24,9 +24,10 @@ function log(msg) {
   console.log(`[download-llama-tarball] ${msg}`);
 }
 
-function run(cmd, args) {
-  log(`${cmd} ${args.join(' ')}`);
-  const r = spawnSync(cmd, args, { cwd: ROOT, stdio: 'inherit', shell: false });
+function run(cmd, args, opts = {}) {
+  const cwd = opts.cwd || ROOT;
+  log(`${cmd} ${args.join(' ')}${cwd !== ROOT ? ` (cwd=${path.relative(ROOT, cwd)})` : ''}`);
+  const r = spawnSync(cmd, args, { cwd, stdio: 'inherit', shell: false });
   if (r.status !== 0) {
     console.error(`[download-llama-tarball] failed: ${cmd}`);
     process.exit(r.status ?? 1);
@@ -68,6 +69,13 @@ fs.writeFileSync(
   path.join(LLAMA_DIR, 'llama.cpp.info.json'),
   JSON.stringify({ tag: RELEASE, llamaCppGithubRepo: REPO }, null, 2) + '\n',
 );
+
+// node-llama-cpp source build requires .git under llama/llama.cpp (isLlamaCppRepoCloned).
+run('git', ['init'], { cwd: LLAMA_CPP_DIR });
+run('git', ['config', 'user.email', 'guide-ci@local'], { cwd: LLAMA_CPP_DIR });
+run('git', ['config', 'user.name', 'guide-ci'], { cwd: LLAMA_CPP_DIR });
+run('git', ['add', '-A'], { cwd: LLAMA_CPP_DIR });
+run('git', ['commit', '-m', `import llama.cpp ${RELEASE} tarball`], { cwd: LLAMA_CPP_DIR });
 
 const binariesMeta = path.join(LLAMA_DIR, 'binariesGithubRelease.json');
 if (fs.existsSync(binariesMeta)) {
