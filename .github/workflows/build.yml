@@ -90,6 +90,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 7
           name: windows-cpu
           path: dist-electron/guIDE-*-cpu-x64-setup.exe
           retention-days: 30
@@ -137,6 +138,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 7
           name: windows-cuda
           path: dist-electron/guIDE-*-cuda-x64-setup.exe
           retention-days: 30
@@ -184,6 +186,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 7
           name: linux-cpu
           path: dist-electron/guIDE-*-cpu-linux-x64.AppImage
           retention-days: 30
@@ -231,6 +234,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 7
           name: linux-cuda
           path: dist-electron/guIDE-*-cuda-linux-x64.AppImage
           retention-days: 30
@@ -290,6 +294,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 7
           name: windows-cpu-legacy
           path: dist-electron/guIDE-*-cpu-legacy-x64-setup.exe
           retention-days: 30
@@ -354,6 +359,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 7
           name: windows-cuda-legacy
           path: dist-electron/guIDE-*-cuda-legacy-x64-setup.exe
           retention-days: 30
@@ -415,6 +421,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 7
           name: linux-cpu-legacy
           path: dist-electron/guIDE-*-cpu-legacy-linux-x64.AppImage
           retention-days: 30
@@ -481,6 +488,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 7
           name: linux-cuda-legacy
           path: dist-electron/guIDE-*-cuda-legacy-linux-x64.AppImage
           retention-days: 30
@@ -544,6 +552,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 7
           name: mac-cpu
           path: dist-electron/guIDE-*-cpu-mac-*.dmg
           retention-days: 30

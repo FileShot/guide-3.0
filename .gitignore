@@ -33,3 +33,47 @@ probe-out.log
 
 # User data
 .guide-ide/
+
+# Accidental home-directory junk (must never be committed)
+.bash_history
+.bash_logout
+.bashrc
+.profile
+.cache/
+.codeium/
+.config/
+.gnupg/
+.ide-memory/
+.local/
+.npm/
+.ollama/
+.pki/
+.ssh/
+.stfolder/
+.windsurf/
+AppData/
+Contacts/
+Desktop/
+Documents/
+Downloads/
+Favorites/
+IntelGraphicsProfiles/
+Links/
+Music/
+OneDrive/
+Pictures/
+Saved Games/
+Sync/
+NTUSER.DAT*
+ntuser.ini
+scoop/
+snap/
+voice-type/
+gpu-monitor/
+_audit_raw_output.txt
+_releases_raw.json
+_r1.json
+_r2.json
+
+# Local export/cleanup temp (release notes live in docs/)
+RELEASE_CLEANUP_*.json
