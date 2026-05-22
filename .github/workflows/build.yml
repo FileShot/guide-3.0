@@ -235,6 +235,256 @@ jobs:
           path: dist-electron/guIDE-*-cuda-linux-x64.AppImage
           retention-days: 30
 
+  # ─── Windows CPU Legacy (Haswell+, no ADX) ───────────────────
+  build-windows-cpu-legacy:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set build version
+        shell: bash
+        run: |
+          node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
+
+      - name: Install setuptools (provides distutils for node-gyp)
+        run: pip install setuptools
+
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build node-llama-cpp from source (Haswell CPU target)
+        shell: bash
+        env:
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_NATIVE: 'OFF'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX2: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_FMA: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_F16C: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: '/arch:AVX2'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_C_FLAGS: '/arch:AVX2'
+        run: npx --no node-llama-cpp source download && npx --no node-llama-cpp source build
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Build Windows CPU Legacy installer
+        run: npx electron-builder --win --x64 --config electron-builder.nosign.legacy.json --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cpu-legacy
+          path: dist-electron/guIDE-*-cpu-legacy-x64-setup.exe
+          retention-days: 30
+
+  # ─── Windows CUDA Legacy (Haswell CPU + CUDA) ────────────────
+  build-windows-cuda-legacy:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set build version
+        shell: bash
+        run: |
+          node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
+
+      - name: Install setuptools (provides distutils for node-gyp)
+        run: pip install setuptools
+
+      - uses: Jimver/cuda-toolkit@v0.2.15
+        with:
+          cuda: '12.4.0'
+
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build node-llama-cpp from source (Haswell CPU + CUDA)
+        shell: bash
+        env:
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_NATIVE: 'OFF'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_CUDA: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX2: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_FMA: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_F16C: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: '/arch:AVX2'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_C_FLAGS: '/arch:AVX2'
+        run: npx --no node-llama-cpp source download && npx --no node-llama-cpp source build
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Build Windows CUDA Legacy installer
+        run: npx electron-builder --win --x64 --config electron-builder.nosign.legacy.cuda.json --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cuda-legacy
+          path: dist-electron/guIDE-*-cuda-legacy-x64-setup.exe
+          retention-days: 30
+
+  # ─── Linux CPU Legacy (Haswell+, no ADX) ─────────────────────
+  build-linux-cpu-legacy:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set build version
+        run: |
+          node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build node-llama-cpp from source (Haswell CPU target)
+        env:
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_NATIVE: 'OFF'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX2: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_FMA: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_F16C: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: '-march=haswell'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_C_FLAGS: '-march=haswell'
+        run: npx --no node-llama-cpp source download && npx --no node-llama-cpp source build
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Convert icon to PNG
+        run: |
+          mkdir -p build
+          if command -v convert &> /dev/null; then
+            convert build/icon.ico[0] build/icon.png
+          else
+            sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
+          fi
+
+      - name: Build Linux CPU Legacy AppImage
+        run: npx electron-builder --linux --x64 --config electron-builder.nosign.legacy.json --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-cpu-legacy
+          path: dist-electron/guIDE-*-cpu-legacy-linux-x64.AppImage
+          retention-days: 30
+
+  # ─── Linux CUDA Legacy (Haswell CPU + CUDA) ──────────────────
+  build-linux-cuda-legacy:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set build version
+        run: |
+          node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - uses: Jimver/cuda-toolkit@v0.2.15
+        with:
+          cuda: '12.4.0'
+
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build node-llama-cpp from source (Haswell CPU + CUDA)
+        env:
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_NATIVE: 'OFF'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_CUDA: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX2: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_FMA: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_F16C: 'ON'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: '-march=haswell'
+          NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_C_FLAGS: '-march=haswell'
+        run: npx --no node-llama-cpp source download && npx --no node-llama-cpp source build
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Convert icon to PNG
+        run: |
+          mkdir -p build
+          if command -v convert &> /dev/null; then
+            convert build/icon.ico[0] build/icon.png
+          else
+            sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
+          fi
+
+      - name: Build Linux CUDA Legacy AppImage
+        run: npx electron-builder --linux --x64 --config electron-builder.nosign.legacy.cuda.json --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-cuda-legacy
+          path: dist-electron/guIDE-*-cuda-legacy-linux-x64.AppImage
+          retention-days: 30
+
   # ─── macOS ──────────────────────────────────────────────────
   build-mac:
     needs: prepare
@@ -300,7 +550,7 @@ jobs:
 
   # ─── GitHub Release ─────────────────────────────────────────
   release:
-    needs: [prepare, build-windows-cpu, build-windows-cuda, build-linux-cpu, build-linux-cuda, build-mac]
+    needs: [prepare, build-windows-cpu, build-windows-cuda, build-linux-cpu, build-linux-cuda, build-windows-cpu-legacy, build-windows-cuda-legacy, build-linux-cpu-legacy, build-linux-cuda-legacy, build-mac]
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -319,8 +569,12 @@ jobs:
           files: |
             artifacts/windows-cpu/*
             artifacts/windows-cuda/*
+            artifacts/windows-cpu-legacy/*
+            artifacts/windows-cuda-legacy/*
             artifacts/linux-cpu/*
             artifacts/linux-cuda/*
+            artifacts/linux-cpu-legacy/*
+            artifacts/linux-cuda-legacy/*
             artifacts/mac-cpu/*
           draft: false
           prerelease: false
