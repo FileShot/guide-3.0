@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-05-22 — v0.3.96 — GLM Mode C only without native FC; block reload while streaming
+
+### Problem
+- v0.3.95: Mode C + 69 native tools trapped entire GLM reply in thought segment (`visibleLen=0`, prose in thinking UI).
+- Changing KV cache during generation triggered model reload/dispose and UI freeze.
+
+### Fix
+- **`chatEngine.js`**: `noPrefixTrigger` (Mode C) only when `availableFunctions` is empty; normal chat keeps standard Jinja path.
+- **`Sidebar.jsx`**: skip model reload while `chatStreaming`; warn user to stop/finish first.
+
+---
+
 ## 2026-05-22 — v0.3.95 — GLM thinking Mode C + restore prose tool catalog
 
 ### Problem

@@ -1291,6 +1291,7 @@ function SettingsPanel() {
   const { themeId, setTheme } = useTheme();
   const reloadTimerRef = useRef(null);
   const reloadInFlightRef = useRef(false);
+  const chatStreaming = useAppStore(s => s.chatStreaming);
 
   const syncLabel = settingsSyncStatus === 'saving'
     ? 'Saving...'
@@ -1332,7 +1333,7 @@ function SettingsPanel() {
         reloadInFlightRef.current = false;
       });
     }, 250);
-  }, [modelInfo, modelLoading, addNotification]);
+  }, [modelInfo, modelLoading, chatStreaming, addNotification]);
 
   const updateSettingWithReload = useCallback((key, value) => {
     updateSetting(key, value);

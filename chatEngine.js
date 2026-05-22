@@ -486,9 +486,15 @@ function buildEngineLoadSettings(raw = {}) {
  */
 function createThinkingOpenJinjaWrapper(JinjaTemplateChatWrapper, LlamaText) {
   return class ThinkingOpenJinjaChatWrapper extends JinjaTemplateChatWrapper {
-    generateContextState(options) {
-      const state = super.generateContextState(options);
+    generateContextState({ chatHistory, availableFunctions, documentFunctionParams }) {
+      const state = super.generateContextState({ chatHistory, availableFunctions, documentFunctionParams });
       if (this.additionalRenderParameters?.enable_thinking !== true) return state;
+      // Mode C (forced thought open) + native function calling: GLM never leaves the thought
+      // segment — all prose streams to llm-thinking-token, visibleLen=0 (v0.3.95 logs).
+      // Keep Mode C only for generations without native FC (ask-only, etc.).
+      if (availableFunctions && Object.keys(availableFunctions).length > 0) {
+        return state;
+      }
       const thoughtSeg = this.settings?.segments?.thought;
       if (thoughtSeg?.prefix == null) return state;
       return {
@@ -2916,6 +2922,9 @@ class ChatEngine extends EventEmitter {
       }
       const stopReason = result.metadata?.stopReason || 'natural';
 
+      if (_sfNativeThinkActive && _sfVisibleChars === 0 && _sfNativeThinkChars > 0) {
+        console.warn(`[ChatEngine] Thought-segment trap: ${_sfNativeThinkChars} chars in thought, 0 in visible chat — check Mode C + native FC interaction`);
+      }
       console.log(`[ChatEngine] Generation complete. Tool calls: ${totalToolCalls}, stopReason=${stopReason}, responseLen=${fullResponse.length}, thoughtLen=${_sfNativeThinkChars}, visibleLen=${_sfVisibleChars}`);
 
       // Inference speed diagnostic
