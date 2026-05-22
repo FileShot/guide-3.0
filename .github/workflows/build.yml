@@ -22,7 +22,6 @@ permissions:
   contents: write
 
 env:
-  LLAMA_CPP_RELEASE: b8954
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
@@ -138,10 +137,7 @@ jobs:
           cuda: '12.4.0'
 
       - name: Install root dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Rebuild llama.cpp runtime (gemma4 + CUDA)
-        run: node scripts/rebuild-llama-runtime.mjs --profile cuda
+        run: npm ci
 
       - name: Install frontend dependencies
         run: npm ci
