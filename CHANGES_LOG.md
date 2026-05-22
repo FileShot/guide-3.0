@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-05-22 — v0.3.99 — Settings/thinking diagnostic logging (guide-main.log)
+
+### Change
+- Log every settings change: `[UI] updateSetting`, `[Settings] POST /api/settings`, `[SettingsManager] set/setAll/flush`, `[Settings] model-load START/DONE`, `[Settings] set-thinking-mode IPC`, `[ChatEngine] setWrapperMode START/DONE`, `chat() toolsEnabled/thinkingMode`.
+- Added `ui-log` IPC (`window.electronAPI.uiLog`) so renderer actions appear in guide-main.log.
+
+---
+
 ## 2026-05-22 — v0.3.98 — Fix Mode C thought-segment trap; fix gray UI on mode switch; persist thinkingMode
 
 ### Problem (log-proven, user session v0.3.97)

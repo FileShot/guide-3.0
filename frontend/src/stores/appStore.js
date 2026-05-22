@@ -1837,6 +1837,9 @@ const useAppStore = create((set, get) => ({
     const next = { ...s.settings, [key]: value };
 
     localStorage.setItem('guIDE-settings', JSON.stringify(next));
+    if (typeof window !== 'undefined' && window.electronAPI?.uiLog) {
+      window.electronAPI.uiLog(`updateSetting ${key}=${JSON.stringify(value)}`);
+    }
 
     // Sync to backend settings.json so model reload reads correct values
     set().setSettingsSyncState({ status: 'saving', at: Date.now() });

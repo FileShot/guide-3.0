@@ -192,7 +192,9 @@ class SettingsManager extends EventEmitter {
   }
 
   set(key, value) {
+    const prev = this._settings[key];
     this._settings[key] = value;
+    console.log(`[SettingsManager] set ${key}: ${JSON.stringify(prev)} -> ${JSON.stringify(value)}`);
     this._scheduleSave();
     this.emit('change', key, value);
   }
@@ -202,7 +204,14 @@ class SettingsManager extends EventEmitter {
   }
 
   setAll(obj) {
+    const prev = { ...this._settings };
     this._settings = { ...SETTINGS_DEFAULTS, ...obj };
+    for (const k of Object.keys(this._settings)) {
+      if (prev[k] !== this._settings[k]) {
+        console.log(`[SettingsManager] setAll diff ${k}: ${JSON.stringify(prev[k])} -> ${JSON.stringify(this._settings[k])}`);
+      }
+    }
+    console.log(`[SettingsManager] setAll done thinkingMode=${this._settings.thinkingMode} toolsEnabled=${this._settings.toolsEnabled}`);
     this._scheduleSave();
     this.emit('change', null, this._settings);
   }
@@ -273,6 +282,7 @@ class SettingsManager extends EventEmitter {
 
   /** Flush all pending saves immediately (call on shutdown). */
   flush() {
+    console.log(`[SettingsManager] flush thinkingMode=${this._settings.thinkingMode} toolsEnabled=${this._settings.toolsEnabled}`);
     if (this._saveTimer) {
       clearTimeout(this._saveTimer);
       this._saveTimer = null;

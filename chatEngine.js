@@ -1347,6 +1347,7 @@ class ChatEngine extends EventEmitter {
     let effectiveToolPrompt = '';
 
     const _toolsEnabled = options.toolsEnabled !== false;
+    console.log(`[ChatEngine] chat() toolsEnabled=${_toolsEnabled} thinkingMode=${this._currentThinkingMode} options.toolsEnabled=${options.toolsEnabled}`);
     if (!_toolsEnabled) {
       console.log('[ChatEngine] Tools disabled by setting — skipping tool prompt and native FC');
       this._chatHistory[0].text = basePrompt;
@@ -3156,6 +3157,7 @@ class ChatEngine extends EventEmitter {
    *        'auto' = node-llama-cpp auto resolver, 'off' = Jinja enable_thinking=false
    */
   async setWrapperMode(mode) {
+    console.log(`[ChatEngine] setWrapperMode START mode=${mode} ready=${this.isReady} currentMode=${this._currentThinkingMode}`);
     if (!this.isReady || !this._sequence) throw new Error('No model loaded');
     if (!this._LlamaChat) throw new Error('LlamaChat class not available — model may need to be reloaded once');
     const template = this._ggufChatTemplate;

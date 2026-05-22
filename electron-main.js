@@ -492,13 +492,19 @@ ipcMain.handle('revert-context', (_e, messages) => {
 // Swap chat wrapper mode on the fly without reloading the model.
 // Resets conversation. Modes: 'C' (ThinkingOpen), 'B' (Jinja no prefix), 'auto', 'off'
 ipcMain.handle('set-thinking-mode', async (_e, mode) => {
+  console.log(`[Settings] set-thinking-mode IPC START mode=${mode}`);
   try {
     const result = await llmEngine.setWrapperMode(mode);
+    console.log(`[Settings] set-thinking-mode IPC DONE mode=${mode} success=${!!result?.success}`);
     return result;
   } catch (err) {
-    console.error(`[electron-main] set-thinking-mode error: ${err.message}`);
+    console.error(`[Settings] set-thinking-mode IPC ERROR: ${err.message}`);
     return { success: false, error: err.message };
   }
+});
+
+ipcMain.handle('ui-log', (_e, msg) => {
+  console.log(`[UI] ${String(msg ?? '')}`);
 });
 
 // Handle answer from frontend for ask_question tool
@@ -563,12 +569,15 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/models/load' && method === 'POST') {
       const { modelPath } = body;
       if (!modelPath) return { _status: 400, error: 'modelPath required' };
+      const loadSettings = buildEngineLoadSettings(settingsManager.getAll());
+      console.log(`[Settings] model-load START path=${modelPath} thinkingMode=${loadSettings.thinkingMode} toolsEnabled=${settingsManager.get('toolsEnabled')} enableThinking=${loadSettings.enableThinking}`);
       try { llmEngine.cancelGeneration('model-load'); } catch (_) {}
       _send('model-loading', { path: modelPath });
-      await llmEngine.initialize(modelPath, buildEngineLoadSettings(settingsManager.getAll()));
+      await llmEngine.initialize(modelPath, loadSettings);
       const info = llmEngine.modelInfo;
       settingsManager.set('lastModelPath', modelPath);
       _send('model-loaded', info);
+      console.log(`[Settings] model-load DONE path=${modelPath} thinkingMode=${settingsManager.get('thinkingMode')}`);
       return { success: true, modelInfo: info };
     }
     if (p === '/api/models/unload' && method === 'POST') {
@@ -845,6 +854,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       return settingsManager.getAll();
     }
     if (p === '/api/settings' && method === 'POST') {
+      console.log(`[Settings] POST /api/settings received thinkingMode=${body?.thinkingMode} toolsEnabled=${body?.toolsEnabled}`);
       settingsManager.setAll(body);
       settingsManager.flush();
       currentSettings = settingsManager.getAll();

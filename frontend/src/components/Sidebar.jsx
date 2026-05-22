@@ -1312,8 +1312,10 @@ function SettingsPanel() {
   };
 
   const triggerModelReload = useCallback((reasonLabel) => {
+    window.electronAPI?.uiLog?.(`triggerModelReload called reason=${reasonLabel} path=${modelInfo?.path ?? 'none'} modelLoading=${modelLoading} chatStreaming=${chatStreaming}`);
     if (!modelInfo?.path || modelLoading || reloadInFlightRef.current) return;
     if (chatStreaming) {
+      window.electronAPI?.uiLog?.(`triggerModelReload BLOCKED chatStreaming`);
       addNotification({ type: 'warning', message: 'Stop or wait for generation to finish before reloading the model.', duration: 4000 });
       return;
     }
@@ -1321,6 +1323,7 @@ function SettingsPanel() {
     reloadTimerRef.current = setTimeout(() => {
       if (!modelInfo?.path || reloadInFlightRef.current) return;
       reloadInFlightRef.current = true;
+      window.electronAPI?.uiLog?.(`triggerModelReload FETCH /api/models/load reason=${reasonLabel}`);
       fetch('/api/models/load', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1346,13 +1349,16 @@ function SettingsPanel() {
   }, [updateSetting, triggerModelReload]);
 
   const applyThinkingMode = useCallback(async (mode) => {
+    window.electronAPI?.uiLog?.(`applyThinkingMode START mode=${mode} current=${settings.thinkingMode}`);
     if (chatStreaming) {
+      window.electronAPI?.uiLog?.(`applyThinkingMode BLOCKED chatStreaming`);
       addNotification({ type: 'warning', message: 'Stop or wait for generation to finish before changing thinking mode.', duration: 4000 });
       return;
     }
     const next = { ...settings, thinkingMode: mode };
     updateSetting('thinkingMode', mode);
     try {
+      window.electronAPI?.uiLog?.(`applyThinkingMode POST /api/settings`);
       const r = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
