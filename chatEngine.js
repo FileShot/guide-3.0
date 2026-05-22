@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const { pathToFileURL } = require('url');
 const { parseToolCalls, repairToolCalls, stripToolCallText } = require('./tools/toolParser');
+const { canonicalizeToolParams } = require('./tools/canonicalizeToolParams');
 const { visionServer } = require('./visionServer');
 const { detectFamily, detectFamilyFromArch, detectParamSize } = require('./modelDetection');
 const { getModelProfile } = require('./modelProfiles');
@@ -1026,9 +1027,8 @@ class ChatEngine extends EventEmitter {
         console.log(`[ChatEngine] chatWrapper=auto (node-llama-cpp resolves specialized wrapper); enable_thinking=${_chatTemplateKwargs.enable_thinking}`);
       }
       this._chatWrapper = chatWrapperOpt;
-      // True when the Jinja template natively emits thought segments (GLM, DeepSeek-R1 via Jinja).
-      // When true: onResponseChunk handles all routing; onTextChunk skips _sfProcessChunk to
-      // prevent the raw-tag state machine racing with native segment events.
+      // Log-only: custom Jinja thinking wrapper in use (GLM, etc.). Routing uses per-generation
+      // _sfNativeThinkActive, not this flag — tag parser stays enabled when native segments absent.
       this._jinjaThoughtSegments = !!(needsThinkingJinja && chatWrapperOpt !== 'auto');
       this._chat = new LlamaChat({ contextSequence: this._sequence, chatWrapper: chatWrapperOpt });
       console.log(`[ChatEngine] chatTemplateKwargs=${JSON.stringify(_chatTemplateKwargs)}, wrapper=${chatWrapperOpt === 'auto' ? 'auto' : chatWrapperOpt.wrapperName}, resolvedThinkMode=${_resolvedThinkMode}, enableThinking=${s.enableThinking}, templateSupportsThinking=${_templateSupportsThinking}`);
@@ -1563,7 +1563,7 @@ class ChatEngine extends EventEmitter {
               }
               // Orphan close-think tag — model emitted reasoning without open tag (pre-native-segment path).
               console.log('[ChatEngine] orphan </think> consumed — retroactively marking preceding text as thinking');
-              if (_sfVisibleChars > 0 && onStreamEvent && !this._jinjaThoughtSegments) {
+              if (_sfVisibleChars > 0 && onStreamEvent) {
                 onStreamEvent('llm-thinking-retroactive', { length: _sfVisibleChars });
               }
               _sfVisibleChars = 0;
@@ -2026,44 +2026,34 @@ class ChatEngine extends EventEmitter {
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
           if (!chunk) return;
-          console.log(`[StreamDiag] onTextChunk len=${chunk.length} jinjaMode=${this._jinjaThoughtSegments}`);
-          // Jinja thought-segment models: visible/thought routing handled entirely in onResponseChunk.
-          // Accumulate fullResponse for end-of-turn tool parse but skip _sfProcessChunk to prevent
-          // the raw-tag state machine racing with native segment events and causing doubled output.
-          if (this._jinjaThoughtSegments) {
-            fullResponse += chunk;
-            tokensSinceLastUsageReport++;
-            genTokenCount++;
-            if (onContextUsage && tokensSinceLastUsageReport >= 50) {
-              tokensSinceLastUsageReport = 0;
-              onContextUsage({ used: this._sequence.nextTokenIndex, total: this._context.contextSize });
-            }
-            return;
-          }
+          console.log(`[StreamDiag] onTextChunk len=${chunk.length} jinjaWrapper=${this._jinjaThoughtSegments}`);
           fullResponse += chunk;
           _sfProcessChunk(chunk);
           tokensSinceLastUsageReport++;
           genTokenCount++;
           if (onContextUsage && tokensSinceLastUsageReport >= 50) {
             tokensSinceLastUsageReport = 0;
-            const used = this._sequence.nextTokenIndex;
-            const total = this._context.contextSize;
-            onContextUsage({ used, total });
+            onContextUsage({
+              used: this._sequence.nextTokenIndex,
+              total: this._context.contextSize,
+            });
           }
         },
         onResponseChunk: (chunk) => {
           if (_thinkingFilterEnabled) return;
           const text = chunk.text || '';
-          if (!text) return;
+          if (!text && chunk.type !== 'segment') return;
 
-          // Thought segments → thinking UI only (never to visible chat stream)
+          console.log(`[StreamDiag] onResponseChunk type=${chunk.type ?? 'n/a'} segmentType=${chunk.segmentType ?? 'n/a'} len=${text.length}`);
+
+          // Native thought segments → thinking dropdown only (never visible chat / onToken)
           if (chunk.type === 'segment' && chunk.segmentType === 'thought') {
             _sfNativeThinkActive = true;
             _sfNativeThinkChars += text.length;
             if (chunk.segmentStartTime && onStreamEvent) {
               onStreamEvent('llm-thinking-start', { position: _sfVisibleChars });
             }
-            if (onStreamEvent) onStreamEvent('llm-thinking-token', text);
+            if (text && onStreamEvent) onStreamEvent('llm-thinking-token', text);
             if (chunk.segmentEndTime && onStreamEvent) {
               onStreamEvent('llm-thinking-end', { position: _sfVisibleChars, length: 0, content: '' });
             }
@@ -2074,20 +2064,10 @@ class ChatEngine extends EventEmitter {
             return;
           }
 
-          // Everything else is visible text:
-          //   chunk.type === 'segment' && segmentType === 'comment'  (DeepSeek visible reply)
-          //   chunk.type === undefined  (main response text, per LlamaChat.d.ts lines 23-30)
-          if (this._jinjaThoughtSegments) {
-            // Jinja models: onTextChunk skipped _sfProcessChunk, so route visible text here.
+          // Visible main text: onTextChunk + _sfProcessChunk only (no _sfForward here — avoids 2× buffer/UI)
+          if (chunk.type === 'segment' && chunk.segmentType !== 'thought') {
             fullResponse += text;
-            _sfForward(text);
-          } else {
-            // Non-Jinja: visible main text already handled via onTextChunk → _sfProcessChunk.
-            // Only route segment-typed visible text (e.g. 'comment') that onTextChunk missed.
-            if (chunk.type === 'segment') {
-              fullResponse += text;
-              _sfProcessChunk(text);
-            }
+            _sfProcessChunk(text);
           }
         },
       };
@@ -2281,7 +2261,7 @@ class ChatEngine extends EventEmitter {
             this._chatHistory = result.lastEvaluation.cleanHistory;
             for (const fc of pendingCalls) {
               const toolName = fc.functionName;
-              const toolParams = fc.params ?? {};
+              const toolParams = canonicalizeToolParams(toolName, fc.params ?? {});
               totalToolCalls++;
               console.log(`[ChatEngine] Native tool call #${totalToolCalls}: ${toolName}(${JSON.stringify(toolParams)})`);
               if (onStreamEvent) onStreamEvent('tool-executing', [{ tool: toolName, params: toolParams }]);

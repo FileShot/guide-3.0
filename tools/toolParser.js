@@ -1,5 +1,7 @@
 'use strict';
 
+const { canonicalizeToolParams, getCanonicalPathParamForRecovery } = require('./canonicalizeToolParams');
+
 // ─── Tool Name Aliases ───
 // Maps common model misspellings/hallucinations to canonical tool names
 const TOOL_NAME_ALIASES = {
@@ -291,7 +293,7 @@ function extractJsonObjects(text) {
           if (toolMatch) {
             const toolName = toolMatch[1];
             // Try multiple param patterns for different tool types
-            const pathMatch = slice.match(/"(?:filePath|path)"\s*:\s*"([^"]+)"/);
+            const pathKeyMatch = slice.match(/"(filePath|path|dirPath)"\s*:\s*"([^"]+)"/);
             const urlMatch = slice.match(/"(?:url|href|link)"\s*:\s*"([^"]+)"/);
             const cmdMatch = slice.match(/"(?:command|cmd)"\s*:\s*"([^"]+)"/);
             const searchMatch = slice.match(/"(?:pattern|query|search)"\s*:\s*"([^"]+)"/);
@@ -302,8 +304,13 @@ function extractJsonObjects(text) {
             const browserReasonMatch = slice.match(/"(?:reason|description|purpose)"\s*:\s*"([^"]+)"/);
             
             let recovered = null;
-            if (pathMatch) {
-              recovered = { tool: toolName, params: { filePath: pathMatch[1] }, _recovered: true };
+            if (pathKeyMatch) {
+              const canonicalKey = getCanonicalPathParamForRecovery(toolName) || pathKeyMatch[1];
+              recovered = {
+                tool: toolName,
+                params: { [canonicalKey]: pathKeyMatch[2] },
+                _recovered: true,
+              };
             } else if (urlMatch) {
               recovered = { tool: toolName, params: { url: urlMatch[1] }, _recovered: true };
             } else if (cmdMatch) {
@@ -461,32 +468,7 @@ function normalizeToolCall(parsed) {
   }
   console.log(`[ToolParser] normalizeToolCall DONE: tool=${toolName}`);
 
-  // Param name normalization
-  if (params.file_path && !params.filePath) { params.filePath = params.file_path; delete params.file_path; }
-  if (params.file && !params.filePath) { params.filePath = params.file; delete params.file; }
-  if (params.filename && !params.filePath) { params.filePath = params.filename; delete params.filename; }
-  if (params.old_text && !params.oldText) { params.oldText = params.old_text; delete params.old_text; }
-  if (params.new_text && !params.newText) { params.newText = params.new_text; delete params.new_text; }
-  if (params.old_string && !params.oldText) { params.oldText = params.old_string; delete params.old_string; }
-  if (params.new_string && !params.newText) { params.newText = params.new_string; delete params.new_string; }
-  if (params.dir_path && !params.dirPath) { params.dirPath = params.dir_path; delete params.dir_path; }
-  if (params.directory && !params.dirPath) { params.dirPath = params.directory; delete params.directory; }
-  if (params.path && !params.dirPath && !params.filePath && toolName === 'list_directory') {
-    params.dirPath = params.path;
-    delete params.path;
-  }
-  if (params.name && !params.key && (toolName === 'write_scratchpad' || toolName === 'read_scratchpad')) {
-    // definition uses name; keep as name (executor accepts name || key)
-  }
-
-  // Browser-specific: selector → ref, value → text, href → url
-  if (toolName.startsWith('browser_')) {
-    if (params.selector && !params.ref) { params.ref = params.selector; delete params.selector; }
-    if (params.value && !params.text && toolName === 'browser_type') { params.text = params.value; delete params.value; }
-    if (params.href && !params.url) { params.url = params.href; delete params.href; }
-  }
-
-  return { tool: toolName, params };
+  return { tool: toolName, params: canonicalizeToolParams(toolName, params) };
 }
 
 // ─── Main Parser ───

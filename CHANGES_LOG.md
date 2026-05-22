@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-05-22 — v0.3.93 — GLM thinking routing + schema-aware tool params
+
+### Problem
+- **U3/U4 regression (v0.3.91):** Jinja path disabled `_sfProcessChunk` and orphan `</think>` retroactive move; visible text forwarded from `onResponseChunk` → thinking naked in chat (`thoughtLen=0` on GLM-4.6V-Flash).
+- **Tool loop:** Regex recovery mapped every `"path"` match to `filePath`; `create_directory` requires `path` → undefined path → repeated failed tool calls.
+
+### Fix
+**`chatEngine.js`**
+- `onTextChunk`: always `fullResponse += chunk` and `_sfProcessChunk(chunk)` (tag parser + visible stream).
+- `onResponseChunk`: only `segmentType === 'thought'` → thinking UI; no `_sfForward` for main text (fixes 2× `fullResponse`).
+- Orphan `</think>` retroactive: gated on `!_sfNativeThinkActive` only (GLM orphan-close path restored).
+- `[StreamDiag] onResponseChunk` logs `type` / `segmentType` / `len`.
+- Native FC: `canonicalizeToolParams` before `executeToolFn`.
+
+**`tools/canonicalizeToolParams.js`** (new)
+- Shared canonical param normalization for all 69 tools (fs + browser aliases).
+- `create_directory`: `filePath` / `dirPath` → `path`.
+- `getCanonicalPathParamForRecovery` for prose regex recovery.
+
+**`tools/toolParser.js`**
+- `normalizeToolCall` delegates to `canonicalizeToolParams`.
+- Regex recovery uses schema-aware path key (`path` / `filePath` / `dirPath` per tool).
+
+**`mcpToolServer.js`**
+- `executeTool` and batch tool path use `canonicalizeToolParams` (removed duplicate inline normalizers).
+
+---
+
+## 2026-05-22 — v0.3.91 — User-reported bug fixes (U1/U3–U7)
+
+### Fix
+- **U1-A:** Post-load VRAM budget no longer double-subtracts inference overhead; GLM context should not collapse to 2048 when KV fits.
+- **U3/U4:** Jinja thought segments: single stream path (`_jinjaThoughtSegments`); no raw-tag retroactive move for GLM.
+- **U5:** Native `functions` API on `generateResponse` when active; prose `parseToolCalls` loop unchanged as fallback.
+- **U6:** Model profile temperature/repeat penalty used when user settings are still at defaults.
+- **U7:** `[StreamDiag]` logging on `onTextChunk` for token-doubling diagnosis.
+
+### Files
+- `chatEngine.js`, `electron-main.js`, `frontend/src/stores/appStore.js`, `package.json`
+
+---
+
 ## 2026-05-21 — v0.3.89 — Release CI fix + B01/B02/B11/B12 bundle
 
 ### Release
