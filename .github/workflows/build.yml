@@ -9,6 +9,14 @@ on:
       version:
         description: 'Version override (e.g. 3.0.0) — leave blank to use package.json'
         required: false
+      matrix:
+        description: 'windows = build/release Windows installers only; all = full 9-platform matrix'
+        required: false
+        default: windows
+        type: choice
+        options:
+          - windows
+          - all
 
 permissions:
   contents: write
@@ -54,6 +62,7 @@ jobs:
   # ─── Windows CPU ────────────────────────────────────────────
   build-windows-cpu:
     needs: prepare
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -158,6 +167,7 @@ jobs:
   # ─── Linux CPU ──────────────────────────────────────────────
   build-linux-cpu:
     needs: prepare
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -211,6 +221,7 @@ jobs:
   # ─── Linux CUDA ─────────────────────────────────────────────
   build-linux-cuda:
     needs: prepare
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -268,6 +279,7 @@ jobs:
   # ─── Windows CPU Legacy (Haswell+, no ADX) ───────────────────
   build-windows-cpu-legacy:
     needs: prepare
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -318,6 +330,7 @@ jobs:
   # ─── Windows CUDA Legacy (Haswell CPU + CUDA) ────────────────
   build-windows-cuda-legacy:
     needs: prepare
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -372,6 +385,7 @@ jobs:
   # ─── Linux CPU Legacy (Haswell+, no ADX) ─────────────────────
   build-linux-cpu-legacy:
     needs: prepare
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -425,6 +439,7 @@ jobs:
   # ─── Linux CUDA Legacy (Haswell CPU + CUDA) ──────────────────
   build-linux-cuda-legacy:
     needs: prepare
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -482,6 +497,7 @@ jobs:
   # ─── macOS ──────────────────────────────────────────────────
   build-mac:
     needs: prepare
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -552,7 +568,24 @@ jobs:
   release:
     needs: [prepare, build-windows-cpu, build-windows-cuda, build-linux-cpu, build-linux-cuda, build-windows-cpu-legacy, build-windows-cuda-legacy, build-linux-cpu-legacy, build-linux-cuda-legacy, build-mac]
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    if: |
+      always() &&
+      (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) &&
+      needs.prepare.result == 'success' &&
+      needs.build-windows-cuda.result == 'success' &&
+      (
+        github.event_name == 'workflow_dispatch' && github.event.inputs.matrix != 'all' ||
+        (
+          needs.build-windows-cpu.result == 'success' &&
+          needs.build-windows-cuda-legacy.result == 'success' &&
+          needs.build-windows-cpu-legacy.result == 'success' &&
+          needs.build-linux-cpu.result == 'success' &&
+          needs.build-linux-cuda.result == 'success' &&
+          needs.build-linux-cpu-legacy.result == 'success' &&
+          needs.build-linux-cuda-legacy.result == 'success' &&
+          needs.build-mac.result == 'success'
+        )
+      )
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -576,6 +609,7 @@ jobs:
             artifacts/linux-cpu-legacy/*
             artifacts/linux-cuda-legacy/*
             artifacts/mac-cpu/*
+          fail_on_unmatched_files: false
           draft: false
           prerelease: false
           make_latest: true

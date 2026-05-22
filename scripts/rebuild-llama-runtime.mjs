@@ -21,9 +21,16 @@ const ROOT = path.resolve(__dirname, '..');
 // Must match node-llama-cpp@3.18.1 addon glue (b9253 breaks: cpu_get_num_math undeclared).
 const RELEASE = process.env.LLAMA_CPP_RELEASE || 'b8954';
 
+// b8954+ common/ uses std::string_view; LLVM/MSVC builds need C++17 explicitly.
+const CXX17 = {
+  NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_STANDARD: '17',
+  NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_STANDARD_REQUIRED: 'ON',
+};
+
 const PROFILES = {
-  default: {},
+  default: { ...CXX17 },
   haswell: {
+    ...CXX17,
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_NATIVE: 'OFF',
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX: 'ON',
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX2: 'ON',
@@ -40,9 +47,11 @@ const PROFILES = {
         }),
   },
   cuda: {
+    ...CXX17,
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_CUDA: 'ON',
   },
   'cuda-haswell': {
+    ...CXX17,
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_NATIVE: 'OFF',
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_CUDA: 'ON',
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX: 'ON',
