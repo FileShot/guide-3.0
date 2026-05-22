@@ -21,10 +21,22 @@ const ROOT = path.resolve(__dirname, '..');
 // Must match node-llama-cpp@3.18.1 addon glue (b9253 breaks: cpu_get_num_math undeclared).
 const RELEASE = process.env.LLAMA_CPP_RELEASE || 'b8954';
 
-// b8954+ common/ uses std::string_view; LLVM/MSVC builds need C++17 explicitly.
+// b8954+ common/ uses std::string_view; builds need C++17 explicitly.
 const CXX17 = {
   NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_STANDARD: '17',
   NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_STANDARD_REQUIRED: 'ON',
+  ...(process.platform === 'win32'
+    ? {
+        NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: '/std:c++17 /Zc:__cplusplus',
+      }
+    : {}),
+};
+
+const GPU_FOR_PROFILE = {
+  default: 'false',
+  haswell: 'false',
+  cuda: 'cuda',
+  'cuda-haswell': 'cuda',
 };
 
 const PROFILES = {
@@ -113,7 +125,12 @@ log(`profile=${profileName} release=${RELEASE} platform=${process.platform}`);
 
 run('node', [path.join('scripts', 'download-llama-cpp-tarball.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
 run('node', [path.join('scripts', 'verify-llama-gemma4.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
-runNlc(['source', 'build'], profileEnv);
+const gpu = GPU_FOR_PROFILE[profileName];
+runNlc(['source', 'build', '--gpu', gpu, '--ciMode'], {
+  ...profileEnv,
+  CI: 'true',
+  NODE_LLAMA_CPP_GPU: gpu,
+});
 run('node', [path.join('scripts', 'verify-llama-gemma4.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
 
 log('done');
