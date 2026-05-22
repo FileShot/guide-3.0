@@ -12,7 +12,8 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const LLAMA_SRC = path.join(ROOT, 'node_modules', 'node-llama-cpp', 'llama');
-const ARCH_CPP = path.join(LLAMA_SRC, 'src', 'llama-arch.cpp');
+// Upstream tarball lays out llama.cpp under llama/llama.cpp/, not llama/src/.
+const ARCH_CPP = path.join(LLAMA_SRC, 'llama.cpp', 'src', 'llama-arch.cpp');
 const INFO_JSON = path.join(LLAMA_SRC, 'llama.cpp.info.json');
 
 function fail(msg) {
