@@ -1,5 +1,15 @@
 # Gemma 4 — agent policy (read before any Gemma work)
 
+## GitHub Actions release build (user rule)
+
+When the user says **push / trigger a GitHub Actions release build**, that means:
+
+- Run the **full** workflow: **all 9 platform jobs** (Windows CPU/CUDA + legacy, Linux CPU/CUDA + legacy, Mac).
+- Publish a release with **all** installer artifacts — same as pre–Gemma-4 releases (e.g. v0.3.93).
+- Do **not** narrow to Windows-only, one GPU variant, or `matrix: windows` unless the user explicitly asks for that only.
+
+Use **`npm ci --ignore-scripts`** on every job (npm prebuilt llama). Do **not** add CI `rebuild-llama-runtime` / source compile unless the user explicitly asks to retry Gemma native compile.
+
 ## Do not mislead the user
 
 - **Never** claim Gemma 4 works in guIDE until the user has loaded a Gemma 4 GGUF in a **shipped installer** and `guide-main.log` shows successful load (no `unknown architecture 'gemma4'`).

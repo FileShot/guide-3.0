@@ -9,14 +9,6 @@ on:
       version:
         description: 'Version override (e.g. 3.0.0) — leave blank to use package.json'
         required: false
-      matrix:
-        description: 'windows = build/release Windows installers only; all = full 9-platform matrix'
-        required: false
-        default: windows
-        type: choice
-        options:
-          - windows
-          - all
 
 permissions:
   contents: write
@@ -61,7 +53,6 @@ jobs:
   # ─── Windows CPU ────────────────────────────────────────────
   build-windows-cpu:
     needs: prepare
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,9 +75,6 @@ jobs:
 
       - name: Install root dependencies
         run: npm ci --ignore-scripts
-
-      - name: Rebuild llama.cpp runtime (gemma4)
-        run: node scripts/rebuild-llama-runtime.mjs --profile default
 
       - name: Install frontend dependencies
         run: npm ci
@@ -137,7 +125,7 @@ jobs:
           cuda: '12.4.0'
 
       - name: Install root dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Install frontend dependencies
         run: npm ci
@@ -163,7 +151,6 @@ jobs:
   # ─── Linux CPU ──────────────────────────────────────────────
   build-linux-cpu:
     needs: prepare
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -181,9 +168,6 @@ jobs:
 
       - name: Install root dependencies
         run: npm ci --ignore-scripts
-
-      - name: Rebuild llama.cpp runtime (gemma4)
-        run: node scripts/rebuild-llama-runtime.mjs --profile default
 
       - name: Install frontend dependencies
         run: npm ci
@@ -217,7 +201,6 @@ jobs:
   # ─── Linux CUDA ─────────────────────────────────────────────
   build-linux-cuda:
     needs: prepare
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -239,9 +222,6 @@ jobs:
 
       - name: Install root dependencies
         run: npm ci --ignore-scripts
-
-      - name: Rebuild llama.cpp runtime (gemma4 + CUDA)
-        run: node scripts/rebuild-llama-runtime.mjs --profile cuda
 
       - name: Install frontend dependencies
         run: npm ci
@@ -275,7 +255,6 @@ jobs:
   # ─── Windows CPU Legacy (Haswell+, no ADX) ───────────────────
   build-windows-cpu-legacy:
     needs: prepare
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -298,9 +277,6 @@ jobs:
 
       - name: Install root dependencies
         run: npm ci --ignore-scripts
-
-      - name: Rebuild llama.cpp runtime (gemma4, Haswell)
-        run: node scripts/rebuild-llama-runtime.mjs --profile haswell
 
       - name: Install frontend dependencies
         run: npm ci
@@ -326,7 +302,6 @@ jobs:
   # ─── Windows CUDA Legacy (Haswell CPU + CUDA) ────────────────
   build-windows-cuda-legacy:
     needs: prepare
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -354,9 +329,6 @@ jobs:
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
-      - name: Rebuild llama.cpp runtime (gemma4, Haswell + CUDA)
-        run: node scripts/rebuild-llama-runtime.mjs --profile cuda-haswell
-
       - name: Install frontend dependencies
         run: npm ci
         working-directory: frontend
@@ -381,7 +353,6 @@ jobs:
   # ─── Linux CPU Legacy (Haswell+, no ADX) ─────────────────────
   build-linux-cpu-legacy:
     needs: prepare
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -399,9 +370,6 @@ jobs:
 
       - name: Install root dependencies
         run: npm ci --ignore-scripts
-
-      - name: Rebuild llama.cpp runtime (gemma4, Haswell)
-        run: node scripts/rebuild-llama-runtime.mjs --profile haswell
 
       - name: Install frontend dependencies
         run: npm ci
@@ -435,7 +403,6 @@ jobs:
   # ─── Linux CUDA Legacy (Haswell CPU + CUDA) ──────────────────
   build-linux-cuda-legacy:
     needs: prepare
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -457,9 +424,6 @@ jobs:
 
       - name: Install root dependencies
         run: npm ci --ignore-scripts
-
-      - name: Rebuild llama.cpp runtime (gemma4, Haswell + CUDA)
-        run: node scripts/rebuild-llama-runtime.mjs --profile cuda-haswell
 
       - name: Install frontend dependencies
         run: npm ci
@@ -493,7 +457,6 @@ jobs:
   # ─── macOS ──────────────────────────────────────────────────
   build-mac:
     needs: prepare
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.matrix == 'all'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -518,9 +481,6 @@ jobs:
 
       - name: Install root dependencies
         run: npm ci --ignore-scripts
-
-      - name: Rebuild llama.cpp runtime (gemma4)
-        run: node scripts/rebuild-llama-runtime.mjs --profile default
 
       - name: Install frontend dependencies
         run: npm ci
@@ -564,24 +524,7 @@ jobs:
   release:
     needs: [prepare, build-windows-cpu, build-windows-cuda, build-linux-cpu, build-linux-cuda, build-windows-cpu-legacy, build-windows-cuda-legacy, build-linux-cpu-legacy, build-linux-cuda-legacy, build-mac]
     runs-on: ubuntu-latest
-    if: |
-      always() &&
-      (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) &&
-      needs.prepare.result == 'success' &&
-      needs.build-windows-cuda.result == 'success' &&
-      (
-        github.event_name == 'workflow_dispatch' && github.event.inputs.matrix != 'all' ||
-        (
-          needs.build-windows-cpu.result == 'success' &&
-          needs.build-windows-cuda-legacy.result == 'success' &&
-          needs.build-windows-cpu-legacy.result == 'success' &&
-          needs.build-linux-cpu.result == 'success' &&
-          needs.build-linux-cuda.result == 'success' &&
-          needs.build-linux-cpu-legacy.result == 'success' &&
-          needs.build-linux-cuda-legacy.result == 'success' &&
-          needs.build-mac.result == 'success'
-        )
-      )
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
