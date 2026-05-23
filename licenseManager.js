@@ -3,7 +3,7 @@
  *
  * Validates and manages software licenses. Supports:
  *   - HMAC-SHA256 signed license keys (offline validation)
- *   - Online license verification via api.graysoft.dev
+ *   - Online license verification via graysoft.dev/api
  *   - Stripe checkout session creation for Pro/Team plans
  *   - Machine binding (license locked to machineId)
  *   - Persistent license storage via settingsManager
@@ -114,7 +114,7 @@ class LicenseManager extends EventEmitter {
 
     // Verify with license server
     try {
-      const res = await fetch(`${API_BASE}/license/activate`, {
+      const res = await fetch(`${API_BASE}/license/validate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -132,8 +132,13 @@ class LicenseManager extends EventEmitter {
       }
 
       const data = await res.json();
-      if (data.license) {
-        this._setLicense(data.license);
+      if (data.success) {
+        this._setLicense({
+          email: data.email,
+          plan: data.plan || 'pro',
+          machineId: this._machineId,
+          expiresAt: data.expiresAt || null,
+        });
         return { success: true };
       }
 
@@ -154,27 +159,38 @@ class LicenseManager extends EventEmitter {
     }
 
     try {
-      const res = await fetch(`${API_BASE}/license/account-activate`, {
+      const res = await fetch(`${API_BASE}/auth/activate-token`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({ machineId: this._machineId }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, machineId: this._machineId }),
       });
 
-      if (!res.ok) {
-        if (res.status === 401) {
-          return { success: false, error: 'Session expired. Please log in again.' };
-        }
-        const err = await res.json().catch(() => ({}));
-        return { success: false, error: err.error || `Server error: HTTP ${res.status}` };
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        return { success: false, error: 'Session expired. Please log in again.' };
       }
 
-      const data = await res.json();
-      if (data.license) {
-        this._setLicense(data.license);
+      if (data.success && data.licenseKey) {
+        this._setLicense({
+          email: data.email,
+          plan: data.plan || 'pro',
+          machineId: this._machineId,
+          expiresAt: data.expiresAt || null,
+        });
         return { success: true };
+      }
+
+      if (res.status === 403 && data.error?.includes('No active license')) {
+        return {
+          success: true,
+          warning: data.error,
+          cloudOnly: true,
+        };
+      }
+
+      if (!res.ok) {
+        return { success: false, error: data.error || `Server error: HTTP ${res.status}` };
       }
 
       return { success: false, error: data.error || 'Account activation failed' };

@@ -1,11 +1,13 @@
 'use strict';
 
 const { BrowserWindow } = require('electron');
-const { OAUTH_REDIRECT_BASE } = require('./accountManager');
+
+/** URLs the OAuth window may land on after provider sign-in (must match graysoft.dev trusted hosts). */
+const TRUSTED_OAUTH_HOSTS = new Set(['graysoft.dev', 'www.graysoft.dev', 'pocket.graysoft.dev']);
 
 /**
- * Run OAuth in an in-app window and capture the callback URL (same redirect as graysoft.dev).
- * The website completes auth in-browser; the desktop app must receive code+state and POST to /api/auth/oauth/callback.
+ * Run OAuth in an in-app window. graysoft.dev completes Google/GitHub OAuth server-side and
+ * redirects to ?return= with guide_token=JWT (see graysoft Google/GitHub callback routes).
  */
 function runOAuthInWindow({ parent, oauthUrl }) {
   return new Promise((resolve) => {
@@ -36,7 +38,6 @@ function runOAuthInWindow({ parent, oauthUrl }) {
 
     const handleCallbackUrl = (rawUrl) => {
       if (!rawUrl || typeof rawUrl !== 'string') return false;
-      if (!rawUrl.startsWith(OAUTH_REDIRECT_BASE)) return false;
 
       let parsed;
       try {
@@ -45,6 +46,8 @@ function runOAuthInWindow({ parent, oauthUrl }) {
         return false;
       }
 
+      if (!TRUSTED_OAUTH_HOSTS.has(parsed.hostname)) return false;
+
       const oauthError = parsed.searchParams.get('error');
       if (oauthError) {
         const desc = parsed.searchParams.get('error_description') || oauthError;
@@ -52,10 +55,9 @@ function runOAuthInWindow({ parent, oauthUrl }) {
         return true;
       }
 
-      const code = parsed.searchParams.get('code');
-      const state = parsed.searchParams.get('state');
-      if (code && state) {
-        finish({ success: true, code, state });
+      const guideToken = parsed.searchParams.get('guide_token');
+      if (guideToken) {
+        finish({ success: true, guideToken });
         return true;
       }
 

@@ -1107,19 +1107,23 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (!nav.success) {
         return { success: false, error: nav.error || 'Sign-in cancelled' };
       }
-      const oauthResult = await accountManager.completeOAuth(nav.code, nav.state);
+      const oauthResult = nav.guideToken
+        ? await accountManager.completeOAuthWithToken(nav.guideToken)
+        : { success: false, error: 'Sign-in did not return a session token. Update graysoft.dev and try again.' };
       if (!oauthResult.success) {
         return oauthResult;
       }
       const activateResult = await licenseManager.activateAccount();
       if (!activateResult.success) {
-        console.warn('[OAuth] signed in but account-activate:', activateResult.error);
+        console.warn('[OAuth] signed in but license bind:', activateResult.error);
+      } else if (activateResult.warning) {
+        console.log('[OAuth] signed in (cloud free tier):', activateResult.warning);
       }
       return {
         success: true,
         user: oauthResult.user,
-        licenseActivated: activateResult.success,
-        licenseError: activateResult.success ? undefined : activateResult.error,
+        licenseActivated: activateResult.success && !activateResult.cloudOnly,
+        licenseError: activateResult.success ? activateResult.warning : activateResult.error,
       };
     }
     if (p === '/api/license/deactivate' && method === 'POST') {
@@ -1164,11 +1168,10 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (!nav.success) {
         return { success: false, error: nav.error || 'Sign-in cancelled' };
       }
-      return await accountManager.completeOAuth(nav.code, nav.state);
-    }
-    if (p === '/api/account/oauth/callback' && method === 'POST') {
-      const { code, state } = body;
-      return await accountManager.completeOAuth(code, state);
+      if (nav.guideToken) {
+        return await accountManager.completeOAuthWithToken(nav.guideToken);
+      }
+      return { success: false, error: 'Sign-in did not return a session token' };
     }
     if (p === '/api/account/logout' && method === 'POST') {
       accountManager.logout();

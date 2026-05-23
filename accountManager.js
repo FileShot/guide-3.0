@@ -18,11 +18,10 @@ const crypto = require('crypto');
 const os = require('os');
 const EventEmitter = require('events');
 
-// ─── Constants ───────────────────────────────────────────
-
-// api.graysoft.dev has no DNS record; backend is served under graysoft.dev/api (see Cloudflare).
-const API_BASE = 'https://graysoft.dev/api';
-const OAUTH_REDIRECT_BASE = 'https://graysoft.dev/auth/callback';
+const APP_ORIGIN = 'https://graysoft.dev';
+const API_BASE = `${APP_ORIGIN}/api`;
+/** OAuth return URL — graysoft callbacks append ?guide_token=JWT (trusted hostname). */
+const OAUTH_RETURN_URL = `${APP_ORIGIN}/auth/callback`;
 
 class AccountManager extends EventEmitter {
   /**
@@ -33,13 +32,10 @@ class AccountManager extends EventEmitter {
     this._settingsManager = settingsManager;
     this._machineId = this._generateMachineId();
 
-    // Restore persisted session
     this._sessionToken = settingsManager.get('sessionToken') || null;
     this._user = settingsManager.get('accountUser') || null;
     this._isAuthenticated = !!this._sessionToken;
   }
-
-  // ─── Public getters ──────────────────────────────────
 
   get isAuthenticated() { return this._isAuthenticated; }
   get user() { return this._user; }
@@ -49,14 +45,6 @@ class AccountManager extends EventEmitter {
     return this._sessionToken;
   }
 
-  // ─── Login methods ───────────────────────────────────
-
-  /**
-   * Login with email and password.
-   * @param {string} email
-   * @param {string} password
-   * @returns {Promise<{ success: boolean, error?: string, user?: object }>}
-   */
   async loginWithEmail(email, password) {
     if (!email || !password) {
       return { success: false, error: 'Email and password are required' };
@@ -69,30 +57,22 @@ class AccountManager extends EventEmitter {
         body: JSON.stringify({ email, password, machineId: this._machineId }),
       });
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        return { success: false, error: err.error || `HTTP ${res.status}` };
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        return { success: false, error: data.error || `HTTP ${res.status}` };
       }
 
-      const data = await res.json();
-      if (data.token && data.user) {
-        this._setSession(data.token, data.user);
-        return { success: true, user: this._user };
+      if (!data.token) {
+        return { success: false, error: data.error || 'Login failed — no session token' };
       }
 
-      return { success: false, error: data.error || 'Login failed' };
+      await this._hydrateSessionFromToken(data.token, { email });
+      return { success: true, user: this._user, licenseKey: data.licenseKey, plan: data.plan };
     } catch (e) {
       return { success: false, error: `Cannot reach authentication server: ${e.message}` };
     }
   }
 
-  /**
-   * Register a new account with email and password.
-   * @param {string} email
-   * @param {string} password
-   * @param {string} [name]
-   * @returns {Promise<{ success: boolean, error?: string, user?: object }>}
-   */
   async register(email, password, name) {
     if (!email || !password) {
       return { success: false, error: 'Email and password are required' };
@@ -102,125 +82,70 @@ class AccountManager extends EventEmitter {
       const res = await fetch(`${API_BASE}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, name: name || email.split('@')[0], machineId: this._machineId }),
+        body: JSON.stringify({
+          email,
+          password,
+          name: name || email.split('@')[0],
+          machineId: this._machineId,
+        }),
       });
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        return { success: false, error: err.error || `HTTP ${res.status}` };
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        return { success: false, error: data.error || `HTTP ${res.status}` };
       }
 
-      const data = await res.json();
-      if (data.token && data.user) {
-        this._setSession(data.token, data.user);
-        return { success: true, user: this._user };
-      }
-
-      return { success: false, error: data.error || 'Registration failed' };
+      return this.loginWithEmail(email, password);
     } catch (e) {
       return { success: false, error: `Cannot reach authentication server: ${e.message}` };
     }
   }
 
   /**
-   * Get the OAuth redirect URL for the given provider.
-   * @param {'google' | 'github'} provider
-   * @returns {{ url: string, state: string }}
+   * OAuth start URL — uses graysoft.dev /api/auth/google|github (not legacy /auth/oauth/*).
    */
   getOAuthURL(provider) {
-    const state = crypto.randomBytes(16).toString('hex');
-    this._oauthState = state;
-
+    const path = provider === 'github' ? '/api/auth/github' : '/api/auth/google';
     const params = new URLSearchParams({
-      provider,
-      state,
-      machineId: this._machineId,
-      redirect: OAUTH_REDIRECT_BASE,
-      client: 'guide-desktop',
+      return: OAUTH_RETURN_URL,
     });
-
     return {
-      url: `${API_BASE}/auth/oauth/${provider}?${params}`,
-      state,
+      url: `${APP_ORIGIN}${path}?${params}`,
+      state: null,
     };
   }
 
   /**
-   * Complete OAuth flow with the callback code/state.
-   * @param {string} code
-   * @param {string} state
-   * @returns {Promise<{ success: boolean, error?: string, user?: object }>}
+   * Complete OAuth using guide_token from the redirect URL (graysoft.dev desktop flow).
    */
-  async completeOAuth(code, state) {
-    if (!code || !state) {
-      return { success: false, error: 'Missing OAuth callback parameters' };
+  async completeOAuthWithToken(guideToken) {
+    if (!guideToken) {
+      return { success: false, error: 'Missing session token from sign-in' };
     }
-
-    if (this._oauthState && state !== this._oauthState) {
-      return { success: false, error: 'OAuth state mismatch — possible CSRF attack' };
-    }
-
     try {
-      const res = await fetch(`${API_BASE}/auth/oauth/callback`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, state, machineId: this._machineId }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        return { success: false, error: err.error || `HTTP ${res.status}` };
-      }
-
-      const data = await res.json();
-      if (data.token && data.user) {
-        this._setSession(data.token, data.user);
-        return { success: true, user: this._user };
-      }
-
-      return { success: false, error: data.error || 'OAuth failed' };
+      await this._hydrateSessionFromToken(guideToken);
+      return { success: true, user: this._user };
     } catch (e) {
-      return { success: false, error: `Cannot reach authentication server: ${e.message}` };
+      return { success: false, error: e.message || 'Failed to validate sign-in token' };
     }
   }
 
-  /**
-   * Refresh the session token.
-   * @returns {Promise<{ success: boolean }>}
-   */
   async refreshSession() {
     if (!this._sessionToken) return { success: false };
 
     try {
-      const res = await fetch(`${API_BASE}/auth/refresh`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this._sessionToken}`,
-        },
-        body: JSON.stringify({ machineId: this._machineId }),
-      });
-
-      if (!res.ok) {
-        // Token expired or invalid — clear session
-        if (res.status === 401) this.logout();
+      const profile = await this._fetchProfile(this._sessionToken);
+      if (!profile) {
+        this.logout();
         return { success: false };
       }
-
-      const data = await res.json();
-      if (data.token) {
-        this._sessionToken = data.token;
-        this._settingsManager.set('sessionToken', data.token);
-        return { success: true };
-      }
-
-      return { success: false };
+      this._applyProfile(this._sessionToken, profile);
+      return { success: true };
     } catch {
       return { success: false };
     }
   }
 
-  /** Logout — clear session. */
   logout() {
     this._sessionToken = null;
     this._user = null;
@@ -230,12 +155,6 @@ class AccountManager extends EventEmitter {
     this.emit('logout');
   }
 
-  // ─── API routes ──────────────────────────────────────
-
-  /**
-   * Register Express API routes.
-   * @param {import('express').Application} app
-   */
   registerRoutes(app) {
     app.get('/api/account/status', (req, res) => {
       res.json({
@@ -247,29 +166,21 @@ class AccountManager extends EventEmitter {
 
     app.post('/api/account/login', async (req, res) => {
       const { email, password } = req.body || {};
-      const result = await this.loginWithEmail(email, password);
-      res.json(result);
+      res.json(await this.loginWithEmail(email, password));
     });
 
     app.post('/api/account/register', async (req, res) => {
       const { email, password, name } = req.body || {};
-      const result = await this.register(email, password, name);
-      res.json(result);
+      res.json(await this.register(email, password, name));
     });
 
-    app.post('/api/account/oauth/start', (req, res) => {
+    app.post('/api/account/oauth/start', async (req, res) => {
       const { provider } = req.body || {};
       if (!provider || !['google', 'github'].includes(provider)) {
         return res.json({ success: false, error: 'Invalid OAuth provider' });
       }
-      const { url, state } = this.getOAuthURL(provider);
-      res.json({ success: true, url, state });
-    });
-
-    app.post('/api/account/oauth/callback', async (req, res) => {
-      const { code, state } = req.body || {};
-      const result = await this.completeOAuth(code, state);
-      res.json(result);
+      const { url } = this.getOAuthURL(provider);
+      res.json({ success: true, url });
     });
 
     app.post('/api/account/logout', (req, res) => {
@@ -278,12 +189,45 @@ class AccountManager extends EventEmitter {
     });
 
     app.post('/api/account/refresh', async (req, res) => {
-      const result = await this.refreshSession();
-      res.json(result);
+      res.json(await this.refreshSession());
     });
   }
 
-  // ─── Internal ────────────────────────────────────────
+  async _hydrateSessionFromToken(token, hints = {}) {
+    const profile = await this._fetchProfile(token);
+    if (profile?.user) {
+      this._applyProfile(token, profile);
+      return;
+    }
+    const email = hints.email || profile?.email || 'user@graysoft.dev';
+    this._setSession(token, {
+      id: hints.id,
+      email,
+      name: hints.name || email.split('@')[0],
+      avatar: null,
+      plan: hints.plan || 'free',
+    });
+  }
+
+  async _fetchProfile(token) {
+    const res = await fetch(`${API_BASE}/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) return null;
+    return data;
+  }
+
+  _applyProfile(token, profile) {
+    const u = profile.user;
+    this._setSession(token, {
+      id: u.id,
+      email: u.email,
+      name: u.name || u.email?.split('@')[0],
+      avatar: u.avatar || null,
+      plan: u.license?.plan || 'free',
+    });
+  }
 
   _setSession(token, user) {
     this._sessionToken = token;
@@ -306,4 +250,4 @@ class AccountManager extends EventEmitter {
   }
 }
 
-module.exports = { AccountManager, API_BASE, OAUTH_REDIRECT_BASE };
+module.exports = { AccountManager, API_BASE, OAUTH_RETURN_URL, APP_ORIGIN };
