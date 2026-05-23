@@ -438,6 +438,13 @@ These tags were pushed during failed legacy CI attempts. They never published Gi
 
 ---
 
+## guIDE v0.3.116 (`v0.3.116`) — planned
+
+- **Subject:** Legacy Haswell: ship older Electron, strip prebuilts/playwright, QEMU gate
+- **Body:** Legacy installers no longer bundle Electron 34, npm `@node-llama-cpp/*` prebuilts, or Playwright. Linux legacy jobs download Electron 28/26/22 (first passing QEMU Haswell), rebuild node-pty with `-march=haswell`, and fail CI unless the AppImage runs `electron --version` and loads `node-llama-cpp` under `qemu-x86_64 -cpu Haswell` with no AVX-512 (`zmm`) in electron/llama-addon. Modern jobs unchanged.
+
+---
+
 ## guIDE v0.3.115 (`v0.3.115`)
 
 - **Published:** 2026-05-23T20:00:14Z

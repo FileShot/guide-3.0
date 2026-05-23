@@ -76,4 +76,15 @@ for (const pkg of prebuiltPackagesToRemove()) {
   }
 }
 
+if (fs.existsSync(BACKENDS)) {
+  for (const name of fs.readdirSync(BACKENDS)) {
+    if (name === '.package-lock.json') continue;
+    const full = path.join(BACKENDS, name);
+    if (fs.statSync(full).isDirectory()) {
+      fs.rmSync(full, { recursive: true, force: true });
+      log(`removed @node-llama-cpp/${name}`);
+    }
+  }
+}
+
 log('done — legacy build uses local source-built llama.cpp only');

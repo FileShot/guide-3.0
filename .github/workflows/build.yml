@@ -291,9 +291,9 @@ jobs:
       - name: Install cmake
         run: choco install cmake -y --no-progress
 
-      - name: Build node-llama-cpp (Haswell baseline, no prebuilt fallback)
+      - name: Prepare legacy runtime (Electron 28/26/22 + Haswell llama + node-pty)
         shell: bash
-        run: node scripts/prepare-legacy-runtime.mjs
+        run: node scripts/prepare-legacy-windows.mjs
         env:
           LLAMA_CPP_RELEASE: b9253
 
@@ -305,7 +305,10 @@ jobs:
         run: npm run build:renderer
 
       - name: Build Windows CPU Legacy installer
-        run: npx electron-builder --win --x64 --config electron-builder.nosign.legacy.json --publish never
+        shell: bash
+        run: |
+          EV=$(tr -d '\n\r' < build/legacy-electron-version.txt)
+          npx electron-builder --win --x64 --config electron-builder.nosign.legacy.json --config.electronVersion="$EV" --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -351,9 +354,9 @@ jobs:
       - name: Install cmake
         run: choco install cmake -y --no-progress
 
-      - name: Build node-llama-cpp CUDA (Haswell baseline, no prebuilt fallback)
+      - name: Prepare legacy CUDA runtime (Electron + Haswell llama + node-pty)
         shell: bash
-        run: node scripts/prepare-legacy-runtime.mjs --cuda
+        run: node scripts/prepare-legacy-windows.mjs --cuda
         env:
           LLAMA_CPP_RELEASE: b9253
 
@@ -365,7 +368,10 @@ jobs:
         run: npm run build:renderer
 
       - name: Build Windows CUDA Legacy installer
-        run: npx electron-builder --win --x64 --config electron-builder.nosign.legacy.cuda.json --publish never
+        shell: bash
+        run: |
+          EV=$(tr -d '\n\r' < build/legacy-electron-version.txt)
+          npx electron-builder --win --x64 --config electron-builder.nosign.legacy.cuda.json --config.electronVersion="$EV" --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -393,14 +399,14 @@ jobs:
         run: |
           node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
 
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake
+      - name: Install build tools (QEMU Haswell gate + objdump)
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake qemu-user-static binutils
 
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
-      - name: Build node-llama-cpp (Haswell baseline, no prebuilt)
-        run: node scripts/prepare-legacy-runtime.mjs
+      - name: Prepare legacy Linux runtime (Electron + Haswell llama + node-pty)
+        run: node scripts/prepare-legacy-linux.mjs
         env:
           LLAMA_CPP_RELEASE: b9253
 
@@ -422,13 +428,20 @@ jobs:
 
       - name: Verify legacy llama uses local build only
         run: |
-          test -d node_modules/node-llama-cpp/llama || (echo "missing node-llama-cpp source tree" && exit 1)
+          test -d node_modules/node-llama-cpp/llama/localBuilds || (echo "missing localBuilds" && exit 1)
           test ! -d node_modules/@node-llama-cpp/linux-x64 || (echo "prebuilt linux-x64 must be removed" && exit 1)
 
       - name: Build Linux CPU Legacy AppImage
-        run: npx electron-builder --linux --x64 --config electron-builder.nosign.legacy.linux.json --publish never
+        run: |
+          EV=$(tr -d '\n\r' < build/legacy-electron-version.txt)
+          npx electron-builder --linux --x64 --config electron-builder.nosign.legacy.linux.json --config.electronVersion="$EV" --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify legacy AppImage on Haswell (QEMU + llama load)
+        run: |
+          APP=$(ls -1 dist-electron/guIDE-*-cpu-legacy-linux-x64.AppImage | head -1)
+          node scripts/verify-legacy-haswell-artifact.mjs --appimage "$APP"
 
       - name: Upload artifact
         continue-on-error: true
@@ -453,8 +466,8 @@ jobs:
         run: |
           node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
 
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake
+      - name: Install build tools (QEMU Haswell gate + objdump)
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake qemu-user-static binutils
 
       - uses: Jimver/cuda-toolkit@v0.2.15
         with:
@@ -463,8 +476,8 @@ jobs:
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
-      - name: Build node-llama-cpp CUDA (Haswell baseline, no prebuilt fallback)
-        run: node scripts/prepare-legacy-runtime.mjs --cuda
+      - name: Prepare legacy Linux CUDA runtime (Electron + Haswell llama + node-pty)
+        run: node scripts/prepare-legacy-linux.mjs --cuda
         env:
           LLAMA_CPP_RELEASE: b9253
 
@@ -487,11 +500,19 @@ jobs:
       - name: Verify legacy CUDA llama local build
         run: |
           test -d node_modules/node-llama-cpp/llama/localBuilds || (echo "missing localBuilds after Haswell CUDA compile" && exit 1)
+          test ! -d node_modules/@node-llama-cpp/linux-x64-cuda || (echo "prebuilt linux-x64-cuda must be removed" && exit 1)
 
       - name: Build Linux CUDA Legacy AppImage
-        run: npx electron-builder --linux --x64 --config electron-builder.nosign.legacy.cuda.linux.json --publish never
+        run: |
+          EV=$(tr -d '\n\r' < build/legacy-electron-version.txt)
+          npx electron-builder --linux --x64 --config electron-builder.nosign.legacy.cuda.linux.json --config.electronVersion="$EV" --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify legacy CUDA AppImage on Haswell (QEMU + llama load)
+        run: |
+          APP=$(ls -1 dist-electron/guIDE-*-cuda-legacy-linux-x64.AppImage | head -1)
+          node scripts/verify-legacy-haswell-artifact.mjs --appimage "$APP"
 
       - name: Upload artifact
         continue-on-error: true
