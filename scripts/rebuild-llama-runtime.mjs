@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
- * Download pinned llama.cpp, compile node-llama-cpp native addon, verify gemma4 arch.
+ * Compile node-llama-cpp native addon from source (legacy CI / local dev).
  *
  * Usage:
- *   node scripts/rebuild-llama-runtime.mjs [--profile default|haswell|cuda|cuda-haswell|x86-64-v2|cuda-x86-64-v2] [--legacy]
+ *   node scripts/rebuild-llama-runtime.mjs [--profile haswell|cuda-haswell] [--legacy]
+ *
+ * Legacy (--legacy): source download b9253 + Haswell patches + source build (used by prepare-legacy-runtime.mjs).
  *
  * Env:
- *   LLAMA_CPP_RELEASE — llama.cpp tag (default b9253)
- *   GITHUB_TOKEN — optional, passed to curl for tarball download
+ *   LLAMA_CPP_RELEASE — llama.cpp tag for --legacy (default b9253, matches node-llama-cpp@3.18.1)
  */
 'use strict';
 
@@ -172,25 +173,22 @@ log(
 );
 
 const gpu = GPU_FOR_PROFILE[profileName];
-if (legacyMode) {
-  // npm ci --ignore-scripts skips postinstall; fetch the release node-llama-cpp expects (b9253 layout).
-  runNlc(['source', 'download', '--release', RELEASE, '--skipBuild', '--gpu', gpu], { CI: 'true' });
-  run('node', [path.join('scripts', 'patch-llama-cmake-common-link.mjs')]);
-  run('node', [path.join('scripts', 'patch-llama-addon-api.mjs')]);
-} else {
-  run('node', [path.join('scripts', 'download-llama-cpp-tarball.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
-}
-run('node', [path.join('scripts', 'verify-llama-gemma4.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
-const nlcArgs = ['source', 'build', '--gpu', gpu];
 if (!legacyMode) {
-  nlcArgs.push('--ciMode');
+  console.error('[rebuild-llama] Pass --legacy (use scripts/prepare-legacy-runtime.mjs in CI).');
+  process.exit(1);
 }
+
+// npm ci --ignore-scripts skips postinstall; fetch the release node-llama-cpp expects (b9253 layout).
+runNlc(['source', 'download', '--release', RELEASE, '--skipBuild', '--gpu', gpu], { CI: 'true' });
+run('node', [path.join('scripts', 'patch-llama-cmake-common-link.mjs')]);
+run('node', [path.join('scripts', 'patch-llama-addon-api.mjs')]);
+
+const nlcArgs = ['source', 'build', '--gpu', gpu];
 runNlc(nlcArgs, {
   ...profileEnv,
-  ...(legacyMode ? LEGACY_SOURCE_OPTS : {}),
+  ...LEGACY_SOURCE_OPTS,
   CI: 'true',
   NODE_LLAMA_CPP_GPU: gpu,
 });
-run('node', [path.join('scripts', 'verify-llama-gemma4.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
 
 log('done');

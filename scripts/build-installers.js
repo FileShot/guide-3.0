@@ -91,21 +91,6 @@ function restoreBackends(moved) {
   }
 }
 
-// Download pinned llama.cpp, compile native addon, verify gemma4 (same as CI).
-function rebuildLlamaCpp(buildCuda) {
-  const profile = buildCuda ? 'cuda' : 'default';
-  log(`Rebuilding llama.cpp runtime (profile=${profile}, gemma4 verify)`);
-  const result = spawnSync(
-    process.execPath,
-    [path.join(__dirname, 'rebuild-llama-runtime.mjs'), '--profile', profile],
-    { cwd: ROOT, stdio: 'inherit', env: { ...process.env, LLAMA_CPP_RELEASE: process.env.LLAMA_CPP_RELEASE || 'b8954' } },
-  );
-  if (result.status !== 0) {
-    throw new Error(`rebuild-llama-runtime.mjs exited with status ${result.status}`);
-  }
-  log('llama.cpp rebuild complete.');
-}
-
 function electronBuild(config) {
   log(`Running: electron-builder --config ${config}`);
   const ebBin = path.join(ROOT, 'node_modules', '.bin', 'electron-builder');
@@ -158,10 +143,8 @@ async function main() {
     fs.rmSync(path.dirname(BACKUP_DIR), { recursive: true, force: true });
   }
 
-  // Pull the latest llama.cpp release before building so installers ship
-  // support for model architectures that landed after node-llama-cpp 3.18.1
-  // was published (e.g. gemma4).
-  rebuildLlamaCpp(buildCuda);
+  // Uses npm @node-llama-cpp prebuilt backends (same as CI modern jobs).
+  // For Haswell/legacy local builds, run scripts/prepare-legacy-runtime.mjs first.
 
   ensureDir(DIST_DIR);
   const outputs = [];
