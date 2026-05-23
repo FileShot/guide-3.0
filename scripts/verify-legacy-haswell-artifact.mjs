@@ -155,9 +155,11 @@ function main() {
   }
   log((ev.stdout || '').trim());
 
-  const testScript = path.join(appDir, 'build', 'test-load-llama-legacy.mjs');
+  // CJS test avoids ESM 'with' syntax (cli-spinners dep of node-llama-cpp, needs Node 20+,
+  // but Electron 28 ships Node 18). Directly loads the native .node addon.
+  const testScript = path.join(appDir, 'build', 'test-load-llama-legacy.cjs');
   if (!fs.existsSync(testScript)) fail(`missing ${testScript}`);
-  log('QEMU Haswell: node-llama-cpp getLlama (CPU)');
+  log('QEMU Haswell: load llama-addon.node (CJS direct require)');
   const lr = qemuRun(shellBinary, [testScript], libPath, { ELECTRON_RUN_AS_NODE: '1' });
   const lrOut = `${lr.stdout}\n${lr.stderr}`;
   if (lr.status !== 0) {
