@@ -3,7 +3,7 @@
  * Download pinned llama.cpp, compile node-llama-cpp native addon, verify gemma4 arch.
  *
  * Usage:
- *   node scripts/rebuild-llama-runtime.mjs [--profile default|haswell|cuda|cuda-haswell|x86-64-v2|cuda-x86-64-v2]
+ *   node scripts/rebuild-llama-runtime.mjs [--profile default|haswell|cuda|cuda-haswell|x86-64-v2|cuda-x86-64-v2] [--legacy]
  *
  * Env:
  *   LLAMA_CPP_RELEASE — llama.cpp tag (default b9253)
@@ -25,11 +25,18 @@ const RELEASE = process.env.LLAMA_CPP_RELEASE || 'b8954';
 const CXX17 = {
   NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_STANDARD: '17',
   NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_STANDARD_REQUIRED: 'ON',
-  ...(process.platform === 'win32'
-    ? {
-        NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: '/std:c++17 /Zc:__cplusplus',
-      }
-    : {}),
+};
+
+/** MSVC needs /std:c++17; profile arch flags must not replace it. */
+function winCxxFlags(archFlag = '') {
+  const base = '/std:c++17 /Zc:__cplusplus';
+  return archFlag ? `${base} ${archFlag}` : base;
+}
+
+/** --ciMode turns on GGML_BACKEND_DL + CPU_ALL_VARIANTS, which breaks -lcommon on Linux source builds. */
+const LEGACY_SOURCE_OPTS = {
+  NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_BACKEND_DL: 'OFF',
+  NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_CPU_ALL_VARIANTS: 'OFF',
 };
 
 const GPU_FOR_PROFILE = {
@@ -51,7 +58,7 @@ const X86_64_V2_FLAGS = {
   NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_F16C: 'OFF',
   ...(process.platform === 'win32'
     ? {
-        NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: '/arch:SSE2',
+        NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: winCxxFlags('/arch:SSE2'),
         NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_C_FLAGS: '/arch:SSE2',
       }
     : {
@@ -61,7 +68,12 @@ const X86_64_V2_FLAGS = {
 };
 
 const PROFILES = {
-  default: { ...CXX17 },
+  default: {
+    ...CXX17,
+    ...(process.platform === 'win32'
+      ? { NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: winCxxFlags() }
+      : {}),
+  },
   haswell: {
     ...CXX17,
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_NATIVE: 'OFF',
@@ -72,7 +84,7 @@ const PROFILES = {
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX512: 'OFF',
     ...(process.platform === 'win32'
       ? {
-          NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: '/arch:AVX2',
+          NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: winCxxFlags('/arch:AVX2'),
           NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_C_FLAGS: '/arch:AVX2',
         }
       : {
@@ -95,7 +107,7 @@ const PROFILES = {
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX512: 'OFF',
     ...(process.platform === 'win32'
       ? {
-          NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: '/arch:AVX2',
+          NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: winCxxFlags('/arch:AVX2'),
           NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_C_FLAGS: '/arch:AVX2',
         }
       : {
@@ -150,16 +162,25 @@ function runNlc(subcmd, extraEnv = {}) {
   run(process.execPath, [NLC_CLI, ...subcmd], extraEnv);
 }
 
-const profileName = parseProfile(process.argv.slice(2));
+const argv = process.argv.slice(2);
+const profileName = parseProfile(argv);
+const legacyMode = argv.includes('--legacy');
 const profileEnv = PROFILES[profileName];
 
-log(`profile=${profileName} release=${RELEASE} platform=${process.platform}`);
+log(
+  `profile=${profileName} release=${RELEASE} platform=${process.platform} legacy=${legacyMode}`,
+);
 
 run('node', [path.join('scripts', 'download-llama-cpp-tarball.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
 run('node', [path.join('scripts', 'verify-llama-gemma4.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
 const gpu = GPU_FOR_PROFILE[profileName];
-runNlc(['source', 'build', '--gpu', gpu, '--ciMode'], {
+const nlcArgs = ['source', 'build', '--gpu', gpu];
+if (!legacyMode) {
+  nlcArgs.push('--ciMode');
+}
+runNlc(nlcArgs, {
   ...profileEnv,
+  ...(legacyMode ? LEGACY_SOURCE_OPTS : {}),
   CI: 'true',
   NODE_LLAMA_CPP_GPU: gpu,
 });

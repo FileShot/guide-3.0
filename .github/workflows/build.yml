@@ -399,7 +399,7 @@ jobs:
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
-      - name: Build node-llama-cpp (x86-64-v2 baseline, no prebuilt)
+      - name: Build node-llama-cpp (Haswell baseline, no prebuilt)
         run: node scripts/prepare-legacy-runtime.mjs
         env:
           LLAMA_CPP_RELEASE: b8954
