@@ -36,6 +36,9 @@ const RE_FILE_WRITE_TOOLS = /write_file|create_file|append_to_file/;
 const RE_CONTENT_START = /"content"\s*:\s*"$/;
 const RE_FILE_PATH = /"(?:filePath|path)"\s*:\s*"([^"]*)"/;
 const RE_TOOL_OR_SYSTEM_INJECT = /^\[(?:Tool Results|System)\]/i;
+/** Reserved generation headroom — matches chat() MIN_GENERATION_TOKENS. */
+const MIN_GENERATION_TOKENS_RESERVE = 512;
+const RE_CONTEXT_ROTATED = /\[System: Context rotated\]/i;
 
 /** Web-facing tools â€” if these share a batch with workspace navigation tools, drop the latter (structural conflict rule). */
 const WEB_TOOL_BATCH = new Set(['web_search', 'fetch_webpage', 'http_request']);
@@ -529,6 +532,9 @@ When you receive an image description from the vision system, treat it as what y
 ## Planning
 For multi-step work, you may use planning tools from ## Tools when they fit the task. For simple requests, act directly without unnecessary planning overhead.
 
+## Context rotation
+When you see [System: Context rotated], older turns were removed from the live context window. Before continuing a long multi-step task, use read_file on .guide-scratch/context-state.md in the project root to recover dropped thread details.
+
 ## Only call a tool when required. Never call a tool when plain prose is sufficient.
 
 Examples of when to call tools:
@@ -981,6 +987,8 @@ class ChatEngine extends EventEmitter {
         totalLayers: totalLayersFromGguf != null ? totalLayersFromGguf : undefined,
         gpuLayers: this._model.gpuLayers || 0,
         gpuMode: s.gpuPreference === 'cpu' ? false : 'auto',
+        vramFreeAfterLoadGB: Number((vramFreeAfterModel / 1e9).toFixed(2)),
+        contextPctOfCap: desiredMax > 0 ? Math.round((actualCtx / desiredMax) * 100) : undefined,
       };
 
       // ─── Three-Tier Model Profile Resolution ───
@@ -2194,8 +2202,14 @@ class ChatEngine extends EventEmitter {
       if (_useNativeFunctions) {
         genOptions.functions = functions;
         genOptions.documentFunctionParams = true;
+        this._shiftMeasureFunctions = functions;
+        this._shiftMeasureDocumentFunctionParams = true;
         console.log(`[ChatEngine] Native function calling active: ${Object.keys(functions).length} tools`);
-      } else if (_modeCWrapper && functions && Object.keys(functions).length > 0 && _toolsEnabled && !options.askOnly) {
+      } else {
+        this._shiftMeasureFunctions = undefined;
+        this._shiftMeasureDocumentFunctionParams = undefined;
+      }
+      if (!_useNativeFunctions && _modeCWrapper && functions && Object.keys(functions).length > 0 && _toolsEnabled && !options.askOnly) {
         console.log(`[ChatEngine] Mode C: native FC disabled (${Object.keys(functions).length} tools via prose prompt only — avoids thought-segment trap)`);
       }
 
@@ -2277,7 +2291,12 @@ class ChatEngine extends EventEmitter {
       const ctxUsedBefore = this._sequence?.nextTokenIndex || 0;
       console.log(`[ChatEngine] Calling generateResponse #1: history=${this._chatHistory.length} msgs, ctxUsedBefore=${ctxUsedBefore}`);
 
-      let result = await this._chat.generateResponse(this._chatHistory, genOptions);
+      let result = await this._generateResponseSafe(genOptions, {
+        contextSize,
+        onStreamEvent,
+        functions: _useNativeFunctions ? functions : undefined,
+        documentFunctionParams: _useNativeFunctions ? true : undefined,
+      });
       console.log(`[ChatEngine] generateResponse #1 returned`);
       const roundElapsed = (Date.now() - roundStartTime) / 1000;
       const roundTokens = result.metadata?.totalTokens ?? result.response?.length ?? 0;
@@ -2341,7 +2360,10 @@ class ChatEngine extends EventEmitter {
               const toolParams = canonicalizeToolParams(toolName, fc.params ?? {});
               totalToolCalls++;
               console.log(`[ChatEngine] Native tool call #${totalToolCalls}: ${toolName}(${JSON.stringify(toolParams)})`);
-              if (onStreamEvent) onStreamEvent('tool-executing', [{ tool: toolName, params: toolParams }]);
+              if (onStreamEvent) {
+                onStreamEvent('tool-generating', { tool: toolName });
+                onStreamEvent('tool-executing', [{ tool: toolName, params: toolParams }]);
+              }
               const _toolStart = Date.now();
               let toolResult;
               try { toolResult = await executeToolFn(toolName, toolParams); }
@@ -2358,7 +2380,12 @@ class ChatEngine extends EventEmitter {
             }
             const ctxAvailNow = contextSize - (this._sequence?.nextTokenIndex || 0);
             genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, ctxAvailNow);
-            result = await this._chat.generateResponse(this._chatHistory, genOptions);
+            result = await this._generateResponseSafe(genOptions, {
+              contextSize,
+              onStreamEvent,
+              functions: _useNativeFunctions ? functions : undefined,
+              documentFunctionParams: _useNativeFunctions ? true : undefined,
+            });
             this._chatHistory = result.lastEvaluation.cleanHistory;
             pendingCalls = result.metadata?.stopReason === 'functionCalls' ? result.functionCalls : null;
           }
@@ -2892,7 +2919,12 @@ class ChatEngine extends EventEmitter {
           roundStart = fullResponse.length;
           const _sfVisibleAtRoundStart = _sfVisibleChars; // snapshot before this round's generation
           console.log(`[ChatEngine] Calling generateResponse CONTINUATION: history=${this._chatHistory.length} msgs`);
-          result = await this._chat.generateResponse(this._chatHistory, genOptions);
+          result = await this._generateResponseSafe(genOptions, {
+            contextSize,
+            onStreamEvent,
+            functions: _useNativeFunctions ? functions : undefined,
+            documentFunctionParams: _useNativeFunctions ? true : undefined,
+          });
           console.log(`[ChatEngine] generateResponse CONTINUATION returned: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}`);
           const _prefillAndGenMs = Date.now() - _prefillStart;
           console.log(`[ChatEngine] Continuation after tools: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}, prefill+gen=${_prefillAndGenMs}ms, ctxUsed=${ctxUsedNow}`);
@@ -3014,11 +3046,15 @@ class ChatEngine extends EventEmitter {
         console.log('[ChatEngine] chat() returning cancelled');
         return { text: fullResponse, stopReason: 'cancelled', toolCallCount: totalToolCalls };
       }
-      // Emit generation error to UI
+      const isContextFull = /context shift strategy|did not return a history that fits|context size is too small/i.test(err.message || '');
       if (onStreamEvent) {
         onStreamEvent('generation-error', {
-          message: `Generation failed: ${err.message}`,
-          suggestion: 'Try again, start a new session, or check the backend log for details.',
+          message: isContextFull
+            ? 'Context full — start a new session or reduce tool-heavy steps'
+            : `Generation failed: ${err.message}`,
+          suggestion: isContextFull
+            ? 'The conversation and tool results exceeded the model context window even after compression. Start a new session or open a smaller project task.'
+            : 'Try again, start a new session, or check the backend log for details.',
         });
       }
       throw err;
@@ -3275,7 +3311,160 @@ class ChatEngine extends EventEmitter {
     console.log('[ChatEngine] _dispose DONE');
   }
 
-  _contextShiftStrategy({ chatHistory, maxTokensCount, tokenizer }) {
+  /**
+   * Token count of the fully rendered prompt — same check node-llama-cpp uses after shift.
+   */
+  _measureRenderedTokens({ chatHistory, tokenizer, chatWrapper, functions, documentFunctionParams }) {
+    const fcFunctions = functions ?? this._shiftMeasureFunctions;
+    const fcDocParams = documentFunctionParams ?? this._shiftMeasureDocumentFunctionParams;
+    const wrapper = chatWrapper || this._chat?.chatWrapper;
+    if (!wrapper?.generateContextState || !tokenizer) {
+      let sum = 0;
+      for (const item of chatHistory) {
+        const text = item.text != null ? String(item.text)
+          : (item.response ? item.response.map((r) => (typeof r === 'string' ? r : JSON.stringify(r))).join('') : '');
+        try { sum += tokenizer.tokenize(text, false).length; } catch { sum += Math.ceil(text.length / 3); }
+      }
+      return sum;
+    }
+    try {
+      const { contextText } = wrapper.generateContextState({
+        chatHistory,
+        availableFunctions: fcFunctions,
+        documentFunctionParams: fcDocParams,
+      });
+      return contextText.tokenize(tokenizer).length;
+    } catch (e) {
+      console.warn('[ChatEngine] _measureRenderedTokens fallback:', e.message);
+      let sum = 0;
+      for (const item of chatHistory) {
+        const text = item.text != null ? String(item.text) : '';
+        try { sum += tokenizer.tokenize(text, false).length; } catch { sum += Math.ceil(text.length / 3); }
+      }
+      return sum;
+    }
+  }
+
+  _contextShiftSize(contextSize) {
+    return Math.max(1, Math.floor((contextSize || 0) / 10));
+  }
+
+  _insertContextRotationNotice(history, droppedCount) {
+    if (!droppedCount || droppedCount <= 0) return history;
+    if (history.some((m) => m.type === 'user' && RE_CONTEXT_ROTATED.test(String(m.text || '')))) return history;
+    const scratchRel = this._projectPath ? '.guide-scratch/context-state.md' : null;
+    const text = scratchRel
+      ? `[System: Context rotated] ${droppedCount} earlier turn(s) were dropped from the live context. Use read_file on ${scratchRel} if task continuity matters.\n`
+      : `[System: Context rotated] ${droppedCount} earlier turn(s) were dropped from the live context.\n`;
+    const copy = history.slice();
+    copy.splice(Math.max(1, copy.length - 1), 0, { type: 'user', text });
+    return copy;
+  }
+
+  _writeContextStateFile({ chatHistory, keptIndices, getItemText, used, budget }) {
+    try {
+      const scratchDir = this._projectPath ? path.join(this._projectPath, '.guide-scratch') : null;
+      if (!scratchDir) return;
+      fs.mkdirSync(scratchDir, { recursive: true });
+      const stateFile = path.join(scratchDir, 'context-state.md');
+      const droppedItems = [];
+      const keptItems = [];
+      for (let i = 1; i <= chatHistory.length - 2; i++) {
+        const item = chatHistory[i];
+        const text = getItemText(item);
+        const role = item.type || 'unknown';
+        const line = `[${role}] ${text.slice(0, 200)}${text.length > 200 ? '...' : ''}`;
+        if (keptIndices.has(i)) keptItems.push(line);
+        else droppedItems.push(line);
+      }
+      const stateContent = [
+        '# Context State',
+        `Updated: ${new Date().toISOString()}`,
+        `Context: ${used}/${budget} tokens (estimate)`,
+        '',
+        '## Current Conversation (in context)',
+        ...keptItems,
+        '',
+        '## Dropped Conversation (shifted out)',
+        ...droppedItems,
+      ].join('\n');
+      fs.writeFileSync(stateFile, stateContent, 'utf8');
+      console.log(`[ChatEngine] Wrote context recovery file: ${stateFile} (${droppedItems.length} dropped, ${keptItems.length} kept)`);
+    } catch (e) {
+      console.warn('[ChatEngine] Scratch write failed:', e.message);
+    }
+  }
+
+  /**
+   * Pre-flight: compress history when rendered size exceeds library budget (before hard failure).
+   */
+  async _preflightContextBeforeGenerate({ contextSize, onStreamEvent, functions, documentFunctionParams }) {
+    if (!this._chat?.chatWrapper || !this._model?.tokenizer || !contextSize) return;
+    const shiftSize = this._contextShiftSize(contextSize);
+    const maxTokensCount = contextSize - shiftSize;
+    const measured = this._measureRenderedTokens({
+      chatHistory: this._chatHistory,
+      tokenizer: this._model.tokenizer,
+      chatWrapper: this._chat.chatWrapper,
+      functions,
+      documentFunctionParams,
+    });
+    const kvUsed = this._sequence?.nextTokenIndex || 0;
+    const genRoom = contextSize - kvUsed;
+    const needsShift = measured > maxTokensCount || genRoom < MIN_GENERATION_TOKENS_RESERVE;
+    if (!needsShift) return;
+
+    console.log(`[ChatEngine] Context pre-flight: renderedTokens=${measured} budget=${maxTokensCount} kvUsed=${kvUsed}/${contextSize}`);
+    const shifted = this._contextShiftStrategy({
+      chatHistory: this._chatHistory,
+      maxTokensCount,
+      tokenizer: this._model.tokenizer,
+      chatWrapper: this._chat.chatWrapper,
+      lastShiftMetadata: this._lastEvaluation?.contextShiftMetadata,
+      functions,
+      documentFunctionParams,
+    });
+    this._chatHistory = shifted.chatHistory;
+    if (shifted.metadata?.droppedCount > 0 && onStreamEvent) {
+      onStreamEvent('generation-warning', {
+        message: 'Compressed conversation context to continue',
+        suggestion: 'Older messages were dropped. The model may read .guide-scratch/context-state.md for a summary.',
+      });
+    }
+  }
+
+  async _generateResponseSafe(genOptions, { contextSize, onStreamEvent, functions, documentFunctionParams }) {
+    await this._preflightContextBeforeGenerate({ contextSize, onStreamEvent, functions, documentFunctionParams });
+    try {
+      return await this._chat.generateResponse(this._chatHistory, genOptions);
+    } catch (err) {
+      const msg = err?.message || '';
+      if (!/context shift strategy|did not return a history that fits|context size is too small/i.test(msg)) throw err;
+      console.warn(`[ChatEngine] Context shift recovery (retry): ${msg}`);
+      const shiftSize = this._contextShiftSize(contextSize);
+      const maxTokensCount = contextSize - shiftSize;
+      const shifted = this._contextShiftStrategy({
+        chatHistory: this._chatHistory,
+        maxTokensCount,
+        tokenizer: this._model.tokenizer,
+        chatWrapper: this._chat.chatWrapper,
+        lastShiftMetadata: this._lastEvaluation?.contextShiftMetadata,
+        functions,
+        documentFunctionParams,
+      });
+      this._chatHistory = shifted.chatHistory;
+      if (onStreamEvent) {
+        onStreamEvent('generation-warning', {
+          message: 'Compressed conversation context to continue',
+          suggestion: 'Older messages were dropped. Check .guide-scratch/context-state.md if the task spans many steps.',
+        });
+      }
+      return await this._chat.generateResponse(this._chatHistory, genOptions);
+    }
+  }
+
+  _contextShiftStrategy({ chatHistory, maxTokensCount, tokenizer, chatWrapper, lastShiftMetadata, functions, documentFunctionParams }) {
+    void lastShiftMetadata;
     if (chatHistory.length <= 2) return { chatHistory, metadata: { droppedCount: 0 } };
 
     // Tokenizer cache — avoids re-tokenizing the same items across multiple shift calls
@@ -3300,7 +3489,8 @@ class ChatEngine extends EventEmitter {
 
     const estimateTokens = (item) => tokenize(getItemText(item)) + 10;
 
-    const budget = Math.floor(maxTokensCount * 0.92);
+    // maxTokensCount is already contextSize - contextShiftSize (library reserves ~10% for generation)
+    const budget = maxTokensCount;
     const systemItem = chatHistory[0];
     const lastItem = chatHistory[chatHistory.length - 1];
 
@@ -3414,55 +3604,46 @@ class ChatEngine extends EventEmitter {
     }
     if (chatHistory.length > 1) newHistory.push(effectiveLastItem);
 
-    // Auto-maintain context state file — when messages are dropped, write a compact
-    // summary to .guide-scratch/context-state.md so the model can read_file to recover
     if (droppedCount > 0) {
-      try {
-        const scratchDir = this._projectPath
-          ? path.join(this._projectPath, '.guide-scratch')
-          : null;
-        if (scratchDir) {
-          fs.mkdirSync(scratchDir, { recursive: true });
-          const stateFile = path.join(scratchDir, 'context-state.md');
-          // Build compact summary of dropped items
-          const droppedItems = [];
-          for (let i = 1; i <= chatHistory.length - 2; i++) {
-            if (!keptIndices.has(i)) {
-              const item = chatHistory[i];
-              const text = getItemText(item);
-              const role = item.type || 'unknown';
-              // Compact: role + first 200 chars of each dropped item
-              droppedItems.push(`[${role}] ${text.slice(0, 200)}${text.length > 200 ? '...' : ''}`);
-            }
-          }
-          // Also include what's currently in context for full picture
-          const keptItems = [];
-          for (let i = 1; i <= chatHistory.length - 2; i++) {
-            if (keptIndices.has(i)) {
-              const item = chatHistory[i];
-              const text = getItemText(item);
-              const role = item.type || 'unknown';
-              keptItems.push(`[${role}] ${text.slice(0, 100)}${text.length > 100 ? '...' : ''}`);
-            }
-          }
-          const stateContent = [
-            '# Context State',
-            `Updated: ${new Date().toISOString()}`,
-            `Context: ${used}/${budget} tokens used`,
-            '',
-            '## Current Conversation (in context)',
-            ...keptItems,
-            '',
-            '## Dropped Conversation (shifted out)',
-            ...droppedItems,
-          ].join('\n');
-          fs.writeFileSync(stateFile, stateContent, 'utf8');
-        }
-      } catch (e) { /* non-critical — don't break generation if scratch write fails */ console.warn('[ChatEngine] Scratch write failed:', e.message); }
+      this._writeContextStateFile({ chatHistory, keptIndices, getItemText, used, budget });
     }
 
-    console.log(`[ChatEngine] Context shift: kept ${keptIndices.size} items, dropped ${droppedCount}. Budget: ${budget}, used: ${used}`);
-    return { chatHistory: newHistory, metadata: { droppedCount } };
+    let finalHistory = newHistory;
+    if (droppedCount > 0) {
+      finalHistory = this._insertContextRotationNotice(finalHistory, droppedCount);
+    }
+
+    const measureOpts = {
+      chatHistory: finalHistory,
+      tokenizer,
+      chatWrapper,
+      functions: functions ?? this._shiftMeasureFunctions,
+      documentFunctionParams: documentFunctionParams ?? this._shiftMeasureDocumentFunctionParams,
+    };
+    let renderedTokens = this._measureRenderedTokens(measureOpts);
+    let verifyDrops = 0;
+    while (renderedTokens > budget && finalHistory.length > 2) {
+      finalHistory.splice(1, 1);
+      verifyDrops++;
+      renderedTokens = this._measureRenderedTokens({ ...measureOpts, chatHistory: finalHistory });
+    }
+
+    if (renderedTokens > budget && finalHistory.length > 1) {
+      const MINIMAL_SYSTEM = 'You are a helpful AI assistant. Respond concisely.';
+      const sys = finalHistory[0];
+      finalHistory[0] = sys.response
+        ? { ...sys, response: [MINIMAL_SYSTEM] }
+        : { ...sys, text: MINIMAL_SYSTEM };
+      renderedTokens = this._measureRenderedTokens({ ...measureOpts, chatHistory: finalHistory });
+      console.log(`[ChatEngine] Context shift verify: minimal system, renderedTokens=${renderedTokens}`);
+    }
+
+    const totalDropped = droppedCount + verifyDrops;
+    console.log(
+      `[ChatEngine] Context shift: kept ${keptIndices.size} items, dropped ${droppedCount}, verifyDrops=${verifyDrops}, ` +
+      `renderedTokens=${renderedTokens} budget=${budget}, estimateUsed=${used}`,
+    );
+    return { chatHistory: finalHistory, metadata: { droppedCount: totalDropped } };
   }
 
   _buildToolPrompt(functions) {
