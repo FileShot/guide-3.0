@@ -136,10 +136,23 @@ function main() {
     fail('playwright must not be bundled (ships modern Chromium → SIGILL on Haswell)');
   }
 
-  log('QEMU Haswell: guIDE --version');
-  const ev = qemuRun(shellBinary, ['--no-sandbox', '--version'], libPath);
+  log('QEMU Haswell: shell smoke (no X11 — ELECTRON_RUN_AS_NODE)');
+  const ev = qemuRun(
+    shellBinary,
+    [
+      '--no-sandbox',
+      '-e',
+      'console.log("ok", process.versions.electron, process.versions.modules)',
+    ],
+    libPath,
+    { ELECTRON_RUN_AS_NODE: '1' },
+  );
   if (ev.status !== 0) {
-    fail(`shell binary SIGILL or crash under Haswell QEMU:\n${ev.stderr || ev.stdout}`);
+    const out = `${ev.stdout}\n${ev.stderr}`;
+    if (/invalid opcode|SIGILL|signal 4|Illegal instruction/i.test(out)) {
+      fail(`shell binary SIGILL under Haswell QEMU:\n${out}`);
+    }
+    fail(`shell binary failed under Haswell QEMU:\n${out}`);
   }
   log((ev.stdout || '').trim());
 

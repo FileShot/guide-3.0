@@ -2,7 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 
-const BINARY_NAMES = ['guIDE', 'guide-ide', 'electron'];
+const BINARY_NAMES = ['guide-ide', 'guIDE', 'electron'];
 
 export function resolveAppImageRoot(extractDir) {
   const squash = path.join(extractDir, 'squashfs-root');
