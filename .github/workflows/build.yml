@@ -295,7 +295,7 @@ jobs:
         shell: bash
         run: node scripts/prepare-legacy-runtime.mjs
         env:
-          LLAMA_CPP_RELEASE: b8954
+          LLAMA_CPP_RELEASE: b9253
 
       - name: Install frontend dependencies
         run: npm ci
@@ -355,7 +355,7 @@ jobs:
         shell: bash
         run: node scripts/prepare-legacy-runtime.mjs --cuda
         env:
-          LLAMA_CPP_RELEASE: b8954
+          LLAMA_CPP_RELEASE: b9253
 
       - name: Install frontend dependencies
         run: npm ci
@@ -402,7 +402,7 @@ jobs:
       - name: Build node-llama-cpp (Haswell baseline, no prebuilt)
         run: node scripts/prepare-legacy-runtime.mjs
         env:
-          LLAMA_CPP_RELEASE: b8954
+          LLAMA_CPP_RELEASE: b9253
 
       - name: Install frontend dependencies
         run: npm ci
@@ -466,7 +466,7 @@ jobs:
       - name: Build node-llama-cpp CUDA (Haswell baseline, no prebuilt fallback)
         run: node scripts/prepare-legacy-runtime.mjs --cuda
         env:
-          LLAMA_CPP_RELEASE: b8954
+          LLAMA_CPP_RELEASE: b9253
 
       - name: Install frontend dependencies
         run: npm ci

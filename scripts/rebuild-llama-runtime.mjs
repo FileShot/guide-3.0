@@ -18,8 +18,8 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-// Must match node-llama-cpp@3.18.1 addon glue (b9253 breaks: cpu_get_num_math undeclared).
-const RELEASE = process.env.LLAMA_CPP_RELEASE || 'b8954';
+// Legacy/source builds must match node-llama-cpp@3.18.1 bundled glue (b9253).
+const RELEASE = process.env.LLAMA_CPP_RELEASE || 'b9253';
 
 // b8954+ common/ uses std::string_view; builds need C++17 explicitly.
 const CXX17 = {
@@ -171,7 +171,9 @@ log(
   `profile=${profileName} release=${RELEASE} platform=${process.platform} legacy=${legacyMode}`,
 );
 
-run('node', [path.join('scripts', 'download-llama-cpp-tarball.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
+if (!legacyMode) {
+  run('node', [path.join('scripts', 'download-llama-cpp-tarball.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
+}
 run('node', [path.join('scripts', 'verify-llama-gemma4.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
 const gpu = GPU_FOR_PROFILE[profileName];
 const nlcArgs = ['source', 'build', '--gpu', gpu];
