@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Gate legacy Linux artifacts: objdump AVX-512 check on critical binaries + QEMU Haswell load test.
+ * Gate legacy Linux AppImages before release: no AVX-512 in shell/llama binaries,
+ * and QEMU Haswell must run the packaged guIDE + node-llama-cpp (the real SIGILL bug).
  *
  * Usage:
  *   node scripts/verify-legacy-haswell-artifact.mjs --appimage path/to.AppImage
@@ -11,6 +12,12 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  appImageLibraryPath,
+  findAppImageBinary,
+  findPackagedAppDir,
+  resolveAppImageRoot,
+} from './lib/appimage-layout.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -40,7 +47,6 @@ function parseArgs() {
   return path.resolve(process.argv[idx + 1]);
 }
 
-/** Disassembly lines using ZMM registers indicate AVX-512 (invalid on Haswell). */
 function disasmUsesAvx512(filePath) {
   const r = run('objdump', ['-d', filePath]);
   if (r.status !== 0) return false;
@@ -61,20 +67,25 @@ function findFiles(dir, name) {
   return out;
 }
 
-function criticalArtifactPaths(root, appDir) {
-  const paths = [path.join(root, 'electron')];
+function criticalArtifactPaths(shellBinary, appDir, root) {
+  const paths = [shellBinary];
   for (const name of ['llama-addon.node', 'pty.node', 'libffmpeg.so']) {
     paths.push(...findFiles(appDir, name));
   }
-  const libnode = path.join(root, 'libnode.so');
-  if (fs.existsSync(libnode)) paths.push(libnode);
+  for (const name of ['libffmpeg.so', 'libnode.so']) {
+    const p = path.join(root, name);
+    if (fs.existsSync(p)) paths.push(p);
+  }
   return [...new Set(paths.filter((p) => fs.existsSync(p)))];
 }
 
-function qemuRun(bin, args, cwd, extraEnv = {}) {
+function qemuRun(bin, args, libPath, extraEnv = {}) {
   return run('qemu-x86_64-static', ['-cpu', QEMU_CPU, bin, ...args], {
-    cwd,
-    env: { ...process.env, LD_LIBRARY_PATH: cwd, ...extraEnv },
+    env: {
+      ...process.env,
+      LD_LIBRARY_PATH: libPath,
+      ...extraEnv,
+    },
     timeout: 300_000,
   });
 }
@@ -97,59 +108,63 @@ function main() {
   const extract = run(path.resolve(appimage), ['--appimage-extract'], { cwd: extractDir });
   if (extract.status !== 0) fail(`appimage extract failed: ${extract.stderr}`);
 
-  const root = path.join(extractDir, 'squashfs-root');
-  const appDir = path.join(root, 'resources', 'app');
-  const electronBin = path.join(root, 'electron');
-  if (!fs.existsSync(electronBin)) fail(`missing ${electronBin}`);
+  const root = resolveAppImageRoot(extractDir);
+  const shellBinary = findAppImageBinary(root);
+  const appDir = findPackagedAppDir(root);
+  const libPath = appImageLibraryPath(root);
 
-  const critical = criticalArtifactPaths(root, appDir);
-  log(`Checking ${critical.length} critical binaries for AVX-512 (zmm)`);
+  log(`shell binary: ${path.relative(root, shellBinary)}`);
+  log(`app dir: ${path.relative(root, appDir)}`);
+
+  const critical = criticalArtifactPaths(shellBinary, appDir, root);
+  log(`Checking ${critical.length} binaries for AVX-512 (zmm) — Haswell SIGILL guard`);
   const avx512 = critical.filter((f) => disasmUsesAvx512(f));
   if (avx512.length) {
     fail(
-      `AVX-512 in: ${avx512.map((f) => path.relative(root, f)).join(', ')}`,
+      `AVX-512 (invalid on Haswell) in: ${avx512.map((f) => path.relative(root, f)).join(', ')}`,
     );
   }
 
   if (findFiles(appDir, 'llama-addon.node').length === 0) {
-    fail('no llama-addon.node in packaged app');
+    fail('no llama-addon.node — legacy must use source-built addon, not npm prebuilt');
   }
   if (fs.existsSync(path.join(appDir, 'node_modules', '@node-llama-cpp'))) {
     const left = fs.readdirSync(path.join(appDir, 'node_modules', '@node-llama-cpp'));
-    if (left.length) fail(`prebuilt @node-llama-cpp still packaged: ${left.join(', ')}`);
+    if (left.length) fail(`prebuilt @node-llama-cpp packaged: ${left.join(', ')}`);
   }
   if (fs.existsSync(path.join(appDir, 'node_modules', 'playwright'))) {
-    fail('playwright must not be bundled in legacy builds');
+    fail('playwright must not be bundled (ships modern Chromium → SIGILL on Haswell)');
   }
 
-  log('QEMU: electron --version');
-  const ev = qemuRun(electronBin, ['--no-sandbox', '--version'], root);
-  if (ev.status !== 0) fail(`electron under Haswell QEMU: ${ev.stderr || ev.stdout}`);
+  log('QEMU Haswell: guIDE --version');
+  const ev = qemuRun(shellBinary, ['--no-sandbox', '--version'], libPath);
+  if (ev.status !== 0) {
+    fail(`shell binary SIGILL or crash under Haswell QEMU:\n${ev.stderr || ev.stdout}`);
+  }
+  log((ev.stdout || '').trim());
 
   const testScript = path.join(appDir, 'build', 'test-load-llama-legacy.mjs');
   if (!fs.existsSync(testScript)) fail(`missing ${testScript}`);
-  log('QEMU: node-llama-cpp getLlama (CPU)');
+  log('QEMU Haswell: node-llama-cpp getLlama (CPU)');
   const lr = qemuRun(
-    electronBin,
+    shellBinary,
     ['--no-sandbox', testScript],
-    root,
+    libPath,
     { ELECTRON_RUN_AS_NODE: '1' },
   );
   if (lr.status !== 0) {
     const err = `${lr.stdout}\n${lr.stderr}`;
     const cudaArtifact = /--cuda-legacy-/.test(appimage);
     if (cudaArtifact && /libcuda|nvidia|CUDA driver/i.test(err)) {
-      log(
-        'warn: getLlama needs NVIDIA in QEMU; llama-addon.node passed AVX-512 objdump',
-      );
+      log('warn: no NVIDIA in QEMU; llama-addon passed AVX-512 objdump');
     } else {
-      fail(`node-llama-cpp load:\n${err}`);
+      fail(`node-llama-cpp load under Haswell QEMU:\n${err}`);
     }
   } else {
     log((lr.stdout || '').trim());
   }
 
-  log('PASS — legacy artifact verified for Haswell (objdump + QEMU)');
+  log('PASS — legacy AppImage safe for Haswell-class CPUs (your SIGILL bug)');
 }
 
 main();

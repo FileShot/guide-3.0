@@ -22,11 +22,11 @@ function run(cmd, args) {
   if (r.status !== 0) process.exit(r.status ?? 1);
 }
 
-const modules = ['node-pty'];
-
-for (const mod of modules) {
-  log(`rebuilding ${mod} from source`);
-  run('npm', ['rebuild', mod, '--build-from-source']);
+if (process.platform !== 'linux') {
+  log('skip node-pty rebuild on non-Linux (Haswell SIGILL target is Linux AppImage)');
+} else {
+  log('rebuilding node-pty from source with -march=haswell');
+  run('npm', ['rebuild', 'node-pty', '--build-from-source']);
 }
 
 log('done');
