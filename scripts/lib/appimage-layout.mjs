@@ -4,6 +4,17 @@ import path from 'path';
 
 const BINARY_NAMES = ['guide-ide', 'guIDE', 'electron'];
 
+function isElf(filePath) {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(4);
+    fs.readSync(fd, buf, 0, 4, 0);
+    return buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 export function resolveAppImageRoot(extractDir) {
   const squash = path.join(extractDir, 'squashfs-root');
   if (fs.existsSync(squash)) return squash;
@@ -13,13 +24,32 @@ export function resolveAppImageRoot(extractDir) {
 export function findAppImageBinary(root) {
   for (const name of BINARY_NAMES) {
     const candidate = path.join(root, name);
-    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile() && isElf(candidate)) {
       return candidate;
     }
   }
+  const elfCandidates = [];
+  for (const name of fs.readdirSync(root)) {
+    const candidate = path.join(root, name);
+    try {
+      if (
+        fs.statSync(candidate).isFile() &&
+        isElf(candidate) &&
+        fs.statSync(candidate).size > 256 * 1024
+      ) {
+        elfCandidates.push(candidate);
+      }
+    } catch {
+      /* skip */
+    }
+  }
+  if (elfCandidates.length) {
+    elfCandidates.sort((a, b) => fs.statSync(b).size - fs.statSync(a).size);
+    return elfCandidates[0];
+  }
   const entries = fs.readdirSync(root);
   throw new Error(
-    `AppImage has no guIDE/electron binary at root. Found: ${entries.join(', ')}`,
+    `AppImage has no ELF shell binary at root. Found: ${entries.join(', ')}`,
   );
 }
 
