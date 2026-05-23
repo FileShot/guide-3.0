@@ -3,7 +3,7 @@
  * Download pinned llama.cpp, compile node-llama-cpp native addon, verify gemma4 arch.
  *
  * Usage:
- *   node scripts/rebuild-llama-runtime.mjs [--profile default|haswell|cuda|cuda-haswell]
+ *   node scripts/rebuild-llama-runtime.mjs [--profile default|haswell|cuda|cuda-haswell|x86-64-v2|cuda-x86-64-v2]
  *
  * Env:
  *   LLAMA_CPP_RELEASE — llama.cpp tag (default b9253)
@@ -37,6 +37,27 @@ const GPU_FOR_PROFILE = {
   haswell: 'false',
   cuda: 'cuda',
   'cuda-haswell': 'cuda',
+  'x86-64-v2': 'false',
+  'cuda-x86-64-v2': 'cuda',
+};
+
+/** Oldest supported desktop CPUs (Haswell / x86-64-v2). No AVX-512, no -march=native. */
+const X86_64_V2_FLAGS = {
+  NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_NATIVE: 'OFF',
+  NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX: 'OFF',
+  NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX2: 'OFF',
+  NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX512: 'OFF',
+  NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_FMA: 'OFF',
+  NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_F16C: 'OFF',
+  ...(process.platform === 'win32'
+    ? {
+        NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: '/arch:SSE2',
+        NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_C_FLAGS: '/arch:SSE2',
+      }
+    : {
+        NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: '-march=x86-64-v2 -mtune=generic',
+        NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_C_FLAGS: '-march=x86-64-v2 -mtune=generic',
+      }),
 };
 
 const PROFILES = {
@@ -48,6 +69,7 @@ const PROFILES = {
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX2: 'ON',
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_FMA: 'ON',
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_F16C: 'ON',
+    NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX512: 'OFF',
     ...(process.platform === 'win32'
       ? {
           NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: '/arch:AVX2',
@@ -70,6 +92,7 @@ const PROFILES = {
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX2: 'ON',
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_FMA: 'ON',
     NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_F16C: 'ON',
+    NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_AVX512: 'OFF',
     ...(process.platform === 'win32'
       ? {
           NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: '/arch:AVX2',
@@ -79,6 +102,15 @@ const PROFILES = {
           NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_CXX_FLAGS: '-march=haswell',
           NODE_LLAMA_CPP_CMAKE_OPTION_DCMAKE_C_FLAGS: '-march=haswell',
         }),
+  },
+  'x86-64-v2': {
+    ...CXX17,
+    ...X86_64_V2_FLAGS,
+  },
+  'cuda-x86-64-v2': {
+    ...CXX17,
+    ...X86_64_V2_FLAGS,
+    NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_CUDA: 'ON',
   },
 };
 
