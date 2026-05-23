@@ -17,8 +17,10 @@ const REPO = 'ggml-org/llama.cpp';
 const LLAMA_DIR = path.join(ROOT, 'node_modules', 'node-llama-cpp', 'llama');
 const LLAMA_CPP_DIR = path.join(LLAMA_DIR, 'llama.cpp');
 const TAR_URL = `https://github.com/${REPO}/archive/refs/tags/${RELEASE}.tar.gz`;
-const TMP_TAR = path.join(ROOT, '.build-temp', `llama.cpp-${RELEASE}.tar.gz`);
-const TMP_EXTRACT = path.join(ROOT, '.build-temp', 'llama-cpp-extract');
+const BUILD_TEMP = path.join(ROOT, '.build-temp');
+const TAR_NAME = `llama.cpp-${RELEASE}.tar.gz`;
+const TMP_TAR = path.join(BUILD_TEMP, TAR_NAME);
+const TMP_EXTRACT = path.join(BUILD_TEMP, 'llama-cpp-extract');
 
 function log(msg) {
   console.log(`[download-llama-tarball] ${msg}`);
@@ -43,7 +45,7 @@ function curlDownload(url, dest) {
   run('curl', args);
 }
 
-fs.mkdirSync(path.dirname(TMP_TAR), { recursive: true });
+fs.mkdirSync(BUILD_TEMP, { recursive: true });
 if (fs.existsSync(TMP_EXTRACT)) {
   fs.rmSync(TMP_EXTRACT, { recursive: true, force: true });
 }
@@ -52,7 +54,12 @@ fs.mkdirSync(TMP_EXTRACT, { recursive: true });
 log(`release=${RELEASE} url=${TAR_URL}`);
 curlDownload(TAR_URL, TMP_TAR);
 
-run('tar', ['-xzf', TMP_TAR, '-C', TMP_EXTRACT]);
+// GNU tar on Windows treats "D:\..." as remote host "D:" — extract with relative paths under BUILD_TEMP.
+if (process.platform === 'win32') {
+  run('tar', ['-xzf', TAR_NAME, '-C', 'llama-cpp-extract'], { cwd: BUILD_TEMP });
+} else {
+  run('tar', ['-xzf', TMP_TAR, '-C', TMP_EXTRACT]);
+}
 
 const extracted = path.join(TMP_EXTRACT, `llama.cpp-${RELEASE}`);
 if (!fs.existsSync(extracted)) {

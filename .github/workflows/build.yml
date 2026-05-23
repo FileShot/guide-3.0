@@ -291,7 +291,7 @@ jobs:
       - name: Install cmake
         run: choco install cmake -y --no-progress
 
-      - name: Build node-llama-cpp (x86-64-v2 / Haswell-safe, no prebuilt)
+      - name: Build node-llama-cpp (Haswell baseline, no prebuilt fallback)
         shell: bash
         run: node scripts/prepare-legacy-runtime.mjs
         env:
@@ -351,7 +351,7 @@ jobs:
       - name: Install cmake
         run: choco install cmake -y --no-progress
 
-      - name: Build node-llama-cpp CUDA (x86-64-v2 baseline, no prebuilt)
+      - name: Build node-llama-cpp CUDA (Haswell baseline, no prebuilt fallback)
         shell: bash
         run: node scripts/prepare-legacy-runtime.mjs --cuda
         env:
@@ -463,7 +463,7 @@ jobs:
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
-      - name: Build node-llama-cpp CUDA (x86-64-v2 baseline, no prebuilt)
+      - name: Build node-llama-cpp CUDA (Haswell baseline, no prebuilt fallback)
         run: node scripts/prepare-legacy-runtime.mjs --cuda
         env:
           LLAMA_CPP_RELEASE: b8954
@@ -484,10 +484,9 @@ jobs:
             sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
           fi
 
-      - name: Verify legacy CUDA llama uses local build only
+      - name: Verify legacy CUDA llama local build
         run: |
-          test -d node_modules/node-llama-cpp/llama || (echo "missing node-llama-cpp source tree" && exit 1)
-          test ! -d node_modules/@node-llama-cpp/linux-x64-cuda || (echo "prebuilt linux-x64-cuda must be removed" && exit 1)
+          test -d node_modules/node-llama-cpp/llama/localBuilds || (echo "missing localBuilds after Haswell CUDA compile" && exit 1)
 
       - name: Build Linux CUDA Legacy AppImage
         run: npx electron-builder --linux --x64 --config electron-builder.nosign.legacy.cuda.linux.json --publish never
