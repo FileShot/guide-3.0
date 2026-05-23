@@ -1358,17 +1358,9 @@ function SettingsPanel() {
       addNotification({ type: 'warning', message: 'Stop or wait for generation to finish before changing thinking mode.', duration: 4000 });
       return;
     }
-    const next = { ...settings, thinkingMode: mode };
-    updateSetting('thinkingMode', mode);
-    window.electronAPI?.uiLog?.(`applyThinkingMode after updateSetting returned`);
     try {
-      window.electronAPI?.uiLog?.(`applyThinkingMode POST /api/settings (2nd POST)`);
-      const r = await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(next),
-      });
-      if (!r.ok) throw new Error('Failed to save thinking mode');
+      await updateSetting('thinkingMode', mode);
+      window.electronAPI?.uiLog?.(`applyThinkingMode after updateSetting OK`);
       addNotification({ type: 'info', message: `Thinking mode → ${mode} — reloading model…`, duration: 2500 });
       triggerModelReload('thinkingMode');
     } catch (e) {

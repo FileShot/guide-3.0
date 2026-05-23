@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-05-22 — v0.3.101 — Fix blank window on settings toggle (nested Zustand set)
+
+### Change
+- `updateSetting`: apply settings + localStorage with one `set()`, then `setSettingsSyncState` and `fetch` **outside** the updater (was nested `set()` inside updater → renderer freeze / blank window per v0.3.100 log).
+- `applyThinkingMode`: `await updateSetting(...)` only; removed duplicate POST `/api/settings`.
+
+---
+
 ## 2026-05-23 — v0.3.100 — Full settings pipeline diagnostic logging
 
 ### Change
