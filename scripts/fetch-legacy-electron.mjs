@@ -60,7 +60,7 @@ function verifyElectronHaswell(electronBin, libDir) {
   log(`QEMU Haswell smoke test: ${electronBin}`);
   const r = spawnSync(
     'qemu-x86_64-static',
-    ['-cpu', QEMU_CPU, electronBin, '--version'],
+    ['-cpu', QEMU_CPU, electronBin, '--no-sandbox', '--version'],
     {
       encoding: 'utf8',
       timeout: 120_000,

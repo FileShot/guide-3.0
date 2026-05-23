@@ -123,7 +123,7 @@ function main() {
   }
 
   log('QEMU: electron --version');
-  const ev = qemuRun(electronBin, ['--version'], root);
+  const ev = qemuRun(electronBin, ['--no-sandbox', '--version'], root);
   if (ev.status !== 0) fail(`electron under Haswell QEMU: ${ev.stderr || ev.stdout}`);
 
   const testScript = path.join(appDir, 'build', 'test-load-llama-legacy.mjs');
@@ -131,7 +131,7 @@ function main() {
   log('QEMU: node-llama-cpp getLlama (CPU)');
   const lr = qemuRun(
     electronBin,
-    [testScript],
+    ['--no-sandbox', testScript],
     root,
     { ELECTRON_RUN_AS_NODE: '1' },
   );
