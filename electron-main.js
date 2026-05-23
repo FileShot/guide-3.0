@@ -367,8 +367,13 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         if (m.role !== 'user' && m.role !== 'assistant') continue;
         const isLast = i === chatMsgs.length - 1;
         if (isLast && m.role === 'user' && String(m.content || '').trim() === userText) continue;
+        const content = String(m.content || '').trim();
+        if (!content) continue;
         conversationHistory.push({ role: m.role, content: m.content });
       }
+      console.log(
+        `[electron-main] cloud conversationHistory: ${conversationHistory.length} msgs from ${chatMsgs.length} chat bubbles`
+      );
 
       const currentFile = chatContext?.currentFile;
       let effectiveMessage = userMessage;

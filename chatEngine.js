@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const { pathToFileURL } = require('url');
 const { parseToolCalls, repairToolCalls, stripToolCallText } = require('./tools/toolParser');
+const { formatToolResultForInject, buildToolResultsUserMessage } = require('./tools/toolResultInjection');
 const { canonicalizeToolParams } = require('./tools/canonicalizeToolParams');
 const { visionServer } = require('./visionServer');
 const { detectFamily, detectFamilyFromArch, detectParamSize } = require('./modelDetection');
@@ -2354,10 +2355,23 @@ class ChatEngine extends EventEmitter {
         if (_useNativeFunctions && result.metadata?.stopReason === 'functionCalls' && result.functionCalls?.length) {
           const _nativeSessionId = this._sessionId;
           let pendingCalls = result.functionCalls;
+          const _ctxTokens = this._contextSize || this.modelInfo?.contextSize || 8192;
+
+          const _findLatestModelItem = () => {
+            for (let i = this._chatHistory.length - 1; i >= 0; i--) {
+              if (this._chatHistory[i]?.type === 'model') return this._chatHistory[i];
+            }
+            return null;
+          };
+
           while (pendingCalls && pendingCalls.length > 0) {
             if (this._sessionId !== _nativeSessionId) break;
             if (_userAbortedGeneration) break;
             this._chatHistory = result.lastEvaluation.cleanHistory;
+
+            const modelItem = _findLatestModelItem();
+            const orphanLines = [];
+
             for (const fc of pendingCalls) {
               const toolName = fc.functionName;
               const toolParams = canonicalizeToolParams(toolName, fc.params ?? {});
@@ -2374,13 +2388,46 @@ class ChatEngine extends EventEmitter {
               console.log(`[ChatEngine] Native tool ${toolName} completed in ${Date.now() - _toolStart}ms`);
               if (onToolCall) onToolCall({ name: toolName, params: toolParams, result: toolResult });
               if (onStreamEvent) onStreamEvent('mcp-tool-results', [{ tool: toolName, result: toolResult }]);
-              // Inject result into the cleanHistory function call item so LlamaChat can continue
-              const lastItem = this._chatHistory[this._chatHistory.length - 1];
-              if (lastItem?.type === 'model') {
-                const fcItem = lastItem.response.find(r => r.type === 'functionCall' && r.name === toolName && r.result == null);
-                if (fcItem) fcItem.result = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
+
+              const injectStr = formatToolResultForInject(toolName, toolResult, { contextTokens: _ctxTokens });
+              let injected = false;
+
+              if (modelItem && Array.isArray(modelItem.response)) {
+                const unfilled = modelItem.response.filter(
+                  (r) => r && r.type === 'functionCall' && (r.result === undefined || r.result === null)
+                );
+                const slot = unfilled[0];
+                if (slot) {
+                  slot.result = injectStr;
+                  injected = true;
+                  const slotIdx = modelItem.response.indexOf(slot);
+                  console.log(`[ChatEngine] Native FC result injected → slot #${slotIdx} (${slot.name || toolName})`);
+                } else {
+                  console.warn(
+                    `[ChatEngine] Native FC inject: no unfilled slots (${modelItem.response.filter((r) => r?.type === 'functionCall').length} total FC items)`
+                  );
+                }
+              } else {
+                console.warn(
+                  `[ChatEngine] Native FC inject: no model item in history (last type=${this._chatHistory[this._chatHistory.length - 1]?.type})`
+                );
+              }
+
+              if (!injected) {
+                orphanLines.push(`${toolName}: ${injectStr}`);
               }
             }
+
+            if (orphanLines.length > 0) {
+              this._chatHistory.push({
+                type: 'user',
+                text: buildToolResultsUserMessage(orphanLines),
+              });
+              console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL (native fallback) ─── ${orphanLines.length} result(s)`);
+            } else {
+              console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL (native slots) ─── ${pendingCalls.length} result(s)`);
+            }
+
             const ctxAvailNow = contextSize - (this._sequence?.nextTokenIndex || 0);
             genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, ctxAvailNow);
             result = await this._generateResponseSafe(genOptions, {
@@ -2392,7 +2439,6 @@ class ChatEngine extends EventEmitter {
             this._chatHistory = result.lastEvaluation.cleanHistory;
             pendingCalls = result.metadata?.stopReason === 'functionCalls' ? result.functionCalls : null;
           }
-          // Update lastEvaluation for next turn context reuse
           this._lastEvaluation = result.lastEvaluation;
         }
         // ── Prose JSON fallback path (unchanged) ──────────────────────────────────────

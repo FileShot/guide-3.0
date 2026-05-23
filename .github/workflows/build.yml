@@ -185,8 +185,13 @@ jobs:
             sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
           fi
 
+      - name: Verify node-llama-cpp Linux CPU backends
+        run: |
+          test -d node_modules/@node-llama-cpp/linux-x64 || (echo "Missing @node-llama-cpp/linux-x64" && exit 1)
+          test -d node_modules/@node-llama-cpp/linux-x64-vulkan || echo "warn: linux-x64-vulkan not installed (CPU fallback may be limited)"
+
       - name: Build Linux CPU AppImage
-        run: npx electron-builder --linux --x64 --config electron-builder.nosign.json --publish never
+        run: npx electron-builder --linux --x64 --config electron-builder.nosign.linux.json --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -239,8 +244,13 @@ jobs:
             sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
           fi
 
+      - name: Verify node-llama-cpp Linux CUDA backends
+        run: |
+          test -d node_modules/@node-llama-cpp/linux-x64-cuda || (echo "Missing @node-llama-cpp/linux-x64-cuda" && exit 1)
+          test -d node_modules/@node-llama-cpp/linux-x64 || echo "warn: linux-x64 CPU fallback not installed"
+
       - name: Build Linux CUDA AppImage
-        run: npx electron-builder --linux --x64 --config electron-builder.nosign.cuda.json --publish never
+        run: npx electron-builder --linux --x64 --config electron-builder.nosign.cuda.linux.json --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -387,8 +397,11 @@ jobs:
             sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
           fi
 
+      - name: Verify node-llama-cpp Linux CPU backends (legacy)
+        run: test -d node_modules/@node-llama-cpp/linux-x64 || (echo "Missing @node-llama-cpp/linux-x64" && exit 1)
+
       - name: Build Linux CPU Legacy AppImage
-        run: npx electron-builder --linux --x64 --config electron-builder.nosign.legacy.json --publish never
+        run: npx electron-builder --linux --x64 --config electron-builder.nosign.legacy.linux.json --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -441,8 +454,14 @@ jobs:
             sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
           fi
 
+      - name: Verify node-llama-cpp Linux CUDA backends (legacy)
+        run: |
+          test -d node_modules/@node-llama-cpp/linux-x64-cuda || (echo "Missing @node-llama-cpp/linux-x64-cuda" && exit 1)
+          test -d node_modules/@node-llama-cpp/linux-x64-vulkan || echo "warn: linux-x64-vulkan not installed"
+          test -d node_modules/@node-llama-cpp/linux-x64 || echo "warn: linux-x64 CPU fallback not installed"
+
       - name: Build Linux CUDA Legacy AppImage
-        run: npx electron-builder --linux --x64 --config electron-builder.nosign.legacy.cuda.json --publish never
+        run: npx electron-builder --linux --x64 --config electron-builder.nosign.legacy.cuda.linux.json --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

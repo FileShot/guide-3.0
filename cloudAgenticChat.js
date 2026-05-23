@@ -2,8 +2,16 @@
 
 const { parseToolCalls, repairToolCalls, stripToolCallText } = require('./tools/toolParser');
 const { buildCloudSystemPrompt } = require('./chatEngine');
+const {
+  formatToolResultForInject,
+  buildToolResultsUserMessage,
+  sanitizeCloudConversationHistory,
+} = require('./tools/toolResultInjection');
+const { createStripBasedStreamFilter } = require('./tools/streamingToolFilter');
 
 const CLOUD_CONTINUE_PROMPT = 'Continue from the tool results above. Call more tools if needed, or give a concise final answer.';
+
+const FILE_WRITE_OPS = new Set(['write_file', 'create_file', 'append_to_file']);
 
 /**
  * Agentic cloud chat: same tool catalog and system prompt as local (via buildCloudSystemPrompt),
@@ -46,14 +54,23 @@ async function runCloudAgenticChat({
     toolPrompt,
   });
 
-  const conversationHistory = Array.isArray(initialHistory)
-    ? initialHistory.map((m) => ({ role: m.role, content: String(m.content || '') }))
-    : [];
+  const conversationHistory = sanitizeCloudConversationHistory(
+    Array.isArray(initialHistory) ? initialHistory : [],
+    { parseToolCalls, stripToolCallText }
+  ).map((m) => ({ role: m.role, content: String(m.content || '') }));
+
+  console.log(
+    `[CloudAgentic] history: ${initialHistory?.length || 0} raw → ${conversationHistory.length} sanitized`
+  );
 
   const maxIter = settings.maxIterations > 0 ? settings.maxIterations : 25;
   let fullResponse = '';
+  let displayResponse = '';
   let totalToolCalls = 0;
   let nextUserPrompt = userMessage;
+  const contextTokens = settings.maxTokens > 0 ? settings.maxTokens : 8192;
+
+  const streamFilter = createStripBasedStreamFilter({ onToken, onStreamEvent });
 
   const genBase = {
     provider: cloudProvider,
@@ -63,7 +80,6 @@ async function runCloudAgenticChat({
     maxTokens: settings.maxTokens || -1,
     topP: settings.topP,
     images,
-    onToken,
     onThinkingToken,
     stream: true,
   };
@@ -74,18 +90,26 @@ async function runCloudAgenticChat({
       break;
     }
 
+    streamFilter.resetRound();
+    const visibleAtRoundStart = streamFilter.getVisibleChars();
+
     const result = await cloudLLM.generate(nextUserPrompt, {
       ...genBase,
       conversationHistory,
       images: iter === 0 ? images : [],
+      onToken: (token) => streamFilter.processChunk(token),
     });
 
+    streamFilter.flush();
+
     if (result?.isQuotaError) {
-      return { isQuotaError: true, error: '__QUOTA_EXCEEDED__', text: fullResponse, toolCallCount: totalToolCalls };
+      return { isQuotaError: true, error: '__QUOTA_EXCEEDED__', text: displayResponse || fullResponse, toolCallCount: totalToolCalls };
     }
 
     const roundText = result?.text || '';
     fullResponse += roundText;
+    const roundClean = streamFilter.getCleanText() || stripToolCallText(roundText);
+    displayResponse += roundClean;
 
     if (askOnly || planMode || !toolsEnabled || !executeToolFn) {
       break;
@@ -99,8 +123,16 @@ async function runCloudAgenticChat({
 
     if (!parsedCalls.length) break;
 
-    const visibleAssistant = stripToolCallText(roundText).trim();
+    const visibleAssistant = roundClean.trim();
     conversationHistory.push({ role: 'assistant', content: visibleAssistant || '(tool calls)' });
+
+    const newVisibleChars = streamFilter.getVisibleChars() - visibleAtRoundStart;
+    if (onStreamEvent && newVisibleChars > 0 && roundClean.length < newVisibleChars) {
+      onStreamEvent('llm-replace-last', {
+        originalLength: newVisibleChars,
+        replacement: roundClean,
+      });
+    }
 
     const toolResultLines = [];
     for (const call of parsedCalls) {
@@ -114,6 +146,15 @@ async function runCloudAgenticChat({
         onStreamEvent('tool-executing', [{ tool: toolName, params: toolParams }]);
       }
 
+      if (FILE_WRITE_OPS.has(toolName) && call.params?.content && onStreamEvent) {
+        const filePath = call.params.filePath || call.params.path || '';
+        const fileName = filePath.split(/[\\/]/).pop() || filePath;
+        const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+        onStreamEvent('file-content-start', { filePath, fileName, language: ext, fileKey: filePath });
+        onStreamEvent('file-content-token', call.params.content);
+        onStreamEvent('file-content-end', { filePath, fileKey: filePath });
+      }
+
       let toolResult;
       try {
         toolResult = await executeToolFn(toolName, toolParams);
@@ -125,27 +166,22 @@ async function runCloudAgenticChat({
         onStreamEvent('mcp-tool-results', [{ tool: toolName, result: toolResult }]);
       }
 
-      const resultStr = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
-      toolResultLines.push(`${toolName}: ${resultStr}`);
-      console.log(`[CloudAgentic] tool ${toolName} done (${resultStr.length} chars)`);
+      const injectResult = formatToolResultForInject(toolName, toolResult, { contextTokens });
+      toolResultLines.push(`${toolName}: ${injectResult}`);
+      console.log(`[CloudAgentic] tool ${toolName} done (${injectResult.length} chars inject)`);
     }
 
     if (!toolResultLines.length) break;
 
-    const injectText = [
-      '[System: Tool Results]',
-      'The tools below have ALREADY been executed. Do not repeat them. Continue concisely.',
-      '',
-      ...toolResultLines,
-      '',
-      'Continue with remaining work or summarize results.',
-    ].join('\n');
-
+    const injectText = buildToolResultsUserMessage(toolResultLines);
     conversationHistory.push({ role: 'user', content: injectText });
+    console.log(`[CloudAgentic] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s)`);
+
     nextUserPrompt = CLOUD_CONTINUE_PROMPT;
   }
 
-  return { text: fullResponse, toolCallCount: totalToolCalls };
+  const finalText = displayResponse || stripToolCallText(fullResponse);
+  return { text: finalText, toolCallCount: totalToolCalls };
 }
 
 module.exports = { runCloudAgenticChat };

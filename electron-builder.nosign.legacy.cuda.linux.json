@@ -1,0 +1,40 @@
+{
+  "appId": "com.guide-ide.desktop",
+  "productName": "guIDE",
+  "copyright": "Copyright © 2026 GraySoft LLC",
+  "directories": {
+    "output": "dist-electron"
+  },
+  "files": [
+    "*.js",
+    "*.json",
+    "server/**/*",
+    "pipeline/**/*",
+    "tools/**/*",
+    "chatWrappers/**/*",
+    "frontend/dist/**/*",
+    "node_modules/**/*",
+    "build/**/*",
+    "!node_modules/.cache/**",
+    "!node_modules/@node-llama-cpp/win-*/**",
+    "!node_modules/@node-llama-cpp/mac-*/**",
+    "!node_modules/@node-llama-cpp/linux-arm64/**",
+    "!node_modules/@node-llama-cpp/linux-armv7l/**",
+    "!frontend/node_modules/**",
+    "!**/*.map",
+    "!**/*.ts",
+    "!**/test/**",
+    "!**/tests/**",
+    "!**/spec/**",
+    "!**/.git/**"
+  ],
+  "asar": false,
+  "linux": {
+    "icon": "build/icon.png",
+    "target": [
+      { "target": "AppImage", "arch": ["x64"] }
+    ],
+    "artifactName": "guIDE-${version}-cuda-legacy-linux-x64.${ext}",
+    "category": "Development"
+  }
+}
