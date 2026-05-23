@@ -141,8 +141,13 @@ function main() {
     fail('playwright packaged (modern Chromium → SIGILL on Haswell)');
   }
 
-  log('QEMU Haswell: packaged shell --version');
-  const ev = qemuRun(shellBinary, ['--no-sandbox', '--version'], libPath);
+  log('QEMU Haswell: packaged shell (ELECTRON_RUN_AS_NODE, no GUI)');
+  const ev = qemuRun(
+    shellBinary,
+    ['-e', 'console.log("ok", process.versions.electron)'],
+    libPath,
+    { ELECTRON_RUN_AS_NODE: '1' },
+  );
   const evOut = `${ev.stdout}\n${ev.stderr}`;
   if (ev.status !== 0) {
     if (isSigill(evOut)) fail(`packaged shell SIGILL under Haswell QEMU:\n${evOut}`);
@@ -153,12 +158,7 @@ function main() {
   const testScript = path.join(appDir, 'build', 'test-load-llama-legacy.mjs');
   if (!fs.existsSync(testScript)) fail(`missing ${testScript}`);
   log('QEMU Haswell: node-llama-cpp getLlama (CPU)');
-  const lr = qemuRun(
-    shellBinary,
-    ['--no-sandbox', testScript],
-    libPath,
-    { ELECTRON_RUN_AS_NODE: '1' },
-  );
+  const lr = qemuRun(shellBinary, [testScript], libPath, { ELECTRON_RUN_AS_NODE: '1' });
   const lrOut = `${lr.stdout}\n${lr.stderr}`;
   if (lr.status !== 0) {
     if (isSigill(lrOut)) fail(`llama-addon SIGILL under Haswell QEMU:\n${lrOut}`);
