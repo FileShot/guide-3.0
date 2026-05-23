@@ -24,6 +24,10 @@
 
 import { create } from 'zustand';
 
+function _uiLog(msg) {
+  try { window.electronAPI?.uiLog?.(String(msg)); } catch (_) {}
+}
+
 
 
 function canonicalizeStreamingFilePath(filePath) {
@@ -1833,28 +1837,33 @@ const useAppStore = create((set, get) => ({
   },
 
   updateSetting: (key, value) => set(s => {
-
+    const t0 = Date.now();
+    _uiLog(`updateSetting START key=${key} value=${JSON.stringify(value)}`);
     const next = { ...s.settings, [key]: value };
-
-    localStorage.setItem('guIDE-settings', JSON.stringify(next));
-    if (typeof window !== 'undefined' && window.electronAPI?.uiLog) {
-      window.electronAPI.uiLog(`updateSetting ${key}=${JSON.stringify(value)}`);
+    let json = '';
+    try {
+      json = JSON.stringify(next);
+      _uiLog(`updateSetting before localStorage jsonLen=${json.length}`);
+      localStorage.setItem('guIDE-settings', json);
+      _uiLog(`updateSetting after localStorage ms=${Date.now() - t0}`);
+    } catch (e) {
+      _uiLog(`updateSetting localStorage ERROR ${e.message}`);
     }
-
-    // Sync to backend settings.json so model reload reads correct values
     set().setSettingsSyncState({ status: 'saving', at: Date.now() });
+    _uiLog(`updateSetting before fetch POST key=${key}`);
     fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(next),
+      body: json || JSON.stringify(next),
     }).then(r => r.json()).then(() => {
+      _uiLog(`updateSetting fetch OK key=${key} ms=${Date.now() - t0}`);
       set().setSettingsSyncState({ status: 'saved', at: Date.now() });
     }).catch(e => {
+      _uiLog(`updateSetting fetch ERROR key=${key} ${e.message} ms=${Date.now() - t0}`);
       set().setSettingsSyncState({ status: 'error', error: e.message, at: Date.now() });
     });
-
+    _uiLog(`updateSetting END setter callback ms=${Date.now() - t0}`);
     return { settings: next };
-
   }),
 
   resetSettings: () => {

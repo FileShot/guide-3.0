@@ -1329,12 +1329,14 @@ function SettingsPanel() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ modelPath: modelInfo.path }),
       }).then(r => r.json()).then(d => {
+        window.electronAPI?.uiLog?.(`triggerModelReload response success=${!!d?.success} reason=${reasonLabel}`);
         if (!d.success) {
           addNotification({ type: 'error', message: d.error || 'Model reload failed' });
         } else {
           addNotification({ type: 'info', message: `Model reloaded (${reasonLabel})`, duration: 1800 });
         }
       }).catch(e => {
+        window.electronAPI?.uiLog?.(`triggerModelReload ERROR ${e.message} reason=${reasonLabel}`);
         addNotification({ type: 'error', message: e.message || 'Model reload failed' });
       }).finally(() => {
         reloadInFlightRef.current = false;
@@ -1343,6 +1345,7 @@ function SettingsPanel() {
   }, [modelInfo, modelLoading, chatStreaming, addNotification]);
 
   const updateSettingWithReload = useCallback((key, value) => {
+    window.electronAPI?.uiLog?.(`updateSettingWithReload key=${key} value=${JSON.stringify(value)}`);
     updateSetting(key, value);
     const requiresReload = key === 'contextSize' || key === 'gpuLayers' || key === 'gpuPreference' || key === 'requireMinContextForGpu' || key === 'kvCacheType' || key === 'enableThinking' || key === 'gpuConstrainedContext' || key === 'vramBalance';
     if (requiresReload) triggerModelReload(key);
@@ -1357,8 +1360,9 @@ function SettingsPanel() {
     }
     const next = { ...settings, thinkingMode: mode };
     updateSetting('thinkingMode', mode);
+    window.electronAPI?.uiLog?.(`applyThinkingMode after updateSetting returned`);
     try {
-      window.electronAPI?.uiLog?.(`applyThinkingMode POST /api/settings`);
+      window.electronAPI?.uiLog?.(`applyThinkingMode POST /api/settings (2nd POST)`);
       const r = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1547,7 +1551,10 @@ function SettingsPanel() {
           <select
             className="w-full bg-vsc-input border border-vsc-border rounded text-[11px] text-vsc-text px-2 py-1 focus:outline-none focus:border-vsc-focus"
             value={settings.thinkingMode || 'C'}
-            onChange={e => applyThinkingMode(e.target.value)}
+            onChange={e => {
+              window.electronAPI?.uiLog?.(`thinkingMode dropdown change -> ${e.target.value}`);
+              applyThinkingMode(e.target.value);
+            }}
           >
             <option value="C">C — ThinkingOpen (inject &lt;think&gt; prefix)</option>
             <option value="B">B — Jinja, no prefix (raw enable_thinking=true)</option>
@@ -1834,7 +1841,10 @@ function SettingToggle({ label, value, onChange, hint }) {
         <span className="text-[11px] text-vsc-text-dim">{label}</span>
         {hint && <div className="text-[10px] text-vsc-text-dim/60">{hint}</div>}
       </div>
-      <button onClick={() => onChange(!value)}
+      <button onClick={() => {
+        window.electronAPI?.uiLog?.(`SettingToggle click label=${label} ${value} -> ${!value}`);
+        onChange(!value);
+      }}
         className="w-[34px] h-[17px] rounded-full transition-colors relative flex-shrink-0"
         style={{ backgroundColor: value ? 'rgb(var(--guide-accent))' : 'rgb(var(--guide-panel-border))' }}>
         <div className="w-[13px] h-[13px] rounded-full bg-white absolute top-[2px] transition-all"

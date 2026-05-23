@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-05-23 — v0.3.100 — Full settings pipeline diagnostic logging
+
+### Change
+- `[api-fetch] ENTRY/DONE/ERROR` on every IPC API call (path, method, bodyLen, ms).
+- `[UI]` step logs: SettingToggle click, thinkingMode dropdown, updateSetting (localStorage + fetch), App.jsx debounce POST, applyThinkingMode after updateSetting, triggerModelReload response.
+- `[Settings]` handler START/DONE on POST /api/settings.
+
+---
+
 ## 2026-05-22 — v0.3.99 — Settings/thinking diagnostic logging (guide-main.log)
 
 ### Change

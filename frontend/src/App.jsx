@@ -805,7 +805,7 @@ export default function App() {
 
 
     const t = setTimeout(() => {
-
+      window.electronAPI?.uiLog?.(`App.jsx settings debounce POST jsonLen=${settingsJson.length}`);
       fetch('/api/settings', {
 
         method: 'POST',

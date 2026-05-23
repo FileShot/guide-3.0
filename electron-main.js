@@ -550,6 +550,7 @@ ipcMain.handle('inject-user-message', (_e, payload) => {
 // This replaces the entire Express REST API from server/main.js.
 
 ipcMain.handle('api-fetch', async (_event, url, options) => {
+  const _apiT0 = Date.now();
   const method = (options?.method || 'GET').toUpperCase();
   let body = {};
   if (options?.body) {
@@ -560,6 +561,8 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
   const urlObj = new URL(url, 'http://localhost');
   const p = urlObj.pathname;
   const q = Object.fromEntries(urlObj.searchParams);
+  const _bodyLen = options?.body ? String(options.body).length : 0;
+  console.log(`[api-fetch] ENTRY ${method} ${p} bodyLen=${_bodyLen}`);
 
   try {
     // ── Models ──────────────────────────────────────────
@@ -578,6 +581,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       settingsManager.set('lastModelPath', modelPath);
       _send('model-loaded', info);
       console.log(`[Settings] model-load DONE path=${modelPath} thinkingMode=${settingsManager.get('thinkingMode')}`);
+      console.log(`[api-fetch] DONE POST /api/models/load ms=${Date.now() - _apiT0}`);
       return { success: true, modelInfo: info };
     }
     if (p === '/api/models/unload' && method === 'POST') {
@@ -854,10 +858,12 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       return settingsManager.getAll();
     }
     if (p === '/api/settings' && method === 'POST') {
-      console.log(`[Settings] POST /api/settings received thinkingMode=${body?.thinkingMode} toolsEnabled=${body?.toolsEnabled}`);
+      console.log(`[Settings] POST /api/settings HANDLER START thinkingMode=${body?.thinkingMode} toolsEnabled=${body?.toolsEnabled}`);
       settingsManager.setAll(body);
       settingsManager.flush();
       currentSettings = settingsManager.getAll();
+      console.log(`[Settings] POST /api/settings HANDLER DONE thinkingMode=${settingsManager.get('thinkingMode')}`);
+      console.log(`[api-fetch] DONE POST /api/settings ms=${Date.now() - _apiT0}`);
       return { success: true };
     }
 
@@ -1407,10 +1413,12 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
 
     // ── Unknown route ───────────────────────────────────
     console.warn(`[Main] Unknown API route: ${method} ${p}`);
+    console.log(`[api-fetch] DONE ${method} ${p} status=404 ms=${Date.now() - _apiT0}`);
     return { _status: 404, error: `Unknown route: ${method} ${p}` };
 
   } catch (e) {
     console.error(`[Main] API error (${method} ${p}):`, e.message);
+    console.log(`[api-fetch] ERROR ${method} ${p} ms=${Date.now() - _apiT0} err=${e.message}`);
     return { _status: 500, error: e.message };
   }
 });
