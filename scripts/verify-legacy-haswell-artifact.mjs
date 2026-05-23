@@ -164,7 +164,7 @@ function main() {
   const lrOut = `${lr.stdout}\n${lr.stderr}`;
   if (lr.status !== 0) {
     if (isSigill(lrOut)) fail(`llama-addon SIGILL under Haswell QEMU:\n${lrOut}`);
-    const cudaArtifact = /--cuda-legacy-/.test(appimage);
+    const cudaArtifact = /-cuda-legacy-/.test(appimage);
     if (cudaArtifact && /libcuda|nvidia|CUDA driver/i.test(lrOut)) {
       log('warn: no NVIDIA in QEMU; objdump already passed on llama-addon');
     } else {
