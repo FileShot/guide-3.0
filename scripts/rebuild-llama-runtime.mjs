@@ -171,11 +171,14 @@ log(
   `profile=${profileName} release=${RELEASE} platform=${process.platform} legacy=${legacyMode}`,
 );
 
-if (!legacyMode) {
+const gpu = GPU_FOR_PROFILE[profileName];
+if (legacyMode) {
+  // npm ci --ignore-scripts skips postinstall; fetch the release node-llama-cpp expects (b9253 layout).
+  runNlc(['source', 'download', '--release', RELEASE, '--skipBuild', '--gpu', gpu], { CI: 'true' });
+} else {
   run('node', [path.join('scripts', 'download-llama-cpp-tarball.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
 }
 run('node', [path.join('scripts', 'verify-llama-gemma4.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
-const gpu = GPU_FOR_PROFILE[profileName];
 const nlcArgs = ['source', 'build', '--gpu', gpu];
 if (!legacyMode) {
   nlcArgs.push('--ciMode');
