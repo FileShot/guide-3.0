@@ -20,8 +20,8 @@ const ROOT = path.resolve(__dirname, '..');
 const BACKENDS = path.join(ROOT, 'node_modules', '@node-llama-cpp');
 
 const useCuda = process.argv.includes('--cuda');
-/** haswell / cuda-haswell: GGML_NATIVE=OFF, -march=haswell (AVX2, no ADX). Proven in rebuild-llama-runtime.mjs. */
-const profile = useCuda ? 'cuda-haswell' : 'haswell';
+/** x86-64-v2: baseline for Haswell-class CPUs (-march=x86-64-v2, no AVX-512, no -march=native). */
+const profile = useCuda ? 'cuda-x86-64-v2' : 'x86-64-v2';
 
 function log(msg) {
   console.log(`[prepare-legacy] ${msg}`);

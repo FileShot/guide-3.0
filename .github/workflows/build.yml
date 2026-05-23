@@ -399,13 +399,13 @@ jobs:
         run: |
           node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
 
-      - name: Install build tools (QEMU Haswell gate + objdump)
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake qemu-user-static binutils
+      - name: Install build tools (QEMU Haswell gate + objdump + xvfb)
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake qemu-user-static binutils xvfb
 
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
-      - name: Prepare legacy Linux runtime (Electron + Haswell llama + node-pty)
+      - name: Prepare legacy Linux runtime (Electron 28 + x86-64-v2 llama)
         run: node scripts/prepare-legacy-linux.mjs
         env:
           LLAMA_CPP_RELEASE: b9253
@@ -441,7 +441,7 @@ jobs:
       - name: Verify legacy AppImage on Haswell (QEMU + llama load)
         run: |
           APP=$(ls -1 dist-electron/guIDE-*-cpu-legacy-linux-x64.AppImage | head -1)
-          node scripts/verify-legacy-haswell-artifact.mjs --appimage "$APP"
+          xvfb-run -a node scripts/verify-legacy-haswell-artifact.mjs --appimage "$APP"
 
       - name: Upload artifact
         continue-on-error: true
@@ -466,8 +466,8 @@ jobs:
         run: |
           node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
 
-      - name: Install build tools (QEMU Haswell gate + objdump)
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake qemu-user-static binutils
+      - name: Install build tools (QEMU Haswell gate + objdump + xvfb)
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake qemu-user-static binutils xvfb
 
       - uses: Jimver/cuda-toolkit@v0.2.15
         with:
@@ -512,7 +512,7 @@ jobs:
       - name: Verify legacy CUDA AppImage on Haswell (QEMU + llama load)
         run: |
           APP=$(ls -1 dist-electron/guIDE-*-cuda-legacy-linux-x64.AppImage | head -1)
-          node scripts/verify-legacy-haswell-artifact.mjs --appimage "$APP"
+          xvfb-run -a node scripts/verify-legacy-haswell-artifact.mjs --appimage "$APP"
 
       - name: Upload artifact
         continue-on-error: true

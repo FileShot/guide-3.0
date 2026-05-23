@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * Gate legacy Linux AppImages before release: no AVX-512 in shell/llama binaries,
- * and QEMU Haswell must run the packaged guIDE + node-llama-cpp (the real SIGILL bug).
+ * Gate legacy Linux AppImages before release (Haswell SIGILL bug):
+ * - No AVX-512 in packaged Electron shell + llama-addon
+ * - No npm @node-llama-cpp prebuilts or Playwright in bundle
+ * - QEMU Haswell runs packaged ELF + loads node-llama-cpp (CPU)
  *
- * Usage:
- *   node scripts/verify-legacy-haswell-artifact.mjs --appimage path/to.AppImage
+ * Run under xvfb-run in CI so Electron does not die on missing DISPLAY.
  */
 'use strict';
 
@@ -90,6 +91,10 @@ function qemuRun(bin, args, libPath, extraEnv = {}) {
   });
 }
 
+function isSigill(output) {
+  return /invalid opcode|SIGILL|signal 4|Illegal instruction/i.test(output);
+}
+
 function main() {
   const appimage = parseArgs();
   if (!fs.existsSync(appimage)) fail(`missing ${appimage}`);
@@ -113,46 +118,35 @@ function main() {
   const appDir = findPackagedAppDir(root);
   const libPath = appImageLibraryPath(root);
 
-  log(`shell binary: ${path.relative(root, shellBinary)}`);
+  log(`shell ELF: ${path.relative(root, shellBinary)}`);
   log(`app dir: ${path.relative(root, appDir)}`);
 
   const critical = criticalArtifactPaths(shellBinary, appDir, root);
-  log(`Checking ${critical.length} binaries for AVX-512 (zmm) — Haswell SIGILL guard`);
+  log(`objdump AVX-512 (zmm) check on ${critical.length} binaries`);
   const avx512 = critical.filter((f) => disasmUsesAvx512(f));
   if (avx512.length) {
     fail(
-      `AVX-512 (invalid on Haswell) in: ${avx512.map((f) => path.relative(root, f)).join(', ')}`,
+      `AVX-512 in: ${avx512.map((f) => path.relative(root, f)).join(', ')}`,
     );
   }
 
   if (findFiles(appDir, 'llama-addon.node').length === 0) {
-    fail('no llama-addon.node — legacy must use source-built addon, not npm prebuilt');
+    fail('no llama-addon.node in package');
   }
   if (fs.existsSync(path.join(appDir, 'node_modules', '@node-llama-cpp'))) {
     const left = fs.readdirSync(path.join(appDir, 'node_modules', '@node-llama-cpp'));
     if (left.length) fail(`prebuilt @node-llama-cpp packaged: ${left.join(', ')}`);
   }
   if (fs.existsSync(path.join(appDir, 'node_modules', 'playwright'))) {
-    fail('playwright must not be bundled (ships modern Chromium → SIGILL on Haswell)');
+    fail('playwright packaged (modern Chromium → SIGILL on Haswell)');
   }
 
-  log('QEMU Haswell: shell smoke (no X11 — ELECTRON_RUN_AS_NODE)');
-  const ev = qemuRun(
-    shellBinary,
-    [
-      '--no-sandbox',
-      '-e',
-      'console.log("ok", process.versions.electron, process.versions.modules)',
-    ],
-    libPath,
-    { ELECTRON_RUN_AS_NODE: '1' },
-  );
+  log('QEMU Haswell: packaged shell --version');
+  const ev = qemuRun(shellBinary, ['--no-sandbox', '--version'], libPath);
+  const evOut = `${ev.stdout}\n${ev.stderr}`;
   if (ev.status !== 0) {
-    const out = `${ev.stdout}\n${ev.stderr}`;
-    if (/invalid opcode|SIGILL|signal 4|Illegal instruction/i.test(out)) {
-      fail(`shell binary SIGILL under Haswell QEMU:\n${out}`);
-    }
-    fail(`shell binary failed under Haswell QEMU:\n${out}`);
+    if (isSigill(evOut)) fail(`packaged shell SIGILL under Haswell QEMU:\n${evOut}`);
+    fail(`packaged shell failed under Haswell QEMU:\n${evOut}`);
   }
   log((ev.stdout || '').trim());
 
@@ -165,19 +159,20 @@ function main() {
     libPath,
     { ELECTRON_RUN_AS_NODE: '1' },
   );
+  const lrOut = `${lr.stdout}\n${lr.stderr}`;
   if (lr.status !== 0) {
-    const err = `${lr.stdout}\n${lr.stderr}`;
+    if (isSigill(lrOut)) fail(`llama-addon SIGILL under Haswell QEMU:\n${lrOut}`);
     const cudaArtifact = /--cuda-legacy-/.test(appimage);
-    if (cudaArtifact && /libcuda|nvidia|CUDA driver/i.test(err)) {
-      log('warn: no NVIDIA in QEMU; llama-addon passed AVX-512 objdump');
+    if (cudaArtifact && /libcuda|nvidia|CUDA driver/i.test(lrOut)) {
+      log('warn: no NVIDIA in QEMU; objdump already passed on llama-addon');
     } else {
-      fail(`node-llama-cpp load under Haswell QEMU:\n${err}`);
+      fail(`node-llama-cpp load under Haswell QEMU:\n${lrOut}`);
     }
   } else {
     log((lr.stdout || '').trim());
   }
 
-  log('PASS — legacy AppImage safe for Haswell-class CPUs (your SIGILL bug)');
+  log('PASS — legacy AppImage cleared for Haswell-class CPUs');
 }
 
 main();

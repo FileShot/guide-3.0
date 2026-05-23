@@ -1,5 +1,5 @@
 /** Shared compile flags for legacy (Haswell-class) native builds. */
-export const LEGACY_MARCH = 'haswell';
+export const LEGACY_MARCH = 'x86-64-v2';
 
 export function legacyCompileEnv(extra = {}) {
   const flags = `-march=${LEGACY_MARCH} -mtune=generic`;
