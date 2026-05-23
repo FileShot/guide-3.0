@@ -2,7 +2,7 @@
  * AccountPanel — License activation, OAuth sign-in, account management.
  * Three states: signed-in (activated), authenticated (free plan), sign-in form.
  */
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { UserCircle, Check, Shield, ExternalLink, LogOut, Key, Mail, Github, UserPlus } from 'lucide-react';
 
 export default function AccountPanel() {
@@ -14,8 +14,6 @@ export default function AccountPanel() {
   const [licenseKey, setLicenseKey] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
-  const oauthPollRef = useRef(null);
-
   const loadStatus = useCallback(async () => {
     try {
       const res = await fetch('/api/license/status');
@@ -25,11 +23,6 @@ export default function AccountPanel() {
   }, []);
 
   useEffect(() => { loadStatus(); }, [loadStatus]);
-
-  // Cleanup OAuth poll on unmount
-  useEffect(() => {
-    return () => { if (oauthPollRef.current) clearInterval(oauthPollRef.current); };
-  }, []);
 
   const showMessage = (msg, duration = 4000) => {
     setMessage(msg);
@@ -46,44 +39,17 @@ export default function AccountPanel() {
         body: JSON.stringify({ provider }),
       });
       const result = await res.json();
-      if (result?.success && result?.url) {
-        // Open OAuth URL in external browser
-        if (window.electronAPI?.openExternal) {
-          window.electronAPI.openExternal(result.url);
-        } else {
-          window.open(result.url, '_blank', 'noopener');
-        }
-        // Poll for authentication completion
-        showMessage('Waiting for sign-in to complete...', 0);
-        if (oauthPollRef.current) clearInterval(oauthPollRef.current);
-        let attempts = 0;
-        oauthPollRef.current = setInterval(async () => {
-          attempts++;
-          if (attempts > 60) { // 2min timeout
-            clearInterval(oauthPollRef.current);
-            oauthPollRef.current = null;
-            setLoading(false);
-            showMessage('Sign-in timed out. Please try again.');
-            return;
-          }
-          try {
-            const statusRes = await fetch('/api/account/status');
-            const status = await statusRes.json();
-            if (status?.isAuthenticated) {
-              clearInterval(oauthPollRef.current);
-              oauthPollRef.current = null;
-              await loadStatus();
-              setLoading(false);
-              showMessage('Signed in successfully');
-            }
-          } catch (_) {}
-        }, 2000);
+      if (result?.success) {
+        await loadStatus();
+        showMessage(result.licenseError
+          ? `Signed in (${result.licenseError})`
+          : 'Signed in successfully');
       } else {
         showMessage(result?.error || 'Sign-in failed');
-        setLoading(false);
       }
     } catch (e) {
       showMessage(e.message || 'Sign-in failed');
+    } finally {
       setLoading(false);
     }
   };

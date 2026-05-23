@@ -1201,6 +1201,8 @@ export default function ChatPanel() {
 
           enableSubAgents: !!s.enableSubAgents,
 
+          toolsEnabled: s.toolsEnabled !== false,
+
           systemPrompt: s.systemPrompt,
 
           customInstructions: s.customInstructions,
@@ -3486,16 +3488,14 @@ function QuotaExceededPrompt({ needsAccount }) {
 
       const data = await res.json();
 
-      if (data?.success && data.url) {
-
-        window.open(data.url, '_blank');
-
+      if (data?.url) {
+        if (window.electronAPI?.openExternal) {
+          window.electronAPI.openExternal(data.url);
+        } else {
+          window.open(data.url, '_blank', 'noopener');
+        }
       } else {
-
-        // If checkout fails (e.g. not signed in), go to account panel
-
         setActiveActivity('account');
-
       }
 
     } catch (_) {

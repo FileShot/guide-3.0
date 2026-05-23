@@ -22,7 +22,7 @@ const EventEmitter = require('events');
 
 // ─── Constants ───────────────────────────────────────────
 
-const API_BASE = 'https://api.graysoft.dev';
+const API_BASE = 'https://graysoft.dev/api';
 
 // Plans and their features
 const PLANS = {
@@ -199,8 +199,9 @@ class LicenseManager extends EventEmitter {
    * @returns {Promise<{ success: boolean, url?: string, error?: string }>}
    */
   async createCheckoutSession(plan) {
-    if (!['pro', 'team'].includes(plan)) {
-      return { success: false, error: 'Invalid plan. Choose "pro" or "team".' };
+    const normalized = plan === 'team' ? 'unlimited' : plan;
+    if (!['pro', 'unlimited'].includes(normalized)) {
+      return { success: false, error: 'Invalid plan. Choose "pro" or "unlimited".' };
     }
 
     const token = this.getSessionToken();
@@ -216,7 +217,7 @@ class LicenseManager extends EventEmitter {
           'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
-          plan,
+          plan: normalized,
           machineId: this._machineId,
         }),
       });

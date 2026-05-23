@@ -204,10 +204,6 @@ export default function App() {
 
         console.log('[App] tool-executing:', JSON.stringify(data).substring(0, 200));
 
-        // File write ops are displayed via FileContentBlock (backend emits file-content-* events)
-
-        const FILE_WRITE_OPS = new Set(['write_file', 'create_file', 'append_to_file']);
-
         const items = Array.isArray(data) ? data : [data];
 
         if (!Array.isArray(items)) {
@@ -229,8 +225,6 @@ export default function App() {
           }
 
           const toolName = item.tool || item.functionName || item.name;
-
-          if (FILE_WRITE_OPS.has(toolName)) continue;
 
           // Check if a 'generating' card already exists for this tool — update it instead of duplicating
 
@@ -296,8 +290,6 @@ export default function App() {
 
         console.log('[App] mcp-tool-results:', JSON.stringify(data).substring(0, 200));
 
-        const FILE_WRITE_OPS_R = new Set(['write_file', 'create_file', 'append_to_file']);
-
         const results = Array.isArray(data) ? data : [data];
 
         if (!Array.isArray(results)) {
@@ -319,8 +311,6 @@ export default function App() {
           }
 
           const name = item.tool || item.functionName || item.name;
-
-          if (FILE_WRITE_OPS_R.has(name)) continue;
 
           s.updateStreamingToolCall(name, {
 
@@ -464,13 +454,42 @@ export default function App() {
 
         break;
 
-      case 'model-loaded':
+      case 'model-loaded': {
 
         s.setModelState({ modelLoaded: true, modelLoading: false, modelInfo: data });
 
-        s.addNotification({ type: 'info', message: `Model loaded: ${data?.name || 'unknown'} — ${(data?.contextSize || 0).toLocaleString()} tokens context` });
+        if (data?.runtimeThinkingMode != null) {
+          const cur = useAppStore.getState().settings;
+          if (cur.thinkingMode !== data.runtimeThinkingMode) {
+            const next = { ...cur, thinkingMode: data.runtimeThinkingMode };
+            try { localStorage.setItem('guIDE-settings', JSON.stringify(next)); } catch (_) {}
+            useAppStore.setState({
+              settings: next,
+              settingsSkipDebounceUntil: Date.now() + 2000,
+            });
+            lastSyncedSettingsJsonRef.current = JSON.stringify(next);
+          }
+        }
+
+        const layerStr = typeof data?.gpuLayers === 'number' && data?.totalLayers
+          ? `${data.gpuLayers}/${data.totalLayers} GPU layers`
+          : typeof data?.gpuLayers === 'number'
+            ? `${data.gpuLayers} GPU layers`
+            : '';
+        const vramStr = typeof data?.vramFreeAfterLoadGB === 'number'
+          ? `${data.vramFreeAfterLoadGB} GB VRAM free after load`
+          : '';
+        const ctxCapStr = typeof data?.contextPctOfCap === 'number'
+          ? `${data.contextPctOfCap}% of context cap used`
+          : '';
+        const extras = [layerStr, vramStr, ctxCapStr].filter(Boolean).join(' · ');
+        s.addNotification({
+          type: 'info',
+          message: `Model loaded: ${data?.name || 'unknown'} — ${(data?.contextSize || 0).toLocaleString()} ctx${extras ? ` · ${extras}` : ''}`,
+        });
 
         break;
+      }
 
       case 'model-loading':
 
@@ -798,7 +817,7 @@ export default function App() {
 
     if (settingsJson === lastSyncedSettingsJsonRef.current) return;
 
-
+    if ((s.settingsSkipDebounceUntil || 0) > Date.now()) return;
 
     s.setSettingsSyncState({ status: 'saving', error: null, at: s.settingsLastSyncedAt });
 

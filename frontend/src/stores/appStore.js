@@ -1818,6 +1818,9 @@ const useAppStore = create((set, get) => ({
 
   settingsLastSyncedAt: null,
 
+  /** Skip App.jsx debounced settings POST until this timestamp (after updateSetting or model-load sync). */
+  settingsSkipDebounceUntil: 0,
+
   setSettingsSyncState: (state) => set({
 
     settingsSyncStatus: state.status ?? 'idle',
@@ -1849,7 +1852,7 @@ const useAppStore = create((set, get) => ({
     } catch (e) {
       _uiLog(`updateSetting localStorage ERROR ${e.message}`);
     }
-    set({ settings: next });
+    set({ settings: next, settingsSkipDebounceUntil: Date.now() + 2000 });
     get().setSettingsSyncState({ status: 'saving', at: Date.now() });
     _uiLog(`updateSetting before fetch POST key=${key}`);
     return fetch('/api/settings', {

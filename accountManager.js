@@ -20,7 +20,8 @@ const EventEmitter = require('events');
 
 // ─── Constants ───────────────────────────────────────────
 
-const API_BASE = 'https://api.graysoft.dev';
+// api.graysoft.dev has no DNS record; backend is served under graysoft.dev/api (see Cloudflare).
+const API_BASE = 'https://graysoft.dev/api';
 const OAUTH_REDIRECT_BASE = 'https://graysoft.dev/auth/callback';
 
 class AccountManager extends EventEmitter {
@@ -135,6 +136,7 @@ class AccountManager extends EventEmitter {
       state,
       machineId: this._machineId,
       redirect: OAUTH_REDIRECT_BASE,
+      client: 'guide-desktop',
     });
 
     return {
@@ -304,4 +306,4 @@ class AccountManager extends EventEmitter {
   }
 }
 
-module.exports = { AccountManager };
+module.exports = { AccountManager, API_BASE, OAUTH_REDIRECT_BASE };

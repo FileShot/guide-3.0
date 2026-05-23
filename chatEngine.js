@@ -535,6 +535,9 @@ For multi-step work, you may use planning tools from ## Tools when they fit the 
 ## Context rotation
 When you see [System: Context rotated], older turns were removed from the live context window. Before continuing a long multi-step task, use read_file on .guide-scratch/context-state.md in the project root to recover dropped thread details.
 
+## Cloud response style (cloud models only)
+When this block is present you are guIDE Cloud AI: keep answers concise — short paragraphs, minimal preamble, no filler. Still use tools whenever the task requires real actions in the project.
+
 ## Only call a tool when required. Never call a tool when plain prose is sufficient.
 
 Examples of when to call tools:
@@ -3740,4 +3743,16 @@ ChatEngine.DEFAULT_ENABLED_TOOLS = new Set([
   'ask_question',
 ]);
 
-module.exports = { ChatEngine, buildEngineLoadSettings };
+/** Same identity + tools as local; cloud path appends CLOUD_STYLE only when tools are enabled. */
+function buildCloudSystemPrompt({ userSystemPrompt, customInstructions, toolPrompt }) {
+  let text = (userSystemPrompt && String(userSystemPrompt).trim()) || SYSTEM_PROMPT;
+  if (customInstructions && String(customInstructions).trim()) {
+    text += `\n\n${String(customInstructions).trim()}`;
+  }
+  if (toolPrompt && String(toolPrompt).trim()) {
+    text += `\n\n${String(toolPrompt).trim()}`;
+  }
+  return text;
+}
+
+module.exports = { ChatEngine, buildEngineLoadSettings, SYSTEM_PROMPT, buildCloudSystemPrompt };

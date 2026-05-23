@@ -184,6 +184,18 @@ const log = require('./logger');
 log.installConsoleIntercepts();
 
 const { ChatEngine, buildEngineLoadSettings } = require('./chatEngine');
+const { resolveRuntimeDefaultsForModel } = require('./modelRuntimeDefaults');
+
+/** Apply per-model runtime defaults (e.g. GLM-4.6V → thinking off) before load. */
+function applyModelRuntimeDefaults(modelPath) {
+  const { thinkingMode, reason } = resolveRuntimeDefaultsForModel(modelPath);
+  const prev = settingsManager.get('thinkingMode');
+  if (thinkingMode !== prev) {
+    settingsManager.set('thinkingMode', thinkingMode);
+    settingsManager.flush();
+    console.log(`[Settings] model runtime default: thinkingMode "${prev}" -> "${thinkingMode}" (${reason}) file=${path.basename(modelPath)}`);
+  }
+}
 const { MCPToolServer } = require('./mcpToolServer');
 const { ModelManager } = require('./modelManager');
 const { MemoryStore } = require('./memoryStore');
@@ -191,6 +203,8 @@ const { LongTermMemory } = require('./longTermMemory');
 const { RulesManager } = require('./rulesManager');
 const { SessionStore } = require('./sessionStore');
 const { CloudLLMService } = require('./cloudLLMService');
+const { runCloudAgenticChat } = require('./cloudAgenticChat');
+const { runOAuthInWindow } = require('./oauthFlow');
 const { SettingsManager } = require('./settingsManager');
 const { GitManager } = require('./gitManager');
 const { BrowserManager } = require('./browserManager');
@@ -336,7 +350,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
   const cloudProvider = chatContext?.cloudProvider;
   const cloudModel = chatContext?.cloudModel;
 
-  // ── Cloud provider path ──────────────────────────────────────────────
+  // ── Cloud provider path (agentic tools + same system/tool prompt as local) ──
   if (cloudProvider) {
     try {
       console.log(`[electron-main] ai-chat: cloud path provider=${cloudProvider}`);
@@ -345,34 +359,59 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       const attachments = Array.isArray(chatContext?.attachments) ? chatContext.attachments : [];
       const images = attachments.filter(a => (a.mimeType || a.type || '').startsWith('image/'));
 
-      // Build conversation history from chatMessages for context continuity
       const conversationHistory = [];
       const chatMsgs = chatContext?.chatMessages || [];
-      for (const m of chatMsgs) {
-        if (m.role === 'user' || m.role === 'assistant') {
-          conversationHistory.push({ role: m.role, content: m.content });
-        }
+      const userText = String(userMessage).trim();
+      for (let i = 0; i < chatMsgs.length; i++) {
+        const m = chatMsgs[i];
+        if (m.role !== 'user' && m.role !== 'assistant') continue;
+        const isLast = i === chatMsgs.length - 1;
+        if (isLast && m.role === 'user' && String(m.content || '').trim() === userText) continue;
+        conversationHistory.push({ role: m.role, content: m.content });
       }
 
-      const result = await cloudLLM.generate(userMessage, {
-        provider: cloudProvider,
-        model: cloudModel,
-        systemPrompt: settings.systemPrompt || undefined,
-        temperature: settings.temperature,
-        maxTokens: settings.maxTokens || -1,
-        topP: settings.topP,
+      const currentFile = chatContext?.currentFile;
+      let effectiveMessage = userMessage;
+      if (currentFile?.path && currentFile?.content != null) {
+        const MAX_FILE_CONTEXT = 4000;
+        const truncated = currentFile.content.length > MAX_FILE_CONTEXT
+          ? currentFile.content.slice(0, MAX_FILE_CONTEXT) + '\n… [truncated — use read_file to see the full file]'
+          : currentFile.content;
+        effectiveMessage = userMessage + `\n\n[Current file: ${currentFile.path}]\n${truncated}`;
+      }
+
+      const askOnly = !!(settings.askOnly);
+      const planMode = !!(settings.planMode);
+      const enableSubAgents = !!(settings.enableSubAgents);
+      const executeToolFn = async (toolName, params) => {
+        if (toolName === 'spawn_subagent') {
+          return { success: false, error: 'Sub-agents require a loaded local model. Switch to local or disable sub-agents.' };
+        }
+        return await mcpToolServer.executeTool(toolName, params);
+      };
+
+      const result = await runCloudAgenticChat({
+        cloudLLM,
+        mcpToolServer,
+        ChatEngine,
+        userMessage: effectiveMessage,
+        cloudProvider,
+        cloudModel,
+        settings: { ...settings, askOnly, planMode, enableSubAgents, toolsEnabled: settings.toolsEnabled !== false },
         conversationHistory,
         images,
+        executeToolFn,
         onToken: (token) => _send('llm-token', token),
         onThinkingToken: (token) => _send('llm-thinking-token', token),
-        stream: true,
+        onStreamEvent: (eventName, data) => _send(eventName, data),
+        getCancelled: () => agenticCancelled,
       });
 
       if (result?.isQuotaError) {
         return { isQuotaError: true, error: '__QUOTA_EXCEEDED__' };
       }
 
-      return { text: result.text || '', toolCallCount: 0 };
+      return { text: result.text || '', toolCallCount: result.toolCallCount || 0 };
     } catch (err) {
       console.error(`[electron-main] ai-chat cloud ERROR: ${err.message}`);
       if (err.isQuotaError) return { isQuotaError: true, error: '__QUOTA_EXCEEDED__' };
@@ -572,12 +611,14 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/models/load' && method === 'POST') {
       const { modelPath } = body;
       if (!modelPath) return { _status: 400, error: 'modelPath required' };
+      applyModelRuntimeDefaults(modelPath);
       const loadSettings = buildEngineLoadSettings(settingsManager.getAll());
       console.log(`[Settings] model-load START path=${modelPath} thinkingMode=${loadSettings.thinkingMode} toolsEnabled=${settingsManager.get('toolsEnabled')} enableThinking=${loadSettings.enableThinking}`);
       try { llmEngine.cancelGeneration('model-load'); } catch (_) {}
       _send('model-loading', { path: modelPath });
       await llmEngine.initialize(modelPath, loadSettings);
       const info = llmEngine.modelInfo;
+      if (info) info.runtimeThinkingMode = settingsManager.get('thinkingMode');
       settingsManager.set('lastModelPath', modelPath);
       _send('model-loaded', info);
       console.log(`[Settings] model-load DONE path=${modelPath} thinkingMode=${settingsManager.get('thinkingMode')}`);
@@ -1057,7 +1098,24 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         return { success: false, error: 'Invalid OAuth provider' };
       }
       const { url: oauthUrl } = accountManager.getOAuthURL(provider);
-      return { success: true, url: oauthUrl };
+      const nav = await runOAuthInWindow({ parent: mainWindow, oauthUrl });
+      if (!nav.success) {
+        return { success: false, error: nav.error || 'Sign-in cancelled' };
+      }
+      const oauthResult = await accountManager.completeOAuth(nav.code, nav.state);
+      if (!oauthResult.success) {
+        return oauthResult;
+      }
+      const activateResult = await licenseManager.activateAccount();
+      if (!activateResult.success) {
+        console.warn('[OAuth] signed in but account-activate:', activateResult.error);
+      }
+      return {
+        success: true,
+        user: oauthResult.user,
+        licenseActivated: activateResult.success,
+        licenseError: activateResult.success ? undefined : activateResult.error,
+      };
     }
     if (p === '/api/license/deactivate' && method === 'POST') {
       licenseManager.deactivate();
@@ -1096,8 +1154,12 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (!provider || !['google', 'github'].includes(provider)) {
         return { success: false, error: 'Invalid OAuth provider' };
       }
-      const { url: oauthUrl, state } = accountManager.getOAuthURL(provider);
-      return { success: true, url: oauthUrl, state };
+      const { url: oauthUrl } = accountManager.getOAuthURL(provider);
+      const nav = await runOAuthInWindow({ parent: mainWindow, oauthUrl });
+      if (!nav.success) {
+        return { success: false, error: nav.error || 'Sign-in cancelled' };
+      }
+      return await accountManager.completeOAuth(nav.code, nav.state);
     }
     if (p === '/api/account/oauth/callback' && method === 'POST') {
       const { code, state } = body;
@@ -1523,6 +1585,7 @@ app.whenReady().then(async () => {
       const target = lastModel || modelManager.getDefaultModel();
       if (target) {
         console.log(`[Main] Auto-loading ${lastModel ? 'last-used' : 'default'} model: ${target.name}`);
+        applyModelRuntimeDefaults(target.path);
         llmEngine.initialize(target.path, buildEngineLoadSettings(settingsManager.getAll())).catch(e => console.error(`[Main] Auto-load failed: ${e.message}`));
       }
     }

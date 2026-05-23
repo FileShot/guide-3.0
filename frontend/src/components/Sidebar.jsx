@@ -1554,7 +1554,7 @@ function SettingsPanel() {
             <option value="off">off — Jinja, thinking disabled</option>
           </select>
           <p className="text-[10px] text-vsc-text-muted mt-1">
-            C = GLM default (forces model into thinking state). B = raw Jinja wrapper. auto = Qwen/Phi path. off = disable thinking via template.
+            Resets on model load: GLM-4.6V → off; others → auto. C/B = Jinja paths. auto = Qwen/GPT/Phi. off = template thinking disabled.
           </p>
         </div>
         <SettingToggle label="Filter Thinking Tokens" value={settings.enableThinkingFilter}

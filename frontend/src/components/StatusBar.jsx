@@ -265,6 +265,8 @@ export default function StatusBar() {
               gpuLayerOffload !== undefined
                 ? ` | ${gpuLayerOffload}${gpuTotalLayers != null ? `/${gpuTotalLayers}` : ''} layer(s) on GPU`
                 : ''
+            }${modelInfo?.vramFreeAfterLoadGB != null ? ` | ${modelInfo.vramFreeAfterLoadGB}GB free after model load` : ''}${
+              modelInfo?.contextPctOfCap != null ? ` | ctx ${modelInfo.contextPctOfCap}% of cap` : ''
             }${vramWarning ? ` | ${vramWarning}` : ''}`}
             onClick={() => vramWarning && clearVramWarning()}
           >
@@ -274,6 +276,7 @@ export default function StatusBar() {
             {gpuLayerOffload !== undefined && (
               <span className="ml-1 text-vsc-text-dim/70">
                 {gpuLayerOffload}{gpuTotalLayers != null ? `/${gpuTotalLayers}` : ''} layers
+                {modelInfo?.vramFreeAfterLoadGB != null ? ` · ${modelInfo.vramFreeAfterLoadGB}GB free` : ''}
               </span>
             )}
           </div>

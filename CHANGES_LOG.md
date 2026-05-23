@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-05-23 — v0.3.104 — Cloud auth, Stripe upgrades, agentic cloud chat
+
+### Change
+- **accountManager.js** / **licenseManager.js**: API base `https://graysoft.dev/api`; OAuth redirect `https://graysoft.dev/auth/callback`.
+- **oauthFlow.js**: In-app OAuth window; captures callback and completes sign-in on desktop.
+- **electron-main.js**: OAuth IPC (`/api/license/oauth`, `/api/account/oauth/start`); cloud chat via `runCloudAgenticChat`.
+- **cloudAgenticChat.js**: Agentic cloud loop with MCP tools and `buildCloudSystemPrompt` (parity with local).
+- **licenseManager.js**: Stripe checkout with Bearer token; `team` → `unlimited`; open checkout URL from response.
+- **AccountPanel.jsx**: Await OAuth result (no status polling).
+- **ChatPanel.jsx**: Quota upgrade opens Stripe URL via `openExternal`; passes `toolsEnabled` for cloud chat.
+
+---
+
+## 2026-05-23 — v0.3.102 — Per-model thinking defaults; native tool UI; VRAM display
+
+### Change
+- **modelRuntimeDefaults.js**: On model load, set `thinkingMode` from filename — GLM-4.6V Flash → `off`; all others → `auto` (not blanket all GLM).
+- **electron-main.js**: `applyModelRuntimeDefaults()` before every load; sync `runtimeThinkingMode` to renderer on `model-loaded`.
+- **chatEngine.js**: Native FC emits `tool-generating` before `tool-executing`; `modelInfo` includes `vramFreeAfterLoadGB`, `contextPctOfCap`.
+- **App.jsx**: Show `write_file` in tool cards (same as prose tools); skip debounced settings POST for 2s after `updateSetting`/model sync.
+- **StatusBar**: Tooltip/label shows VRAM free after load from `modelInfo`.
+
+### Docs
+- `PHASE_B_CONTEXT_ERROR_LAYMAN.md` — Phase B on hold; layman explanation only.
+
+---
+
 ## 2026-05-22 — v0.3.101 — Fix blank window on settings toggle (nested Zustand set)
 
 ### Change
