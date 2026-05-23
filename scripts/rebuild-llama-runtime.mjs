@@ -176,6 +176,7 @@ if (legacyMode) {
   // npm ci --ignore-scripts skips postinstall; fetch the release node-llama-cpp expects (b9253 layout).
   runNlc(['source', 'download', '--release', RELEASE, '--skipBuild', '--gpu', gpu], { CI: 'true' });
   run('node', [path.join('scripts', 'patch-llama-cmake-common-link.mjs')]);
+  run('node', [path.join('scripts', 'patch-llama-addon-api.mjs')]);
 } else {
   run('node', [path.join('scripts', 'download-llama-cpp-tarball.mjs')], { LLAMA_CPP_RELEASE: RELEASE });
 }
