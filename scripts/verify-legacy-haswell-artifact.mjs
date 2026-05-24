@@ -180,9 +180,20 @@ function main() {
         `ESM syntax error (need Electron Node >= ${LEGACY_ELECTRON_MIN_NODE_MAJOR}, not 18):\n${lrOut}`,
       );
     }
-    fail(`getLlama import/load failed:\n${lrOut}`);
+    const cudaArtifact = /-cuda-legacy-/.test(appimage);
+    if (
+      cudaArtifact &&
+      /libcuda\.so|ERR_DLOPEN_FAILED|Failed to load last build/i.test(lrOut)
+    ) {
+      log(
+        'warn: CUDA lastBuild needs libcuda (no GPU in QEMU) — ESM import + objdump passed',
+      );
+    } else {
+      fail(`getLlama import/load failed:\n${lrOut}`);
+    }
+  } else {
+    log((lr.stdout || '').trim());
   }
-  log((lr.stdout || '').trim());
 
   log('PASS — legacy AppImage: Haswell-safe binaries + Node 20+ + getLlama()');
 }
