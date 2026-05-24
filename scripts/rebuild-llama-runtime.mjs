@@ -34,10 +34,19 @@ function winCxxFlags(archFlag = '') {
   return archFlag ? `${base} ${archFlag}` : base;
 }
 
-/** --ciMode turns on GGML_BACKEND_DL + CPU_ALL_VARIANTS, which breaks -lcommon on Linux source builds. */
+/**
+ * --ciMode turns on GGML_BACKEND_DL + CPU_ALL_VARIANTS, which breaks -lcommon on Linux source builds.
+ * SOURCE_DATE_EPOCH is checked by ggml/CMakeLists.txt:
+ *   if (CMAKE_CROSSCOMPILING OR DEFINED ENV{SOURCE_DATE_EPOCH})
+ *       set(GGML_NATIVE_DEFAULT OFF)
+ * Setting it forces GGML_NATIVE_DEFAULT=OFF so GGML cannot auto-detect and compile post-Haswell
+ * instructions (AVX-512, etc.) from the CI runner's CPU.  The direct cmake FORCE patch in
+ * patch-llama-cmake-native-off.mjs is the belt — this env var is the suspenders.
+ */
 const LEGACY_SOURCE_OPTS = {
   NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_BACKEND_DL: 'OFF',
   NODE_LLAMA_CPP_CMAKE_OPTION_DGGML_CPU_ALL_VARIANTS: 'OFF',
+  SOURCE_DATE_EPOCH: '1',
 };
 
 const GPU_FOR_PROFILE = {
