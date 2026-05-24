@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /**
- * Download an Electron release and verify the binary runs under QEMU Haswell CPU model.
- * Legacy AppImages must not ship electron@34 (built for modern host CPUs).
+ * Download legacy Electron (Node 20+, not v34 Haswell-SIGILL) and verify under QEMU Haswell.
  */
 'use strict';
 
@@ -9,20 +8,22 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  LEGACY_ELECTRON_CANDIDATES,
+  LEGACY_ELECTRON_MIN_NODE_MAJOR,
+} from './lib/legacy-electron.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const OUT_DIR = path.join(ROOT, 'build', 'electron-legacy-dist');
 const CACHE = path.join(ROOT, 'build', 'electron-legacy-cache');
 
-/** Oldest reasonably modern Electron that still runs guIDE; verified via QEMU in CI. */
-const ELECTRON_VERSION = process.env.LEGACY_ELECTRON_VERSION || '28.3.3';
 const QEMU_CPU =
   process.env.LEGACY_QEMU_CPU ||
   'Haswell-noTSX,+sse4.2,+avx,+avx2,+fma,+popcnt';
 
 const CANDIDATES = (
-  process.env.LEGACY_ELECTRON_CANDIDATES || '28.3.3,26.6.10,22.3.27'
+  process.env.LEGACY_ELECTRON_CANDIDATES || LEGACY_ELECTRON_CANDIDATES.join(',')
 )
   .split(',')
   .map((s) => s.trim())
@@ -58,15 +59,24 @@ function verifyElectronHaswell(electronBin, libDir) {
     return;
   }
   log(`QEMU Haswell smoke test: ${electronBin}`);
+  const checkNode = [
+    '-e',
+    `const m=+process.versions.node.split(".")[0]; if(m<${LEGACY_ELECTRON_MIN_NODE_MAJOR}){process.exit(2)}; console.log("node",process.versions.node,"electron",process.versions.electron)`,
+  ];
   const r = spawnSync(
     'qemu-x86_64-static',
-    ['-cpu', QEMU_CPU, electronBin, '--no-sandbox', '--version'],
+    ['-cpu', QEMU_CPU, electronBin, ...checkNode],
     {
       encoding: 'utf8',
       timeout: 120_000,
-      env: { ...process.env, LD_LIBRARY_PATH: libDir },
+      env: { ...process.env, LD_LIBRARY_PATH: libDir, ELECTRON_RUN_AS_NODE: '1' },
     },
   );
+  if (r.status === 2) {
+    throw new Error(
+      `Electron bundles Node ${(r.stderr || r.stdout || '').trim()} — need Node >= ${LEGACY_ELECTRON_MIN_NODE_MAJOR}`,
+    );
+  }
   if (r.status !== 0) {
     console.error(r.stdout);
     console.error(r.stderr);

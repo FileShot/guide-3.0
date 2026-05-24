@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 /**
- * Gate legacy Linux AppImages before release (Haswell SIGILL bug):
- * - No AVX-512 in packaged Electron shell + llama-addon
- * - No npm @node-llama-cpp prebuilts or Playwright in bundle
- * - QEMU Haswell runs packaged ELF + loads node-llama-cpp (CPU)
- *
- * Run under xvfb-run in CI so Electron does not die on missing DISPLAY.
+ * Gate legacy Linux AppImages before release:
+ * - No AVX-512 in shell/llama binaries (Haswell SIGILL)
+ * - Electron bundles Node 20+ (node-llama-cpp ESM / import attributes)
+ * - QEMU Haswell runs real getLlama() import path (same as /api/model/load)
  */
 'use strict';
 
@@ -13,6 +11,7 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { LEGACY_ELECTRON_MIN_NODE_MAJOR } from './lib/legacy-electron.mjs';
 import {
   appImageLibraryPath,
   findAppImageBinary,
@@ -95,6 +94,10 @@ function isSigill(output) {
   return /invalid opcode|SIGILL|signal 4|Illegal instruction/i.test(output);
 }
 
+function isEsmSyntaxError(output) {
+  return /Unexpected token ['']with['']|import attributes|SyntaxError/i.test(output);
+}
+
 function main() {
   const appimage = parseArgs();
   if (!fs.existsSync(appimage)) fail(`missing ${appimage}`);
@@ -141,40 +144,43 @@ function main() {
     fail('playwright packaged (modern Chromium → SIGILL on Haswell)');
   }
 
-  log('QEMU Haswell: packaged shell (ELECTRON_RUN_AS_NODE, no GUI)');
-  const ev = qemuRun(
+  log('QEMU Haswell: require Node 20+ in packaged Electron');
+  const nv = qemuRun(
     shellBinary,
-    ['-e', 'console.log("ok", process.versions.electron)'],
+    [
+      '-e',
+      `const m=+process.versions.node.split(".")[0]; console.log(process.versions.node); if(m<${LEGACY_ELECTRON_MIN_NODE_MAJOR})process.exit(2)`,
+    ],
     libPath,
     { ELECTRON_RUN_AS_NODE: '1' },
   );
-  const evOut = `${ev.stdout}\n${ev.stderr}`;
-  if (ev.status !== 0) {
-    if (isSigill(evOut)) fail(`packaged shell SIGILL under Haswell QEMU:\n${evOut}`);
-    fail(`packaged shell failed under Haswell QEMU:\n${evOut}`);
+  const nvOut = `${nv.stdout}\n${nv.stderr}`;
+  if (nv.status === 2) {
+    fail(`packaged Electron has Node < ${LEGACY_ELECTRON_MIN_NODE_MAJOR} (node-llama-cpp ESM will break): ${nvOut}`);
   }
-  log((ev.stdout || '').trim());
+  if (nv.status !== 0) {
+    if (isSigill(nvOut)) fail(`SIGILL checking Node version:\n${nvOut}`);
+    fail(`Node version check failed:\n${nvOut}`);
+  }
+  log(`node ${(nv.stdout || '').trim()}`);
 
-  // CJS test avoids ESM 'with' syntax (cli-spinners dep of node-llama-cpp, needs Node 20+,
-  // but Electron 28 ships Node 18). Directly loads the native .node addon.
-  const testScript = path.join(appDir, 'build', 'test-load-llama-legacy.cjs');
+  const testScript = path.join(appDir, 'build', 'test-load-llama-legacy.mjs');
   if (!fs.existsSync(testScript)) fail(`missing ${testScript}`);
-  log('QEMU Haswell: load llama-addon.node (CJS direct require)');
+  log('QEMU Haswell: import getLlama from node-llama-cpp (real model-load path)');
   const lr = qemuRun(shellBinary, [testScript], libPath, { ELECTRON_RUN_AS_NODE: '1' });
   const lrOut = `${lr.stdout}\n${lr.stderr}`;
   if (lr.status !== 0) {
-    if (isSigill(lrOut)) fail(`llama-addon SIGILL under Haswell QEMU:\n${lrOut}`);
-    const cudaArtifact = /-cuda-legacy-/.test(appimage);
-    if (cudaArtifact && /libcuda|nvidia|CUDA driver/i.test(lrOut)) {
-      log('warn: no NVIDIA in QEMU; objdump already passed on llama-addon');
-    } else {
-      fail(`node-llama-cpp load under Haswell QEMU:\n${lrOut}`);
+    if (isSigill(lrOut)) fail(`SIGILL in getLlama path:\n${lrOut}`);
+    if (isEsmSyntaxError(lrOut)) {
+      fail(
+        `ESM syntax error (need Electron Node >= ${LEGACY_ELECTRON_MIN_NODE_MAJOR}, not 18):\n${lrOut}`,
+      );
     }
-  } else {
-    log((lr.stdout || '').trim());
+    fail(`getLlama import/load failed:\n${lrOut}`);
   }
+  log((lr.stdout || '').trim());
 
-  log('PASS — legacy AppImage cleared for Haswell-class CPUs');
+  log('PASS — legacy AppImage: Haswell-safe binaries + Node 20+ + getLlama()');
 }
 
 main();
