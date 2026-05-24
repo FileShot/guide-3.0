@@ -187,8 +187,8 @@ if (!legacyMode) {
   process.exit(1);
 }
 
-// npm ci --ignore-scripts skips postinstall; fetch the release node-llama-cpp expects (b9253 layout).
-runNlc(['source', 'download', '--release', RELEASE, '--skipBuild', '--gpu', gpu], { CI: 'true' });
+// Tarball via curl — avoids GitHub REST rate limits when many CI jobs run in parallel.
+run('node', [path.join('scripts', 'download-llama-cpp-tarball.mjs')]);
 run('node', [path.join('scripts', 'patch-llama-cmake-common-link.mjs')]);
 run('node', [path.join('scripts', 'patch-llama-addon-api.mjs')]);
 // After source download: ggml/CMakeLists.txt exists. Force GGML_NATIVE=OFF before cmake configure.

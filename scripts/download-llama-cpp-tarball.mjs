@@ -12,7 +12,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const RELEASE = process.env.LLAMA_CPP_RELEASE || 'b8954';
+const RELEASE = process.env.LLAMA_CPP_RELEASE || 'b9253';
 const REPO = 'ggml-org/llama.cpp';
 const LLAMA_DIR = path.join(ROOT, 'node_modules', 'node-llama-cpp', 'llama');
 const LLAMA_CPP_DIR = path.join(LLAMA_DIR, 'llama.cpp');

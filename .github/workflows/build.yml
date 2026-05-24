@@ -10,6 +10,11 @@ on:
         description: 'Version override (e.g. 3.0.0) — leave blank to use package.json'
         required: false
 
+# One Build & Release at a time; new runs queue (do not cancel an in-flight release).
+concurrency:
+  group: build-release-${{ github.repository }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -296,6 +301,7 @@ jobs:
         run: node scripts/prepare-legacy-windows.mjs
         env:
           LLAMA_CPP_RELEASE: b9253
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -359,6 +365,7 @@ jobs:
         run: node scripts/prepare-legacy-windows.mjs --cuda
         env:
           LLAMA_CPP_RELEASE: b9253
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -409,6 +416,7 @@ jobs:
         run: node scripts/prepare-legacy-linux.mjs
         env:
           LLAMA_CPP_RELEASE: b9253
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Assert legacy Electron <= 22 (blocks silent 30.x ship like v0.3.128)
         run: node scripts/assert-legacy-electron-version.mjs
@@ -491,6 +499,7 @@ jobs:
         run: node scripts/prepare-legacy-linux.mjs --cuda
         env:
           LLAMA_CPP_RELEASE: b9253
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Assert legacy Electron <= 22 (blocks silent 30.x ship like v0.3.128)
         run: node scripts/assert-legacy-electron-version.mjs
