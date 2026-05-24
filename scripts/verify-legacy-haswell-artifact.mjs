@@ -75,6 +75,22 @@ function criticalArtifactPaths(shellBinary, appDir, root) {
     const p = path.join(root, name);
     if (fs.existsSync(p)) paths.push(p);
   }
+  // Scan ALL .so files under the llama localBuilds/bin directory.
+  // libggml-cpu.so is built separately from llama-addon.node and loaded at runtime
+  // via dlopen during createContext — it does NOT appear in llama-addon.node's objdump
+  // but it executes on the host CPU and caused v0.3.132/v0.3.134 SIGILL at offset 0x37e3b4f.
+  const llamaBin = path.join(appDir, 'node_modules', 'node-llama-cpp', 'llama', 'localBuilds');
+  if (fs.existsSync(llamaBin)) {
+    const stack = [llamaBin];
+    while (stack.length) {
+      const d = stack.pop();
+      for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
+        const full = path.join(d, ent.name);
+        if (ent.isDirectory()) stack.push(full);
+        else if (ent.name.endsWith('.so') || ent.name.endsWith('.so.1')) paths.push(full);
+      }
+    }
+  }
   return [...new Set(paths.filter((p) => fs.existsSync(p)))];
 }
 
@@ -156,11 +172,16 @@ function main() {
 
   const critical = criticalArtifactPaths(shellBinary, appDir, root);
   log(`objdump: post-Haswell instruction scan (${critical.length} binaries)`);
+  for (const p of critical) {
+    const rel = path.relative(root, p);
+    log(`  scanning: ${rel}`);
+  }
   try {
     assertHaswellSafeBinaries(critical, 'packaged');
   } catch (e) {
     fail(e.message);
   }
+  log('objdump: all binaries (incl. libggml-cpu.so) Haswell-safe');
 
   if (findFiles(appDir, 'llama-addon.node').length === 0) {
     fail('no llama-addon.node in package');

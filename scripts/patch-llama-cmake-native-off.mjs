@@ -27,6 +27,14 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NEEDLE = `option(GGML_NATIVE "ggml: optimize the build for the current system"`;
 const INJECTION = `# guIDE legacy patch: force off — CI runner may have AVX-512, Haswell does not\nset(GGML_NATIVE OFF CACHE BOOL "ggml: optimize the build for the current system" FORCE)\n`;
 
+// ggml-cpu/CMakeLists.txt builds libggml-cpu.so as a dynamically loaded backend.
+// It inherits arch flags from the parent scope. If GGML_NATIVE leaks through, the
+// CI runner's CPU feature detection compiles AVX-512 into libggml-cpu.so which then
+// SIGILLs on Haswell at createContext time (not at getLlama() time, so CI missed it).
+// Patch: insert set(GGML_NATIVE OFF CACHE BOOL "" FORCE) at the top of each ggml-cpu cmake.
+const CPU_NEEDLE = `function(ggml_add_cpu_backend_features`;
+const CPU_INJECTION = `# guIDE legacy patch: force GGML_NATIVE off in ggml-cpu variants\nset(GGML_NATIVE OFF CACHE BOOL "ggml: optimize the build for the current system" FORCE)\n`;
+
 function log(msg) {
   console.log(`[patch-llama-cmake-native-off] ${msg}`);
 }
@@ -34,6 +42,11 @@ function log(msg) {
 const CANDIDATES = [
   path.join(ROOT, 'node_modules', 'node-llama-cpp', 'llama', 'ggml', 'CMakeLists.txt'),
   path.join(ROOT, 'node_modules', 'node-llama-cpp', 'llama', 'llama.cpp', 'ggml', 'CMakeLists.txt'),
+];
+
+const CPU_CANDIDATES = [
+  path.join(ROOT, 'node_modules', 'node-llama-cpp', 'llama', 'ggml', 'src', 'ggml-cpu', 'CMakeLists.txt'),
+  path.join(ROOT, 'node_modules', 'node-llama-cpp', 'llama', 'llama.cpp', 'ggml', 'src', 'ggml-cpu', 'CMakeLists.txt'),
 ];
 
 let patched = 0;
@@ -75,4 +88,46 @@ if (patched === 0) {
   console.error('[patch-llama-cmake-native-off] FAIL: no ggml CMakeLists.txt patched');
   process.exit(1);
 }
-log(`done — ${patched} file(s) patched`);
+
+// Also patch ggml-cpu/CMakeLists.txt — this controls libggml-cpu.so, which is
+// dlopen'd at createContext() time and was the *actual* source of the Haswell SIGILL
+// (offset 0x37e3b4f in guide-ide process, caused by AVX-512 code in libggml-cpu.so).
+let cpuPatched = 0;
+for (const file of CPU_CANDIDATES) {
+  if (!fs.existsSync(file)) {
+    log(`cpu: skip (not found): ${file}`);
+    continue;
+  }
+  const real = fs.realpathSync(file);
+  if (seen.has(real)) {
+    log(`cpu: skip (symlink dupe): ${file}`);
+    continue;
+  }
+  seen.add(real);
+
+  const src = fs.readFileSync(file, 'utf8');
+  if (!src.includes(CPU_NEEDLE)) {
+    log(`cpu: skip (needle not found): ${file}`);
+    continue;
+  }
+  if (src.includes('guIDE legacy patch')) {
+    log(`cpu: already patched: ${file}`);
+    cpuPatched++;
+    continue;
+  }
+  const next = src.replace(CPU_NEEDLE, CPU_INJECTION + CPU_NEEDLE);
+  if (next === src) {
+    log(`cpu: WARN: replace produced no change in ${file}`);
+    continue;
+  }
+  fs.writeFileSync(file, next, 'utf8');
+  log(`cpu: patched: ${file}`);
+  cpuPatched++;
+}
+
+if (cpuPatched === 0) {
+  console.error('[patch-llama-cmake-native-off] FAIL: no ggml-cpu CMakeLists.txt patched (libggml-cpu.so would get native flags)');
+  process.exit(1);
+}
+
+log(`done — ${patched} ggml + ${cpuPatched} ggml-cpu file(s) patched`);
