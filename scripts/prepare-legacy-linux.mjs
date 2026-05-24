@@ -26,6 +26,7 @@ function run(script, args = []) {
 
 console.log(`[prepare-legacy-linux] cuda=${useCuda}`);
 run('fetch-legacy-electron.mjs');
+run('assert-legacy-electron-version.mjs');
 run('prepare-legacy-runtime.mjs', useCuda ? ['--cuda'] : []);
 run('rebuild-native-modules-legacy.mjs');
 console.log('[prepare-legacy-linux] done');

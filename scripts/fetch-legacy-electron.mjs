@@ -2,6 +2,8 @@
 /**
  * Download legacy Electron (Haswell-safe Chromium) and verify under QEMU Haswell.
  * Must run real `electron --version` — ELECTRON_RUN_AS_NODE does not execute the crashing paths.
+ *
+ * Only advances to a newer candidate on SIGILL. Config / Node gate failures abort (no silent fallback).
  */
 'use strict';
 
@@ -12,7 +14,7 @@ import { fileURLToPath } from 'url';
 import { assertHaswellSafeBinaries } from './lib/check-haswell-disallowed-insns.mjs';
 import {
   LEGACY_ELECTRON_CANDIDATES,
-  LEGACY_ELECTRON_MIN_NODE_MAJOR,
+  minNodeMajorForElectron,
 } from './lib/legacy-electron.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,6 +32,13 @@ const CANDIDATES = (
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+
+export class LegacyElectronSigillError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'LegacyElectronSigillError';
+  }
+}
 
 function log(msg) {
   console.log(`[fetch-legacy-electron] ${msg}`);
@@ -58,7 +67,7 @@ function isSigill(output, status) {
   );
 }
 
-function verifyElectronHaswell(electronBin, libDir) {
+function verifyElectronHaswell(electronBin, libDir, electronVersion) {
   if (process.platform !== 'linux') {
     log('skip QEMU Haswell test (non-linux host)');
     return;
@@ -83,13 +92,14 @@ function verifyElectronHaswell(electronBin, libDir) {
   );
   const out = `${ver.stdout}\n${ver.stderr}`;
   if (isSigill(out, ver.status)) {
-    throw new Error(`SIGILL under Haswell QEMU on --version:\n${out}`);
+    throw new LegacyElectronSigillError(`SIGILL under Haswell QEMU on --version:\n${out}`);
   }
   if (ver.status !== 0) {
     throw new Error(`electron --version failed under Haswell QEMU (exit ${ver.status}):\n${out}`);
   }
-  log(`QEMU ok: ${(ver.stdout || '').trim()}`);
+  log(`QEMU Chromium ok: ${(ver.stdout || '').trim()}`);
 
+  const minNode = minNodeMajorForElectron(electronVersion);
   const nv = spawnSync(
     'qemu-x86_64-static',
     [
@@ -97,7 +107,7 @@ function verifyElectronHaswell(electronBin, libDir) {
       QEMU_CPU,
       electronBin,
       '-e',
-      `const m=+process.versions.node.split(".")[0]; if(m<${LEGACY_ELECTRON_MIN_NODE_MAJOR})process.exit(2); console.log(process.versions.node)`,
+      `const m=+process.versions.node.split(".")[0]; console.log(process.versions.node); if(m<${minNode})process.exit(2)`,
     ],
     {
       encoding: 'utf8',
@@ -105,9 +115,16 @@ function verifyElectronHaswell(electronBin, libDir) {
       env: { ...process.env, LD_LIBRARY_PATH: libDir, ELECTRON_RUN_AS_NODE: '1' },
     },
   );
+  const nodeOut = `${nv.stdout}${nv.stderr}`.trim();
   if (nv.status === 2) {
-    throw new Error(`Node < ${LEGACY_ELECTRON_MIN_NODE_MAJOR}: ${nv.stdout}${nv.stderr}`);
+    throw new Error(
+      `Node runtime check failed for Electron ${electronVersion} (need Node >= ${minNode}, got ${nodeOut})`,
+    );
   }
+  if (nv.status !== 0) {
+    throw new Error(`Node version probe failed (exit ${nv.status}): ${nodeOut}`);
+  }
+  log(`bundled Node ok: ${nodeOut} (min ${minNode} for Electron ${electronVersion})`);
 }
 
 function fetchVersion(version) {
@@ -128,13 +145,13 @@ function fetchVersion(version) {
     throw new Error(`Missing ${electronBin} after extract`);
   }
   if (process.platform !== 'win32') fs.chmodSync(electronBin, 0o755);
-  verifyElectronHaswell(electronBin, OUT_DIR);
+  verifyElectronHaswell(electronBin, OUT_DIR, version);
   fs.writeFileSync(
     path.join(ROOT, 'build', 'legacy-electron-version.txt'),
     `${version}\n`,
     'utf8',
   );
-  log(`Ready: ${OUT_DIR} (Electron v${version})`);
+  log(`SELECTED Electron v${version} → ${OUT_DIR}`);
   return version;
 }
 
@@ -143,8 +160,16 @@ for (const version of CANDIDATES) {
     fetchVersion(version);
     process.exit(0);
   } catch (e) {
-    log(`Electron v${version} failed: ${e.message}`);
+    if (e instanceof LegacyElectronSigillError) {
+      log(`Electron v${version}: SIGILL on Haswell — trying newer Chromium`);
+      continue;
+    }
+    console.error(`[fetch-legacy-electron] Electron v${version} failed: ${e.message}`);
+    console.error(
+      '[fetch-legacy-electron] Aborting (no fallback). Chromium passed QEMU but was rejected, or download/verify failed.',
+    );
+    process.exit(1);
   }
 }
-console.error('[fetch-legacy-electron] No candidate Electron passed Haswell checks');
+console.error('[fetch-legacy-electron] All candidates SIGILL under Haswell QEMU');
 process.exit(1);

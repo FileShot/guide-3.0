@@ -410,6 +410,9 @@ jobs:
         env:
           LLAMA_CPP_RELEASE: b9253
 
+      - name: Assert legacy Electron <= 22 (blocks silent 30.x ship like v0.3.128)
+        run: node scripts/assert-legacy-electron-version.mjs
+
       - name: Install frontend dependencies
         run: npm ci
         working-directory: frontend
@@ -480,6 +483,9 @@ jobs:
         run: node scripts/prepare-legacy-linux.mjs --cuda
         env:
           LLAMA_CPP_RELEASE: b9253
+
+      - name: Assert legacy Electron <= 22 (blocks silent 30.x ship like v0.3.128)
+        run: node scripts/assert-legacy-electron-version.mjs
 
       - name: Install frontend dependencies
         run: npm ci

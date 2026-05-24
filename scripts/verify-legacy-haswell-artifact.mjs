@@ -12,7 +12,11 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { assertHaswellSafeBinaries } from './lib/check-haswell-disallowed-insns.mjs';
-import { LEGACY_ELECTRON_MIN_NODE_MAJOR } from './lib/legacy-electron.mjs';
+import {
+  LEGACY_ELECTRON_PREFER_MAX_MAJOR,
+  electronMajor,
+  minNodeMajorForElectron,
+} from './lib/legacy-electron.mjs';
 import {
   appImageLibraryPath,
   findAppImageBinary,
@@ -92,6 +96,21 @@ function isEsmSyntaxError(output) {
   return /Unexpected token ['']with['']|import attributes|SyntaxError/i.test(output);
 }
 
+function assertCliSpinnersPatched(appDir) {
+  const rels = [
+    'node_modules/node-llama-cpp/node_modules/cli-spinners/index.js',
+    'node_modules/cli-spinners/index.js',
+  ];
+  for (const rel of rels) {
+    const p = path.join(appDir, rel);
+    if (!fs.existsSync(p)) continue;
+    if (/with \{type: 'json'\}/.test(fs.readFileSync(p, 'utf8'))) {
+      fail(`unpatched cli-spinners in artifact: ${rel}`);
+    }
+    log(`cli-spinners patched: ${rel}`);
+  }
+}
+
 function main() {
   const appimage = parseArgs();
   if (!fs.existsSync(appimage)) fail(`missing ${appimage}`);
@@ -140,6 +159,8 @@ function main() {
     fail('playwright packaged');
   }
 
+  assertCliSpinnersPatched(appDir);
+
   log('QEMU Haswell: guide-ide --version (real Chromium launch path)');
   const ver = qemuRun(shellBinary, ['--no-sandbox', '--disable-gpu', '--version'], libPath);
   const verOut = `${ver.stdout}\n${ver.stderr}`;
@@ -151,16 +172,40 @@ function main() {
   }
   log((ver.stdout || '').trim());
 
-  const nv = qemuRun(
+  const meta = qemuRun(
     shellBinary,
     [
       '-e',
-      `const m=+process.versions.node.split(".")[0]; console.log(process.versions.node); if(m<${LEGACY_ELECTRON_MIN_NODE_MAJOR})process.exit(2)`,
+      'console.log(JSON.stringify({electron:process.versions.electron,node:process.versions.node}))',
     ],
     libPath,
     { ELECTRON_RUN_AS_NODE: '1' },
   );
-  if (nv.status === 2) fail(`Node < ${LEGACY_ELECTRON_MIN_NODE_MAJOR}`);
+  if (meta.status !== 0) fail(`runtime probe failed:\n${meta.stdout}${meta.stderr}`);
+  let runtime;
+  try {
+    runtime = JSON.parse((meta.stdout || '').trim());
+  } catch {
+    fail(`runtime probe JSON parse failed: ${meta.stdout}`);
+  }
+  const { electron: electronVer, node: nodeVer } = runtime;
+  log(`packaged runtime: Electron ${electronVer}, Node ${nodeVer}`);
+
+  const minNode = minNodeMajorForElectron(electronVer);
+  const nodeMajor = parseInt(String(nodeVer).split('.')[0], 10);
+  if (nodeMajor < minNode) {
+    fail(`Node ${nodeVer} < ${minNode} required for Electron ${electronVer}`);
+  }
+
+  const em = electronMajor(electronVer);
+  const allowFallback = process.env.LEGACY_ALLOW_ELECTRON_FALLBACK === '1';
+  if (em > LEGACY_ELECTRON_PREFER_MAX_MAJOR && !allowFallback) {
+    fail(
+      `packaged Electron ${electronVer} > max ${LEGACY_ELECTRON_PREFER_MAX_MAJOR} ` +
+        '(would have shipped 30.5.1 in v0.3.128 after rejecting 22). ' +
+        'Set LEGACY_ALLOW_ELECTRON_FALLBACK=1 only if all older candidates SIGILL under QEMU.',
+    );
+  }
 
   const testScript = path.join(appDir, 'build', 'test-load-llama-legacy.mjs');
   if (!fs.existsSync(testScript)) fail(`missing ${testScript}`);
