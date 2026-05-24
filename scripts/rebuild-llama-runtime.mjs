@@ -191,6 +191,8 @@ if (!legacyMode) {
 runNlc(['source', 'download', '--release', RELEASE, '--skipBuild', '--gpu', gpu], { CI: 'true' });
 run('node', [path.join('scripts', 'patch-llama-cmake-common-link.mjs')]);
 run('node', [path.join('scripts', 'patch-llama-addon-api.mjs')]);
+// After source download: ggml/CMakeLists.txt exists. Force GGML_NATIVE=OFF before cmake configure.
+run('node', [path.join('scripts', 'patch-llama-cmake-native-off.mjs')]);
 
 const nlcArgs = ['source', 'build', '--gpu', gpu];
 runNlc(nlcArgs, {
@@ -199,5 +201,7 @@ runNlc(nlcArgs, {
   CI: 'true',
   NODE_LLAMA_CPP_GPU: gpu,
 });
+
+run('node', [path.join('scripts', 'assert-legacy-ggml-cache.mjs')]);
 
 log('done');

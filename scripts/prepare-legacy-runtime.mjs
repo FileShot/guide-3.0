@@ -54,11 +54,6 @@ log(`profile=${profile} platform=${process.platform} cuda=${useCuda}`);
 
 run(process.execPath, [path.join('scripts', 'patch-legacy-node16-deps.mjs')]);
 
-// Patch ggml/CMakeLists.txt to force GGML_NATIVE=OFF before the source build.
-// This prevents the CI runner's own CPU (AVX-512 capable) from being detected and compiled in,
-// which would produce llama-addon.node with ZMM (AVX-512) instructions that SIGILL on Haswell.
-run(process.execPath, [path.join('scripts', 'patch-llama-cmake-native-off.mjs')]);
-
 run(process.execPath, [path.join('scripts', 'rebuild-llama-runtime.mjs'), '--profile', profile, '--legacy'], {
   LLAMA_CPP_RELEASE: process.env.LLAMA_CPP_RELEASE || 'b9253',
 });
