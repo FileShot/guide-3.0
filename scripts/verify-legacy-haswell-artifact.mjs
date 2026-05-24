@@ -136,6 +136,10 @@ function main() {
   if (findFiles(appDir, 'llama-addon.node').length === 0) {
     fail('no llama-addon.node in package');
   }
+  const lastBuildJson = path.join(appDir, 'node_modules', 'node-llama-cpp', 'llama', 'lastBuild.json');
+  if (!fs.existsSync(lastBuildJson)) {
+    fail('missing node-llama-cpp/llama/lastBuild.json — getLlama() cannot find source build');
+  }
   if (fs.existsSync(path.join(appDir, 'node_modules', '@node-llama-cpp'))) {
     const left = fs.readdirSync(path.join(appDir, 'node_modules', '@node-llama-cpp'));
     if (left.length) fail(`prebuilt @node-llama-cpp packaged: ${left.join(', ')}`);

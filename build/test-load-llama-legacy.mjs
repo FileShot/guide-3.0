@@ -15,7 +15,7 @@ process.chdir(path.join(__dirname, '..'));
 console.log('[test-load-llama-legacy] node', process.versions.node, 'electron', process.versions.electron);
 
 try {
-  const llama = await getLlama({ gpu: false, logger: () => {} });
+  const llama = await getLlama('lastBuild', { gpu: false, logger: () => {} });
   console.log('[test-load-llama-legacy] getLlama ok', typeof llama);
 } catch (e) {
   const msg = e?.message || String(e);

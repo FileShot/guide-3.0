@@ -670,9 +670,8 @@ class ChatEngine extends EventEmitter {
       }
 
       // Initialize llama runtime early so we can query VRAM state before context sizing.
-      this._llama = await getLlama({
-        gpu: s.gpuPreference === 'cpu' ? false : 'auto',
-      });
+      const gpuOpt = s.gpuPreference === 'cpu' ? false : 'auto';
+      this._llama = await this._createLlamaRuntime(getLlama, gpuOpt);
 
       const modelStats = fs.statSync(modelPath);
 
@@ -3703,6 +3702,27 @@ class ChatEngine extends EventEmitter {
     const prompt = `\n\nYou have access to the following tools:\n${toolLines.join('\n')}\n\nTOOL USAGE RULES:\n- When the user asks you to create, write, edit, read, or delete files in their project, you MUST use the appropriate file tool (write_file, read_file, edit_file, append_to_file, delete_file). Do NOT output file contents inline.\n- When the user asks you to find, search, or look for something in their code, use grep_search or find_files.\n- When the user asks to list or explore project structure, use list_directory.\n- When the user asks to run a command, script, or install something, use run_command.\n- When the user asks to search the web or look something up online, use web_search then immediately fetch_webpage on the first and second ranked result URLs in the same continuation before answering (if only one hit, fetch that URL). Do not ask the user whether to fetch. Do not list the project directory in the same tool round as web_search/fetch_webpage unless the user asked about the project.\n- When the user asks a general question, wants an explanation, or asks you to review code you already have, respond with text directly.\n- You can chain tools: use read_file to see existing code, then edit_file to modify it, then run_command to test it.\n- Always prefer tools over inline code when the user wants changes to their actual project files.`;
     console.log(`[ChatEngine] _buildToolPrompt: built ${prompt.length} chars`);
     return prompt;
+  }
+
+  /** Legacy installers ship source-built llama only (no @node-llama-cpp prebuilts). */
+  _usesSourceBuiltLlama() {
+    const lastBuildJson = path.join(__dirname, 'node_modules', 'node-llama-cpp', 'llama', 'lastBuild.json');
+    if (!fs.existsSync(lastBuildJson)) return false;
+    const prebuiltRoot = path.join(__dirname, 'node_modules', '@node-llama-cpp');
+    if (!fs.existsSync(prebuiltRoot)) return true;
+    try {
+      return fs.readdirSync(prebuiltRoot).filter((n) => !n.startsWith('.')).length === 0;
+    } catch {
+      return true;
+    }
+  }
+
+  async _createLlamaRuntime(getLlama, gpuOpt) {
+    if (this._usesSourceBuiltLlama()) {
+      console.log('[ChatEngine] getLlama(lastBuild) — legacy/source-built binary');
+      return getLlama('lastBuild', { gpu: gpuOpt });
+    }
+    return getLlama({ gpu: gpuOpt });
   }
 
   _getNodeLlamaCppPath() {
