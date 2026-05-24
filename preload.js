@@ -109,6 +109,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onFileContentStart:  (cb) => _on('file-content-start', cb),
   onFileContentToken:  (cb) => _on('file-content-token', cb),
   onFileContentEnd:    (cb) => _on('file-content-end', cb),
+  onFileContentBlockComplete: (cb) => _on('file-content-block-complete', cb),
 
   // Context & progress
   onContextUsage:      (cb) => _on('context-usage', cb),

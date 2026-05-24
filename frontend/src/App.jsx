@@ -120,6 +120,12 @@ export default function App() {
 
         break;
 
+      case 'file-content-block-complete':
+
+        s.addCompleteFileContentBlock(data);
+
+        break;
+
       case 'file-content-lint':
 
         if (data?.filePath && data?.diagnostics) s.setFileLintErrors(data.filePath, data.diagnostics);
@@ -732,6 +738,8 @@ export default function App() {
       api.onFileContentToken?.((d) => handleEvent('file-content-token', d)),
 
       api.onFileContentEnd?.((d) => handleEvent('file-content-end', d)),
+
+      api.onFileContentBlockComplete?.((d) => handleEvent('file-content-block-complete', d)),
 
       api.onContextUsage?.((d) => handleEvent('context-usage', d)),
 

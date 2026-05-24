@@ -89,6 +89,7 @@ export default function EditorArea() {
   }, []);
   const setChatFilesChanged = useAppStore(s => s.setChatFilesChanged);
   const openDiff = useAppStore(s => s.openDiff);
+  const closeDiff = useAppStore(s => s.closeDiff);
   const [tabContextMenu, setTabContextMenu] = useState(null);
   const [inlineChat, setInlineChat] = useState(null);
   const [previewMode, setPreviewMode] = useState({}); // { [tabId]: boolean }
@@ -100,10 +101,11 @@ export default function EditorArea() {
   // activate preview mode on the active tab
   useEffect(() => {
     if (previewRequested && activeTabId) {
+      closeDiff();
       setPreviewMode(p => ({ ...p, [activeTabId]: true }));
       useAppStore.getState().setPreviewRequested(false);
     }
-  }, [previewRequested, activeTabId]);
+  }, [previewRequested, activeTabId, closeDiff]);
 
   const activeTab = openTabs.find(t => t.id === activeTabId);
   const addChatMessage = useAppStore(s => s.addChatMessage);
@@ -319,7 +321,7 @@ export default function EditorArea() {
                   className="p-0.5 hover:bg-vsc-list-hover rounded text-vsc-success opacity-60 hover:opacity-100"
                   onClick={(e) => { 
                     e.stopPropagation(); 
-                    // R46-B: Open preview in viewport instead of external browser
+                    closeDiff();
                     setPreviewMode(p => ({ ...p, [tab.id]: true }));
                   }}
                   title="Preview in viewport"
@@ -423,7 +425,10 @@ export default function EditorArea() {
                   ? 'text-vsc-accent bg-vsc-accent/10'
                   : 'text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover'
               }`}
-              onClick={() => setPreviewMode(p => ({ ...p, [activeTab.id]: !p[activeTab.id] }))}
+              onClick={() => {
+                closeDiff();
+                setPreviewMode(p => ({ ...p, [activeTab.id]: !p[activeTab.id] }));
+              }}
               title={previewMode[activeTab.id] ? 'Show code' : 'Show preview'}
             >
               {previewMode[activeTab.id] ? <Code2 size={12} /> : <Eye size={12} />}
@@ -522,7 +527,7 @@ export default function EditorArea() {
 
       {/* Monaco Editor, Diff Viewer, Preview, or Browser */}
       <div className="flex-1 min-h-0">
-        {diffState ? (
+        {diffState && !(activeTab && previewMode[activeTab.id]) ? (
           <DiffViewer />
         ) : activeTab && activeTab.type === 'browser' ? (
           <BrowserPanel />

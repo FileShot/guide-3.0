@@ -261,7 +261,7 @@ export default function AccountPanel() {
             Upgrade to Pro
           </p>
           <p className="text-[10px] mb-2 text-vsc-foreground/60">
-            Cloud AI models, web automation, unlimited conversations. $4.99/mo.
+            Cloud AI models, web automation, unlimited conversations. 14 days free, then $4.99/mo.
           </p>
           <button
             onClick={() => openExternal('https://graysoft.dev/account')}
@@ -480,7 +480,7 @@ export default function AccountPanel() {
           </button>
         )}
         <p className="text-[9px] mt-1.5 text-vsc-foreground/30">
-          Free plan includes local AI. Pro $4.99/mo for cloud AI.
+          Free plan includes local AI. Pro: 14 days free, then $4.99/mo for cloud AI.
         </p>
       </div>
     </div>

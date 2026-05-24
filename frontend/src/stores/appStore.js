@@ -508,7 +508,20 @@ const useAppStore = create((set, get) => ({
 
     // NOT cleared, causing previous response text to bleed into the new one.
 
-    set({ chatStreaming: val, chatStreamingText: '', chatThinkingText: '', chatGeneratingTool: null, streamingSegments: [], streamingToolCalls: [], _textTokenBuffer: null, _textTokenTimer: null });
+    set({
+      chatStreaming: val,
+      chatStreamingText: '',
+      chatThinkingText: '',
+      chatGeneratingTool: null,
+      streamingSegments: [],
+      streamingToolCalls: [],
+      streamingFileBlocks: [],
+      activeStreamingFileKey: null,
+      _textTokenBuffer: null,
+      _textTokenTimer: null,
+      _fileTokenBuffer: null,
+      _fileTokenTimer: null,
+    });
 
   },
 
@@ -941,6 +954,79 @@ const useAppStore = create((set, get) => ({
 
     }
 
+  },
+
+  /**
+   * Atomically add a complete file block + segment in one set().
+   * Used for native function-calling writes where start/token/end IPC events
+   * can arrive in the same tick before React/Zustand flushes — the burst path
+   * dropped content and left only ToolCallCard bubbles visible.
+   */
+  addCompleteFileContentBlock: ({ filePath, fileKey, language, fileName, content }) => {
+    const store = get();
+    const normalizedKey = fileKey || canonicalizeStreamingFilePath(filePath);
+    if (!normalizedKey || content == null) return;
+
+    if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
+    if (store._fileTokenTimer) clearTimeout(store._fileTokenTimer);
+
+    let currentText = store.chatStreamingText;
+    let currentSegs = store.streamingSegments;
+
+    if (store._textTokenBuffer) {
+      const buf = store._textTokenBuffer;
+      currentText = currentText + buf;
+      if (currentSegs.length > 0 && currentSegs[currentSegs.length - 1].type === 'text') {
+        currentSegs = [...currentSegs];
+        const lastSeg = currentSegs[currentSegs.length - 1];
+        currentSegs[currentSegs.length - 1] = { ...lastSeg, content: lastSeg.content + buf };
+      } else {
+        currentSegs = [...currentSegs, { type: 'text', content: buf }];
+      }
+    }
+
+    const existingIdx = store.streamingFileBlocks.findIndex(
+      b => b.fileKey === normalizedKey && !b.complete,
+    );
+    let newBlocks;
+    let fileIndex;
+
+    if (existingIdx !== -1) {
+      newBlocks = [...store.streamingFileBlocks];
+      newBlocks[existingIdx] = {
+        ...newBlocks[existingIdx],
+        content: String(content),
+        complete: true,
+      };
+      fileIndex = existingIdx;
+    } else {
+      newBlocks = [
+        ...store.streamingFileBlocks,
+        {
+          filePath,
+          fileKey: normalizedKey,
+          language,
+          fileName,
+          content: String(content),
+          complete: true,
+        },
+      ];
+      fileIndex = newBlocks.length - 1;
+      currentSegs = [...currentSegs, { type: 'file', index: fileIndex }];
+    }
+
+    console.log('[appStore] addCompleteFileContentBlock:', normalizedKey, `(${String(content).length} chars)`);
+
+    set({
+      streamingFileBlocks: newBlocks,
+      streamingSegments: currentSegs,
+      chatStreamingText: currentText,
+      activeStreamingFileKey: null,
+      _textTokenBuffer: null,
+      _textTokenTimer: null,
+      _fileTokenBuffer: null,
+      _fileTokenTimer: null,
+    });
   },
 
   endFileContentBlock: (payload) => {

@@ -40,7 +40,29 @@ import {
 
 const GUIDE_CLOUD_PROVIDERS = new Set(['cerebras', 'groq', 'sambanova', 'google', 'openrouter']);
 
+const FILE_WRITE_TOOL_NAMES = new Set(['write_file', 'create_file', 'append_to_file']);
 
+/** Safety net: rebuild file segments from write_file tool params when IPC file blocks were lost. */
+function synthesizeFileBlocksFromToolCalls(toolCalls, messageSegments, messageFileBlocks) {
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) return;
+  const existingPaths = new Set(messageFileBlocks.map((b) => b.filePath));
+  for (const tc of toolCalls) {
+    if (!FILE_WRITE_TOOL_NAMES.has(tc.functionName)) continue;
+    const content = tc.params?.content;
+    const filePath = tc.params?.filePath || tc.params?.path || '';
+    if (!content || !filePath || existingPaths.has(filePath)) continue;
+    existingPaths.add(filePath);
+    const fileName = filePath.split(/[\\/]/).pop() || filePath;
+    const language = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+    messageSegments.push({ type: 'file', index: messageFileBlocks.length });
+    messageFileBlocks.push({
+      filePath,
+      language,
+      fileName,
+      content: String(content),
+    });
+  }
+}
 
 // R43-Fix-B: Streaming-scoped error boundary.
 
@@ -1013,7 +1035,7 @@ export default function ChatPanel() {
 
     // into the ongoing loop instead of blocking. The model will see it in its next continuation.
 
-    if (chatStreaming) {
+    if (useAppStore.getState().chatStreaming) {
 
       try {
 
@@ -1457,6 +1479,8 @@ export default function ChatPanel() {
 
       }
 
+      synthesizeFileBlocksFromToolCalls(finalToolCalls, messageSegments, messageFileBlocks);
+
       if (fileBlocks.length > 0) {
 
         useAppStore.getState().clearFileContentBlocks();
@@ -1465,7 +1489,7 @@ export default function ChatPanel() {
 
       // R40: Create message if there's text content OR tool calls
 
-      const hasContent = messageContent && messageContent.trim();
+      const hasContent = (messageContent && messageContent.trim()) || messageFileBlocks.length > 0;
 
       const hasToolCalls = finalToolCalls.length > 0;
 
@@ -1651,9 +1675,21 @@ export default function ChatPanel() {
 
   const prevStreamingRef = useRef(chatStreaming);
 
+  const skipAutoQueueRef = useRef(false);
+
   useEffect(() => {
 
     if (prevStreamingRef.current && !chatStreaming) {
+
+      if (skipAutoQueueRef.current) {
+
+        skipAutoQueueRef.current = false;
+
+        prevStreamingRef.current = chatStreaming;
+
+        return;
+
+      }
 
       const queue = useAppStore.getState().messageQueue;
 
@@ -1682,6 +1718,9 @@ export default function ChatPanel() {
 
 
   const handleForceSend = useCallback(async (msg) => {
+    skipAutoQueueRef.current = true;
+    removeQueuedMessage(msg.id);
+    addChatMessage({ role: 'user', content: msg.text });
     try {
       if (window.electronAPI?.forceSendQueued) {
         await window.electronAPI.forceSendQueued();
@@ -1689,9 +1728,13 @@ export default function ChatPanel() {
         await (await import('../api/websocket')).invoke('force-send-queued');
       }
     } catch (_) {}
-    removeQueuedMessage(msg.id);
-    setTimeout(() => handleSendQueued(msg.text), 1000);
-  }, [removeQueuedMessage, handleSendQueued]);
+    // Wait for the aborted generation to fully finalize before starting a new send.
+    for (let i = 0; i < 80; i++) {
+      if (!useAppStore.getState().chatStreaming) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    doSend(msg.text, { skipAddMessage: true });
+  }, [removeQueuedMessage, addChatMessage, doSend]);
 
   const handleStop = useCallback(async () => {
 
@@ -1899,7 +1942,7 @@ export default function ChatPanel() {
 
           {historyOpen && (
 
-            <div className="absolute right-0 top-[32px] z-20 w-[320px] max-h-[320px] overflow-y-auto rounded-lg border border-vsc-panel-border/70 bg-vsc-sidebar/95 backdrop-blur-md shadow-[0_10px_30px_rgba(0,0,0,0.35)] p-1.5">
+            <div className="absolute right-0 top-[32px] z-20 w-[320px] max-h-[320px] overflow-y-auto rounded-lg border border-vsc-panel-border bg-vsc-sidebar shadow-[0_10px_30px_rgba(0,0,0,0.45)] p-1.5">
 
               <div className="text-[10px] font-medium text-vsc-text-dim uppercase tracking-wider px-1 py-1">History</div>
 

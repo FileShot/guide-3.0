@@ -150,9 +150,13 @@ async function runCloudAgenticChat({
         const filePath = call.params.filePath || call.params.path || '';
         const fileName = filePath.split(/[\\/]/).pop() || filePath;
         const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
-        onStreamEvent('file-content-start', { filePath, fileName, language: ext, fileKey: filePath });
-        onStreamEvent('file-content-token', call.params.content);
-        onStreamEvent('file-content-end', { filePath, fileKey: filePath });
+        onStreamEvent('file-content-block-complete', {
+          filePath,
+          fileName,
+          language: ext,
+          fileKey: filePath,
+          content: String(call.params.content),
+        });
       }
 
       let toolResult;

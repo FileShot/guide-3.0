@@ -26,6 +26,21 @@ const TOOL_INJECT_MULTIPLIERS = {
   read_file: 0.5, fetch_webpage: 0.5, web_search: 0.25,
 };
 
+/** Emit one atomic IPC event for a complete file write (native FC / batch prose path). */
+function emitCompleteFileContentBlock(onStreamEvent, filePath, content) {
+  if (!onStreamEvent || content == null) return;
+  const fp = filePath || '';
+  const fn = fp.split(/[\\/]/).pop() || fp;
+  const ext = fn.includes('.') ? fn.split('.').pop().toLowerCase() : '';
+  onStreamEvent('file-content-block-complete', {
+    filePath: fp,
+    fileName: fn,
+    language: ext,
+    fileKey: fp,
+    content: String(content),
+  });
+}
+
 // Pre-compiled regex patterns for the streaming tool call filter.
 // These are tested on line boundaries only — never on every character.
 const RE_FENCE_HEADER = /^```\s*(\w*)\r?\n/;
@@ -2371,6 +2386,7 @@ class ChatEngine extends EventEmitter {
             const modelItem = _findLatestModelItem();
             const orphanLines = [];
 
+            const _NATIVE_FILE_WRITE_OPS = new Set(['write_file', 'create_file', 'append_to_file']);
             for (const fc of pendingCalls) {
               const toolName = fc.functionName;
               const toolParams = canonicalizeToolParams(toolName, fc.params ?? {});
@@ -2380,6 +2396,15 @@ class ChatEngine extends EventEmitter {
                 onStreamEvent('tool-generating', { tool: toolName });
                 onStreamEvent('tool-executing', [{ tool: toolName, params: toolParams }]);
               }
+
+              // Emit file-content events for write operations so the UI shows FileContentBlock.
+              // The prose JSON path already does this (line ~2522); native FC path was missing it,
+              // causing write_file calls from Qwen/DeepSeek native FC to produce no code blocks.
+              if (_NATIVE_FILE_WRITE_OPS.has(toolName) && toolParams?.content && onStreamEvent) {
+                const _fp = toolParams.filePath || toolParams.path || '';
+                emitCompleteFileContentBlock(onStreamEvent, _fp, toolParams.content);
+              }
+
               const _toolStart = Date.now();
               let toolResult;
               try { toolResult = await executeToolFn(toolName, toolParams); }
@@ -2522,11 +2547,7 @@ class ChatEngine extends EventEmitter {
             if (FILE_WRITE_OPS.has(call.tool) && call.params?.content && onStreamEvent) {
               const filePath = call.params.filePath || call.params.path || '';
               if (!_sfStreamedFileWrites.has(filePath)) {
-                const fileName = filePath.split(/[\\/]/).pop() || filePath;
-                const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
-                onStreamEvent('file-content-start', { filePath, fileName, language: ext, fileKey: filePath });
-                onStreamEvent('file-content-token', call.params.content);
-                onStreamEvent('file-content-end', { filePath, fileKey: filePath });
+                emitCompleteFileContentBlock(onStreamEvent, filePath, call.params.content);
               }
             }
 
@@ -2803,7 +2824,7 @@ class ChatEngine extends EventEmitter {
 
           this._chatHistory.push({
             type: 'user',
-            text: `${userInterruptPrefix}[System: Tool Results]\nThe tools below have ALREADY been executed. Do not repeat these actions or re-narrate work that is already complete. Summarize outcomes or proceed to the next step only.\n\n${toolResultLines.join('\n')}${relatedSection}\n\nContinue with any remaining steps. Call the next tool if more work is needed, or explain the result if the task is complete.`
+            text: `${userInterruptPrefix}[System: Tool Results]\nThe tools below have ALREADY been executed. Do not repeat these actions or re-narrate work that is already complete. Give a brief summary of outcomes, then either call the next tool if more work is needed or give a short final answer. Do NOT enumerate long lists of hypothetical future options or features.\n\n${toolResultLines.join('\n')}${relatedSection}`,
           });
           console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${!!this._pendingUserMessage}`);
           // Log compact summaries — browser snapshots bloat logs with full DOM
@@ -3040,6 +3061,12 @@ class ChatEngine extends EventEmitter {
         console.warn(`[ChatEngine] Thought-segment trap: ${_sfNativeThinkChars} chars in thought, 0 in visible chat — check Mode C + native FC interaction`);
       }
       console.log(`[ChatEngine] Generation complete. Tool calls: ${totalToolCalls}, stopReason=${stopReason}, responseLen=${fullResponse.length}, thoughtLen=${_sfNativeThinkChars}, visibleLen=${_sfVisibleChars}`);
+      // Log visible response text to help diagnose model looping/drifting.
+      // This is the text the user actually sees (tool JSON is stripped, thinking is separate).
+      if (_sfVisibleChars > 0) {
+        const _visPreview = fullResponse.replace(/\n/g, '\\n').slice(0, 500);
+        console.log(`[ChatEngine] Visible response preview (first 500 chars): "${_visPreview}${fullResponse.length > 500 ? '...' : ''}"`);
+      }
 
       // Inference speed diagnostic
       const ctxUsedTokens = this._sequence?.nextTokenIndex || 0;
