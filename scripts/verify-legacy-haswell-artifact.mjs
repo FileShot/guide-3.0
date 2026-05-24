@@ -92,22 +92,27 @@ function isSigill(output, status) {
   );
 }
 
-function isEsmSyntaxError(output) {
-  return /Unexpected token ['']with['']|import attributes|SyntaxError/i.test(output);
+function isNode16RuntimeSyntaxError(output) {
+  return (
+    /Unexpected token ['']with['']|import attributes/i.test(output) ||
+    /Invalid regular expression flags/i.test(output) ||
+    (/SyntaxError/i.test(output) && /string-width|cli-spinners|node-llama-cpp/i.test(output))
+  );
 }
 
-function assertCliSpinnersPatched(appDir) {
-  const rels = [
+function assertNode16DepsPatched(appDir) {
+  const checks = [
     'node_modules/node-llama-cpp/node_modules/cli-spinners/index.js',
     'node_modules/cli-spinners/index.js',
+    'node_modules/node-llama-cpp/node_modules/string-width/index.js',
   ];
-  for (const rel of rels) {
+  for (const rel of checks) {
     const p = path.join(appDir, rel);
     if (!fs.existsSync(p)) continue;
-    if (/with \{type: 'json'\}/.test(fs.readFileSync(p, 'utf8'))) {
-      fail(`unpatched cli-spinners in artifact: ${rel}`);
-    }
-    log(`cli-spinners patched: ${rel}`);
+    const text = fs.readFileSync(p, 'utf8');
+    if (/with \{type: 'json'\}/.test(text)) fail(`unpatched cli-spinners: ${rel}`);
+    if (/\/v;/.test(text)) fail(`unpatched string-width (/v flag): ${rel}`);
+    log(`Node16-deps ok: ${rel}`);
   }
 }
 
@@ -159,7 +164,17 @@ function main() {
     fail('playwright packaged');
   }
 
-  assertCliSpinnersPatched(appDir);
+  assertNode16DepsPatched(appDir);
+
+  const scan = run(process.execPath, [
+    path.join(ROOT, 'scripts', 'scan-legacy-node16-incompat.mjs'),
+    '--app-dir',
+    appDir,
+  ]);
+  if (scan.status !== 0) {
+    fail(`Node 16 incompat scan:\n${scan.stdout}${scan.stderr}`);
+  }
+  log((scan.stdout || '').trim());
 
   log('QEMU Haswell: guide-ide --version (real Chromium launch path)');
   const ver = qemuRun(shellBinary, ['--no-sandbox', '--disable-gpu', '--version'], libPath);
@@ -214,8 +229,8 @@ function main() {
   const lrOut = `${lr.stdout}\n${lr.stderr}`;
   if (lr.status !== 0) {
     if (isSigill(lrOut, lr.status)) fail(`SIGILL in getLlama:\n${lrOut}`);
-    if (isEsmSyntaxError(lrOut)) {
-      fail(`ESM syntax (patch cli-spinners / need Node 20+):\n${lrOut}`);
+    if (isNode16RuntimeSyntaxError(lrOut)) {
+      fail(`Node 16 runtime syntax (run patch-legacy-node16-deps):\n${lrOut}`);
     }
     const cudaArtifact = /-cuda-legacy-/.test(appimage);
     if (
