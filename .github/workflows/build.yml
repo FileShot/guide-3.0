@@ -434,6 +434,9 @@ jobs:
           test -d node_modules/node-llama-cpp/llama/localBuilds || (echo "missing localBuilds" && exit 1)
           test ! -d node_modules/@node-llama-cpp/linux-x64 || (echo "prebuilt linux-x64 must be removed" && exit 1)
 
+      - name: Re-patch Node 16 deps before package
+        run: node scripts/patch-legacy-node16-deps.mjs
+
       - name: Build Linux CPU Legacy AppImage
         run: |
           EV=$(tr -d '\n\r' < build/legacy-electron-version.txt)
@@ -507,6 +510,9 @@ jobs:
         run: |
           test -d node_modules/node-llama-cpp/llama/localBuilds || (echo "missing localBuilds after Haswell CUDA compile" && exit 1)
           test ! -d node_modules/@node-llama-cpp/linux-x64-cuda || (echo "prebuilt linux-x64-cuda must be removed" && exit 1)
+
+      - name: Re-patch Node 16 deps before package
+        run: node scripts/patch-legacy-node16-deps.mjs
 
       - name: Build Linux CUDA Legacy AppImage
         run: |

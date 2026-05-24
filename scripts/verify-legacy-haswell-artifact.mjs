@@ -100,18 +100,29 @@ function isNode16RuntimeSyntaxError(output) {
   );
 }
 
+function findPkgIndexFiles(dir, pkgName, out = []) {
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, ent.name);
+    if (ent.isDirectory()) {
+      if (ent.name === 'llama' || ent.name === '.bin') continue;
+      findPkgIndexFiles(full, pkgName, out);
+    } else if (ent.name === 'index.js' && full.includes(`${path.sep}${pkgName}${path.sep}`)) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
 function assertNode16DepsPatched(appDir) {
-  const checks = [
-    'node_modules/node-llama-cpp/node_modules/cli-spinners/index.js',
-    'node_modules/cli-spinners/index.js',
-    'node_modules/node-llama-cpp/node_modules/string-width/index.js',
-  ];
-  for (const rel of checks) {
-    const p = path.join(appDir, rel);
-    if (!fs.existsSync(p)) continue;
-    const text = fs.readFileSync(p, 'utf8');
-    if (/with \{type: 'json'\}/.test(text)) fail(`unpatched cli-spinners: ${rel}`);
-    if (/\/v;/.test(text)) fail(`unpatched string-width (/v flag): ${rel}`);
+  const nm = path.join(appDir, 'node_modules');
+  for (const p of findPkgIndexFiles(nm, 'cli-spinners')) {
+    const rel = path.relative(appDir, p);
+    if (/with \{type: 'json'\}/.test(fs.readFileSync(p, 'utf8'))) fail(`unpatched cli-spinners: ${rel}`);
+    log(`Node16-deps ok: ${rel}`);
+  }
+  for (const p of findPkgIndexFiles(nm, 'string-width')) {
+    const rel = path.relative(appDir, p);
+    if (/\/v;/.test(fs.readFileSync(p, 'utf8'))) fail(`unpatched string-width (/v flag): ${rel}`);
     log(`Node16-deps ok: ${rel}`);
   }
 }

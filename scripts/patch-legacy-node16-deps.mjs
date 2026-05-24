@@ -55,35 +55,33 @@ function patchStringWidth(file) {
   return true;
 }
 
-function walkStringWidthAndSpinners(dir, out = []) {
+function findAllIndexJs(dir, name, out = []) {
   if (!fs.existsSync(dir)) return out;
   for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, ent.name);
     if (ent.isDirectory()) {
-      if (ent.name === '.bin' || ent.name === 'llama') continue;
-      walkStringWidthAndSpinners(full, out);
-    } else if (ent.name === 'index.js' && /[\\/]string-width[\\/]/.test(full)) {
-      out.push(full);
-    } else if (ent.name === 'index.js' && /[\\/]cli-spinners[\\/]/.test(full)) {
+      if (ent.name === '.bin' || ent.name === 'llama' || ent.name === '.cache') continue;
+      findAllIndexJs(full, name, out);
+    } else if (ent.isFile() && ent.name === 'index.js' && full.includes(`${path.sep}${name}${path.sep}`)) {
       out.push(full);
     }
   }
   return out;
 }
 
-const spinnersFixed = [
-  path.join(ROOT, 'node_modules', 'node-llama-cpp', 'node_modules', 'cli-spinners', 'index.js'),
-  path.join(ROOT, 'node_modules', 'cli-spinners', 'index.js'),
-].filter((f) => patchCliSpinners(f));
-
-const targets = walkStringWidthAndSpinners(path.join(ROOT, 'node_modules'));
+const stringWidthFiles = findAllIndexJs(path.join(ROOT, 'node_modules'), 'string-width');
+const spinnerFiles = findAllIndexJs(path.join(ROOT, 'node_modules'), 'cli-spinners');
 let stringWidthFixed = 0;
-for (const file of targets) {
-  if (/[\\/]string-width[\\/]/.test(file) && patchStringWidth(file)) stringWidthFixed++;
+let spinnersFixed = 0;
+for (const file of stringWidthFiles) {
+  if (patchStringWidth(file)) stringWidthFixed++;
+}
+for (const file of spinnerFiles) {
+  if (patchCliSpinners(file)) spinnersFixed++;
 }
 
-if (!spinnersFixed.length && !stringWidthFixed) {
+if (!spinnersFixed && !stringWidthFixed) {
   log('warn: no files patched (already patched or node_modules missing?)');
 } else {
-  log(`done: cli-spinners=${spinnersFixed.length} string-width=${stringWidthFixed}`);
+  log(`done: cli-spinners=${spinnersFixed} string-width=${stringWidthFixed} (found ${spinnerFiles.length} spinner paths, ${stringWidthFiles.length} string-width paths)`);
 }

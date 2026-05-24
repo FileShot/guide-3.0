@@ -46,7 +46,7 @@ for (const file of walkJs(nm)) {
   const rel = path.relative(appDir, file);
   const text = fs.readFileSync(file, 'utf8');
   if (importAttr.test(text)) offenders.push(`${rel}: import attributes (need Node 20+)`);
-  if (regexVFlag.test(text) && rel.includes('string-width')) {
+  if (regexVFlag.test(text)) {
     offenders.push(`${rel}: RegExp /v flag (need Node 20+)`);
   }
 }
