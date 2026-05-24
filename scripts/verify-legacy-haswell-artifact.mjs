@@ -121,8 +121,10 @@ function assertNode16DepsPatched(appDir) {
     log(`Node16-deps ok: ${rel}`);
   }
   for (const p of findPkgIndexFiles(nm, 'string-width')) {
+    if (!p.endsWith(`${path.sep}string-width${path.sep}index.js`)) continue;
     const rel = path.relative(appDir, p);
-    if (/\/v;/.test(fs.readFileSync(p, 'utf8'))) fail(`unpatched string-width (/v flag): ${rel}`);
+    const text = fs.readFileSync(p, 'utf8');
+    if (/\/v;|\)\$\/v/.test(text)) fail(`unpatched string-width (/v flag): ${rel}`);
     log(`Node16-deps ok: ${rel}`);
   }
 }

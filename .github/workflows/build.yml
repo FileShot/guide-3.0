@@ -434,13 +434,18 @@ jobs:
           test -d node_modules/node-llama-cpp/llama/localBuilds || (echo "missing localBuilds" && exit 1)
           test ! -d node_modules/@node-llama-cpp/linux-x64 || (echo "prebuilt linux-x64 must be removed" && exit 1)
 
-      - name: Re-patch Node 16 deps before package
-        run: node scripts/patch-legacy-node16-deps.mjs
+      - name: Audit legacy Node 16 (workspace)
+        run: node scripts/audit-legacy-node16.mjs
 
-      - name: Build Linux CPU Legacy AppImage
+      - name: Build Linux CPU Legacy (dir, patch packaged app, AppImage)
         run: |
+          set -euo pipefail
           EV=$(tr -d '\n\r' < build/legacy-electron-version.txt)
-          npx electron-builder --linux --x64 --config electron-builder.nosign.legacy.linux.json --config.electronVersion="$EV" --publish never
+          CFG=electron-builder.nosign.legacy.linux.json
+          npx electron-builder --linux --x64 --dir --config "$CFG" --config.electronVersion="$EV" --publish never
+          node scripts/patch-legacy-node16-deps.mjs --app-dir dist-electron/linux-unpacked/resources/app
+          node scripts/scan-legacy-node16-incompat.mjs --app-dir dist-electron/linux-unpacked/resources/app
+          npx electron-builder --linux --x64 --config "$CFG" --config.electronVersion="$EV" --prepackaged dist-electron/linux-unpacked --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -511,13 +516,18 @@ jobs:
           test -d node_modules/node-llama-cpp/llama/localBuilds || (echo "missing localBuilds after Haswell CUDA compile" && exit 1)
           test ! -d node_modules/@node-llama-cpp/linux-x64-cuda || (echo "prebuilt linux-x64-cuda must be removed" && exit 1)
 
-      - name: Re-patch Node 16 deps before package
-        run: node scripts/patch-legacy-node16-deps.mjs
+      - name: Audit legacy Node 16 (workspace)
+        run: node scripts/audit-legacy-node16.mjs
 
-      - name: Build Linux CUDA Legacy AppImage
+      - name: Build Linux CUDA Legacy (dir, patch packaged app, AppImage)
         run: |
+          set -euo pipefail
           EV=$(tr -d '\n\r' < build/legacy-electron-version.txt)
-          npx electron-builder --linux --x64 --config electron-builder.nosign.legacy.cuda.linux.json --config.electronVersion="$EV" --publish never
+          CFG=electron-builder.nosign.legacy.cuda.linux.json
+          npx electron-builder --linux --x64 --dir --config "$CFG" --config.electronVersion="$EV" --publish never
+          node scripts/patch-legacy-node16-deps.mjs --app-dir dist-electron/linux-unpacked/resources/app
+          node scripts/scan-legacy-node16-incompat.mjs --app-dir dist-electron/linux-unpacked/resources/app
+          npx electron-builder --linux --x64 --config "$CFG" --config.electronVersion="$EV" --prepackaged dist-electron/linux-unpacked --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

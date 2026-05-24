@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Electron 22 bundles Node 16. node-llama-cpp 3.18 pulls ora/stdout-update → string-width@8
- * which uses RegExp /v and \p{RGI_Emoji} (Node 20+). Patch for legacy packaging only.
+ * Electron 22 = Node 16. node-llama-cpp 3.18 needs patches for cli-spinners + string-width@8 (/v flag).
+ * Must run on the tree that ships: use --app-dir dist-electron/linux-unpacked/resources/app after --dir build.
  */
 'use strict';
 
@@ -9,10 +9,19 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, '..');
 
 function log(msg) {
   console.log(`[patch-legacy-node16] ${msg}`);
+}
+
+function resolveNodeModulesRoot() {
+  const appIdx = process.argv.indexOf('--app-dir');
+  if (appIdx !== -1 && process.argv[appIdx + 1]) {
+    return path.join(path.resolve(process.argv[appIdx + 1]), 'node_modules');
+  }
+  return path.join(ROOT, 'node_modules');
 }
 
 function patchCliSpinners(file) {
@@ -28,11 +37,14 @@ const spinners = require('./spinners.json');`;
   return true;
 }
 
-/** string-width@7+ uses /v; Node 16 only accepts flags through /u. */
+function stringWidthNeedsPatch(text) {
+  return /\/v;/.test(text) || /\)\$\/v/.test(text);
+}
+
 function patchStringWidth(file) {
   if (!fs.existsSync(file)) return false;
   let text = fs.readFileSync(file, 'utf8');
-  if (!/\/v;/.test(text)) return false;
+  if (!stringWidthNeedsPatch(text)) return false;
 
   text = text.replace(
     /const zeroWidthClusterRegex = \/[\s\S]*?\/v;/,
@@ -47,7 +59,7 @@ function patchStringWidth(file) {
     "const rgiEmojiRegex = /^\\p{Extended_Pictographic}(?:\\uFE0F)?$/u;",
   );
 
-  if (/\/v;/.test(text)) {
+  if (stringWidthNeedsPatch(text)) {
     throw new Error(`string-width still has /v flag after patch: ${file}`);
   }
   fs.writeFileSync(file, text, 'utf8');
@@ -69,10 +81,14 @@ function findAllIndexJs(dir, name, out = []) {
   return out;
 }
 
-const stringWidthFiles = findAllIndexJs(path.join(ROOT, 'node_modules'), 'string-width');
-const spinnerFiles = findAllIndexJs(path.join(ROOT, 'node_modules'), 'cli-spinners');
+const nmRoot = resolveNodeModulesRoot();
+log(`scanning ${nmRoot}`);
+
+const stringWidthFiles = findAllIndexJs(nmRoot, 'string-width');
+const spinnerFiles = findAllIndexJs(nmRoot, 'cli-spinners');
 let stringWidthFixed = 0;
 let spinnersFixed = 0;
+
 for (const file of stringWidthFiles) {
   if (patchStringWidth(file)) stringWidthFixed++;
 }
@@ -80,8 +96,13 @@ for (const file of spinnerFiles) {
   if (patchCliSpinners(file)) spinnersFixed++;
 }
 
-if (!spinnersFixed && !stringWidthFixed) {
-  log('warn: no files patched (already patched or node_modules missing?)');
-} else {
-  log(`done: cli-spinners=${spinnersFixed} string-width=${stringWidthFixed} (found ${spinnerFiles.length} spinner paths, ${stringWidthFiles.length} string-width paths)`);
+const pending = stringWidthFiles.filter((f) => stringWidthNeedsPatch(fs.readFileSync(f, 'utf8')));
+if (pending.length) {
+  console.error('[patch-legacy-node16] FAIL: unpatched string-width still has /v:\n' + pending.join('\n'));
+  process.exit(1);
 }
+
+log(
+  `done: cli-spinners=${spinnersFixed} string-width=${stringWidthFixed} ` +
+    `(paths: ${spinnerFiles.length} spinners, ${stringWidthFiles.length} string-width)`,
+);

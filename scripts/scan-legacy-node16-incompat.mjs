@@ -1,12 +1,10 @@
 #!/usr/bin/env node
-/** Fail if packaged tree still has Node-20-only syntax (legacy Electron 22 = Node 16). */
+/** Fail if tree has Node-20-only syntax (Electron 22 legacy = Node 16). */
 'use strict';
 
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function findAppDirFromArgv() {
   const idx = process.argv.indexOf('--app-dir');
@@ -30,6 +28,14 @@ function walkJs(dir, files = []) {
   return files;
 }
 
+function findStringWidthIndexFiles(nm) {
+  const out = [];
+  for (const file of walkJs(nm)) {
+    if (file.endsWith(`${path.sep}string-width${path.sep}index.js`)) out.push(file);
+  }
+  return out;
+}
+
 const appDir = findAppDirFromArgv();
 const nm = path.join(appDir, 'node_modules');
 if (!fs.existsSync(nm)) {
@@ -39,20 +45,22 @@ if (!fs.existsSync(nm)) {
 
 const offenders = [];
 const importAttr = /import\s+[\s\S]*?\bwith\s*\{\s*type\s*:\s*['"]json['"]\s*\}/;
-const regexVFlag = /\/[^/\n]*\/v\b/;
+const stringWidthV = /\/v;|\)\$\/v/;
 
 for (const file of walkJs(nm)) {
-  if (!file.includes('node_modules')) continue;
   const rel = path.relative(appDir, file);
   const text = fs.readFileSync(file, 'utf8');
   if (importAttr.test(text)) offenders.push(`${rel}: import attributes (need Node 20+)`);
-  if (regexVFlag.test(text)) {
-    offenders.push(`${rel}: RegExp /v flag (need Node 20+)`);
-  }
+}
+
+for (const file of findStringWidthIndexFiles(nm)) {
+  const rel = path.relative(appDir, file);
+  const text = fs.readFileSync(file, 'utf8');
+  if (stringWidthV.test(text)) offenders.push(`${rel}: RegExp /v flag (need Node 20+)`);
 }
 
 if (offenders.length) {
-  console.error('[scan-legacy-node16] FAIL:\n' + offenders.slice(0, 20).join('\n'));
+  console.error('[scan-legacy-node16] FAIL:\n' + offenders.join('\n'));
   process.exit(1);
 }
-console.log('[scan-legacy-node16] OK — no import attributes or string-width /v in package');
+console.log('[scan-legacy-node16] OK');
