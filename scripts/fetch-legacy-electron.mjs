@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Download legacy Electron (Node 20+, not v34 Haswell-SIGILL) and verify under QEMU Haswell.
+ * Download legacy Electron (Haswell-safe Chromium) and verify under QEMU Haswell.
+ * Must run real `electron --version` — ELECTRON_RUN_AS_NODE does not execute the crashing paths.
  */
 'use strict';
 
@@ -8,6 +9,7 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { assertHaswellSafeBinaries } from './lib/check-haswell-disallowed-insns.mjs';
 import {
   LEGACY_ELECTRON_CANDIDATES,
   LEGACY_ELECTRON_MIN_NODE_MAJOR,
@@ -49,6 +51,13 @@ function platformAsset() {
   return { zipSuffix: 'linux-x64.zip', binary: 'electron' };
 }
 
+function isSigill(output, status) {
+  return (
+    status === 132 ||
+    /invalid opcode|SIGILL|signal 4|Illegal instruction|trap invalid opcode/i.test(output)
+  );
+}
+
 function verifyElectronHaswell(electronBin, libDir) {
   if (process.platform !== 'linux') {
     log('skip QEMU Haswell test (non-linux host)');
@@ -58,31 +67,47 @@ function verifyElectronHaswell(electronBin, libDir) {
     log('warn: qemu-x86_64-static not found — skipping Haswell execution test');
     return;
   }
-  log(`QEMU Haswell smoke test: ${electronBin}`);
-  const checkNode = [
-    '-e',
-    `const m=+process.versions.node.split(".")[0]; if(m<${LEGACY_ELECTRON_MIN_NODE_MAJOR}){process.exit(2)}; console.log("node",process.versions.node,"electron",process.versions.electron)`,
-  ];
-  const r = spawnSync(
+
+  log(`objdump: post-Haswell instructions in ${electronBin}`);
+  assertHaswellSafeBinaries([electronBin], 'Electron');
+
+  log(`QEMU Haswell: Chromium --version (real binary — same path as app launch)`);
+  const ver = spawnSync(
     'qemu-x86_64-static',
-    ['-cpu', QEMU_CPU, electronBin, ...checkNode],
+    ['-cpu', QEMU_CPU, electronBin, '--no-sandbox', '--disable-gpu', '--version'],
     {
       encoding: 'utf8',
-      timeout: 120_000,
+      timeout: 180_000,
+      env: { ...process.env, LD_LIBRARY_PATH: libDir },
+    },
+  );
+  const out = `${ver.stdout}\n${ver.stderr}`;
+  if (isSigill(out, ver.status)) {
+    throw new Error(`SIGILL under Haswell QEMU on --version:\n${out}`);
+  }
+  if (ver.status !== 0) {
+    throw new Error(`electron --version failed under Haswell QEMU (exit ${ver.status}):\n${out}`);
+  }
+  log(`QEMU ok: ${(ver.stdout || '').trim()}`);
+
+  const nv = spawnSync(
+    'qemu-x86_64-static',
+    [
+      '-cpu',
+      QEMU_CPU,
+      electronBin,
+      '-e',
+      `const m=+process.versions.node.split(".")[0]; if(m<${LEGACY_ELECTRON_MIN_NODE_MAJOR})process.exit(2); console.log(process.versions.node)`,
+    ],
+    {
+      encoding: 'utf8',
+      timeout: 60_000,
       env: { ...process.env, LD_LIBRARY_PATH: libDir, ELECTRON_RUN_AS_NODE: '1' },
     },
   );
-  if (r.status === 2) {
-    throw new Error(
-      `Electron bundles Node ${(r.stderr || r.stdout || '').trim()} — need Node >= ${LEGACY_ELECTRON_MIN_NODE_MAJOR}`,
-    );
+  if (nv.status === 2) {
+    throw new Error(`Node < ${LEGACY_ELECTRON_MIN_NODE_MAJOR}: ${nv.stdout}${nv.stderr}`);
   }
-  if (r.status !== 0) {
-    console.error(r.stdout);
-    console.error(r.stderr);
-    throw new Error(`Electron failed under QEMU Haswell (exit ${r.status})`);
-  }
-  log(`QEMU ok: ${(r.stdout || '').trim()}`);
 }
 
 function fetchVersion(version) {
@@ -121,5 +146,5 @@ for (const version of CANDIDATES) {
     log(`Electron v${version} failed: ${e.message}`);
   }
 }
-console.error('[fetch-legacy-electron] No candidate Electron passed Haswell QEMU test');
+console.error('[fetch-legacy-electron] No candidate Electron passed Haswell checks');
 process.exit(1);

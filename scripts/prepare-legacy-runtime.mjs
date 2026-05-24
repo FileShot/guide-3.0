@@ -52,6 +52,8 @@ function prebuiltPackagesToRemove() {
 
 log(`profile=${profile} platform=${process.platform} cuda=${useCuda}`);
 
+run(process.execPath, [path.join('scripts', 'patch-cli-spinners-esm.mjs')]);
+
 run(process.execPath, [path.join('scripts', 'rebuild-llama-runtime.mjs'), '--profile', profile, '--legacy'], {
   LLAMA_CPP_RELEASE: process.env.LLAMA_CPP_RELEASE || 'b9253',
 });

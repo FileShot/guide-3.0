@@ -405,7 +405,7 @@ jobs:
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
-      - name: Prepare legacy Linux runtime (Electron 30–33 Node 20+ + x86-64-v2 llama)
+      - name: Prepare legacy Linux runtime (Electron 22 Haswell-safe + x86-64-v2 llama)
         run: node scripts/prepare-legacy-linux.mjs
         env:
           LLAMA_CPP_RELEASE: b9253

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Gate legacy Linux AppImages before release:
- * - No AVX-512 in shell/llama binaries (Haswell SIGILL)
- * - Electron bundles Node 20+ (node-llama-cpp ESM / import attributes)
- * - QEMU Haswell runs real getLlama() import path (same as /api/model/load)
+ * Gate legacy Linux AppImages before release (Haswell SIGILL):
+ * - objdump: no post-Haswell instructions in guide-ide + llama-addon
+ * - QEMU Haswell: real `guide-ide --version` (Chromium startup — NOT ELECTRON_RUN_AS_NODE only)
+ * - QEMU Haswell: getLlama('lastBuild') import path (model load)
  */
 'use strict';
 
@@ -11,6 +11,7 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { assertHaswellSafeBinaries } from './lib/check-haswell-disallowed-insns.mjs';
 import { LEGACY_ELECTRON_MIN_NODE_MAJOR } from './lib/legacy-electron.mjs';
 import {
   appImageLibraryPath,
@@ -47,12 +48,6 @@ function parseArgs() {
   return path.resolve(process.argv[idx + 1]);
 }
 
-function disasmUsesAvx512(filePath) {
-  const r = run('objdump', ['-d', filePath]);
-  if (r.status !== 0) return false;
-  return /\bzmm[0-9]+\b/.test(r.stdout);
-}
-
 function findFiles(dir, name) {
   const out = [];
   const stack = [dir];
@@ -81,17 +76,16 @@ function criticalArtifactPaths(shellBinary, appDir, root) {
 
 function qemuRun(bin, args, libPath, extraEnv = {}) {
   return run('qemu-x86_64-static', ['-cpu', QEMU_CPU, bin, ...args], {
-    env: {
-      ...process.env,
-      LD_LIBRARY_PATH: libPath,
-      ...extraEnv,
-    },
+    env: { ...process.env, LD_LIBRARY_PATH: libPath, ...extraEnv },
     timeout: 300_000,
   });
 }
 
-function isSigill(output) {
-  return /invalid opcode|SIGILL|signal 4|Illegal instruction/i.test(output);
+function isSigill(output, status) {
+  return (
+    status === 132 ||
+    /invalid opcode|SIGILL|signal 4|Illegal instruction|trap invalid opcode/i.test(output)
+  );
 }
 
 function isEsmSyntaxError(output) {
@@ -102,10 +96,10 @@ function main() {
   const appimage = parseArgs();
   if (!fs.existsSync(appimage)) fail(`missing ${appimage}`);
   if (run('which', ['qemu-x86_64-static']).status !== 0) {
-    fail('qemu-x86_64-static required for legacy verification');
+    fail('qemu-x86_64-static required');
   }
   if (run('which', ['objdump']).status !== 0) {
-    fail('objdump required for AVX-512 disassembly check');
+    fail('objdump required');
   }
 
   const extractDir = path.join(ROOT, '.build-temp', 'appimage-extract');
@@ -114,7 +108,7 @@ function main() {
 
   log(`Extracting ${appimage}`);
   const extract = run(path.resolve(appimage), ['--appimage-extract'], { cwd: extractDir });
-  if (extract.status !== 0) fail(`appimage extract failed: ${extract.stderr}`);
+  if (extract.status !== 0) fail(`extract failed: ${extract.stderr}`);
 
   const root = resolveAppImageRoot(extractDir);
   const shellBinary = findAppImageBinary(root);
@@ -122,15 +116,13 @@ function main() {
   const libPath = appImageLibraryPath(root);
 
   log(`shell ELF: ${path.relative(root, shellBinary)}`);
-  log(`app dir: ${path.relative(root, appDir)}`);
 
   const critical = criticalArtifactPaths(shellBinary, appDir, root);
-  log(`objdump AVX-512 (zmm) check on ${critical.length} binaries`);
-  const avx512 = critical.filter((f) => disasmUsesAvx512(f));
-  if (avx512.length) {
-    fail(
-      `AVX-512 in: ${avx512.map((f) => path.relative(root, f)).join(', ')}`,
-    );
+  log(`objdump: post-Haswell instruction scan (${critical.length} binaries)`);
+  try {
+    assertHaswellSafeBinaries(critical, 'packaged');
+  } catch (e) {
+    fail(e.message);
   }
 
   if (findFiles(appDir, 'llama-addon.node').length === 0) {
@@ -138,17 +130,27 @@ function main() {
   }
   const lastBuildJson = path.join(appDir, 'node_modules', 'node-llama-cpp', 'llama', 'lastBuild.json');
   if (!fs.existsSync(lastBuildJson)) {
-    fail('missing node-llama-cpp/llama/lastBuild.json — getLlama() cannot find source build');
+    fail('missing lastBuild.json');
   }
   if (fs.existsSync(path.join(appDir, 'node_modules', '@node-llama-cpp'))) {
     const left = fs.readdirSync(path.join(appDir, 'node_modules', '@node-llama-cpp'));
     if (left.length) fail(`prebuilt @node-llama-cpp packaged: ${left.join(', ')}`);
   }
   if (fs.existsSync(path.join(appDir, 'node_modules', 'playwright'))) {
-    fail('playwright packaged (modern Chromium → SIGILL on Haswell)');
+    fail('playwright packaged');
   }
 
-  log('QEMU Haswell: require Node 20+ in packaged Electron');
+  log('QEMU Haswell: guide-ide --version (real Chromium launch path)');
+  const ver = qemuRun(shellBinary, ['--no-sandbox', '--disable-gpu', '--version'], libPath);
+  const verOut = `${ver.stdout}\n${ver.stderr}`;
+  if (isSigill(verOut, ver.status)) {
+    fail(`SIGILL on guide-ide --version (your kernel trap):\n${verOut}`);
+  }
+  if (ver.status !== 0) {
+    fail(`guide-ide --version failed under Haswell QEMU:\n${verOut}`);
+  }
+  log((ver.stdout || '').trim());
+
   const nv = qemuRun(
     shellBinary,
     [
@@ -158,44 +160,32 @@ function main() {
     libPath,
     { ELECTRON_RUN_AS_NODE: '1' },
   );
-  const nvOut = `${nv.stdout}\n${nv.stderr}`;
-  if (nv.status === 2) {
-    fail(`packaged Electron has Node < ${LEGACY_ELECTRON_MIN_NODE_MAJOR} (node-llama-cpp ESM will break): ${nvOut}`);
-  }
-  if (nv.status !== 0) {
-    if (isSigill(nvOut)) fail(`SIGILL checking Node version:\n${nvOut}`);
-    fail(`Node version check failed:\n${nvOut}`);
-  }
-  log(`node ${(nv.stdout || '').trim()}`);
+  if (nv.status === 2) fail(`Node < ${LEGACY_ELECTRON_MIN_NODE_MAJOR}`);
 
   const testScript = path.join(appDir, 'build', 'test-load-llama-legacy.mjs');
   if (!fs.existsSync(testScript)) fail(`missing ${testScript}`);
-  log('QEMU Haswell: import getLlama from node-llama-cpp (real model-load path)');
+  log('QEMU Haswell: getLlama(lastBuild) — model load path');
   const lr = qemuRun(shellBinary, [testScript], libPath, { ELECTRON_RUN_AS_NODE: '1' });
   const lrOut = `${lr.stdout}\n${lr.stderr}`;
   if (lr.status !== 0) {
-    if (isSigill(lrOut)) fail(`SIGILL in getLlama path:\n${lrOut}`);
+    if (isSigill(lrOut, lr.status)) fail(`SIGILL in getLlama:\n${lrOut}`);
     if (isEsmSyntaxError(lrOut)) {
-      fail(
-        `ESM syntax error (need Electron Node >= ${LEGACY_ELECTRON_MIN_NODE_MAJOR}, not 18):\n${lrOut}`,
-      );
+      fail(`ESM syntax (patch cli-spinners / need Node 20+):\n${lrOut}`);
     }
     const cudaArtifact = /-cuda-legacy-/.test(appimage);
     if (
       cudaArtifact &&
       /libcuda\.so|ERR_DLOPEN_FAILED|Failed to load last build/i.test(lrOut)
     ) {
-      log(
-        'warn: CUDA lastBuild needs libcuda (no GPU in QEMU) — ESM import + objdump passed',
-      );
+      log('warn: CUDA .node needs libcuda in QEMU (OK on your GPU)');
     } else {
-      fail(`getLlama import/load failed:\n${lrOut}`);
+      fail(`getLlama failed:\n${lrOut}`);
     }
   } else {
     log((lr.stdout || '').trim());
   }
 
-  log('PASS — legacy AppImage: Haswell-safe binaries + Node 20+ + getLlama()');
+  log('PASS — Haswell-safe guide-ide + getLlama path verified');
 }
 
 main();
