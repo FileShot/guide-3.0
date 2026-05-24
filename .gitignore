@@ -1,4 +1,4 @@
-﻿node_modules/
+node_modules/
 dist/
 dist-electron/
 # build/ assets (icon.ico, installer.nsh, BMPs) must be committed for GitHub Actions
@@ -20,6 +20,31 @@ test-*/
 /*.jpg
 /*.gif
 /*.webp
+
+# Internal audits / bug reports (never publish)
+/*-report.md
+/*-plan.md
+/ALL_FAILURES.md
+/PAST_FAILURES.md
+/BUGFIX_PLAN.md
+/BUG_*.md
+/LOG_AUDIT_*.md
+/*INVESTIGATION*.md
+/*IMPLEMENTATION_PLAN*.md
+/PRODUCTION_*.md
+/PHASE_B_*.md
+/GLM_*.md
+/USER_REPORTED_*.md
+/USER_FEEDBACK_*.md
+/REGRESSION_*.md
+/CODEBASE_FULL_AUDIT_*.md
+/GUIDE_MAIN_LOG_*.md
+/CHANGES_LOG.md
+/CONTEXT_RESEARCH.md
+/TOOL_SCHEMA_AUDIT.md
+/server-vs-electron-*
+/pipeline-parity-*
+/guide3/
 
 # Debug and temp logs
 *.log
