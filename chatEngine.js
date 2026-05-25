@@ -2312,6 +2312,11 @@ class ChatEngine extends EventEmitter {
               logBuf: '', buf: '', phase: 0,
               filePath: '', fileName: '', ext: '', escPending: false,
             });
+            // File-write ops are shown via FileContentBlock — all others get a tool-generating card
+            const _FC_FILE_WRITE_OPS = new Set(['write_file', 'create_file', 'append_to_file']);
+            if (!_FC_FILE_WRITE_OPS.has(functionName) && onStreamEvent) {
+              onStreamEvent('tool-generating', { tool: functionName });
+            }
           }
           const s = _fcStreams.get(callIndex);
 
