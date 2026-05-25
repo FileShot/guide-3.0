@@ -2319,8 +2319,7 @@ class ChatEngine extends EventEmitter {
           s.logBuf += paramsChunk;
           if (done) {
             const total = s.logBuf.length;
-            const preview = total > 200 ? `${s.logBuf.slice(0, 200)}…(${total} total)` : s.logBuf;
-            console.log(`[StreamDiag] FC ${functionName}[${callIndex}]: ${total} chars [DONE] "${preview}"`);
+            console.log(`[StreamDiag] FC ${functionName}[${callIndex}]: ${total} chars [DONE] "${s.logBuf}"`);
           }
 
           // ── write_file content streaming → file-content-start/token/end ─────
