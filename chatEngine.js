@@ -1489,6 +1489,8 @@ class ChatEngine extends EventEmitter {
 
     this._abortController = new AbortController();
     let fullResponse = '';
+    let _proseLogBuf = '';
+    let _thinkLogBuf = '';
     let tokensSinceLastUsageReport = 0;
     let totalToolCalls = 0;
     const genStartTime = Date.now();
@@ -1566,6 +1568,9 @@ class ChatEngine extends EventEmitter {
 
       const _sfForward = (text) => {
         _sfVisibleChars += text.length;
+        if (_sfVisibleChars <= 30 || _sfVisibleChars % 100 < text.length) {
+          console.log(`[StreamDiag] FORWARD: chars=${_sfVisibleChars} tail=${JSON.stringify(text.slice(-10))}`);
+        }
         if (onToken) onToken(text);
       };
 
@@ -2187,7 +2192,11 @@ class ChatEngine extends EventEmitter {
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
           if (!chunk) return;
-          console.log(`[StreamDiag] PROSE: "${chunk.length > 120 ? chunk.slice(0, 120) + '...' : chunk}"`);
+          _proseLogBuf += chunk;
+          if (_proseLogBuf.includes('\n')) {
+            console.log(`[StreamDiag] PROSE: ${JSON.stringify(_proseLogBuf)}`);
+            _proseLogBuf = '';
+          }
           fullResponse += chunk;
           _sfProcessChunk(chunk);
           tokensSinceLastUsageReport++;
@@ -2206,7 +2215,11 @@ class ChatEngine extends EventEmitter {
           if (!text && chunk.type !== 'segment') return;
 
           if (text && chunk.type === 'segment' && chunk.segmentType === 'thought') {
-            console.log(`[StreamDiag] THINK: "${text.length > 120 ? text.slice(0, 120) + '...' : text}"`);
+            _thinkLogBuf += text;
+            if (_thinkLogBuf.includes('\n')) {
+              console.log(`[StreamDiag] THINK: ${JSON.stringify(_thinkLogBuf)}`);
+              _thinkLogBuf = '';
+            }
           }
 
           // Native thought segments → thinking dropdown only (never visible chat / onToken)
@@ -3233,6 +3246,8 @@ class ChatEngine extends EventEmitter {
         console.warn(`[ChatEngine] Thought-segment trap: ${_sfNativeThinkChars} chars in thought, 0 in visible chat — check Mode C + native FC interaction`);
       }
       console.log(`[ChatEngine] Generation complete. Tool calls: ${totalToolCalls}, stopReason=${stopReason}, responseLen=${fullResponse.length}, thoughtLen=${_sfNativeThinkChars}, visibleLen=${_sfVisibleChars}`);
+      if (_proseLogBuf) { console.log(`[StreamDiag] PROSE (final): ${JSON.stringify(_proseLogBuf)}`); _proseLogBuf = ''; }
+      if (_thinkLogBuf) { console.log(`[StreamDiag] THINK (final): ${JSON.stringify(_thinkLogBuf)}`); _thinkLogBuf = ''; }
       // Log visible response text to help diagnose model looping/drifting.
       // This is the text the user actually sees (tool JSON is stripped, thinking is separate).
       if (_sfVisibleChars > 0) {
@@ -3656,7 +3671,10 @@ class ChatEngine extends EventEmitter {
       const llamaCppPath = this._getNodeLlamaCppPath();
       const { LlamaChat } = await import(pathToFileURL(llamaCppPath).href);
 
-      subContext = await this._model.createContext({ contextSize: subCtxSize });
+      subContext = await this._model.createContext({
+        contextSize: { min: 256, max: subCtxSize },
+        failedCreationRemedy: { retries: 4, autoContextSizeShrink: 0.4 },
+      });
       const subSequence = subContext.getSequence();
       const subChat = new LlamaChat({
         contextSequence: subSequence,
@@ -3699,10 +3717,28 @@ class ChatEngine extends EventEmitter {
       return summary || null;
     } catch (err) {
       console.warn(`[ChatEngine] Summarizer FAILED: ${err.message}`);
-      return null;
+      return this._extractDeterministicSummary(droppedItems);
     } finally {
       try { subContext?.dispose(); } catch (_) {}
     }
+  }
+
+  _extractDeterministicSummary(droppedItems) {
+    if (!droppedItems || droppedItems.length === 0) return null;
+    const lines = [];
+    for (const item of droppedItems) {
+      if (item.type === 'user') {
+        const text = this._getHistoryItemText(item).trim();
+        if (text) lines.push(`- User: ${text.slice(0, 200)}`);
+      } else if (item.type === 'model') {
+        const text = this._getHistoryItemText(item).trim();
+        if (text) lines.push(`- Assistant: ${text.slice(0, 200)}`);
+      }
+    }
+    if (!lines.length) return null;
+    const summary = lines.join('\n');
+    console.log(`[ChatEngine] Summarizer FALLBACK: extracted ${lines.length} lines from ${droppedItems.length} dropped items`);
+    return summary;
   }
 
   _writeContextStateFile({ chatHistory, keptIndices, getItemText, used, budget }) {

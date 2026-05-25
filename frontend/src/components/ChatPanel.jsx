@@ -1489,6 +1489,62 @@ export default function ChatPanel() {
 
       }
 
+      // R53-Diag: Log segment shapes and streaming state to trace IPC ordering issues
+      console.log('[ChatPanel] R53-Diag: segments=', JSON.stringify(
+        (segments || []).map(s => ({ type: s.type, len: s.content?.length || 0 }))
+      ));
+
+      console.log(`[ChatPanel] R53-Diag: chatStreamingText.len=${state.chatStreamingText?.length || 0}, resultText.len=${result?.text?.length || 0}, messageContent.len=${messageContent.length}`);
+
+      // R53-Fix: Guard against Electron IPC ordering lag where the ai-chat invoke reply
+      // is processed before all llm-token events arrive, leaving streamingSegments
+      // with fewer prose chars than the backend actually generated.
+      // result.text (from the invoke reply payload) is always complete — it arrives
+      // in the same message as the reply and is never subject to IPC event lag.
+      {
+
+        const _backendProse = result?.text || '';
+
+        if (_backendProse.trim() && _backendProse.trim().length > messageContent.trim().length) {
+
+          console.warn(`[ChatPanel] R53-Fix: IPC lag detected — segments=${messageContent.trim().length} chars, backend=${_backendProse.trim().length} chars. Correcting.`);
+
+          const textSegIndices = [];
+
+          for (let _i = 0; _i < messageSegments.length; _i++) {
+
+            if (messageSegments[_i].type === 'text') textSegIndices.push(_i);
+
+          }
+
+          let precedingProseLen = 0;
+
+          for (let _k = 0; _k < textSegIndices.length - 1; _k++) {
+
+            precedingProseLen += (messageSegments[textSegIndices[_k]].content || '').length;
+
+          }
+
+          const correctedLastProse = _backendProse.slice(precedingProseLen);
+
+          if (textSegIndices.length > 0) {
+
+            const lastIdx = textSegIndices[textSegIndices.length - 1];
+
+            messageSegments[lastIdx] = { ...messageSegments[lastIdx], content: correctedLastProse };
+
+          } else {
+
+            messageSegments.push({ type: 'text', content: _backendProse });
+
+          }
+
+          messageContent = _backendProse;
+
+        }
+
+      }
+
       // R40: Create message if there's text content OR tool calls
 
       const hasContent = (messageContent && messageContent.trim()) || messageFileBlocks.length > 0;
