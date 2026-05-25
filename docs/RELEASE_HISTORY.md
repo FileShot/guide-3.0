@@ -1,9 +1,63 @@
 # guIDE release history (archived)
 
-Exported: 2026-05-24T17:01:02.820Z
-Total releases: 40
+Exported: 2026-05-25T (merged — 45 releases total)
 
 This file preserves notes from releases pruned from GitHub. Install artifacts use the latest release only.
+
+---
+
+## guIDE v0.3.141 (`v0.3.141`)
+
+- **Published:** 2026-05-25T18:38:14Z
+- **Draft:** no
+- **Prerelease:** no
+- **URL:** https://github.com/FileShot/guide-3.0/releases/tag/v0.3.141
+
+**Full Changelog**: https://github.com/FileShot/guide-3.0/compare/v0.3.140...v0.3.141
+
+---
+
+## guIDE v0.3.140 (`v0.3.140`)
+
+- **Published:** 2026-05-25T16:48:21Z
+- **Draft:** no
+- **Prerelease:** no
+- **URL:** https://github.com/FileShot/guide-3.0/releases/tag/v0.3.140
+
+**Full Changelog**: https://github.com/FileShot/guide-3.0/compare/v0.3.139...v0.3.140
+
+---
+
+## guIDE v0.3.138 (`v0.3.138`)
+
+- **Published:** 2026-05-25T03:42:15Z
+- **Draft:** no
+- **Prerelease:** no
+- **URL:** https://github.com/FileShot/guide-3.0/releases/tag/v0.3.138
+
+**Full Changelog**: https://github.com/FileShot/guide-3.0/compare/v0.3.137...v0.3.138
+
+---
+
+## guIDE v0.3.137 (`v0.3.137`)
+
+- **Published:** 2026-05-24T23:10:45Z
+- **Draft:** no
+- **Prerelease:** no
+- **URL:** https://github.com/FileShot/guide-3.0/releases/tag/v0.3.137
+
+**Full Changelog**: https://github.com/FileShot/guide-3.0/compare/v0.3.136...v0.3.137
+
+---
+
+## guIDE v0.3.134 (`v0.3.134`)
+
+- **Published:** 2026-05-24T17:34:28Z
+- **Draft:** no
+- **Prerelease:** no
+- **URL:** https://github.com/FileShot/guide-3.0/releases/tag/v0.3.134
+
+**Full Changelog**: https://github.com/FileShot/guide-3.0/compare/v0.3.132...v0.3.134
 
 ---
 
