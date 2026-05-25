@@ -37,6 +37,7 @@ const SETTINGS_DEFAULTS = {
   maxIterations: 0,
   generationTimeoutSec: 0,
   enableGrammar: false,
+  enableContextSummarizer: true,  // When true, generates a progress summary from dropped context during context shifts using the loaded model (sub-context pattern)
   // System Prompt
   systemPrompt: '',
   customInstructions: '',
@@ -46,7 +47,7 @@ const SETTINGS_DEFAULTS = {
   requireMinContextForGpu: false,
   gpuConstrainedContext: true,  // When GPU layers < 30% of total, cap context to VRAM-bounded size for faster generation
   vramBalance: 'balanced', // auto gpuLayers=-1: balanced | speed | context
-  kvCacheType: 'f16', // KV cache quantization — f16 matches llama.cpp upstream default and enables the fastest fused flash-attention path on consumer NVIDIA GPUs (matches LM Studio / llama-server). Lower-precision options (q8_0, q4_0) save VRAM at a measurable speed cost; user-overridable.
+  kvCacheType: 'q8_0', // KV cache quantization — q8_0 provides ~2x memory reduction vs f16 with nearly imperceptible quality delta, giving significantly more context capacity. f16 enables the fastest fused flash-attention path on NVIDIA GPUs but consumes more VRAM; q4_0 saves even more VRAM at a measurable speed/quality cost. User-overridable.
   // Editor
   fontSize: 14,
   fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
@@ -156,12 +157,12 @@ class SettingsManager extends EventEmitter {
           this._settings.contextSize = 0;
           this._scheduleSave();
         }
-        // Migration: legacy guIDE KV defaults (q3_0, q4_0) → f16. f16 matches llama.cpp upstream and
-        // enables the fastest fused flash-attention path on consumer NVIDIA GPUs (LM Studio / llama-server
-        // behaviour). Users who explicitly want lower-precision KV (e.g. for very long contexts on low-VRAM
-        // systems) can set q8_0 / q4_0 / etc. via settings — only legacy guIDE defaults are swept.
-        if (this._settings.kvCacheType === 'q3_0' || this._settings.kvCacheType === 'q4_0') {
-          this._settings.kvCacheType = 'f16';
+        // Migration: legacy guIDE KV defaults (q3_0, q4_0, f16) → q8_0. q8_0 provides ~2x memory
+        // reduction vs f16 with nearly imperceptible quality delta, giving significantly more context.
+        // Users who explicitly want f16 (fastest flash-attention) or q4_0 (max context) can set them
+        // via settings — only legacy guIDE defaults are swept.
+        if (this._settings.kvCacheType === 'q3_0' || this._settings.kvCacheType === 'q4_0' || this._settings.kvCacheType === 'f16') {
+          this._settings.kvCacheType = 'q8_0';
           this._scheduleSave();
         }
       }

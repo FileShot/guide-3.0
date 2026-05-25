@@ -1219,6 +1219,8 @@ export default function ChatPanel() {
 
           enableGrammar: s.enableGrammar,
 
+          enableContextSummarizer: s.enableContextSummarizer !== false,
+
           autoLintFix: s.autoLintFix !== false,
 
           enableSubAgents: !!s.enableSubAgents,

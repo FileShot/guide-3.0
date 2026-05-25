@@ -1566,6 +1566,9 @@ function SettingsPanel() {
         <SettingToggle label="Grammar-Constrained Tool Calls" value={settings.enableGrammar}
           onChange={v => updateSetting('enableGrammar', v)}
           hint="Forces valid tool calls. May cause hangs on small models." />
+        <SettingToggle label="Context Summarizer" value={settings.enableContextSummarizer !== false}
+          onChange={v => updateSetting('enableContextSummarizer', v)}
+          hint="On context shift, generate a progress summary from dropped turns so the model can continue the task without losing track." />
         <SettingToggle label="Auto Lint Fix" value={settings.autoLintFix !== false}
           onChange={v => updateSetting('autoLintFix', v)}
           hint="Auto-inject lint correction into model context after file writes detect errors." />

@@ -2,6 +2,10 @@ node_modules/
 dist/
 dist-electron/
 # build/ assets (icon.ico, installer.nsh, BMPs) must be committed for GitHub Actions
+# but large electron dist/cache binaries must NOT be committed (exceed GitHub 100MB limit)
+build/electron-legacy-dist/
+build/electron-legacy-cache/
+build-output.log
 *.exe
 *.blockmap
 
