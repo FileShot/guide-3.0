@@ -2123,9 +2123,7 @@ class ChatEngine extends EventEmitter {
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
           if (!chunk) return;
-          if (fullResponse.length < 80 || fullResponse.length % 300 < chunk.length) {
-            console.log(`[StreamDiag] PROSE [${fullResponse.length}]: "${chunk.length > 100 ? chunk.slice(0, 100) + '...' : chunk}"`);
-          }
+          console.log(`[StreamDiag] PROSE: "${chunk.length > 120 ? chunk.slice(0, 120) + '...' : chunk}"`);
           fullResponse += chunk;
           _sfProcessChunk(chunk);
           tokensSinceLastUsageReport++;
@@ -2143,10 +2141,9 @@ class ChatEngine extends EventEmitter {
           const text = chunk.text || '';
           if (!text && chunk.type !== 'segment') return;
 
-          if (chunk.type === 'segment' && chunk.segmentType === 'thought') {
-            console.log(`[StreamDiag] THINK +${text.length}: "${text.length > 100 ? text.slice(0, 100) + '...' : text}"`);
-          } else {
-            console.log(`[StreamDiag] onResponseChunk type=${chunk.type ?? 'n/a'} segmentType=${chunk.segmentType ?? 'n/a'} len=${text.length}`);
+          if (text) {
+            const _diagLabel = (chunk.type === 'segment' && chunk.segmentType === 'thought') ? 'THINK' : 'CHUNK';
+            console.log(`[StreamDiag] ${_diagLabel}: "${text.length > 120 ? text.slice(0, 120) + '...' : text}"`);
           }
 
           // Native thought segments → thinking dropdown only (never visible chat / onToken)
