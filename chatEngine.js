@@ -2141,9 +2141,8 @@ class ChatEngine extends EventEmitter {
           const text = chunk.text || '';
           if (!text && chunk.type !== 'segment') return;
 
-          if (text) {
-            const _diagLabel = (chunk.type === 'segment' && chunk.segmentType === 'thought') ? 'THINK' : 'CHUNK';
-            console.log(`[StreamDiag] ${_diagLabel}: "${text.length > 120 ? text.slice(0, 120) + '...' : text}"`);
+          if (text && chunk.type === 'segment' && chunk.segmentType === 'thought') {
+            console.log(`[StreamDiag] THINK: "${text.length > 120 ? text.slice(0, 120) + '...' : text}"`);
           }
 
           // Native thought segments → thinking dropdown only (never visible chat / onToken)
@@ -2231,6 +2230,11 @@ class ChatEngine extends EventEmitter {
         genOptions.documentFunctionParams = true;
         this._shiftMeasureFunctions = functions;
         this._shiftMeasureDocumentFunctionParams = true;
+        genOptions.onFunctionCallParamsChunk = (chunk) => {
+          const preview = chunk.paramsChunk.length > 100 ? chunk.paramsChunk.slice(0, 100) + '...' : chunk.paramsChunk;
+          console.log(`[StreamDiag] FC ${chunk.functionName}[${chunk.callIndex}]: "${preview}"${chunk.done ? ' [DONE]' : ''}`);
+          if (onStreamEvent) onStreamEvent('llm-thinking-token', chunk.paramsChunk);
+        };
         console.log(`[ChatEngine] Native function calling active: ${Object.keys(functions).length} tools`);
       } else {
         this._shiftMeasureFunctions = undefined;
@@ -3936,8 +3940,10 @@ class ChatEngine extends EventEmitter {
     };
     let renderedTokens = this._measureRenderedTokens(measureOpts);
     let verifyDrops = 0;
+    const verifyDroppedItems = [];
     while (renderedTokens > budget && finalHistory.length > 2) {
-      finalHistory.splice(1, 1);
+      const [removed] = finalHistory.splice(1, 1);
+      verifyDroppedItems.push(removed);
       verifyDrops++;
       renderedTokens = this._measureRenderedTokens({ ...measureOpts, chatHistory: finalHistory });
     }
@@ -3953,11 +3959,15 @@ class ChatEngine extends EventEmitter {
     }
 
     const totalDropped = droppedCount + verifyDrops;
+    if (verifyDrops > 0) {
+      finalHistory = this._insertContextRotationNotice(finalHistory, totalDropped, pinnedUserText);
+    }
     console.log(
       `[ChatEngine] Context shift: kept ${keptIndices.size} items, dropped ${droppedCount}, verifyDrops=${verifyDrops}, ` +
       `renderedTokens=${renderedTokens} budget=${budget}, estimateUsed=${used}`,
     );
-    return { chatHistory: finalHistory, metadata: { droppedCount: totalDropped, droppedItems, pinnedUserText } };
+    const allDroppedItems = [...droppedItems, ...verifyDroppedItems];
+    return { chatHistory: finalHistory, metadata: { droppedCount: totalDropped, droppedItems: allDroppedItems, pinnedUserText } };
   }
 
   _buildToolPrompt(functions) {
