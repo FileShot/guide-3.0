@@ -267,7 +267,7 @@ export default function StatusBar() {
                 : ''
             }${modelInfo?.vramFreeAfterLoadGB != null ? ` | ${modelInfo.vramFreeAfterLoadGB}GB free after model load` : ''}${
               modelInfo?.contextPctOfCap != null ? ` | ctx ${modelInfo.contextPctOfCap}% of cap` : ''
-            }${vramWarning ? ` | ${vramWarning}` : ''}`}
+            }${gpuMemory.temperature > 0 ? ` | ${Math.round(gpuMemory.temperature)}°C` : ''}${vramWarning ? ` | ${vramWarning}` : ''}`}
             onClick={() => vramWarning && clearVramWarning()}
           >
             {vramWarning && <AlertTriangle size={12} className="mr-1 text-yellow-400" />}
@@ -277,6 +277,15 @@ export default function StatusBar() {
               <span className="ml-1 text-vsc-text-dim/70">
                 {gpuLayerOffload}{gpuTotalLayers != null ? `/${gpuTotalLayers}` : ''} layers
                 {modelInfo?.vramFreeAfterLoadGB != null ? ` · ${modelInfo.vramFreeAfterLoadGB}GB free` : ''}
+              </span>
+            )}
+            {gpuMemory.temperature > 0 && (
+              <span className={`ml-1 ${
+                gpuMemory.temperature > 85 ? 'text-red-400' :
+                gpuMemory.temperature > 75 ? 'text-yellow-400' :
+                'text-vsc-text-dim/70'
+              }`}>
+                {Math.round(gpuMemory.temperature)}°C
               </span>
             )}
           </div>

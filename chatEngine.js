@@ -2123,7 +2123,9 @@ class ChatEngine extends EventEmitter {
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
           if (!chunk) return;
-          console.log(`[StreamDiag] onTextChunk len=${chunk.length} jinjaWrapper=${this._jinjaThoughtSegments}`);
+          if (fullResponse.length < 80 || fullResponse.length % 300 < chunk.length) {
+            console.log(`[StreamDiag] PROSE [${fullResponse.length}]: "${chunk.length > 100 ? chunk.slice(0, 100) + '...' : chunk}"`);
+          }
           fullResponse += chunk;
           _sfProcessChunk(chunk);
           tokensSinceLastUsageReport++;
@@ -2141,7 +2143,11 @@ class ChatEngine extends EventEmitter {
           const text = chunk.text || '';
           if (!text && chunk.type !== 'segment') return;
 
-          console.log(`[StreamDiag] onResponseChunk type=${chunk.type ?? 'n/a'} segmentType=${chunk.segmentType ?? 'n/a'} len=${text.length}`);
+          if (chunk.type === 'segment' && chunk.segmentType === 'thought') {
+            console.log(`[StreamDiag] THINK +${text.length}: "${text.length > 100 ? text.slice(0, 100) + '...' : text}"`);
+          } else {
+            console.log(`[StreamDiag] onResponseChunk type=${chunk.type ?? 'n/a'} segmentType=${chunk.segmentType ?? 'n/a'} len=${text.length}`);
+          }
 
           // Native thought segments → thinking dropdown only (never visible chat / onToken)
           if (chunk.type === 'segment' && chunk.segmentType === 'thought') {
