@@ -41,6 +41,70 @@ function emitCompleteFileContentBlock(onStreamEvent, filePath, content) {
   });
 }
 
+/**
+ * Unescape a JSON string value fragment (no surrounding quotes).
+ * Used to decode filePath from accumulated FC params buffer.
+ */
+function _jsonUnescape(s) {
+  try { return JSON.parse('"' + s + '"'); } catch { return s; }
+}
+
+/**
+ * Stream-decode a fragment of a JSON string value (no surrounding quotes).
+ * Handles escape sequences that may be split across chunk boundaries.
+ * Returns { out, escPending, ended }:
+ *   out         — decoded content for this chunk
+ *   escPending  — true if trailing \ needs next chunk to resolve
+ *   ended       — true if unescaped " (end of JSON string) was found
+ */
+function _jsonStringChunkDecode(chunk, escPending) {
+  let out = '';
+  let i = 0;
+  if (escPending && chunk.length > 0) {
+    const c = chunk[0];
+    switch (c) {
+      case '"':  out += '"';  break;
+      case '\\': out += '\\'; break;
+      case '/':  out += '/';  break;
+      case 'n':  out += '\n'; break;
+      case 'r':  out += '\r'; break;
+      case 't':  out += '\t'; break;
+      case 'b':  out += '\b'; break;
+      case 'f':  out += '\f'; break;
+      default:   out += '\\' + c;
+    }
+    i = 1;
+  }
+  while (i < chunk.length) {
+    const c = chunk[i];
+    if (c === '\\') {
+      if (i + 1 < chunk.length) {
+        const nc = chunk[i + 1];
+        switch (nc) {
+          case '"':  out += '"';  break;
+          case '\\': out += '\\'; break;
+          case '/':  out += '/';  break;
+          case 'n':  out += '\n'; break;
+          case 'r':  out += '\r'; break;
+          case 't':  out += '\t'; break;
+          case 'b':  out += '\b'; break;
+          case 'f':  out += '\f'; break;
+          default:   out += '\\' + nc;
+        }
+        i += 2;
+      } else {
+        return { out, escPending: true, ended: false };
+      }
+    } else if (c === '"') {
+      return { out, escPending: false, ended: true };
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return { out, escPending: false, ended: false };
+}
+
 // Pre-compiled regex patterns for the streaming tool call filter.
 // These are tested on line boundaries only — never on every character.
 const RE_FENCE_HEADER = /^```\s*(\w*)\r?\n/;
@@ -2230,10 +2294,86 @@ class ChatEngine extends EventEmitter {
         genOptions.documentFunctionParams = true;
         this._shiftMeasureFunctions = functions;
         this._shiftMeasureDocumentFunctionParams = true;
+        const _fcStreams = new Map();
+        let _fcUsageChunks = 0;
         genOptions.onFunctionCallParamsChunk = (chunk) => {
-          const preview = chunk.paramsChunk.length > 100 ? chunk.paramsChunk.slice(0, 100) + '...' : chunk.paramsChunk;
-          console.log(`[StreamDiag] FC ${chunk.functionName}[${chunk.callIndex}]: "${preview}"${chunk.done ? ' [DONE]' : ''}`);
-          if (onStreamEvent) onStreamEvent('llm-thinking-token', chunk.paramsChunk);
+          const { callIndex, functionName, paramsChunk, done } = chunk;
+
+          // ── Throttled context ring update during FC generation ──────────────
+          _fcUsageChunks++;
+          if (onContextUsage && this._sequence && _fcUsageChunks >= 50) {
+            _fcUsageChunks = 0;
+            onContextUsage({ used: this._sequence.nextTokenIndex, total: this._context.contextSize });
+          }
+
+          // ── Per-call state ───────────────────────────────────────────────────
+          if (!_fcStreams.has(callIndex)) {
+            _fcStreams.set(callIndex, {
+              logBuf: '', buf: '', phase: 0,
+              filePath: '', fileName: '', ext: '', escPending: false,
+            });
+          }
+          const s = _fcStreams.get(callIndex);
+
+          // ── Consolidated logging: one line per call at [DONE] ────────────────
+          s.logBuf += paramsChunk;
+          if (done) {
+            const total = s.logBuf.length;
+            const preview = total > 200 ? `${s.logBuf.slice(0, 200)}…(${total} total)` : s.logBuf;
+            console.log(`[StreamDiag] FC ${functionName}[${callIndex}]: ${total} chars [DONE] "${preview}"`);
+          }
+
+          // ── write_file content streaming → file-content-start/token/end ─────
+          if (functionName !== 'write_file' || s.phase === 2) return;
+
+          if (s.phase === 0) {
+            s.buf += paramsChunk;
+
+            if (!s.filePath) {
+              const fpM = s.buf.match(/"filePath"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+              if (fpM) {
+                s.filePath = _jsonUnescape(fpM[1]);
+                s.fileName = s.filePath.split(/[\\/]/).pop() || s.filePath;
+                s.ext = s.fileName.includes('.') ? s.fileName.split('.').pop().toLowerCase() : '';
+              }
+            }
+
+            const contentMatch = s.buf.match(/"content"\s*:\s*"([\s\S]*)/);
+            if (contentMatch) {
+              s.phase = 1;
+              s.buf = '';
+              if (onStreamEvent) {
+                onStreamEvent('file-content-start', {
+                  filePath: s.filePath, fileName: s.fileName, language: s.ext, fileKey: s.filePath,
+                });
+              }
+              const after = contentMatch[1];
+              if (after) {
+                const { out, escPending, ended } = _jsonStringChunkDecode(after, false);
+                if (out && onStreamEvent) onStreamEvent('file-content-token', out);
+                if (ended) {
+                  if (onStreamEvent) onStreamEvent('file-content-end', { filePath: s.filePath, fileKey: s.filePath });
+                  s.phase = 2;
+                  return;
+                }
+                s.escPending = escPending;
+              }
+            }
+
+            if (done && s.phase === 1 && onStreamEvent) {
+              onStreamEvent('file-content-end', { filePath: s.filePath, fileKey: s.filePath });
+              s.phase = 2;
+            }
+          } else if (s.phase === 1) {
+            const { out, escPending, ended } = _jsonStringChunkDecode(paramsChunk, s.escPending);
+            if (out && onStreamEvent) onStreamEvent('file-content-token', out);
+            if (ended || done) {
+              if (onStreamEvent) onStreamEvent('file-content-end', { filePath: s.filePath, fileKey: s.filePath });
+              s.phase = 2;
+            } else {
+              s.escPending = escPending;
+            }
+          }
         };
         console.log(`[ChatEngine] Native function calling active: ${Object.keys(functions).length} tools`);
       } else {
@@ -3493,13 +3633,14 @@ class ChatEngine extends EventEmitter {
    * Returns summary string on success, null on any failure or skip.
    */
   async _summarizeDroppedContext(droppedItems, taskHint, enabled) {
-    if (!enabled) return null;
-    if (!droppedItems || droppedItems.length === 0) return null;
-    if (!this._model) return null;
+    console.log(`[ChatEngine] Summarizer ENTER: enabled=${enabled}, droppedItems=${droppedItems?.length ?? 0}, hasModel=${!!this._model}`);
+    if (!enabled) { console.log('[ChatEngine] Summarizer SKIP: disabled'); return null; }
+    if (!droppedItems || droppedItems.length === 0) { console.log('[ChatEngine] Summarizer SKIP: no dropped items'); return null; }
+    if (!this._model) { console.log('[ChatEngine] Summarizer SKIP: no model'); return null; }
 
     const mainCtx = this._context?.contextSize || 0;
     if (mainCtx < 2048) {
-      console.log('[ChatEngine] Summarizer: skipped — main context too small');
+      console.log('[ChatEngine] Summarizer SKIP: main context too small');
       return null;
     }
 
@@ -3550,10 +3691,10 @@ class ChatEngine extends EventEmitter {
         onTextChunk: (chunk) => { summary += chunk; },
       });
       summary = (result?.response || summary).trim();
-      console.log(`[ChatEngine] Summarizer: generated ${summary.length} chars from ${droppedItems.length} dropped items`);
+      console.log(`[ChatEngine] Summarizer DONE: generated ${summary.length} chars from ${droppedItems.length} dropped items`);
       return summary || null;
     } catch (err) {
-      console.warn(`[ChatEngine] Summarizer: failed — ${err.message}`);
+      console.warn(`[ChatEngine] Summarizer FAILED: ${err.message}`);
       return null;
     } finally {
       try { subContext?.dispose(); } catch (_) {}
