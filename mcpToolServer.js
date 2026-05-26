@@ -67,7 +67,7 @@ class MCPToolServer {
     // Permission gates for destructive operations
     this.onPermissionRequest = null;
     this._destructiveTools = new Set([
-      'delete_file', 'replace_in_file', 'write_file', 'terminal_run',
+      'delete_file', 'replace_in_file', 'write_file',
       'git_commit', 'git_push', 'git_reset', 'git_branch_delete',
     ]);
 
@@ -301,7 +301,7 @@ class MCPToolServer {
       },
       {
         name: 'run_command',
-        description: 'Execute a shell command in the project directory and return the output. Default timeout 60 seconds, maximum 5 minutes. On Windows, runs in cmd.exe — use CMD commands (del, rmdir /s /q, copy, move, type, echo, curl, netstat, findstr). PowerShell cmdlets (Remove-Item, Get-ChildItem, Invoke-RestMethod, etc.) do NOT work — the "powershell -Command" prefix fails because cmd.exe mangles the nested quotes and the command echoes instead of executing. If PowerShell is truly needed, write a .ps1 file with write_file and run "powershell -File script.ps1".',
+        description: 'Execute a shell command in the project directory and return the output. Default timeout 60 seconds, maximum 5 minutes. IMPORTANT: Each call spawns a fresh shell — cd, set VAR=, export VAR= do NOT persist between calls. Use absolute paths or chain commands with && to work around this. Shell: Windows = cmd.exe, Unix = /bin/sh. Windows CMD commands: del, rmdir /s /q, copy, move, type, echo, curl, netstat, findstr. PowerShell cmdlets do NOT work directly — if needed, write a .ps1 file with write_file and run "powershell -File script.ps1". WAIT/SLEEP: Windows = "timeout /t 5 /nobreak >nul" (5 seconds), Unix = "sleep 5". POLLING: Windows = "ping -n 6 127.0.0.1 >nul" (5-second delay), Unix = "while ! command; do sleep 1; done". BACKGROUND: Windows = "start /b command", Unix = "command &".',
         parameters: {
           command: { type: 'string', description: 'Command to execute', required: true },
           cwd: { type: 'string', description: 'Working directory', required: false },
