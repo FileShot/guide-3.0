@@ -1495,6 +1495,7 @@ class ChatEngine extends EventEmitter {
     let totalToolCalls = 0;
     const genStartTime = Date.now();
     let genTokenCount = 0;
+    let totalGenTokens = 0; // counts ALL tokens: prose + thinking + FC grammar (genTokenCount only counts prose)
 
     try {
       console.log(`[ChatEngine] chat() try block ENTER: abortController=${!!this._abortController}`);
@@ -1568,7 +1569,7 @@ class ChatEngine extends EventEmitter {
 
       const _sfForward = (text) => {
         _sfVisibleChars += text.length;
-        if (_sfVisibleChars <= 30 || _sfVisibleChars % 100 < text.length) {
+        if (_sfVisibleChars <= 30 || _sfVisibleChars % 1000 < text.length) {
           console.log(`[StreamDiag] FORWARD: chars=${_sfVisibleChars} tail=${JSON.stringify(text.slice(-10))}`);
         }
         if (onToken) onToken(text);
@@ -2201,6 +2202,7 @@ class ChatEngine extends EventEmitter {
           _sfProcessChunk(chunk);
           tokensSinceLastUsageReport++;
           genTokenCount++;
+          totalGenTokens++;
           if (onContextUsage && tokensSinceLastUsageReport >= 50) {
             tokensSinceLastUsageReport = 0;
             onContextUsage({
@@ -2230,6 +2232,7 @@ class ChatEngine extends EventEmitter {
             if (onContextUsage && this._sequence) {
               onContextUsage({ used: this._sequence.nextTokenIndex, total: this._context.contextSize });
             }
+            totalGenTokens += chunk.tokens?.length || 1;
             if (chunk.segmentStartTime && onStreamEvent) {
               onStreamEvent('llm-thinking-start', { position: _sfVisibleChars });
             }
@@ -2313,6 +2316,7 @@ class ChatEngine extends EventEmitter {
           const { callIndex, functionName, paramsChunk, done } = chunk;
 
           // ── Throttled context ring update during FC generation ──────────────
+          totalGenTokens++;
           _fcUsageChunks++;
           if (onContextUsage && this._sequence && _fcUsageChunks >= 50) {
             _fcUsageChunks = 0;
@@ -2532,8 +2536,91 @@ class ChatEngine extends EventEmitter {
       }
       console.log(`[ChatEngine] ─── MODEL RESPONSE ─── "${_rawResp}"`);
 
-      const _genStopReason = result.metadata?.stopReason;
-      const _userAbortedGeneration = _genStopReason === 'abort' || _genStopReason === 'cancelled';
+      let _genStopReason = result.metadata?.stopReason;
+      let _userAbortedGeneration = _genStopReason === 'abort' || _genStopReason === 'cancelled';
+
+      // maxTokens interrupt diagnostic: when maxTokens stops generation during native FC,
+      // the partial FC result is discarded by node-llama-cpp (result.functionCalls is undefined).
+      // Log + warn the user so the 15-minute silence scenario is visible.
+      if (_genStopReason === 'maxTokens' && _useNativeFunctions) {
+        console.warn(`[ChatEngine] maxTokens interrupted native FC generation — totalGenTokens=${totalGenTokens}, proseGenTokens=${genTokenCount}, partial FC result discarded by node-llama-cpp`);
+        if (onStreamEvent) {
+          onStreamEvent('generation-warning', {
+            message: 'Generation hit token limit during tool call — will continue',
+            suggestion: 'The model will automatically continue generating to complete the tool call.',
+          });
+        }
+      }
+
+      // Seamless continuation: when maxTokens stops generation, continue from where the model left off.
+      // Implements the core pipeline requirement (RULES.md Section 2): "when generation hits maxTokens,
+      // the pipeline continues in the same response without user intervention."
+      // Previously, continuation only existed inside the tool loop (after tool execution).
+      // This adds continuation for maxTokens stops with 0 tool calls — the 15-minute silence scenario.
+      let _seamlessRound = 0;
+      const MAX_SEAMLESS_CONTINUATION_ROUNDS = 10;
+      while (result.metadata?.stopReason === 'maxTokens' && _seamlessRound < MAX_SEAMLESS_CONTINUATION_ROUNDS) {
+        _seamlessRound++;
+
+        // Reset streaming filter state for the next generation round
+        _sfBuf = ''; _sfDepth = 0; _sfActive = false; _sfConfirmed = false;
+        _sfInStr = false; _sfEscaped = false; _sfLastCharWasNewlineOrStart = true;
+        _sfInFence = false; _sfFenceBuf = ''; _sfFenceTickCount = 0;
+        _sfFileWriteDetected = false; _sfContentStreamActive = false; _sfContentDone = false;
+        _sfContentEsc = false; _sfContentBuf = ''; _sfContentFilePath = '';
+        _sfUnicodeCount = 0; _sfUnicodeChars = '';
+        _sfInThink = false; _sfThinkBuf = ''; _sfThinkTagMatch = '';
+        _sfFenceInThink = false; _sfPostFenceSuppress = false;
+        _sfFenceStreamPlain = false; _sfFencePlainTick = 0;
+        _sfNativeThinkActive = false;
+        this._nativeThinkLogged = false;
+        // NOTE: _sfVisibleChars is NOT reset — it tracks cumulative visible chars across rounds
+
+        // Recalculate maxTokens for this round
+        const _seamlessCtxUsed = this._sequence?.nextTokenIndex || 0;
+        const _seamlessCtxAvail = contextSize - _seamlessCtxUsed;
+        if (_seamlessCtxAvail < MIN_GENERATION_TOKENS) {
+          console.log(`[ChatEngine] Seamless continuation: insufficient context (${_seamlessCtxAvail} tokens) — stopping`);
+          break;
+        }
+        genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, Math.min(_seamlessCtxAvail, userMaxTokens));
+
+        console.log(`[ChatEngine] Seamless continuation #${_seamlessRound}: maxTokens=${genOptions.maxTokens}, ctxUsed=${_seamlessCtxUsed}/${contextSize}`);
+
+        // Continue generation — model sees its previous partial output via cleanHistory and continues
+        result = await this._generateResponseSafe(genOptions, {
+          contextSize,
+          onStreamEvent,
+          functions: _useNativeFunctions ? functions : undefined,
+          documentFunctionParams: _useNativeFunctions ? true : undefined,
+          userMaxTokensCap: userMaxTokens,
+        });
+
+        // Apply cleanHistory from continuation
+        this._lastEvaluation = result.lastEvaluation;
+        if (result.lastEvaluation?.cleanHistory) {
+          this._chatHistory = result.lastEvaluation.cleanHistory;
+        }
+
+        // Update context usage display
+        if (onContextUsage && this._sequence) {
+          onContextUsage({ used: this._sequence.nextTokenIndex, total: this._context.contextSize });
+        }
+
+        console.log(`[ChatEngine] Seamless continuation #${_seamlessRound} returned: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}, totalGenTokens=${totalGenTokens}`);
+
+        // If user aborted during continuation, stop
+        if (result.metadata?.stopReason === 'abort' || result.metadata?.stopReason === 'cancelled') break;
+        // If continuation produced native FC calls or ended naturally, break out to tool dispatch
+        if (result.metadata?.stopReason !== 'maxTokens') break;
+      }
+
+      // Update stop reason variables after seamless continuation
+      _genStopReason = result.metadata?.stopReason;
+      _userAbortedGeneration = _genStopReason === 'abort' || _genStopReason === 'cancelled';
+      if (_seamlessRound > 0) {
+        console.log(`[ChatEngine] Seamless continuation complete: ${_seamlessRound} rounds, final stopReason=${_genStopReason}, totalGenTokens=${totalGenTokens}`);
+      }
 
       // Tool call dispatch — native function calling path first, prose JSON fallback second.
       if (executeToolFn && !_userAbortedGeneration) {
@@ -3266,7 +3353,7 @@ class ChatEngine extends EventEmitter {
       const ctxPct = totalCtx > 0 ? Math.round((ctxUsedTokens / totalCtx) * 100) : 0;
       const totalGenElapsed = (Date.now() - genStartTime) / 1000;
       const avgTokPerSec = totalGenElapsed > 0 && genTokenCount > 0 ? (genTokenCount / totalGenElapsed).toFixed(1) : '?';
-      console.log(`[ChatEngine] Inference diagnostic: ctx=${ctxUsedTokens}/${totalCtx} (${ctxPct}%), gpuLayers=${gpuLayers}/${totalLayers}, responseLen=${fullResponse.length}, thoughtLen=${_sfNativeThinkChars}, visibleLen=${_sfVisibleChars}, genTokens=${genTokenCount}, totalTime=${totalGenElapsed.toFixed(1)}s, avgTok/s=${avgTokPerSec}, model=${this.modelInfo?.name}`);
+      console.log(`[ChatEngine] Inference diagnostic: ctx=${ctxUsedTokens}/${totalCtx} (${ctxPct}%), gpuLayers=${gpuLayers}/${totalLayers}, responseLen=${fullResponse.length}, thoughtLen=${_sfNativeThinkChars}, visibleLen=${_sfVisibleChars}, genTokens=${genTokenCount}, totalGenTokens=${totalGenTokens}, totalTime=${totalGenElapsed.toFixed(1)}s, avgTok/s=${avgTokPerSec}, model=${this.modelInfo?.name}`);
       // Memory monitoring: check VRAM/RAM pressure after generation
       if (this.gpuPreference !== 'cpu') {
         try {
