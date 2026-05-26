@@ -220,10 +220,16 @@ const WebSearch = require('./webSearch');
 const { TEMPLATES } = require('./server/templateHandlers');
 
 // ─── Initialize services ────────────────────────────────────────────
+const settingsManager = new SettingsManager(userDataPath);
 const llmEngine = new ChatEngine();
 const webSearch = new WebSearch();
 const ragEngine = new RAGEngine();
-const mcpToolServer = new MCPToolServer({ projectPath: null, webSearch, ragEngine });
+const mcpToolServer = new MCPToolServer({
+  projectPath: null, webSearch, ragEngine,
+  executionPolicy: settingsManager.get('executionPolicy'),
+  commandAllowList: settingsManager.get('commandAllowList'),
+  commandDenyList: settingsManager.get('commandDenyList'),
+});
 const gitManager = new GitManager();
 const memoryStore = new MemoryStore();
 const longTermMemory = new LongTermMemory();
@@ -232,7 +238,6 @@ const modelManager = new ModelManager(modelsBasePath);
 const sessionStore = new SessionStore(path.join(userDataPath, 'sessions'));
 const cloudLLM = new CloudLLMService();
 const modelDownloader = new ModelDownloader(path.join(ROOT_DIR, 'models'));
-const settingsManager = new SettingsManager(userDataPath);
 const firstRunSetup = new FirstRunSetup(settingsManager);
 const accountManager = new AccountManager(settingsManager);
 const licenseManager = new LicenseManager(settingsManager, accountManager);
@@ -256,6 +261,14 @@ mcpToolServer.onAskQuestion = (questionData) => {
     _send('ask-question', questionData);
     // Store the resolver so the answer IPC can pick it up
     mcpToolServer._pendingQuestionResolve = resolve;
+  });
+};
+mcpToolServer.onPermissionRequest = (toolName, params, reason) => {
+  return new Promise((resolve) => {
+    const reqId = `perm-${Date.now()}`;
+    _send('permission-request', { id: reqId, toolName, params, reason });
+    mcpToolServer._pendingPermissionResolvers = mcpToolServer._pendingPermissionResolvers || {};
+    mcpToolServer._pendingPermissionResolvers[reqId] = resolve;
   });
 };
 cloudLLM.setLicenseManager(licenseManager);
@@ -558,6 +571,17 @@ ipcMain.handle('answer-question', (_e, answer) => {
     const resolve = mcpToolServer._pendingQuestionResolve;
     mcpToolServer._pendingQuestionResolve = null;
     resolve({ success: true, answer });
+  }
+  return { received: true };
+});
+
+// Handle permission response from frontend (approve/deny command execution)
+ipcMain.handle('permission-response', (_e, reqId, approved) => {
+  const resolvers = mcpToolServer._pendingPermissionResolvers;
+  if (resolvers && resolvers[reqId]) {
+    const resolve = resolvers[reqId];
+    delete resolvers[reqId];
+    resolve(approved);
   }
   return { received: true };
 });
@@ -1582,6 +1606,11 @@ app.whenReady().then(async () => {
       const hours = Number(settingsManager.get('autoUpdateCheckHours')) || 0;
       if (hours > 0) autoUpdater.startPeriodicCheck(hours);
       else autoUpdater.stopPeriodicCheck();
+    }
+    // React to execution policy changes at runtime
+    if (key === 'executionPolicy' || key === 'commandAllowList' || key === 'commandDenyList' || key === null) {
+      mcpToolServer.setExecutionPolicy(settingsManager.get('executionPolicy'));
+      mcpToolServer.setCommandLists(settingsManager.get('commandAllowList'), settingsManager.get('commandDenyList'));
     }
   });
 

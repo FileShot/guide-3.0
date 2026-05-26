@@ -17,7 +17,7 @@ import {
   Save, RotateCcw, Zap, Scale, Brain, Cpu, Monitor, Type,
   FolderOpen, ExternalLink, Play,
   Package, Star, Download, Upload,
-  Pause, SkipForward, ArrowDownRight, ArrowUpRight, Square, Bug, AlertTriangle, Eye
+  Pause, SkipForward, ArrowDownRight, ArrowUpRight, Square, Bug, AlertTriangle, Eye, Shield
 } from 'lucide-react';
 
 export default function Sidebar() {
@@ -1575,6 +1575,46 @@ function SettingsPanel() {
         <SettingToggle label="Sub-Agents (Experimental)" value={!!settings.enableSubAgents}
           onChange={v => updateSetting('enableSubAgents', v)}
           hint="Allow model to spawn focused sub-agents using a fresh context window. Off by default — uses extra VRAM." />
+      </SettingsSection>
+
+      {/* Command Execution Policy */}
+      <SettingsSection title="Command Execution" icon={<Shield size={13} />}>
+        <div>
+          <label className="text-[11px] text-vsc-text-dim block mb-1">Execution Policy</label>
+          <select
+            className="w-full text-[11px] bg-vsc-input border border-vsc-panel-border/50 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
+            value={settings.executionPolicy || 'auto'}
+            onChange={e => updateSetting('executionPolicy', e.target.value)}
+          >
+            <option value="disabled">Disabled — All commands require approval</option>
+            <option value="allowlist">Allowlist — Only safe commands auto-execute</option>
+            <option value="auto">Auto — Agent judges safety (recommended)</option>
+            <option value="turbo">Turbo — All commands auto-execute (except denylisted)</option>
+          </select>
+          <p className="text-[10px] text-vsc-text-muted mt-1">
+            Controls how the agent executes shell commands. "Auto" lets the agent decide based on safety heuristics. "Turbo" auto-executes everything except explicitly denylisted commands. "Allowlist" only auto-executes commands in the allow list. "Disabled" requires approval for every command.
+          </p>
+        </div>
+        <div>
+          <label className="text-[11px] text-vsc-text-dim block mb-1">Allow List (one per line)</label>
+          <textarea
+            className="w-full text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/50 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50 resize-y min-h-[60px] max-h-[120px]"
+            value={(settings.commandAllowList || []).join('\n')}
+            onChange={e => updateSetting('commandAllowList', e.target.value.split('\n').map(s => s.trim()).filter(Boolean))}
+            placeholder="git status&#10;git log&#10;npm test"
+          />
+          <p className="text-[10px] text-vsc-text-muted mt-1">Commands that auto-execute in "Allowlist" mode.</p>
+        </div>
+        <div>
+          <label className="text-[11px] text-vsc-text-dim block mb-1">Deny List (one per line)</label>
+          <textarea
+            className="w-full text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/50 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50 resize-y min-h-[60px] max-h-[120px]"
+            value={(settings.commandDenyList || []).join('\n')}
+            onChange={e => updateSetting('commandDenyList', e.target.value.split('\n').map(s => s.trim()).filter(Boolean))}
+            placeholder="rm -rf /&#10;format C:&#10;shutdown"
+          />
+          <p className="text-[10px] text-vsc-text-muted mt-1">Commands that are always blocked regardless of policy level.</p>
+        </div>
       </SettingsSection>
 
       {/* System Prompt */}

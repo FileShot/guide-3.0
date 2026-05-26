@@ -146,6 +146,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onAskQuestion:       (cb) => _on('ask-question', cb),
   answerQuestion:      (answer) => ipcRenderer.invoke('answer-question', answer),
 
+  // Permission request events (command execution approval)
+  onPermissionRequest: (cb) => _on('permission-request', cb),
+  respondPermission:   (reqId, approved) => ipcRenderer.invoke('permission-response', reqId, approved),
+
   // Agent pause
   onAgentPaused:       (cb) => _on('agent-paused', cb),
 

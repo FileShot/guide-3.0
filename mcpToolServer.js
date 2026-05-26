@@ -37,6 +37,11 @@ class MCPToolServer {
     this._agentPtyResolve = null;
     this._agentPtyShell = null;
     this._projectPath = options.projectPath ? path.resolve(options.projectPath) : null;
+
+    // Execution policy for command tools (run_command, terminal_run)
+    this._executionPolicy = options.executionPolicy || 'auto';
+    this._commandAllowList = new Set(options.commandAllowList || []);
+    this._commandDenyList = new Set(options.commandDenyList || []);
     this.browserManager = null;
     this.playwrightBrowser = null;
     this.gitManager = null;
@@ -893,6 +898,21 @@ class MCPToolServer {
       const allowed = await this.onPermissionRequest(toolName, params, reason);
       if (!allowed) {
         return { success: false, error: 'Operation denied by user', permissionDenied: true };
+      }
+    }
+
+    // Execution policy for command tools (run_command, terminal_run)
+    if (toolName === 'run_command' || toolName === 'terminal_run') {
+      const policyResult = this._checkExecutionPolicy(toolName, params);
+      if (!policyResult.allowed) {
+        if (this.onPermissionRequest) {
+          const allowed = await this.onPermissionRequest(toolName, params, policyResult.reason);
+          if (!allowed) {
+            return { success: false, error: 'Command requires approval', permissionDenied: true, policyReason: policyResult.reason };
+          }
+        } else {
+          return { success: false, error: `Command blocked by execution policy: ${policyResult.reason}`, permissionDenied: true };
+        }
       }
     }
 
@@ -1833,6 +1853,88 @@ class MCPToolServer {
       child.on('error', (err) => settle(-1, null) || console.log(`[MCPToolServer] run_command spawn error: ${err.message}`));
       child.on('close', (code, signal) => settle(code, signal));
     });
+  }
+
+  // ─── Execution Policy ───────────────────────────────────────────────────
+
+  /**
+   * Check whether a command tool call is allowed under the current execution policy.
+   * Returns { allowed: boolean, reason: string }.
+   *
+   * Levels:
+   *   'disabled'  — All commands require approval
+   *   'allowlist' — Only allowlisted commands auto-execute; everything else needs approval
+   *   'auto'      — Agent judges safety: denylisted commands always blocked, destructive
+   *                  patterns always blocked, everything else auto-executes
+   *   'turbo'     — All commands auto-execute except denylisted ones
+   */
+  _checkExecutionPolicy(toolName, params) {
+    const command = (params.command || '').trim();
+    const policy = this._executionPolicy;
+
+    // Always check deny list first (all levels)
+    for (const denied of this._commandDenyList) {
+      if (command.includes(denied) || command.startsWith(denied)) {
+        return { allowed: false, reason: `Command matches deny list entry: "${denied}"` };
+      }
+    }
+
+    // Always check dangerous patterns (all levels)
+    const dangerousPatterns = [
+      /\brm\s+(-[a-z]*\s+)*-[a-z]*r[a-z]*\s+(\/|~|\$HOME|C:\\|%USERPROFILE%)/i,
+      /\bformat\s+[A-Z]:/i,
+      /\bmkfs\b/i,
+      /\bshutdown\b/i,
+      /\breboot\b/i,
+      /\bpoweroff\b/i,
+      /\bdd\s+.*of=\/dev\//i,
+      /\bcurl\b.*\|\s*(ba)?sh/i,
+      /\bwget\b.*\|\s*(ba)?sh/i,
+    ];
+    for (const pat of dangerousPatterns) {
+      if (pat.test(command)) {
+        return { allowed: false, reason: 'Command matches dangerous pattern' };
+      }
+    }
+
+    switch (policy) {
+      case 'disabled':
+        // All commands require approval
+        return { allowed: false, reason: 'Execution policy is "Disabled" — all commands require approval' };
+
+      case 'allowlist':
+        // Check if command starts with an allowlisted prefix
+        for (const allowed of this._commandAllowList) {
+          if (command.startsWith(allowed) || command.includes(allowed)) {
+            return { allowed: true, reason: '' };
+          }
+        }
+        return { allowed: false, reason: `Execution policy is "Allowlist" — command not in allow list` };
+
+      case 'auto':
+        // Auto mode: allow by default, but destructive tools still need approval
+        // (the _destructiveTools gate above handles that separately)
+        return { allowed: true, reason: '' };
+
+      case 'turbo':
+        // Turbo mode: allow everything except deny list (already checked above)
+        return { allowed: true, reason: '' };
+
+      default:
+        return { allowed: true, reason: '' };
+    }
+  }
+
+  /** Update execution policy at runtime (called when settings change) */
+  setExecutionPolicy(policy) {
+    this._executionPolicy = policy || 'auto';
+    console.log(`[MCPToolServer] Execution policy set to "${this._executionPolicy}"`);
+  }
+
+  /** Update allow/deny lists at runtime */
+  setCommandLists(allowList, denyList) {
+    this._commandAllowList = new Set(allowList || []);
+    this._commandDenyList = new Set(denyList || []);
   }
 
   // ─── Persistent Terminal (node-pty) ──────────────────────────────────────

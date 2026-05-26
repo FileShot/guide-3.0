@@ -1495,7 +1495,14 @@ const useAppStore = create((set, get) => ({
 
   clearPendingQuestion: () => set({ pendingQuestion: null }),
 
-
+  // ─── Pending Permission Request (from execution policy) ──
+  pendingPermission: null, // { id, toolName, params, reason }
+  setPendingPermission: (req) => set({ pendingPermission: req }),
+  clearPendingPermission: () => set({ pendingPermission: null }),
+  respondPermission: (reqId, approved) => {
+    set({ pendingPermission: null });
+    window.electronAPI?.respondPermission?.(reqId, approved);
+  },
 
   // ─── VRAM Warning (statusbar-only, not intrusive overlay) ──
 

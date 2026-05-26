@@ -559,6 +559,16 @@ export default function App() {
 
 
 
+      // Permission request from execution policy
+
+      case 'permission-request':
+
+        if (data) s.setPendingPermission(data);
+
+        break;
+
+
+
       // Agent pause
 
       case 'agent-paused':
@@ -780,6 +790,8 @@ export default function App() {
       api.onTodoUpdate?.((d) => handleEvent('todo-update', d)),
 
       api.onAskQuestion?.((d) => handleEvent('ask-question', d)),
+
+      api.onPermissionRequest?.((d) => handleEvent('permission-request', d)),
 
       api.onAgentPaused?.((d) => handleEvent('agent-paused', d)),
 

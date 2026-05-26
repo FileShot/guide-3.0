@@ -30,7 +30,7 @@ import {
 
   CheckCircle2, Circle, Loader2, ListTodo, Bot, MessageSquare, AlertCircle,
 
-  PencilLine
+  PencilLine, Shield
 
 } from 'lucide-react';
 
@@ -677,6 +677,12 @@ export default function ChatPanel() {
 
   const clearPendingQuestion = useAppStore(s => s.clearPendingQuestion);
 
+  const pendingPermission = useAppStore(s => s.pendingPermission);
+  const respondPermission = useAppStore(s => s.respondPermission);
+
+  const settings = useAppStore(s => s.settings);
+  const updateSetting = useAppStore(s => s.updateSetting);
+
 
 
   const [input, setInput] = useState('');
@@ -690,6 +696,8 @@ export default function ChatPanel() {
   const [modeDropdownOpen, setModeDropdownOpen] = useState(false);
 
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+
+  const [policyDropdownOpen, setPolicyDropdownOpen] = useState(false);
 
   const modeDropdownRef = useRef(null);
 
@@ -758,6 +766,16 @@ export default function ChatPanel() {
     return () => document.removeEventListener('mousedown', handler);
 
   }, [modeDropdownOpen]);
+
+  // Close policy dropdown on outside click
+  useEffect(() => {
+    if (!policyDropdownOpen) return;
+    const handler = (e) => {
+      setPolicyDropdownOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [policyDropdownOpen]);
 
 
 
@@ -3125,6 +3143,70 @@ export default function ChatPanel() {
 
 
 
+          {/* Pending permission request from execution policy */}
+
+          {pendingPermission && (
+
+            <div className="border-b border-vsc-panel-border/40 px-3 py-2 bg-vsc-editor/50">
+
+              <div className="flex items-start gap-2">
+
+                <Shield size={13} className="text-vsc-warning flex-shrink-0 mt-0.5" />
+
+                <div className="flex-1 min-w-0">
+
+                  <div className="text-[11px] text-vsc-warning font-medium mb-1">Command requires approval</div>
+
+                  <div className="text-[12px] text-vsc-text font-mono bg-vsc-input/50 rounded px-2 py-1 mb-1.5 break-all">
+
+                    {pendingPermission.params?.command || pendingPermission.toolName}
+
+                  </div>
+
+                  {pendingPermission.reason && (
+
+                    <div className="text-[10px] text-vsc-text-dim mb-2">{pendingPermission.reason}</div>
+
+                  )}
+
+                  <div className="flex items-center gap-2">
+
+                    <button
+
+                      className="px-3 py-1 text-[11px] font-medium rounded bg-vsc-accent/20 text-vsc-accent hover:bg-vsc-accent/30 transition-colors"
+
+                      onClick={() => respondPermission(pendingPermission.id, true)}
+
+                    >
+
+                      Allow
+
+                    </button>
+
+                    <button
+
+                      className="px-3 py-1 text-[11px] font-medium rounded bg-vsc-error/20 text-vsc-error hover:bg-vsc-error/30 transition-colors"
+
+                      onClick={() => respondPermission(pendingPermission.id, false)}
+
+                    >
+
+                      Deny
+
+                    </button>
+
+                  </div>
+
+                </div>
+
+              </div>
+
+            </div>
+
+          )}
+
+
+
           {/* Message queue */}
 
           {messageQueue.length > 0 && (
@@ -3406,6 +3488,100 @@ export default function ChatPanel() {
               </button>
 
             </div>
+
+
+
+            {/* Separator */}
+
+            <div className="w-px h-4 bg-vsc-panel-border/50 mx-0.5" />
+
+
+
+            {/* Execution policy toggle — styled like Windsurf/Cursor */}
+
+            {(() => {
+
+              const policyLevels = [
+
+                { id: 'disabled', label: 'Disabled', icon: Shield, desc: 'All commands require approval', color: 'text-vsc-error', bg: 'bg-vsc-error/10' },
+
+                { id: 'allowlist', label: 'Allowlist', icon: Shield, desc: 'Only allowlisted commands auto-execute', color: 'text-vsc-warning', bg: 'bg-vsc-warning/10' },
+
+                { id: 'auto', label: 'Auto', icon: Zap, desc: 'Agent judges safety (recommended)', color: 'text-vsc-accent', bg: 'bg-vsc-accent/10' },
+
+                { id: 'turbo', label: 'Turbo', icon: Zap, desc: 'All commands auto-execute except denylisted', color: 'text-vsc-text-dim', bg: 'bg-vsc-list-hover/60' },
+
+              ];
+
+              const currentPolicy = settings?.executionPolicy || 'auto';
+
+              const current = policyLevels.find(l => l.id === currentPolicy) || policyLevels[2];
+
+              return (
+
+                <div className="relative">
+
+                  <button
+
+                    className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium transition-colors ${current.bg} ${current.color} hover:opacity-80`}
+
+                    onClick={() => setPolicyDropdownOpen(!policyDropdownOpen)}
+
+                    title={`Execution policy: ${current.label}`}
+
+                  >
+
+                    <current.icon size={10} />
+
+                    <span>{current.label}</span>
+
+                  </button>
+
+                  {policyDropdownOpen && (
+
+                    <div className="absolute bottom-full left-0 mb-1 w-56 bg-vsc-dropdown border border-vsc-panel-border rounded-lg shadow-xl z-50 py-1 overflow-hidden">
+
+                      {policyLevels.map(level => (
+
+                        <button
+
+                          key={level.id}
+
+                          className={`w-full flex items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-vsc-list-hover ${
+
+                            currentPolicy === level.id ? 'bg-vsc-list-hover/50' : ''
+
+                          }`}
+
+                          onClick={() => { updateSetting('executionPolicy', level.id); setPolicyDropdownOpen(false); }}
+
+                        >
+
+                          <level.icon size={14} className={`mt-0.5 flex-shrink-0 ${currentPolicy === level.id ? level.color : 'text-vsc-text-dim'}`} />
+
+                          <div className="min-w-0">
+
+                            <div className={`text-[11px] font-semibold ${currentPolicy === level.id ? level.color : 'text-vsc-text'}`}>{level.label}</div>
+
+                            <div className="text-[10px] text-vsc-text-dim leading-tight">{level.desc}</div>
+
+                          </div>
+
+                          {currentPolicy === level.id && <Check size={12} className={`ml-auto mt-0.5 flex-shrink-0 ${level.color}`} />}
+
+                        </button>
+
+                      ))}
+
+                    </div>
+
+                  )}
+
+                </div>
+
+              );
+
+            })()}
 
 
 
