@@ -39,6 +39,7 @@ const TOOL_NAME_ALIASES = {
   run: 'run_command', exec: 'run_command', execute: 'run_command',
   shell: 'run_command', terminal: 'run_command', run_terminal_cmd: 'run_command',
   run_terminal: 'run_command', command: 'run_command',
+  persistent_terminal: 'terminal_run', pty: 'terminal_run', terminal_session: 'terminal_run',
   install: 'install_packages', npm_install: 'install_packages', pip_install: 'install_packages',
   // Search
   grep: 'grep_search', search_code: 'search_codebase', codebase_search: 'search_codebase',
@@ -112,7 +113,7 @@ const VALID_TOOLS = new Set([
   'web_search', 'fetch_webpage',
   'git_status', 'git_commit', 'git_diff', 'git_log', 'git_branch', 'git_stash', 'git_reset',
   'save_memory', 'get_memory', 'list_memories',
-  'run_command', 'get_project_structure', 'create_directory', 'analyze_error', 'install_packages',
+  'run_command', 'terminal_run', 'get_project_structure', 'create_directory', 'analyze_error', 'install_packages',
   'undo_edit', 'list_undoable',
   'write_todos', 'update_todo',
   'ask_question',

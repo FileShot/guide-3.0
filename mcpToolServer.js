@@ -29,6 +29,13 @@ class MCPToolServer {
     this.webSearch = options.webSearch || null;
     this.ragEngine = options.ragEngine || null;
     this.terminalManager = options.terminalManager || null;
+
+    // Agent persistent PTY session (separate from user's terminal)
+    this._agentPty = null;
+    this._agentPtyId = null;
+    this._agentPtyBuffer = '';
+    this._agentPtyResolve = null;
+    this._agentPtyShell = null;
     this._projectPath = options.projectPath ? path.resolve(options.projectPath) : null;
     this.browserManager = null;
     this.playwrightBrowser = null;
@@ -67,7 +74,7 @@ class MCPToolServer {
     // Permission gates for destructive operations
     this.onPermissionRequest = null;
     this._destructiveTools = new Set([
-      'delete_file', 'replace_in_file', 'write_file',
+      'delete_file', 'replace_in_file', 'write_file', 'terminal_run',
       'git_commit', 'git_push', 'git_reset', 'git_branch_delete',
     ]);
 
@@ -77,6 +84,7 @@ class MCPToolServer {
       edit_file: { max: 10, window: 10000 },
       delete_file: { max: 5, window: 10000 },
       run_command: { max: 8, window: 10000 },
+      terminal_run: { max: 8, window: 10000 },
       web_search: { max: 4, window: 30000 },
       fetch_webpage: { max: 6, window: 30000 },
       http_request: { max: 6, window: 30000 },
@@ -92,6 +100,8 @@ class MCPToolServer {
   // ─── Child Process Management ───────────────────────────────────────────
 
   killActiveChildren(reason) {
+    // Also kill agent PTY session on cancel
+    this._killAgentPty();
     if (this._activeChildren.size === 0) return 0;
     const count = this._activeChildren.size;
     console.log(`[MCPToolServer] killActiveChildren: ${count} process(es), reason=${reason || 'unspecified'}`);
@@ -301,12 +311,22 @@ class MCPToolServer {
       },
       {
         name: 'run_command',
-        description: 'Execute a shell command in the project directory and return the output. Default timeout 60 seconds, maximum 5 minutes. IMPORTANT: Each call spawns a fresh shell — cd, set VAR=, export VAR= do NOT persist between calls. Use absolute paths or chain commands with && to work around this. Shell: Windows = cmd.exe, Unix = /bin/sh. Windows CMD commands: del, rmdir /s /q, copy, move, type, echo, curl, netstat, findstr. PowerShell cmdlets do NOT work directly — if needed, write a .ps1 file with write_file and run "powershell -File script.ps1". WAIT/SLEEP: Windows = "timeout /t 5 /nobreak >nul" (5 seconds), Unix = "sleep 5". POLLING: Windows = "ping -n 6 127.0.0.1 >nul" (5-second delay), Unix = "while ! command; do sleep 1; done". BACKGROUND: Windows = "start /b command", Unix = "command &".',
+        description: 'Execute a shell command in the project directory and return the output. Default timeout 60 seconds, maximum 5 minutes. IMPORTANT: Each call spawns a fresh shell — cd, set VAR=, export VAR= do NOT persist between calls. Use absolute paths or chain commands with && to work around this. Default shell: Windows = cmd.exe, Unix = /bin/sh. Set shell="powershell" on Windows to use PowerShell (cmdlets like Remove-Item, Get-ChildItem, Invoke-RestMethod work in this mode). WAIT/SLEEP: Windows cmd = "timeout /t 5 /nobreak >nul", PowerShell = "Start-Sleep -Seconds 5", Unix = "sleep 5". POLLING: Windows = "ping -n 6 127.0.0.1 >nul", Unix = "while ! command; do sleep 1; done". BACKGROUND: Windows = "start /b command", Unix = "command &".',
         parameters: {
           command: { type: 'string', description: 'Command to execute', required: true },
+          shell: { type: 'string', description: 'Shell to use: "cmd" (default) or "powershell" (Windows only)', required: false },
           cwd: { type: 'string', description: 'Working directory', required: false },
           timeout: { type: 'number', description: 'Timeout in ms (default 60000)', required: false },
           reason: { type: 'string', description: 'One sentence explaining why this command needs to be run', required: false },
+        },
+      },
+      {
+        name: 'terminal_run',
+        description: 'Execute a command in a persistent terminal session. Unlike run_command (fresh shell each call), this uses a persistent PTY — cd, environment variables, conda activate, nvm use, and other shell state persist across calls. Shell: Windows = PowerShell, Unix = $SHELL (bash/zsh). Use this when you need shell state to persist (e.g., cd into a directory then run multiple commands, activate a virtual environment, or run a dev server and check its output). Falls back to run_command if persistent terminal is unavailable.',
+        parameters: {
+          command: { type: 'string', description: 'Command to execute in the persistent terminal', required: true },
+          timeout: { type: 'number', description: 'Timeout in ms (default 30000)', required: false },
+          reset: { type: 'boolean', description: 'Reset the terminal session (start fresh) — use if the session is stuck or you need a clean environment', required: false },
         },
       },
       {
@@ -894,7 +914,10 @@ class MCPToolServer {
           result = await this._searchCodebase(params.query, params.maxResults);
           break;
         case 'run_command':
-          result = await this._runCommand(params.command, params.cwd, params.timeout);
+          result = await this._runCommand(params.command, params.cwd, params.timeout, params.shell);
+          break;
+        case 'terminal_run':
+          result = await this._terminalRun(params.command, params.timeout, params.reset);
           break;
         case 'create_directory':
           result = await this._createDirectory(params.path);
@@ -1668,7 +1691,7 @@ class MCPToolServer {
     };
   }
 
-  async _runCommand(command, cwd, timeout) {
+  async _runCommand(command, cwd, timeout, shell) {
     const dangerousPatterns = [
       /\brm\s+(-[a-z]*\s+)*-[a-z]*r[a-z]*\s+(\/|~|\$HOME|C:\\|%USERPROFILE%)/i,
       /\bformat\s+[A-Z]:/i,
@@ -1735,13 +1758,23 @@ class MCPToolServer {
     return new Promise((resolve) => {
       const isWindows = process.platform === 'win32';
       // Shell selection:
-      //   Windows: cmd.exe /d /s /c — POSIX-style commands the model generates
-      //     (git, npm, node, 2>nul, >nul, &&, ||, pipes, native find/dir) all
-      //     work natively. PowerShell was previously used but broke on 2>nul
-      //     and misquoted arguments.
-      //   Unix:    /bin/sh -c — standard POSIX shell.
-      const shellBin = isWindows ? 'cmd.exe' : '/bin/sh';
-      const shellArgs = isWindows ? ['/d', '/s', '/c', command] : ['-c', command];
+      //   Windows cmd (default): cmd.exe /d /s /c — git, npm, node, 2>nul, >nul,
+      //     &&, ||, pipes all work natively.
+      //   Windows powershell: powershell.exe -NoProfile -NonInteractive
+      //     -EncodedCommand <Base64> — avoids all quoting issues by encoding the
+      //     entire script as UTF-16LE Base64. PowerShell cmdlets work in this mode.
+      //   Unix: /bin/sh -c — standard POSIX shell.
+      const usePowerShell = isWindows && shell && shell.toLowerCase() === 'powershell';
+      let shellBin, shellArgs;
+      if (usePowerShell) {
+        // Encode command as UTF-16LE Base64 for -EncodedCommand (bulletproof quoting)
+        const encoded = Buffer.from(cmdStr, 'utf16le').toString('base64');
+        shellBin = 'powershell.exe';
+        shellArgs = ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded];
+      } else {
+        shellBin = isWindows ? 'cmd.exe' : '/bin/sh';
+        shellArgs = isWindows ? ['/d', '/s', '/c', command] : ['-c', command];
+      }
       let child;
       try {
         child = spawn(shellBin, shellArgs, { cwd: workDir, windowsHide: true });
@@ -1799,6 +1832,171 @@ class MCPToolServer {
 
       child.on('error', (err) => settle(-1, null) || console.log(`[MCPToolServer] run_command spawn error: ${err.message}`));
       child.on('close', (code, signal) => settle(code, signal));
+    });
+  }
+
+  // ─── Persistent Terminal (node-pty) ──────────────────────────────────────
+
+  _ensureAgentPty() {
+    if (this._agentPty && !this._agentPty._exited) return true;
+    // Try to load node-pty
+    let ptyModule;
+    try {
+      ptyModule = require('node-pty');
+    } catch (_) {
+      return false;
+    }
+    const isWindows = process.platform === 'win32';
+    const shell = isWindows ? 'powershell.exe' : (process.env.SHELL || '/bin/bash');
+    const cwd = this.projectPath || process.cwd();
+    try {
+      const ptyProcess = ptyModule.spawn(shell, [], {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 40,
+        cwd,
+        env: { ...process.env },
+      });
+      ptyProcess._exited = false;
+      ptyProcess.onExit(({ exitCode }) => {
+        ptyProcess._exited = true;
+        this._agentPty = null;
+        this._agentPtyId = null;
+        this._agentPtyShell = null;
+        // Resolve any pending command
+        if (this._agentPtyResolve) {
+          this._agentPtyResolve({ success: false, output: `Terminal session exited (code=${exitCode})`, exitCode });
+          this._agentPtyResolve = null;
+        }
+      });
+      this._agentPty = ptyProcess;
+      this._agentPtyId = `agent-pty-${Date.now()}`;
+      this._agentPtyShell = shell;
+      this._agentPtyBuffer = '';
+      // Drain ongoing output (prompt, etc.) — we'll capture per-command
+      ptyProcess.onData((data) => {
+        this._agentPtyBuffer += data;
+        // If we have a pending resolve, check for prompt marker
+        if (this._agentPtyResolve) {
+          this._agentPtyBuffer = this._agentPtyBuffer.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, ''); // strip ANSI
+        }
+      });
+      console.log(`[MCPToolServer] Agent PTY started: ${this._agentPtyId} shell=${shell}`);
+      return true;
+    } catch (e) {
+      console.log(`[MCPToolServer] Failed to start agent PTY: ${e.message}`);
+      return false;
+    }
+  }
+
+  _killAgentPty() {
+    if (this._agentPty) {
+      try { this._agentPty.kill(); } catch (_) {}
+      this._agentPty = null;
+      this._agentPtyId = null;
+      this._agentPtyShell = null;
+      this._agentPtyBuffer = '';
+      if (this._agentPtyResolve) {
+        this._agentPtyResolve({ success: false, output: 'Terminal session killed', exitCode: -1 });
+        this._agentPtyResolve = null;
+      }
+    }
+  }
+
+  async _terminalRun(command, timeout, reset) {
+    const cmdStr = (command || '').trim();
+    if (!cmdStr) {
+      return { success: false, error: 'No command provided' };
+    }
+
+    // Reset requested — kill existing session
+    if (reset) {
+      this._killAgentPty();
+    }
+
+    // Ensure PTY is alive
+    if (!this._ensureAgentPty()) {
+      // Fallback to run_command (non-persistent)
+      console.log('[MCPToolServer] terminal_run: node-pty unavailable, falling back to run_command');
+      return await this._runCommand(cmdStr, null, timeout);
+    }
+
+    const timeoutMs = Math.min(Math.max(timeout || 30000, 5000), 120000);
+
+    // Write an end-of-output marker so we can detect when the command finishes.
+    // The marker is a unique string that the shell will echo after the command.
+    const marker = `__GUIDE_PTY_DONE_${Date.now()}__`;
+    let markerCmd;
+    if (process.platform === 'win32') {
+      // PowerShell: use Write-Host (goes to stdout, not stderr)
+      markerCmd = `${cmdStr}\r\nWrite-Host ${marker}\r\n`;
+    } else {
+      markerCmd = `${cmdStr} && echo ${marker} || echo ${marker}\n`;
+    }
+
+    return new Promise((resolve) => {
+      // Clear buffer and set up capture
+      this._agentPtyBuffer = '';
+      this._agentPtyResolve = null;
+
+      let capturedOutput = '';
+      let markerFound = false;
+      const MAX_CAPTURE = 2 * 1024 * 1024;
+
+      const dataHandler = (data) => {
+        if (capturedOutput.length < MAX_CAPTURE) {
+          capturedOutput += data;
+        }
+        // Check for marker in the raw stream
+        if (!markerFound && capturedOutput.includes(marker)) {
+          markerFound = true;
+          finish();
+        }
+      };
+
+      this._agentPty.onData(dataHandler);
+
+      const timeoutHandle = setTimeout(() => {
+        if (!markerFound) finish();
+      }, timeoutMs);
+
+      const finish = () => {
+        clearTimeout(timeoutHandle);
+        try { this._agentPty.removeListener('data', dataHandler); } catch (_) {}
+        // Strip ANSI escape sequences from captured output
+        let cleanOutput = capturedOutput
+          .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+          .replace(/\x1b\].*?\x07/g, '')
+          .replace(/\r\n/g, '\n')
+          .replace(/\r/g, '\n');
+
+        // Remove the marker line from output
+        const markerLine = marker;
+        cleanOutput = cleanOutput.split('\n')
+          .filter(line => !line.includes(markerLine))
+          .join('\n')
+          .trim();
+
+        // Remove the echoed command (first line usually)
+        // The PTY echoes the input command — strip it if it matches
+        const cmdPrefix = cmdStr.split('\n')[0].trim();
+        const lines = cleanOutput.split('\n');
+        if (lines.length > 1 && lines[0].trim() === cmdPrefix) {
+          lines.shift();
+          cleanOutput = lines.join('\n').trim();
+        }
+
+        const truncated = capturedOutput.length >= MAX_CAPTURE;
+        resolve({
+          success: markerFound,
+          output: truncated ? cleanOutput + '\n[... output truncated]' : cleanOutput || '(no output)',
+          shell: this._agentPtyShell,
+          persistent: true,
+        });
+      };
+
+      // Send command to PTY
+      this._agentPty.write(markerCmd);
     });
   }
 
