@@ -82,7 +82,7 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --force
         working-directory: frontend
 
       - name: Build renderer
@@ -133,7 +133,7 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --force
         working-directory: frontend
 
       - name: Build renderer
@@ -175,7 +175,7 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --force
         working-directory: frontend
 
       - name: Build renderer
@@ -234,7 +234,7 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --force
         working-directory: frontend
 
       - name: Build renderer
@@ -296,7 +296,7 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --force
         working-directory: frontend
 
       - name: Build renderer
