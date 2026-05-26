@@ -70,6 +70,44 @@ if (!fs.existsSync(localBuilds)) {
   process.exit(1);
 }
 
+// Preserve llama-addon.node from prebuilt package — the local cmake build only
+// produces .so libraries, not the Node.js addon itself.
+const prebuiltPkg = useCuda ? 'linux-x64-cuda' : 'linux-x64';
+const prebuiltDir = path.join(BACKENDS, prebuiltPkg, 'bins', prebuiltPkg);
+const prebuiltAddon = path.join(prebuiltDir, 'llama-addon.node');
+const prebuiltMeta  = path.join(prebuiltDir, '_nlcBuildMetadata.json');
+
+if (fs.existsSync(prebuiltAddon)) {
+  const localBuildEntries = fs.readdirSync(localBuilds).filter((n) => fs.statSync(path.join(localBuilds, n)).isDirectory());
+  for (const folder of localBuildEntries) {
+    const releaseDir = path.join(localBuilds, folder, 'Release');
+    if (!fs.existsSync(releaseDir)) continue;
+    fs.copyFileSync(prebuiltAddon, path.join(releaseDir, 'llama-addon.node'));
+    if (fs.existsSync(prebuiltMeta)) {
+      fs.copyFileSync(prebuiltMeta, path.join(releaseDir, '_nlcBuildMetadata.json'));
+    }
+    log(`copied llama-addon.node into localBuilds/${folder}/Release`);
+
+    // The prebuilt addon may link to .so files with CUDA-specific suffixes
+    // (e.g. libllama.cuda.b8390.so). Create symlinks so the addon finds our locally-built .so files.
+    const soFiles = fs.readdirSync(releaseDir).filter((n) => n.endsWith('.so') && !n.includes('.cuda.'));
+    for (const so of soFiles) {
+      const base = so.replace(/\.so$/, '');
+      // Try to create common suffixed variants the prebuilt addon might reference
+      for (const suffix of ['.cuda.b8390.so', '.cuda.so', '.b8390.so']) {
+        const linkName = base + suffix;
+        const linkPath = path.join(releaseDir, linkName);
+        if (!fs.existsSync(linkPath)) {
+          try {
+            fs.symlinkSync(so, linkPath);
+            log(`symlink ${linkName} -> ${so}`);
+          } catch {}
+        }
+      }
+    }
+  }
+}
+
 for (const pkg of prebuiltPackagesToRemove()) {
   const full = path.join(BACKENDS, pkg);
   if (fs.existsSync(full)) {

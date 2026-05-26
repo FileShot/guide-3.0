@@ -130,6 +130,10 @@ const VALID_TOOLS = new Set([
   'open_terminal', 'switch_file', 'get_diagnostics', 'get_selection',
   // Phase 6: Documentation tools
   'read_doc', 'search_docs',
+  // Phase 5: Checkpoint tools
+  'list_checkpoints', 'restore_checkpoint',
+  // Git tools (previously in _destructiveTools but missing from VALID_TOOLS)
+  'git_push', 'git_branch_delete',
 ]);
 
 // ─── JSON Repair Utilities ───
@@ -1030,9 +1034,17 @@ function _isInsideExistingRange(ranges, index) {
   return false;
 }
 
+// Add a tool name to VALID_TOOLS at runtime (used by MCP client for dynamically discovered tools)
+function addValidTool(name) {
+  if (typeof name === 'string' && name.trim() && !VALID_TOOLS.has(name)) {
+    VALID_TOOLS.add(name);
+  }
+}
+
 module.exports = {
   TOOL_NAME_ALIASES,
   VALID_TOOLS,
+  addValidTool,
   sanitizeJson,
   fixQuoting,
   fixBackticks,

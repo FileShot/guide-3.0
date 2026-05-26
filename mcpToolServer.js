@@ -41,6 +41,8 @@ class MCPToolServer {
     this.webSearch = options.webSearch || null;
     this.ragEngine = options.ragEngine || null;
     this.terminalManager = options.terminalManager || null;
+    this.mcpClient = options.mcpClient || null;
+    this._userDataPath = options.userDataPath || null;
 
     // Agent persistent PTY session (separate from user's terminal)
     this._agentPty = null;
@@ -72,6 +74,9 @@ class MCPToolServer {
     this._currentTurnId = null;
     this._currentTurnCapture = new Map();
 
+    // Load persisted checkpoints from disk
+    this._loadCheckpointsFromDisk();
+
     // Caches
     this._toolDefsCache = null;
     this._toolPromptCache = null;
@@ -93,7 +98,7 @@ class MCPToolServer {
     this._destructiveTools = new Set([
       'delete_file', 'replace_in_file', 'write_file', 'terminal_run',
       'git_commit', 'git_push', 'git_reset', 'git_branch_delete',
-      'kill_process', 'set_env_var',
+      'kill_process', 'set_env_var', 'restore_checkpoint',
     ]);
 
     // Rate limiting: max calls per tool type within the rate window
@@ -681,6 +686,24 @@ class MCPToolServer {
           hard: { type: 'boolean', description: 'Hard reset — discard changes (default false)', required: false },
         },
       },
+      {
+        name: 'git_push',
+        description: 'Push commits to a remote repository. Requires a remote to be configured.',
+        parameters: {
+          remote: { type: 'string', description: "Remote name (default: 'origin')", required: false },
+          branch: { type: 'string', description: 'Branch to push (default: current branch)', required: false },
+          force: { type: 'boolean', description: 'Force push (use with extreme caution)', required: false },
+        },
+      },
+      {
+        name: 'git_branch_delete',
+        description: 'Delete a local or remote branch. This is destructive and cannot be undone.',
+        parameters: {
+          branch: { type: 'string', description: 'Branch name to delete', required: true },
+          remote: { type: 'boolean', description: 'Delete remote branch instead of local (default: false)', required: false },
+          force: { type: 'boolean', description: 'Force delete unmerged branch (default: false)', required: false },
+        },
+      },
       // ── Search Tools ──
       {
         name: 'grep_search',
@@ -988,8 +1011,28 @@ class MCPToolServer {
           maxResults: { type: 'number', description: 'Max results (default 10)', required: false },
         },
       },
+      // ── Checkpoint Tools ──
+      {
+        name: 'list_checkpoints',
+        description: 'List all available checkpoints (file snapshots from previous turns). Each checkpoint captures the original state of files before they were modified during that turn. Use this when the user asks to undo changes or go back to a previous state.',
+        parameters: {},
+      },
+      {
+        name: 'restore_checkpoint',
+        description: 'Restore all files to their state before a specific turn. This reverses all file modifications made during that turn — modified files are reverted to their original content, and newly created files are deleted. Use list_checkpoints first to find the turn ID. This is a destructive operation — current file changes will be lost.',
+        parameters: {
+          turnId: { type: 'string', description: 'The turn ID to restore (from list_checkpoints)', required: true },
+        },
+      },
 
     ];
+    // Merge tools discovered from MCP servers
+    if (this.mcpClient) {
+      const mcpTools = this.mcpClient.getDiscoveredTools();
+      if (mcpTools.length > 0) {
+        return [...this._allToolDefsCache, ...mcpTools];
+      }
+    }
     return this._allToolDefsCache;
   }
 
@@ -1239,6 +1282,12 @@ class MCPToolServer {
         case 'git_reset':
           result = await this._gitReset(params.filePath, params.hard);
           break;
+        case 'git_push':
+          result = await this._gitPush(params.remote, params.branch, params.force);
+          break;
+        case 'git_branch_delete':
+          result = await this._gitBranchDelete(params.branch, params.remote, params.force);
+          break;
         // Search
         case 'grep_search':
           result = await this._grepSearch(params.pattern, params.filePattern, params.isRegex, params.maxResults);
@@ -1367,8 +1416,23 @@ class MCPToolServer {
         case 'search_docs':
           result = await this._searchDocs(params.query, params.maxResults);
           break;
+        // Checkpoint tools
+        case 'list_checkpoints':
+          result = { success: true, checkpoints: this.getCheckpointList() };
+          break;
+        case 'restore_checkpoint':
+          result = await this.restoreCheckpoint(params.turnId);
+          break;
         default:
-          result = { success: false, error: `Unknown tool: ${toolName}` };
+          // Try routing to MCP server for dynamically discovered tools
+          if (this.mcpClient && this.mcpClient.isMCPTool(toolName)) {
+            console.log(`[MCPToolServer] executeTool: routing "${toolName}" to MCP client`);
+            result = await this.mcpClient.executeTool(toolName, params);
+            // Emit for streaming display in frontend
+            if (this._send) this._send('mcp-tool-results', { tool: toolName, result });
+          } else {
+            result = { success: false, error: `Unknown tool: ${toolName}` };
+          }
       }
     } catch (error) {
       result = { success: false, error: error.message };
@@ -1504,6 +1568,7 @@ class MCPToolServer {
     this._turnSnapshots.push(snapshot);
     if (this._turnSnapshots.length > this._maxTurnSnapshots) this._turnSnapshots.shift();
     this._currentTurnId = null;
+    this._persistCheckpointsToDisk();
     return snapshot;
   }
 
@@ -1523,7 +1588,7 @@ class MCPToolServer {
     for (const file of snapshot.files) {
       try {
         if (file.isNew) {
-          try { await fs.unlink(file.filePath); } catch (_) {}
+          try { await fs.unlink(file.filePath); } catch (unlinkErr) { console.warn(`[MCPToolServer] restoreCheckpoint: failed to delete new file ${file.filePath}: ${unlinkErr.message}`); }
           results.push({ filePath: file.filePath, action: 'deleted' });
         } else {
           await fs.writeFile(file.filePath, file.original, 'utf8');
@@ -1535,7 +1600,45 @@ class MCPToolServer {
     }
     const idx = this._turnSnapshots.findIndex(s => s.turnId === turnId);
     if (idx !== -1) this._turnSnapshots.splice(idx);
+    this._persistCheckpointsToDisk();
     return { success: true, results, restoredCount: results.filter(r => r.action !== 'failed').length };
+  }
+
+  // ─── Checkpoint Persistence ──────────────────────────────────────────────
+
+  _checkpointFilePath() {
+    if (!this._userDataPath) return null;
+    return path.join(this._userDataPath, 'checkpoints.json');
+  }
+
+  _loadCheckpointsFromDisk() {
+    const filePath = this._checkpointFilePath();
+    if (!filePath) return;
+    try {
+      const data = require('fs').readFileSync(filePath, 'utf8');
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed)) {
+        this._turnSnapshots = parsed.slice(0, this._maxTurnSnapshots);
+        console.log(`[MCPToolServer] loaded ${this._turnSnapshots.length} checkpoints from disk`);
+      }
+    } catch (err) {
+      // File doesn't exist or is corrupt — start fresh
+      this._turnSnapshots = [];
+    }
+  }
+
+  _persistCheckpointsToDisk() {
+    const filePath = this._checkpointFilePath();
+    if (!filePath) return;
+    try {
+      const syncFs = require('fs');
+      const data = JSON.stringify(this._turnSnapshots);
+      const tmpPath = filePath + '.tmp';
+      syncFs.writeFileSync(tmpPath, data, 'utf8');
+      syncFs.renameSync(tmpPath, filePath);
+    } catch (err) {
+      console.warn(`[MCPToolServer] failed to persist checkpoints: ${err.message}`);
+    }
   }
 
   // ─── Tool Implementations ────────────────────────────────────────────────
@@ -1836,6 +1939,15 @@ class MCPToolServer {
     const fullPath = this._sanitizeFilePath(path.isAbsolute(filePath) ? filePath : path.join(this.projectPath || '', filePath));
     try {
       const stats = await fs.stat(fullPath);
+      // Backup file content before deletion for checkpoint restore
+      if (!stats.isDirectory()) {
+        try {
+          const content = await fs.readFile(fullPath, 'utf8');
+          this._setFileBackup(fullPath, { original: content, timestamp: Date.now(), tool: 'delete_file', isNew: false });
+        } catch (readErr) {
+          console.warn(`[MCPToolServer] _deleteFile: could not read file for backup: ${readErr.message}`);
+        }
+      }
       if (stats.isDirectory()) {
         // Recursively delete directory
         await fs.rm(fullPath, { recursive: true, force: true });
@@ -1855,6 +1967,13 @@ class MCPToolServer {
     const fullOld = this._sanitizeFilePath(path.isAbsolute(oldPath) ? oldPath : path.join(this.projectPath || '', oldPath));
     const fullNew = this._sanitizeFilePath(path.isAbsolute(newPath) ? newPath : path.join(this.projectPath || '', newPath));
     try {
+      // Backup file content before rename for checkpoint restore
+      try {
+        const content = await fs.readFile(fullOld, 'utf8');
+        this._setFileBackup(fullOld, { original: content, timestamp: Date.now(), tool: 'rename_file', isNew: false });
+      } catch (readErr) {
+        console.warn(`[MCPToolServer] _renameFile: could not read file for backup: ${readErr.message}`);
+      }
       await fs.mkdir(path.dirname(fullNew), { recursive: true });
       await fs.rename(fullOld, fullNew);
       if (this.browserManager?.parentWindow) {
@@ -2557,6 +2676,15 @@ class MCPToolServer {
         return { success: true, source: fullSrc, destination: fullDst, overwritten: false, message: `Copied directory to ${fullDst}` };
       }
       const dstExists = await fs.access(fullDst).then(() => true).catch(() => false);
+      // Backup destination file content before overwrite for checkpoint restore
+      if (dstExists) {
+        try {
+          const existingContent = await fs.readFile(fullDst, 'utf8');
+          this._setFileBackup(fullDst, { original: existingContent, timestamp: Date.now(), tool: 'copy_file', isNew: false });
+        } catch (readErr) {
+          console.warn(`[MCPToolServer] _copyFile: could not read destination for backup: ${readErr.message}`);
+        }
+      }
       await fs.copyFile(fullSrc, fullDst);
       return { success: true, source: fullSrc, destination: fullDst, overwritten: dstExists, message: dstExists ? `Overwritten: ${fullDst}` : `Copied to ${fullDst}` };
     } catch (error) {
@@ -2771,7 +2899,7 @@ class MCPToolServer {
         const lines = existingFullContent.split('\n');
         const last15 = lines.slice(-15).join('\n');
         tailHint = ` The file currently has ${lines.length} lines. Here are the last 15 lines — continue from here:\n${last15}`;
-      } catch {}
+      } catch (tailErr) { console.warn(`[MCPToolServer] append_to_file: failed to read tail hint: ${tailErr.message}`); }
       return { success: false, error: `Content is empty. You must provide actual code content to append.${tailHint}`, fullContent: existingFullContent || undefined, path: fullPath };
     }
 
@@ -2832,7 +2960,7 @@ class MCPToolServer {
               console.log(`[MCP] Smart HTML insert: placed ${content.length} chars before </html> in ${path.basename(fullPath)}`);
             }
           }
-        } catch {}
+        } catch (smartErr) { console.warn(`[MCPToolServer] append_to_file: smart insert failed: ${smartErr.message}`); }
       }
 
       if (!didSmartInsert) {
@@ -2840,7 +2968,7 @@ class MCPToolServer {
       }
 
       let fullContent = content;
-      try { fullContent = await fs.readFile(fullPath, 'utf8'); } catch {}
+      try { fullContent = await fs.readFile(fullPath, 'utf8'); } catch (readErr) { console.warn(`[MCPToolServer] append_to_file: failed to read full content: ${readErr.message}`); }
 
       if (this.browserManager?.parentWindow) {
         this.browserManager.parentWindow.webContents.send('files-changed');

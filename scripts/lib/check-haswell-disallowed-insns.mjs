@@ -29,18 +29,20 @@ import { spawnSync } from 'child_process';
  * NOTE: "avx512" as a string never appears in real disassembly mnemonics; %zmm is the signal.
  */
 const DISALLOWED_PATTERN =
-  /%zmm[0-9]|\{%k[0-7]\}|\b(rdseed|adcx|adox|clflushopt|clwb|pcommit|prefetchwt1|serialize|xsavec|xsaves)\b/i;
+  /%zmm[0-9]+|\{%k[0-7]\}|\b(rdseed|adcx|adox|clflushopt|clwb|pcommit|prefetchwt1|serialize|xsavec|xsaves)\b/i;
 
 export function disasmHasDisallowedInsn(filePath) {
-  const r = spawnSync('objdump', ['-d', filePath], { encoding: 'utf8' });
+  // Use a shell pipeline so we only capture matching lines (avoids spawnSync maxBuffer overflow).
+  const pattern = String(DISALLOWED_PATTERN).replace(/^\//, '').replace(/\/i$/, '');
+  const r = spawnSync('sh', ['-c', `objdump -d "${filePath.replace(/"/g, '\\"')}" | grep -i -E "${pattern}" | head -20`], { encoding: 'utf8', maxBuffer: 1024 * 1024 });
   if (r.status !== 0) return null;
-  const hits = [];
-  for (const line of r.stdout.split('\n')) {
-    if (!line.includes('\t')) continue;
-    const insn = line.split('\t').pop().trim();
-    if (DISALLOWED_PATTERN.test(insn)) hits.push(insn);
-  }
-  return hits.length ? [...new Set(hits)].slice(0, 8) : null;
+  const lines = r.stdout.trim().split('\n').filter(Boolean);
+  if (!lines.length) return null;
+  const insns = lines.map((line) => {
+    const parts = line.split('\t');
+    return parts.pop().trim();
+  }).filter(Boolean);
+  return insns.length ? [...new Set(insns)].slice(0, 8) : null;
 }
 
 export function assertHaswellSafeBinaries(filePaths, label = 'binary') {

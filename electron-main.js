@@ -197,6 +197,7 @@ function applyModelRuntimeDefaults(modelPath) {
   }
 }
 const { MCPToolServer } = require('./mcpToolServer');
+const { MCPClient } = require('./mcpClient');
 const { ModelManager } = require('./modelManager');
 const { MemoryStore } = require('./memoryStore');
 const { LongTermMemory } = require('./longTermMemory');
@@ -229,7 +230,25 @@ const mcpToolServer = new MCPToolServer({
   executionPolicy: settingsManager.get('executionPolicy'),
   commandAllowList: settingsManager.get('commandAllowList'),
   commandDenyList: settingsManager.get('commandDenyList'),
+  userDataPath,
 });
+
+// ── MCP Client: manages external MCP servers (stdio transport) ──
+const mcpClient = new MCPClient({
+  projectPath: null,
+  onLog: (msg) => console.log(`[MCP] ${msg}`),
+  onToolsChanged: () => {
+    // Invalidate tool defs cache so next getToolDefinitions() picks up new tools
+    mcpToolServer._allToolDefsCache = null;
+    const discovered = mcpClient.getDiscoveredTools();
+    // Add dynamically discovered tool names to VALID_TOOLS so the parser accepts them
+    const { addValidTool } = require('./tools/toolParser');
+    for (const t of discovered) addValidTool(t.name);
+    _send('mcp-tools-changed', { tools: discovered.map(t => t.name) });
+    console.log(`[MCP] tools changed: ${discovered.length} tools available`);
+  },
+});
+mcpToolServer.mcpClient = mcpClient;
 const gitManager = new GitManager();
 const memoryStore = new MemoryStore();
 const longTermMemory = new LongTermMemory();
@@ -332,10 +351,20 @@ async function openProjectPath(projectPath) {
   currentProjectPath = resolved;
   ctx.currentProjectPath = resolved;
   mcpToolServer.projectPath = resolved;
+  mcpClient.projectPath = resolved;
   gitManager.setProjectPath(resolved);
   memoryStore.initialize(resolved);
   longTermMemory.initialize(resolved);
   rulesManager.initialize(resolved);
+  // Load MCP server config and start autoStart servers for this project
+  try {
+    mcpClient.loadConfig();
+    for (const [name, server] of mcpClient._servers) {
+      if (server.config?.autoStart !== false) {
+        mcpClient.startServer(name, server.config).catch(e => console.error(`[MCP] Failed to start ${name}:`, e.message));
+      }
+    }
+  } catch (e) { console.warn(`[MCP] Config load failed: ${e.message}`); }
   ragEngine.indexProject(resolved).catch(e => console.warn('[Main] RAG indexing failed:', e.message));
   _send('project-opened', { path: resolved });
   console.log(`[electron-main] openProjectPath DONE: ${resolved}`);
@@ -390,6 +419,11 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
   console.log(`[electron-main] ai-chat START: userMessageLen=${String(userMessage).length}, cloudProvider=${chatContext?.cloudProvider || 'none'}`);
   const cloudProvider = chatContext?.cloudProvider;
   const cloudModel = chatContext?.cloudModel;
+
+  // ── Checkpoint: begin turn capture before generation ──
+  const turnId = `turn-${Date.now()}`;
+  mcpToolServer.startTurn(turnId);
+  console.log(`[electron-main] checkpoint: startTurn(${turnId})`);
 
   // ── Cloud provider path (agentic tools + same system/tool prompt as local) ──
   if (cloudProvider) {
@@ -457,9 +491,20 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         return { isQuotaError: true, error: '__QUOTA_EXCEEDED__' };
       }
 
-      return { text: result.text || '', toolCallCount: result.toolCallCount || 0 };
+      // ── Checkpoint: finalize turn after cloud generation ──
+      const snapshot = mcpToolServer.finalizeCurrentTurn(String(userMessage).substring(0, 100));
+      if (snapshot) {
+        console.log(`[electron-main] checkpoint: finalizeCurrentTurn → ${snapshot.files.length} files captured`);
+        _send('tool-checkpoint', { turnId: snapshot.turnId, timestamp: snapshot.timestamp, userMessage: snapshot.userMessage, fileCount: snapshot.files.length });
+      } else {
+        console.log('[electron-main] checkpoint: finalizeCurrentTurn → no files modified this turn');
+      }
+
+      return { text: result.text || '', toolCallCount: result.toolCallCount || 0, checkpoint: snapshot ? { turnId: snapshot.turnId, timestamp: snapshot.timestamp, fileCount: snapshot.files.length } : null };
     } catch (err) {
       console.error(`[electron-main] ai-chat cloud ERROR: ${err.message}`);
+      // Reset checkpoint state on error to prevent stale captures
+      mcpToolServer.startTurn(null);
       if (err.isQuotaError) return { isQuotaError: true, error: '__QUOTA_EXCEEDED__' };
       return { error: err.message };
     }
@@ -560,10 +605,21 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     if (settings.guideInstructionsPath) {
       rulesManager.setGuideInstructionsPath(settings.guideInstructionsPath);
     }
+    // ── Checkpoint: finalize turn after local generation ──
+    const snapshot = mcpToolServer.finalizeCurrentTurn(String(userMessage).substring(0, 100));
+    if (snapshot) {
+      console.log(`[electron-main] checkpoint: finalizeCurrentTurn → ${snapshot.files.length} files captured`);
+      _send('tool-checkpoint', { turnId: snapshot.turnId, timestamp: snapshot.timestamp, userMessage: snapshot.userMessage, fileCount: snapshot.files.length });
+    } else {
+      console.log('[electron-main] checkpoint: finalizeCurrentTurn → no files modified this turn');
+    }
+
     console.log(`[electron-main] ai-chat DONE: toolCallCount=${result.toolCallCount}`);
-    return { text: result.text, toolCallCount: result.toolCallCount };
+    return { text: result.text, toolCallCount: result.toolCallCount, checkpoint: snapshot ? { turnId: snapshot.turnId, timestamp: snapshot.timestamp, fileCount: snapshot.files.length } : null };
   } catch (err) {
     console.error(`[electron-main] ai-chat local ERROR: ${err.message}`);
+    // Reset checkpoint state on error to prevent stale captures
+    mcpToolServer.startTurn(null);
     return { error: err.message };
   }
 });
@@ -573,6 +629,94 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
 ipcMain.handle('revert-context', (_e, messages) => {
   llmEngine.revertContext(Array.isArray(messages) ? messages : []);
   return { success: true };
+});
+
+// Restore file contents to a checkpoint (called from ChatPanel checkpoint button + restore_checkpoint tool)
+ipcMain.handle('restore-checkpoint', async (_e, turnId) => {
+  if (!mcpToolServer) return { success: false, error: 'MCPToolServer not initialized' };
+  return await mcpToolServer.restoreCheckpoint(turnId);
+});
+
+// ── MCP Server Management IPC ──────────────────────────────────────
+ipcMain.handle('mcp-add-server', async (_e, serverConfig) => {
+  if (!mcpClient) return { success: false, error: 'MCPClient not initialized' };
+  try {
+    const { name, command, args, env } = serverConfig;
+    if (!name || !command) return { success: false, error: 'name and command are required' };
+    const config = { command, args: args || [], env: env || {} };
+    mcpClient.initFromConfig({ [name]: config });
+    await mcpClient.startServer(name, config);
+    console.log(`[MCP] server added and started: ${name}`);
+    return { success: true, name };
+  } catch (err) {
+    console.error(`[MCP] add-server error: ${err.message}`);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('mcp-remove-server', async (_e, name) => {
+  if (!mcpClient) return { success: false, error: 'MCPClient not initialized' };
+  try {
+    await mcpClient.stopServer(name);
+    mcpClient._servers.delete(name);
+    mcpClient._rebuildDiscoveredTools();
+    console.log(`[MCP] server removed: ${name}`);
+    return { success: true };
+  } catch (err) {
+    console.error(`[MCP] remove-server error: ${err.message}`);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('mcp-toggle-server', async (_e, name) => {
+  if (!mcpClient) return { success: false, error: 'MCPClient not initialized' };
+  try {
+    const server = mcpClient._servers.get(name);
+    if (!server) return { success: false, error: `Server "${name}" not found` };
+    if (server.status === 'running') {
+      await mcpClient.stopServer(name);
+      console.log(`[MCP] server stopped: ${name}`);
+      return { success: true, status: 'stopped' };
+    } else {
+      await mcpClient.startServer(name, server.config);
+      console.log(`[MCP] server started: ${name}`);
+      return { success: true, status: 'running' };
+    }
+  } catch (err) {
+    console.error(`[MCP] toggle-server error: ${err.message}`);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('mcp-server-status', () => {
+  if (!mcpClient) return { servers: [] };
+  return { servers: mcpClient.getServerStatus() };
+});
+
+ipcMain.handle('mcp-start-server', async (_e, name) => {
+  if (!mcpClient) return { success: false, error: 'MCPClient not initialized' };
+  try {
+    const server = mcpClient._servers.get(name);
+    if (!server) return { success: false, error: `Server "${name}" not found` };
+    await mcpClient.startServer(name, server.config);
+    console.log(`[MCP] server started: ${name}`);
+    return { success: true };
+  } catch (err) {
+    console.error(`[MCP] start-server error: ${err.message}`);
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('mcp-stop-server', async (_e, name) => {
+  if (!mcpClient) return { success: false, error: 'MCPClient not initialized' };
+  try {
+    await mcpClient.stopServer(name);
+    console.log(`[MCP] server stopped: ${name}`);
+    return { success: true };
+  } catch (err) {
+    console.error(`[MCP] stop-server error: ${err.message}`);
+    return { success: false, error: err.message };
+  }
 });
 
 // Swap chat wrapper mode on the fly without reloading the model.
@@ -1696,6 +1840,7 @@ function _shutdown() {
   settingsManager.flush();
   memoryStore.dispose();
   sessionStore.flush();
+  try { mcpClient.stopAll(); } catch (_) {}
   try { browserManager.dispose(); } catch (_) {}
   try { llmEngine.dispose(); } catch (_) {}
   modelManager.dispose();

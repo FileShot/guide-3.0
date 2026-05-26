@@ -86,7 +86,40 @@ async function _gitReset(mode = 'soft', filePath) {
   return { success: false, error: 'Use mode "soft" or "hard"' };
 }
 
+async function _gitPush(remote, branch, force) {
+  const remoteArg = remote ? this._sanitizeShellArg(remote) : 'origin';
+  const branchArg = branch ? this._sanitizeShellArg(branch) : '';
+  const forceFlag = force ? ' --force' : '';
+  const target = branchArg ? `${remoteArg} ${branchArg}` : remoteArg;
+  console.log(`[MCPToolServer] git push${forceFlag} ${target}`);
+  const result = await this._runCommand(`git push${forceFlag} ${target}`);
+  if (!result || result.exitCode !== 0) {
+    return { success: false, error: result?.stderr || 'git push failed' };
+  }
+  return { success: true, message: `Pushed to ${target}` };
+}
+
+async function _gitBranchDelete(branch, remote, force) {
+  if (!branch) return { success: false, error: 'Branch name is required' };
+  const safe = this._sanitizeShellArg(branch);
+  const flag = force ? ' -D' : ' -d';
+  if (remote) {
+    console.log(`[MCPToolServer] git push origin --delete ${safe}`);
+    const result = await this._runCommand(`git push origin --delete ${safe}`);
+    if (!result || result.exitCode !== 0) {
+      return { success: false, error: result?.stderr || 'Remote branch delete failed' };
+    }
+    return { success: true, message: `Deleted remote branch ${branch}` };
+  }
+  console.log(`[MCPToolServer] git branch${flag} ${safe}`);
+  const result = await this._runCommand(`git branch${flag} ${safe}`);
+  if (!result || result.exitCode !== 0) {
+    return { success: false, error: result?.stderr || 'Branch delete failed' };
+  }
+  return { success: true, message: `Deleted branch ${branch}` };
+}
+
 module.exports = {
   _gitStatus, _gitCommit, _gitDiff, _gitLog,
-  _gitBranch, _gitStash, _gitReset,
+  _gitBranch, _gitStash, _gitReset, _gitPush, _gitBranchDelete,
 };

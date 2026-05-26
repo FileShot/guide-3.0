@@ -2,6 +2,7 @@
   "appId": "com.guide-ide.desktop",
   "productName": "guIDE",
   "copyright": "Copyright © 2026 GraySoft LLC",
+  "electronVersion": "22.3.27",
   "electronDist": "build/electron-legacy-dist",
   "directories": {
     "output": "dist-electron"

@@ -2266,6 +2266,14 @@ export default function ChatPanel() {
 
                       useAppStore.getState().setChatStreaming(false);
 
+                      // Also restore file contents via backend checkpoint system
+                      // Find the checkpoint turnId from the assistant message before this user message
+                      const prevAssistant = chatMessages[idx - 1];
+                      const turnId = prevAssistant?.checkpoint?.turnId || prevAssistant?.turnId;
+                      if (turnId && window.electronAPI?.restoreCheckpoint) {
+                        window.electronAPI.restoreCheckpoint(turnId);
+                      }
+
                     }}
 
                   >

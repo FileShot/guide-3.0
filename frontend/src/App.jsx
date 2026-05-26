@@ -336,14 +336,21 @@ export default function App() {
 
       case 'tool-checkpoint': {
 
-        const cps = Array.isArray(data) ? data : [data];
-
-        for (const item of cps) {
-
-          const name = item.tool || item.functionName || item.name;
-
-          s.updateStreamingToolCall(name, { checkpoint: item });
-
+        // Attach checkpoint metadata to the last assistant message so the
+        // restore button in ChatPanel can find the turnId for file restore.
+        const cpData = Array.isArray(data) ? data[data.length - 1] : data;
+        if (cpData?.turnId) {
+          const { chatMessages } = s;
+          // Find the last assistant message
+          for (let i = chatMessages.length - 1; i >= 0; i--) {
+            if (chatMessages[i].role === 'assistant') {
+              const updated = [...chatMessages];
+              updated[i] = { ...updated[i], checkpoint: { turnId: cpData.turnId, timestamp: cpData.timestamp, fileCount: cpData.fileCount } };
+              set({ chatMessages: updated });
+              console.log(`[App] tool-checkpoint: attached turnId=${cpData.turnId} to msg[${i}]`);
+              break;
+            }
+          }
         }
 
         break;

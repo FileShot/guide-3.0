@@ -2197,13 +2197,22 @@ function MCPConfigPanel() {
   const [command, setCommand] = useState('');
   const [args, setArgs] = useState('');
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!name.trim() || !command.trim()) return;
-    addMcpServer({
+    const serverConfig = {
       name: name.trim(),
       command: command.trim(),
       args: args.trim() ? args.trim().split(/\s+/) : [],
-    });
+    };
+    // Save to localStorage for persistence
+    addMcpServer(serverConfig);
+    // Also tell the backend to actually start the MCP server
+    if (window.electronAPI?.mcpAddServer) {
+      const result = await window.electronAPI.mcpAddServer(serverConfig);
+      if (!result?.success) {
+        console.error(`[MCPConfigPanel] add-server failed: ${result?.error}`);
+      }
+    }
     setName(''); setCommand(''); setArgs('');
     setAdding(false);
   };
@@ -2222,7 +2231,7 @@ function MCPConfigPanel() {
       <div className="space-y-1 mb-2">
         {mcpServers.map(sv => (
           <div key={sv.id} className="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-vsc-list-hover group">
-            <button onClick={() => toggleMcpServer(sv.id)} title={sv.enabled ? 'Disable' : 'Enable'}>
+            <button onClick={async () => { toggleMcpServer(sv.id); if (window.electronAPI?.mcpToggleServer) await window.electronAPI.mcpToggleServer(sv.name); }} title={sv.enabled ? 'Disable' : 'Enable'}>
               <Power size={12} className={sv.enabled ? 'text-green-400' : 'text-vsc-text-dim'} />
             </button>
             <div className="flex-1 min-w-0">
@@ -2233,7 +2242,7 @@ function MCPConfigPanel() {
             </div>
             <button
               className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-vsc-list-hover rounded"
-              onClick={() => removeMcpServer(sv.id)}
+              onClick={async () => { removeMcpServer(sv.id); if (window.electronAPI?.mcpRemoveServer) await window.electronAPI.mcpRemoveServer(sv.name); }}
               title="Remove"
             >
               <Trash2 size={11} className="text-vsc-text-dim hover:text-red-400" />
