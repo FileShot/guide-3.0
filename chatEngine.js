@@ -613,7 +613,7 @@ When you receive an image description from the vision system, treat it as what y
 For multi-step work, you may use planning tools from ## Tools when they fit the task. For simple requests, act directly without unnecessary planning overhead.
 
 ## Context rotation
-When you see [System: Context rotated], older turns were removed from the live context window. Before continuing a long multi-step task, use read_file on .guide-scratch/context-state.md in the project root to recover dropped thread details.
+When you see [System: Context rotated], older turns were removed from the live context window. The progress summary embedded in the rotation notice contains the key details you need to continue. Do not call read_file to recover context — the summary is already in your context.
 
 ## Cloud response style (cloud models only)
 When this block is present you are guIDE Cloud AI: keep answers concise — short paragraphs, minimal preamble, no filler. Still use tools whenever the task requires real actions in the project.
@@ -662,6 +662,7 @@ class ChatEngine extends EventEmitter {
     this._context = null;
     this._sequence = null;
     this._chat = null;
+    this._baseCtxOpts = null; // saved from loadModel() for summarizer VRAM reclaim
     this._chatHistory = [];
     this._lastEvaluation = null;
     this._abortController = null;
@@ -997,6 +998,7 @@ class ChatEngine extends EventEmitter {
         baseCtxOpts.experimentalKvCacheKeyType = kvCacheType;
         baseCtxOpts.experimentalKvCacheValueType = kvCacheType;
       }
+      this._baseCtxOpts = baseCtxOpts; // Save for summarizer VRAM reclaim
 
       // Create context with computed single-number size (bypasses f16-based fitting)
       try {
@@ -2550,6 +2552,17 @@ class ChatEngine extends EventEmitter {
             suggestion: 'The model will automatically continue generating to complete the tool call.',
           });
         }
+        // Fix C: Force-emit partial file content to UI when maxTokens interrupts streaming.
+        // Without this, the user sees nothing during the 5-minute invisible generation.
+        if (_sfContentStreamActive && onStreamEvent) {
+          if (_sfContentBuf) {
+            onStreamEvent('file-content-token', _sfContentBuf);
+            _sfContentBuf = '';
+          }
+          onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath, incomplete: true });
+          _sfContentStreamActive = false;
+          console.log(`[ChatEngine] maxTokens FC interrupt: emitted partial file-content-end for ${_sfContentFilePath} (incomplete)`);
+        }
       }
 
       // Seamless continuation: when maxTokens stops generation, continue from where the model left off.
@@ -2730,6 +2743,60 @@ class ChatEngine extends EventEmitter {
               onContextUsage({ used: this._sequence.nextTokenIndex, total: this._context.contextSize });
             }
             pendingCalls = result.metadata?.stopReason === 'functionCalls' ? result.functionCalls : null;
+
+            // Seamless continuation inside native FC tool loop:
+            // When maxTokens stops generation after tool execution, the model was mid-FC or
+            // mid-prose. Without continuation, pendingCalls=null causes the loop to exit
+            // silently — the 5-minute invisible generation scenario.
+            let _toolLoopSeamlessRound = 0;
+            const MAX_TOOL_LOOP_SEAMLESS = 5;
+            while (result.metadata?.stopReason === 'maxTokens' && _toolLoopSeamlessRound < MAX_TOOL_LOOP_SEAMLESS && !_userAbortedGeneration) {
+              _toolLoopSeamlessRound++;
+              // Reset streaming filter state for the next generation round
+              _sfBuf = ''; _sfDepth = 0; _sfActive = false; _sfConfirmed = false;
+              _sfInStr = false; _sfEscaped = false; _sfLastCharWasNewlineOrStart = true;
+              _sfInFence = false; _sfFenceBuf = ''; _sfFenceTickCount = 0;
+              _sfFileWriteDetected = false; _sfContentStreamActive = false; _sfContentDone = false;
+              _sfContentEsc = false; _sfContentBuf = ''; _sfContentFilePath = '';
+              _sfUnicodeCount = 0; _sfUnicodeChars = '';
+              _sfInThink = false; _sfThinkBuf = ''; _sfThinkTagMatch = '';
+              _sfFenceInThink = false; _sfPostFenceSuppress = false;
+              _sfFenceStreamPlain = false; _sfFencePlainTick = 0;
+              _sfNativeThinkActive = false;
+              this._nativeThinkLogged = false;
+
+              const _tlCtxUsed = this._sequence?.nextTokenIndex || 0;
+              const _tlCtxAvail = contextSize - _tlCtxUsed;
+              if (_tlCtxAvail < MIN_GENERATION_TOKENS) {
+                console.log(`[ChatEngine] Tool-loop seamless: insufficient context (${_tlCtxAvail} tokens) — stopping`);
+                break;
+              }
+              genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, Math.min(_tlCtxAvail, userMaxTokens));
+              console.log(`[ChatEngine] Tool-loop seamless continuation #${_toolLoopSeamlessRound}: maxTokens=${genOptions.maxTokens}, ctxUsed=${_tlCtxUsed}/${contextSize}`);
+
+              result = await this._generateResponseSafe(genOptions, {
+                contextSize,
+                onStreamEvent,
+                functions: _useNativeFunctions ? functions : undefined,
+                documentFunctionParams: _useNativeFunctions ? true : undefined,
+                userMaxTokensCap: userMaxTokens,
+              });
+              this._chatHistory = result.lastEvaluation.cleanHistory;
+              if (onContextUsage && this._sequence) {
+                onContextUsage({ used: this._sequence.nextTokenIndex, total: this._context.contextSize });
+              }
+              pendingCalls = result.metadata?.stopReason === 'functionCalls' ? result.functionCalls : null;
+              console.log(`[ChatEngine] Tool-loop seamless #${_toolLoopSeamlessRound} returned: stopReason=${result.metadata?.stopReason}, pendingCalls=${pendingCalls?.length ?? 0}`);
+
+              // If the continuation produced function calls, break out of seamless loop
+              // to process them in the outer tool loop
+              if (pendingCalls) break;
+              // If stop reason changed from maxTokens (e.g., eogToken, natural), stop
+              if (result.metadata?.stopReason !== 'maxTokens') break;
+            }
+            if (_toolLoopSeamlessRound > 0) {
+              console.log(`[ChatEngine] Tool-loop seamless continuation complete: ${_toolLoopSeamlessRound} rounds, final stopReason=${result.metadata?.stopReason}`);
+            }
           }
           this._lastEvaluation = result.lastEvaluation;
         }
@@ -3721,12 +3788,10 @@ class ChatEngine extends EventEmitter {
 
     const taskLine = pinnedUserText
       ? `Current task: "${pinnedUserText.slice(0, 300)}${pinnedUserText.length > 300 ? '...' : ''}"`
-      : 'Current task: (not found — check context-state.md)';
+      : 'Current task: (not found)';
     const progressLine = 'Progress summary: (generating...)';
 
-    const text = scratchRel
-      ? `[System: Context rotated] ${droppedCount} earlier turn(s) compressed.\n${taskLine}\n${progressLine}\nContinue from where you left off. Do not restart completed steps.\nDetailed context log: ${scratchRel}\n`
-      : `[System: Context rotated] ${droppedCount} earlier turn(s) compressed.\n${taskLine}\n${progressLine}\nContinue from where you left off. Do not restart completed steps.\n`;
+    const text = `[System: Context rotated] ${droppedCount} earlier turn(s) compressed.\n${taskLine}\n${progressLine}\nContinue from where you left off. Do not restart completed steps.\n`;
 
     copy.splice(Math.max(1, copy.length - 1), 0, { type: 'user', text });
     return copy;
@@ -3804,9 +3869,131 @@ class ChatEngine extends EventEmitter {
       return summary || null;
     } catch (err) {
       console.warn(`[ChatEngine] Summarizer FAILED: ${err.message}`);
+      // If VRAM is the issue, try the dispose-and-recreate approach
+      if (/VRAM|memory|context size|failed to create|allocation/i.test(err.message)) {
+        console.log('[ChatEngine] Summarizer: attempting VRAM reclaim (dispose main context → summarize → recreate)');
+        const reclaimResult = await this._summarizeWithVramReclaim(droppedItems, taskHint);
+        if (reclaimResult) return reclaimResult;
+      }
       return this._extractDeterministicSummary(droppedItems);
     } finally {
       try { subContext?.dispose(); } catch (_) {}
+    }
+  }
+
+  /**
+   * Summarize dropped context by disposing the main context to free VRAM,
+   * creating a summarizer sub-context in the freed space, running summarization,
+   * then recreating the main context and re-prefilling on next generation.
+   * This is the production-grade solution for VRAM-constrained systems where
+   * the normal sub-context creation fails because the main context occupies
+   * 100% of available VRAM.
+   *
+   * Cost: ~60 seconds on a 4GB GPU (25s summarization + 34s re-prefill).
+   * Cursor takes minutes for the same operation. The user sees a
+   * "Condensing context" status event throughout.
+   *
+   * Recovery guarantee: if anything fails, the catch block always attempts
+   * to recreate the main context. If even that fails, isReady=false + error
+   * status event, and the user must reload the model.
+   */
+  async _summarizeWithVramReclaim(droppedItems, taskHint) {
+    if (!this._baseCtxOpts || !this._model) return null;
+    console.log('[ChatEngine] Summarizer VRAM reclaim: disposing main context to free VRAM');
+
+    // Step 1: Save state that must survive the cycle
+    const savedHistory = this._chatHistory;
+    const savedWrapper = this._chatWrapper;
+
+    // Step 2: Dispose main context (frees ALL KV cache VRAM)
+    try { this._sequence?.dispose(); } catch (_) {}
+    try { await this._context?.dispose(); } catch (_) {}
+    this._sequence = null;
+    this._context = null;
+    this._chat = null;
+
+    // Step 3-4: Create summarizer sub-context and run summarization
+    let subContext = null;
+    try {
+      const subCtxSize = Math.min(4096, Math.max(1024, Math.floor((this._baseCtxOpts.contextSize || 4096) * 0.1)));
+      subContext = await this._model.createContext({
+        contextSize: { min: 256, max: subCtxSize },
+      });
+      const subSequence = subContext.getSequence();
+      const llamaCppPath = this._getNodeLlamaCppPath();
+      const { LlamaChat } = await import(pathToFileURL(llamaCppPath).href);
+      const subChat = new LlamaChat({
+        contextSequence: subSequence,
+        chatWrapper: savedWrapper || 'auto',
+      });
+
+      // Build compact text from dropped items (same logic as _summarizeDroppedContext)
+      const inputCharCap = Math.max(600, (subCtxSize - 500) * 3);
+      let inputText = '';
+      for (const item of droppedItems) {
+        const role = item.type === 'user' ? 'User' : item.type === 'model' ? 'Assistant' : 'System';
+        const text = this._getHistoryItemText(item);
+        const line = `[${role}] ${text.slice(0, 600)}\n`;
+        if (inputText.length + line.length > inputCharCap) {
+          inputText += `[... ${droppedItems.length} items total, truncated]\n`;
+          break;
+        }
+        inputText += line;
+      }
+
+      const systemPrompt = `You are a task continuity assistant. Summarize the following conversation segment using concise bullet points. Focus on: tools called, files created or modified, URLs visited, and current task progress state. Be specific with paths and URLs. No preamble. Start immediately with bullet points.`;
+      const userPrompt = taskHint
+        ? `Task: ${taskHint.slice(0, 300)}\n\nConversation to summarize:\n${inputText}`
+        : `Conversation to summarize:\n${inputText}`;
+
+      const subHistory = [
+        { type: 'system', text: systemPrompt },
+        { type: 'user', text: userPrompt },
+      ];
+
+      let summary = '';
+      await subChat.generateResponse(subHistory, {
+        temperature: 0.1,
+        maxTokens: 250,
+        signal: this._abortController?.signal,
+        stopOnAbortSignal: true,
+        onTextChunk: (chunk) => { summary += chunk; },
+      });
+      summary = summary.trim();
+      console.log(`[ChatEngine] Summarizer VRAM reclaim DONE: ${summary.length} chars from ${droppedItems.length} items`);
+
+      // Step 5: Dispose sub-context
+      try { subContext?.dispose(); } catch (_) {}
+      subContext = null;
+
+      // Step 6-8: Recreate main context, sequence, chat
+      this._context = await this._model.createContext(this._baseCtxOpts);
+      this._sequence = this._context.getSequence();
+      this._chat = new LlamaChat({ contextSequence: this._sequence, chatWrapper: savedWrapper });
+      this._chatHistory = savedHistory;
+      this._lastEvaluation = null; // Force full re-prefill on next generateResponse
+
+      console.log('[ChatEngine] Summarizer VRAM reclaim: main context recreated, re-prefill will occur on next generation');
+      return summary || null;
+    } catch (err) {
+      console.warn(`[ChatEngine] Summarizer VRAM reclaim FAILED: ${err.message}`);
+      // Recovery: ensure main context is recreated even if summarization failed
+      if (!this._context && this._model && this._baseCtxOpts) {
+        try {
+          this._context = await this._model.createContext(this._baseCtxOpts);
+          this._sequence = this._context.getSequence();
+          this._chat = new LlamaChat({ contextSequence: this._sequence, chatWrapper: savedWrapper });
+          this._chatHistory = savedHistory;
+          this._lastEvaluation = null;
+          console.log('[ChatEngine] Summarizer VRAM reclaim: main context recovered after failure');
+        } catch (recoveryErr) {
+          console.error(`[ChatEngine] Summarizer VRAM reclaim: FATAL — context recovery failed: ${recoveryErr.message}`);
+          this.isReady = false;
+          this.emit('status', { state: 'error', message: `Context recovery failed: ${recoveryErr.message}. Please reload the model.` });
+        }
+      }
+      try { subContext?.dispose(); } catch (_) {}
+      return this._extractDeterministicSummary(droppedItems);
     }
   }
 
@@ -3814,12 +4001,25 @@ class ChatEngine extends EventEmitter {
     if (!droppedItems || droppedItems.length === 0) return null;
     const lines = [];
     for (const item of droppedItems) {
+      const text = this._getHistoryItemText(item).trim();
+      if (!text) continue;
       if (item.type === 'user') {
-        const text = this._getHistoryItemText(item).trim();
-        if (text) lines.push(`- User: ${text.slice(0, 200)}`);
+        lines.push(`- User: ${text.slice(0, 300)}`);
       } else if (item.type === 'model') {
-        const text = this._getHistoryItemText(item).trim();
-        if (text) lines.push(`- Assistant: ${text.slice(0, 200)}`);
+        // Extract tool calls from model responses for task continuity
+        const toolCalls = text.match(/(?:write_file|read_file|web_search|fetch_webpage|edit_file|run_terminal_command|browser_screenshot|browser_click|browser_navigate|browser_type|browser_fill_form)\s*\([^)]*\)/g);
+        if (toolCalls) {
+          lines.push(`- Tools: ${toolCalls.join(', ')}`);
+        }
+        // Extract file paths when no tool calls found
+        const filePaths = text.match(/["']([\w/\\]+\.\w+)["']/g);
+        if (filePaths && !toolCalls) {
+          lines.push(`- Files: ${filePaths.slice(0, 5).join(', ')}`);
+        }
+        // Always include a snippet of the response for context
+        if (!toolCalls && !filePaths) {
+          lines.push(`- Assistant: ${text.slice(0, 200)}`);
+        }
       }
     }
     if (!lines.length) return null;
@@ -3926,7 +4126,7 @@ class ChatEngine extends EventEmitter {
           const notice = this._chatHistory[noticeIdx];
           notice.text = notice.text.replace(
             'Progress summary: (generating...)',
-            'Progress summary: (not available — check .guide-scratch/context-state.md)'
+            'Progress summary: (not available — context was compressed without a summary)'
           );
         }
       }
@@ -3934,8 +4134,8 @@ class ChatEngine extends EventEmitter {
       // Final status event
       if (onStreamEvent) {
         onStreamEvent('generation-warning', {
-          message: summary ? 'Context condensed — progress summary injected' : 'Context compressed — check .guide-scratch/context-state.md',
-          suggestion: summary ? 'The model now has a summary of earlier work and will continue from where it left off.' : 'Older messages were dropped. The model may read .guide-scratch/context-state.md for details.',
+          message: summary ? 'Context condensed — progress summary injected' : 'Context compressed — no summary available',
+          suggestion: summary ? 'The model now has a summary of earlier work and will continue from where it left off.' : 'Older messages were dropped. The model will continue based on the remaining context.',
         });
       }
     }
@@ -4008,14 +4208,14 @@ class ChatEngine extends EventEmitter {
           if (noticeIdx >= 0) {
             this._chatHistory[noticeIdx].text = this._chatHistory[noticeIdx].text.replace(
               'Progress summary: (generating...)',
-              'Progress summary: (not available — check .guide-scratch/context-state.md)'
+              'Progress summary: (not available — context was compressed without a summary)'
             );
           }
         }
         if (onStreamEvent) {
           onStreamEvent('generation-warning', {
-            message: summary ? 'Context condensed — progress summary injected' : 'Context compressed — check .guide-scratch/context-state.md',
-            suggestion: summary ? 'The model now has a summary of earlier work and will continue from where it left off.' : 'Older messages were dropped. Check .guide-scratch/context-state.md if the task spans many steps.',
+            message: summary ? 'Context condensed — progress summary injected' : 'Context compressed — no summary available',
+            suggestion: summary ? 'The model now has a summary of earlier work and will continue from where it left off.' : 'Older messages were dropped. The model will continue based on the remaining context.',
           });
         }
       }
