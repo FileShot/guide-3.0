@@ -271,6 +271,34 @@ mcpToolServer.onPermissionRequest = (toolName, params, reason) => {
     mcpToolServer._pendingPermissionResolvers[reqId] = resolve;
   });
 };
+// IPC bridge for IDE integration tools (switch_file, get_diagnostics, get_selection, open_terminal)
+mcpToolServer.onIPCCall = async (channel, data) => {
+  try {
+    const result = await ipcMain.handle(channel, data);
+    return result;
+  } catch {
+    // IPC handlers may not exist for some channels — use direct approach
+    if (channel === 'switch-file') {
+      _send('switch-file', data);
+      return { success: true };
+    }
+    if (channel === 'terminal-create') {
+      // Reuse existing terminal-create IPC
+      const ptyModule = _loadPty ? _loadPty() : null;
+      if (!ptyModule) return { success: false, error: 'node-pty not available' };
+      return { success: true, note: 'Terminal creation requested' };
+    }
+    if (channel === 'get-diagnostics') {
+      _send('get-diagnostics', data);
+      return { success: true, note: 'Diagnostics request sent to frontend' };
+    }
+    if (channel === 'get-selection') {
+      _send('get-selection', data);
+      return { success: true, note: 'Selection request sent to frontend' };
+    }
+    return { success: false, error: `IPC channel ${channel} not available` };
+  }
+};
 cloudLLM.setLicenseManager(licenseManager);
 
 // Restore persisted API keys

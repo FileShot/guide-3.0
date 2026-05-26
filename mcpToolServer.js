@@ -24,6 +24,18 @@ const {
 } = require('./tools/toolParser');
 const { canonicalizeToolParams } = require('./tools/canonicalizeToolParams');
 
+/** Format uptime seconds into human-readable string */
+function formatUptime(seconds) {
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const parts = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  parts.push(`${mins}m`);
+  return parts.join(' ');
+}
+
 class MCPToolServer {
   constructor(options = {}) {
     this.webSearch = options.webSearch || null;
@@ -81,6 +93,7 @@ class MCPToolServer {
     this._destructiveTools = new Set([
       'delete_file', 'replace_in_file', 'write_file', 'terminal_run',
       'git_commit', 'git_push', 'git_reset', 'git_branch_delete',
+      'kill_process', 'set_env_var',
     ]);
 
     // Rate limiting: max calls per tool type within the rate window
@@ -833,6 +846,148 @@ class MCPToolServer {
           allowMultiple: { type: 'boolean', description: 'If true, the user can select multiple options', required: false },
         },
       },
+      // ── Process / System Tools ──
+      {
+        name: 'list_processes',
+        description: 'List running processes on the system. Returns PID, command name, CPU%, and memory usage. Cross-platform: uses tasklist on Windows, ps on Unix.',
+        parameters: {
+          filter: { type: 'string', description: 'Filter processes by name (substring match, optional)', required: false },
+          sortBy: { type: 'string', description: "Sort by: 'cpu', 'memory', or 'pid' (default 'cpu')", required: false },
+          maxResults: { type: 'number', description: 'Max processes to return (default 30)', required: false },
+        },
+      },
+      {
+        name: 'kill_process',
+        description: 'Kill a process by its PID. Use list_processes first to find the PID. This is a destructive operation — the process will be terminated immediately.',
+        parameters: {
+          pid: { type: 'number', description: 'Process ID to kill', required: true },
+          force: { type: 'boolean', description: 'Force kill (SIGKILL on Unix, /F on Windows). Default: graceful termination.', required: false },
+        },
+      },
+      {
+        name: 'get_system_info',
+        description: 'Get system information: OS, CPU cores, total/free memory, disk usage, and uptime. Useful for understanding the environment before running resource-intensive tasks.',
+        parameters: {},
+      },
+      {
+        name: 'get_env_var',
+        description: 'Read the value of an environment variable. Returns the variable value or null if not set. Use this to check PATH, HOME, NODE_ENV, etc.',
+        parameters: {
+          name: { type: 'string', description: 'Environment variable name (e.g. "PATH", "HOME", "NODE_ENV")', required: true },
+        },
+      },
+      {
+        name: 'set_env_var',
+        description: 'Set an environment variable for the current IDE session and persistent terminal. The variable persists for the lifetime of the session (not across app restarts). Use this to configure build environments, set API keys, or adjust PATH.',
+        parameters: {
+          name: { type: 'string', description: 'Environment variable name', required: true },
+          value: { type: 'string', description: 'Variable value', required: true },
+          persistent: { type: 'boolean', description: 'Also persist to shell profile (.bashrc, PowerShell profile) for future sessions. Default: false.', required: false },
+        },
+      },
+      // ── Network Tools ──
+      {
+        name: 'ping_host',
+        description: 'Ping a host and return latency statistics. Cross-platform: uses ping on all OSes. Returns min/avg/max latency and packet loss.',
+        parameters: {
+          host: { type: 'string', description: 'Hostname or IP address to ping', required: true },
+          count: { type: 'number', description: 'Number of pings (default 4)', required: false },
+        },
+      },
+      {
+        name: 'dns_lookup',
+        description: 'Resolve DNS records for a hostname. Returns A, AAAA, CNAME, and MX records when available. Useful for debugging network issues or verifying domain configuration.',
+        parameters: {
+          hostname: { type: 'string', description: 'Hostname to resolve (e.g. "example.com")', required: true },
+          recordType: { type: 'string', description: "DNS record type: 'A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS' (default: all available)", required: false },
+        },
+      },
+      {
+        name: 'download_file',
+        description: 'Download a file from a URL to the project directory. Supports HTTP and HTTPS. Shows download progress. Use this to fetch assets, data files, or scripts.',
+        parameters: {
+          url: { type: 'string', description: 'URL to download from', required: true },
+          savePath: { type: 'string', description: 'Relative path in the project to save the file (default: filename from URL)', required: false },
+          overwrite: { type: 'boolean', description: 'Overwrite if file exists (default: false)', required: false },
+        },
+      },
+      // ── Code Quality Tools ──
+      {
+        name: 'run_linter',
+        description: 'Run a linter on a file or project. Auto-detects ESLint, Pylint, Ruff, Flake8, RuboCop, and other common linters from project config. Returns lint errors and warnings with file, line, and message.',
+        parameters: {
+          filePath: { type: 'string', description: 'File or directory to lint (default: project root)', required: false },
+          fix: { type: 'boolean', description: 'Auto-fix lint errors where possible (default: false)', required: false },
+          linter: { type: 'string', description: "Specific linter to use (e.g. 'eslint', 'pylint', 'ruff'). Auto-detected if omitted.", required: false },
+        },
+      },
+      {
+        name: 'run_tests',
+        description: 'Run the project test suite. Auto-detects test runners: npm test, pytest, cargo test, go test, dotnet test. Returns test results with pass/fail counts and failure details.',
+        parameters: {
+          testPath: { type: 'string', description: 'Specific test file or directory (default: all tests)', required: false },
+          testName: { type: 'string', description: 'Specific test name or pattern to run (e.g. "Auth.test")', required: false },
+          runner: { type: 'string', description: "Test runner to use (e.g. 'jest', 'pytest', 'cargo'). Auto-detected if omitted.", required: false },
+          coverage: { type: 'boolean', description: 'Generate coverage report (default: false)', required: false },
+        },
+      },
+      {
+        name: 'run_formatter',
+        description: 'Run a code formatter on a file or project. Auto-detects Prettier, Black, rustfmt, gofmt, and other formatters from project config. Returns list of formatted files.',
+        parameters: {
+          filePath: { type: 'string', description: 'File or directory to format (default: project root)', required: false },
+          formatter: { type: 'string', description: "Specific formatter (e.g. 'prettier', 'black', 'rustfmt'). Auto-detected if omitted.", required: false },
+          check: { type: 'boolean', description: 'Check only — report unformatted files without changing them (default: false)', required: false },
+        },
+      },
+      // ── IDE Integration Tools ──
+      {
+        name: 'open_terminal',
+        description: 'Open a new terminal tab in the IDE. Optionally run a command in the new terminal. The terminal persists after the command completes — the user can continue interacting with it.',
+        parameters: {
+          command: { type: 'string', description: 'Initial command to run in the terminal (optional)', required: false },
+          name: { type: 'string', description: 'Terminal tab name (optional)', required: false },
+          cwd: { type: 'string', description: 'Working directory for the terminal (default: project root)', required: false },
+        },
+      },
+      {
+        name: 'switch_file',
+        description: 'Open a file in the IDE editor and optionally move the cursor to a specific line. Use this to navigate the user to a relevant file or to show them where a change was made.',
+        parameters: {
+          filePath: { type: 'string', description: 'File to open', required: true },
+          line: { type: 'number', description: 'Line number to scroll to (1-based, optional)', required: false },
+          column: { type: 'number', description: 'Column number to position cursor (1-based, optional)', required: false },
+        },
+      },
+      {
+        name: 'get_diagnostics',
+        description: 'Get VS Code-style diagnostics (errors, warnings, hints) for a file or the entire project. Returns the list of problems from the language server or linter that the IDE is currently showing. More reliable than running a linter manually because it uses the IDE\'s built-in analysis.',
+        parameters: {
+          filePath: { type: 'string', description: 'File to get diagnostics for (omit for all open files)', required: false },
+          severity: { type: 'string', description: "Filter by severity: 'error', 'warning', 'info', 'hint' (default: all)", required: false },
+        },
+      },
+      {
+        name: 'get_selection',
+        description: 'Get the currently selected text in the active editor, along with the file path and selection range. Use this when the user asks you to do something with "this code" or "the selected part".',
+        parameters: {},
+      },
+      // ── Documentation Tools ──
+      {
+        name: 'read_doc',
+        description: 'Read a documentation file (README, API docs, CHANGELOG, CONTRIBUTING, etc.) from the project. Returns the file content. Automatically looks in common doc locations if no path is specified.',
+        parameters: {
+          docPath: { type: 'string', description: 'Path to doc file, or a name like "README", "CHANGELOG", "CONTRIBUTING" to auto-locate', required: true },
+        },
+      },
+      {
+        name: 'search_docs',
+        description: 'Search project documentation files for a keyword or pattern. Scans README, docs/, wiki/, and .md files. Returns matching files with context snippets.',
+        parameters: {
+          query: { type: 'string', description: 'Search query or keyword', required: true },
+          maxResults: { type: 'number', description: 'Max results (default 10)', required: false },
+        },
+      },
 
     ];
     return this._allToolDefsCache;
@@ -1155,6 +1310,62 @@ class MCPToolServer {
           break;
         case 'ask_question':
           result = await this._askQuestion(params);
+          break;
+        // Process / System tools
+        case 'list_processes':
+          result = await this._listProcesses(params.filter, params.sortBy, params.maxResults);
+          break;
+        case 'kill_process':
+          result = await this._killProcess(params.pid, params.force);
+          break;
+        case 'get_system_info':
+          result = await this._getSystemInfo();
+          break;
+        case 'get_env_var':
+          result = await this._getEnvVar(params.name);
+          break;
+        case 'set_env_var':
+          result = await this._setEnvVar(params.name, params.value, params.persistent);
+          break;
+        // Network tools
+        case 'ping_host':
+          result = await this._pingHost(params.host, params.count);
+          break;
+        case 'dns_lookup':
+          result = await this._dnsLookup(params.hostname, params.recordType);
+          break;
+        case 'download_file':
+          result = await this._downloadFile(params.url, params.savePath, params.overwrite);
+          break;
+        // Code quality tools
+        case 'run_linter':
+          result = await this._runLinter(params.filePath, params.fix, params.linter);
+          break;
+        case 'run_tests':
+          result = await this._runTests(params.testPath, params.testName, params.runner, params.coverage);
+          break;
+        case 'run_formatter':
+          result = await this._runFormatter(params.filePath, params.formatter, params.check);
+          break;
+        // IDE integration tools
+        case 'open_terminal':
+          result = await this._openTerminal(params.command, params.name, params.cwd);
+          break;
+        case 'switch_file':
+          result = await this._switchFile(params.filePath, params.line, params.column);
+          break;
+        case 'get_diagnostics':
+          result = await this._getDiagnostics(params.filePath, params.severity);
+          break;
+        case 'get_selection':
+          result = await this._getSelection();
+          break;
+        // Documentation tools
+        case 'read_doc':
+          result = await this._readDoc(params.docPath);
+          break;
+        case 'search_docs':
+          result = await this._searchDocs(params.query, params.maxResults);
           break;
         default:
           result = { success: false, error: `Unknown tool: ${toolName}` };
@@ -3109,6 +3320,674 @@ class MCPToolServer {
 
     // Fallback: no UI wired — return the question text so the model can ask in chat
     return { success: true, answer: '(User could not be reached — ask in chat instead)', asked: question };
+  }
+
+  // ─── Process / System Tools ──────────────────────────────────────────────
+
+  async _listProcesses(filter, sortBy = 'cpu', maxResults = 30) {
+    const isWin = process.platform === 'win32';
+    let cmd;
+    if (isWin) {
+      cmd = 'powershell -NoProfile -NonInteractive -Command "Get-Process | Select-Object Id,ProcessName,CPU,WorkingSet64 | ConvertTo-Json"';
+    } else {
+      cmd = 'ps aux --sort=-%cpu 2>/dev/null || ps aux';
+    }
+    try {
+      const result = await this._runCommand(cmd, undefined, 15000);
+      if (!result.success) return result;
+      let procs;
+      if (isWin) {
+        let raw = result.output.trim();
+        // PowerShell may return single object instead of array
+        if (raw.startsWith('{')) raw = '[' + raw + ']';
+        try { procs = JSON.parse(raw); } catch { return { success: false, error: 'Failed to parse process list' }; }
+        if (!Array.isArray(procs)) procs = [procs];
+        procs = procs.map(p => ({
+          pid: p.Id,
+          name: p.ProcessName,
+          cpu: (p.CPU || 0).toFixed(1),
+          memoryMB: ((p.WorkingSet64 || 0) / 1048576).toFixed(1),
+        }));
+      } else {
+        const lines = result.output.split('\n').filter(l => l.trim());
+        procs = [];
+        for (const line of lines.slice(1)) { // skip header
+          const parts = line.split(/\s+/);
+          if (parts.length < 11) continue;
+          procs.push({
+            pid: parseInt(parts[1]),
+            name: parts[10].split('/').pop(),
+            cpu: parseFloat(parts[2]).toFixed(1),
+            memoryMB: (parseFloat(parts[5]) / 1024).toFixed(1),
+            user: parts[0],
+          });
+        }
+      }
+      // Filter
+      if (filter) {
+        const f = filter.toLowerCase();
+        procs = procs.filter(p => p.name.toLowerCase().includes(f));
+      }
+      // Sort
+      if (sortBy === 'memory') procs.sort((a, b) => parseFloat(b.memoryMB) - parseFloat(a.memoryMB));
+      else if (sortBy === 'pid') procs.sort((a, b) => a.pid - b.pid);
+      else procs.sort((a, b) => parseFloat(b.cpu) - parseFloat(a.cpu));
+      // Limit
+      procs = procs.slice(0, maxResults);
+      return { success: true, processes: procs, count: procs.length };
+    } catch (e) {
+      return { success: false, error: `Failed to list processes: ${e.message}` };
+    }
+  }
+
+  async _killProcess(pid, force = false) {
+    if (!pid || typeof pid !== 'number') return { success: false, error: 'PID must be a number' };
+    const isWin = process.platform === 'win32';
+    const cmd = isWin
+      ? `taskkill /PID ${pid}${force ? ' /F' : ''}`
+      : `kill ${force ? '-9' : '-15'} ${pid}`;
+    try {
+      const result = await this._runCommand(cmd, undefined, 10000);
+      return result;
+    } catch (e) {
+      return { success: false, error: `Failed to kill process ${pid}: ${e.message}` };
+    }
+  }
+
+  async _getSystemInfo() {
+    const os = require('os');
+    const cpus = os.cpus();
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const info = {
+      platform: os.platform(),
+      arch: os.arch(),
+      osRelease: os.release(),
+      hostname: os.hostname(),
+      cpuModel: cpus.length > 0 ? cpus[0].model : 'unknown',
+      cpuCores: cpus.length,
+      totalMemoryGB: (totalMem / 1073741824).toFixed(2),
+      freeMemoryGB: (freeMem / 1073741824).toFixed(2),
+      usedMemoryGB: ((totalMem - freeMem) / 1073741824).toFixed(2),
+      memoryUsagePercent: (((totalMem - freeMem) / totalMem) * 100).toFixed(1),
+      uptime: formatUptime(os.uptime()),
+      loadAvg: os.loadavg().map(l => l.toFixed(2)),
+      nodeVersion: process.version,
+    };
+    // Disk usage
+    try {
+      const isWin = process.platform === 'win32';
+      const cmd = isWin
+        ? 'powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_LogicalDisk -Filter \'DriveType=3\' | Select-Object DeviceID,Size,FreeSpace | ConvertTo-Json"'
+        : 'df -h / 2>/dev/null | tail -1';
+      const result = await this._runCommand(cmd, undefined, 10000);
+      if (result.success) {
+        if (isWin) {
+          let raw = result.output.trim();
+          if (raw.startsWith('{')) raw = '[' + raw + ']';
+          try {
+            const disks = JSON.parse(raw);
+            const arr = Array.isArray(disks) ? disks : [disks];
+            info.disks = arr.map(d => ({
+              drive: d.DeviceID,
+              totalGB: (d.Size / 1073741824).toFixed(1),
+              freeGB: (d.FreeSpace / 1073741824).toFixed(1),
+              usedPercent: (((d.Size - d.FreeSpace) / d.Size) * 100).toFixed(1),
+            }));
+          } catch {}
+        } else {
+          const parts = result.output.trim().split(/\s+/);
+          if (parts.length >= 6) {
+            info.disks = [{ drive: parts[5] || '/', total: parts[1], used: parts[2], available: parts[3], usedPercent: parts[4] }];
+          }
+        }
+      }
+    } catch {}
+    return { success: true, system: info };
+  }
+
+  async _getEnvVar(name) {
+    if (!name) return { success: false, error: 'Variable name is required' };
+    const value = process.env[name];
+    return { success: true, name, value: value || null, isSet: value !== undefined };
+  }
+
+  async _setEnvVar(name, value, persistent = false) {
+    if (!name) return { success: false, error: 'Variable name is required' };
+    if (value === undefined || value === null) return { success: false, error: 'Variable value is required' };
+    // Set for current process
+    process.env[name] = String(value);
+    // If persistent, also write to shell profile
+    if (persistent) {
+      try {
+        const fs = require('fs');
+        const os = require('os');
+        const home = os.homedir();
+        const isWin = process.platform === 'win32';
+        if (isWin) {
+          // Set user environment variable persistently on Windows
+          await this._runCommand(`setx ${name} "${value}"`, undefined, 10000);
+        } else {
+          // Append to .bashrc / .zshrc
+          const shell = process.env.SHELL || '/bin/bash';
+          const rcFile = shell.includes('zsh') ? path.join(home, '.zshrc') : path.join(home, '.bashrc');
+          const exportLine = `\nexport ${name}="${value}" # Added by guIDE\n`;
+          if (fs.existsSync(rcFile)) {
+            const content = fs.readFileSync(rcFile, 'utf8');
+            // Remove existing export for this var
+            const cleaned = content.replace(new RegExp(`\nexport ${name}=.*\n?`, 'g'), '\n');
+            fs.writeFileSync(rcFile, cleaned.trimEnd() + exportLine);
+          } else {
+            fs.writeFileSync(rcFile, exportLine);
+          }
+        }
+      } catch (e) {
+        return { success: true, name, value: String(value), persistent: false, warning: `Set for session only — failed to persist: ${e.message}` };
+      }
+    }
+    // Also set in the persistent terminal if available
+    if (this._terminalManager && typeof this._terminalManager.setEnv === 'function') {
+      this._terminalManager.setEnv(name, String(value));
+    }
+    return { success: true, name, value: String(value), persistent };
+  }
+
+  // ─── Network Tools ────────────────────────────────────────────────────────
+
+  async _pingHost(host, count = 4) {
+    if (!host) return { success: false, error: 'Host is required' };
+    const isWin = process.platform === 'win32';
+    const cmd = isWin
+      ? `ping -n ${count} "${host}"`
+      : `ping -c ${count} -W 5 "${host}" 2>&1`;
+    try {
+      const result = await this._runCommand(cmd, undefined, 30000);
+      if (!result.success) return result;
+      const output = result.output;
+      // Parse latency from ping output
+      const latencies = [];
+      const timeRe = isWin ? /time[=<](\d+)/gi : /time=([\d.]+)\s*ms/gi;
+      let m;
+      while ((m = timeRe.exec(output)) !== null) {
+        latencies.push(parseFloat(m[1]));
+      }
+      // Parse packet loss
+      const lossMatch = output.match(/\((\d+)%\s*loss\)/i) || output.match(/(\d+)%\s*packet\s*loss/i);
+      const packetLoss = lossMatch ? parseInt(lossMatch[1]) : null;
+      const stats = latencies.length > 0 ? {
+        min: Math.min(...latencies).toFixed(1),
+        avg: (latencies.reduce((a, b) => a + b, 0) / latencies.length).toFixed(1),
+        max: Math.max(...latencies).toFixed(1),
+        count: latencies.length,
+      } : null;
+      return { success: true, host, stats, packetLoss, raw: output.trim() };
+    } catch (e) {
+      return { success: false, error: `Ping failed: ${e.message}` };
+    }
+  }
+
+  async _dnsLookup(hostname, recordType) {
+    if (!hostname) return { success: false, error: 'Hostname is required' };
+    const dns = require('dns').promises;
+    const results = {};
+    const types = recordType ? [recordType] : ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS'];
+    for (const type of types) {
+      try {
+        const method = `resolve${type === 'A' ? '4' : type === 'AAAA' ? '6' : type.charAt(0).toUpperCase() + type.slice(1).toLowerCase()}`;
+        if (typeof dns[method] === 'function') {
+          const records = await dns[method](hostname);
+          results[type] = records;
+        } else if (type === 'CNAME') {
+          const records = await dns.resolveCname(hostname);
+          results[type] = records;
+        }
+      } catch {
+        // Record type not found — skip
+      }
+    }
+    // Also resolve the default address
+    try {
+      const defaultAddr = await dns.lookup(hostname);
+      results.default = defaultAddr;
+    } catch {}
+    return { success: true, hostname, records: results };
+  }
+
+  async _downloadFile(url, savePath, overwrite = false) {
+    if (!url) return { success: false, error: 'URL is required' };
+    const fs = require('fs');
+    const { URL } = require('url');
+    const http = require('http');
+    const https = require('https');
+
+    // Determine save path
+    let targetPath;
+    if (savePath) {
+      targetPath = path.isAbsolute(savePath) ? savePath : path.join(this.projectPath || process.cwd(), savePath);
+    } else {
+      try {
+        const urlObj = new URL(url);
+        const filename = path.basename(urlObj.pathname) || 'download';
+        targetPath = path.join(this.projectPath || process.cwd(), filename);
+      } catch {
+        targetPath = path.join(this.projectPath || process.cwd(), 'download');
+      }
+    }
+
+    // Check overwrite
+    if (!overwrite && fs.existsSync(targetPath)) {
+      return { success: false, error: `File already exists: ${targetPath}. Set overwrite=true to replace.` };
+    }
+
+    // Ensure parent directory exists
+    const dir = path.dirname(targetPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    return new Promise((resolve) => {
+      const client = url.startsWith('https') ? https : http;
+      const file = fs.createWriteStream(targetPath);
+      let downloaded = 0;
+
+      client.get(url, { timeout: 60000 }, (response) => {
+        // Handle redirects
+        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          file.close();
+          fs.unlinkSync(targetPath);
+          this._downloadFile(response.headers.location, savePath, overwrite).then(resolve);
+          return;
+        }
+        if (response.statusCode !== 200) {
+          file.close();
+          fs.unlinkSync(targetPath);
+          resolve({ success: false, error: `HTTP ${response.statusCode}` });
+          return;
+        }
+        const totalSize = parseInt(response.headers['content-length'] || '0');
+        response.pipe(file);
+        response.on('data', (chunk) => { downloaded += chunk.length; });
+        file.on('finish', () => {
+          file.close();
+          resolve({
+            success: true,
+            savedTo: targetPath,
+            sizeBytes: downloaded,
+            sizeMB: (downloaded / 1048576).toFixed(2),
+          });
+        });
+      }).on('error', (e) => {
+        file.close();
+        if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath);
+        resolve({ success: false, error: `Download failed: ${e.message}` });
+      }).on('timeout', () => {
+        file.close();
+        if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath);
+        resolve({ success: false, error: 'Download timed out' });
+      });
+    });
+  }
+
+  // ─── Code Quality Tools ────────────────────────────────────────────────────
+
+  async _runLinter(filePath, fix = false, linter) {
+    const fs = require('fs');
+    const projRoot = this.projectPath || process.cwd();
+    const target = filePath ? (path.isAbsolute(filePath) ? filePath : path.join(projRoot, filePath)) : projRoot;
+
+    // Auto-detect linter
+    let detected = linter;
+    if (!detected) {
+      if (fs.existsSync(path.join(projRoot, '.eslintrc.js')) || fs.existsSync(path.join(projRoot, '.eslintrc.json')) || fs.existsSync(path.join(projRoot, '.eslintrc.yml')) || fs.existsSync(path.join(projRoot, 'eslint.config.js')) || fs.existsSync(path.join(projRoot, 'eslint.config.mjs'))) {
+        detected = 'eslint';
+      } else if (fs.existsSync(path.join(projRoot, 'pyproject.toml')) || fs.existsSync(path.join(projRoot, '.flake8'))) {
+        // Check for ruff first (preferred over pylint)
+        try {
+          const whichResult = await this._runCommand(process.platform === 'win32' ? 'where ruff' : 'which ruff', undefined, 5000);
+          detected = whichResult.success ? 'ruff' : 'pylint';
+        } catch { detected = 'pylint'; }
+      } else if (fs.existsSync(path.join(projRoot, '.rubocop.yml'))) {
+        detected = 'rubocop';
+      }
+    }
+
+    if (!detected) return { success: false, error: 'No linter detected. Specify linter parameter or install a linter (eslint, ruff, pylint).' };
+
+    let cmd;
+    switch (detected) {
+      case 'eslint':
+        cmd = `npx eslint --format json${fix ? ' --fix' : ''} "${target}"`;
+        break;
+      case 'ruff':
+        cmd = `ruff check --output-format json${fix ? ' --fix' : ''} "${target}"`;
+        break;
+      case 'pylint':
+        cmd = `pylint --output-format json "${target}"`;
+        break;
+      case 'rubocop':
+        cmd = `rubocop --format json${fix ? ' --auto-correct' : ''} "${target}"`;
+        break;
+      default:
+        return { success: false, error: `Unknown linter: ${detected}` };
+    }
+
+    try {
+      const result = await this._runCommand(cmd, projRoot, 60000);
+      // Linters often exit non-zero on errors — that's fine, we still parse output
+      let lintResults;
+      try {
+        lintResults = JSON.parse(result.output || result.error || '[]');
+      } catch {
+        return { success: true, linter: detected, raw: result.output || result.error, note: 'Output not JSON — linter may not support json format' };
+      }
+      const errorCount = Array.isArray(lintResults) ? lintResults.reduce((sum, f) => sum + (f.errorCount || f.messages?.length || 0), 0) : 0;
+      const warningCount = Array.isArray(lintResults) ? lintResults.reduce((sum, f) => sum + (f.warningCount || 0), 0) : 0;
+      return { success: true, linter: detected, errors: errorCount, warnings: warningCount, results: lintResults, fixed: fix };
+    } catch (e) {
+      return { success: false, error: `Linter failed: ${e.message}` };
+    }
+  }
+
+  async _runTests(testPath, testName, runner, coverage = false) {
+    const fs = require('fs');
+    const projRoot = this.projectPath || process.cwd();
+
+    // Auto-detect test runner
+    let detected = runner;
+    if (!detected) {
+      const pkgPath = path.join(projRoot, 'package.json');
+      if (fs.existsSync(pkgPath)) {
+        try {
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+          if (pkg.scripts?.test && pkg.scripts.test !== 'echo "Error: no test specified" && exit 1') {
+            detected = 'npm';
+          } else if (fs.existsSync(path.join(projRoot, 'jest.config.js')) || fs.existsSync(path.join(projRoot, 'jest.config.ts')) || (pkg.devDependencies?.jest)) {
+            detected = 'jest';
+          } else if (fs.existsSync(path.join(projRoot, 'vitest.config.js')) || pkg.devDependencies?.vitest) {
+            detected = 'vitest';
+          }
+        } catch {}
+      }
+      if (!detected) {
+        if (fs.existsSync(path.join(projRoot, 'pytest.ini')) || fs.existsSync(path.join(projRoot, 'pyproject.toml')) || fs.existsSync(path.join(projRoot, 'setup.cfg'))) {
+          detected = 'pytest';
+        } else if (fs.existsSync(path.join(projRoot, 'Cargo.toml'))) {
+          detected = 'cargo';
+        } else if (fs.existsSync(path.join(projRoot, 'go.mod'))) {
+          detected = 'go';
+        }
+      }
+    }
+
+    if (!detected) return { success: false, error: 'No test runner detected. Specify runner parameter.' };
+
+    let cmd;
+    switch (detected) {
+      case 'npm':
+        cmd = 'npm test';
+        if (testName) cmd += ` -- --testNamePattern="${testName}"`;
+        break;
+      case 'jest':
+        cmd = 'npx jest --verbose';
+        if (testPath) cmd += ` "${testPath}"`;
+        if (testName) cmd += ` -t "${testName}"`;
+        if (coverage) cmd += ' --coverage';
+        break;
+      case 'vitest':
+        cmd = 'npx vitest run --reporter=verbose';
+        if (testPath) cmd += ` "${testPath}"`;
+        if (testName) cmd += ` -t "${testName}"`;
+        if (coverage) cmd += ' --coverage';
+        break;
+      case 'pytest':
+        cmd = 'pytest -v';
+        if (testPath) cmd += ` "${testPath}"`;
+        if (testName) cmd += ` -k "${testName}"`;
+        if (coverage) cmd += ' --cov';
+        break;
+      case 'cargo':
+        cmd = 'cargo test';
+        if (testName) cmd += ` "${testName}"`;
+        break;
+      case 'go':
+        cmd = 'go test -v ./...';
+        if (testPath) cmd = `go test -v "${testPath}"`;
+        if (coverage) cmd = 'go test -v -cover ./...';
+        break;
+      default:
+        return { success: false, error: `Unknown test runner: ${detected}` };
+    }
+
+    try {
+      const result = await this._runCommand(cmd, projRoot, 120000);
+      const output = result.output || result.error || '';
+      // Parse pass/fail counts from common patterns
+      const passMatch = output.match(/(\d+)\s*(?:passing|passed|PASS)/i);
+      const failMatch = output.match(/(\d+)\s*(?:failing|failed|FAIL)/i);
+      return {
+        success: result.success,
+        runner: detected,
+        passed: passMatch ? parseInt(passMatch[1]) : null,
+        failed: failMatch ? parseInt(failMatch[1]) : null,
+        output: output.substring(0, 10000),
+      };
+    } catch (e) {
+      return { success: false, error: `Test run failed: ${e.message}` };
+    }
+  }
+
+  async _runFormatter(filePath, formatter, check = false) {
+    const fs = require('fs');
+    const projRoot = this.projectPath || process.cwd();
+    const target = filePath ? (path.isAbsolute(filePath) ? filePath : path.join(projRoot, filePath)) : projRoot;
+
+    // Auto-detect formatter
+    let detected = formatter;
+    if (!detected) {
+      if (fs.existsSync(path.join(projRoot, '.prettierrc')) || fs.existsSync(path.join(projRoot, '.prettierrc.js')) || fs.existsSync(path.join(projRoot, '.prettierrc.json')) || fs.existsSync(path.join(projRoot, 'prettier.config.js'))) {
+        detected = 'prettier';
+      } else if (fs.existsSync(path.join(projRoot, 'pyproject.toml'))) {
+        detected = 'black';
+      } else if (fs.existsSync(path.join(projRoot, 'Cargo.toml'))) {
+        detected = 'rustfmt';
+      } else if (fs.existsSync(path.join(projRoot, 'go.mod'))) {
+        detected = 'gofmt';
+      }
+    }
+
+    if (!detected) return { success: false, error: 'No formatter detected. Specify formatter parameter.' };
+
+    let cmd;
+    switch (detected) {
+      case 'prettier':
+        cmd = `npx prettier ${check ? '--check' : '--write'} "${target}"`;
+        break;
+      case 'black':
+        cmd = `black ${check ? '--check' : ''} "${target}"`;
+        break;
+      case 'rustfmt':
+        cmd = `rustfmt${check ? ' --check' : ''} "${target}"`;
+        break;
+      case 'gofmt':
+        cmd = `gofmt ${check ? '-l' : '-w'} "${target}"`;
+        break;
+      default:
+        return { success: false, error: `Unknown formatter: ${detected}` };
+    }
+
+    try {
+      const result = await this._runCommand(cmd, projRoot, 60000);
+      return { success: true, formatter: detected, check, output: (result.output || '').substring(0, 5000) };
+    } catch (e) {
+      return { success: false, error: `Formatter failed: ${e.message}` };
+    }
+  }
+
+  // ─── IDE Integration Tools ────────────────────────────────────────────────
+
+  async _openTerminal(command, name, cwd) {
+    // Send IPC to main process to create a terminal
+    if (typeof this.onIPCCall === 'function') {
+      return await this.onIPCCall('terminal-create', { command, name, cwd: cwd || this.projectPath });
+    }
+    // Fallback: use run_command as a non-persistent alternative
+    if (command) {
+      return await this._runCommand(command, cwd, 30000);
+    }
+    return { success: false, error: 'Terminal creation not available — no IPC bridge' };
+  }
+
+  async _switchFile(filePath, line, column) {
+    if (!filePath) return { success: false, error: 'filePath is required' };
+    const resolvedPath = path.isAbsolute(filePath) ? filePath : path.join(this.projectPath || process.cwd(), filePath);
+    // Send IPC to main process to open file in editor
+    if (typeof this.onIPCCall === 'function') {
+      return await this.onIPCCall('switch-file', { filePath: resolvedPath, line, column });
+    }
+    // Fallback: use open_file_in_editor
+    return await this._openFileInEditor(filePath);
+  }
+
+  async _getDiagnostics(filePath, severity) {
+    // Send IPC to main process to get diagnostics from the editor
+    if (typeof this.onIPCCall === 'function') {
+      return await this.onIPCCall('get-diagnostics', { filePath, severity });
+    }
+    // Fallback: run linter as approximation
+    if (filePath) {
+      return await this._runLinter(filePath, false);
+    }
+    return { success: false, error: 'Diagnostics not available — no IPC bridge. Use run_linter as fallback.' };
+  }
+
+  async _getSelection() {
+    // Send IPC to main process to get current editor selection
+    if (typeof this.onIPCCall === 'function') {
+      return await this.onIPCCall('get-selection', {});
+    }
+    return { success: false, error: 'Selection not available — no IPC bridge' };
+  }
+
+  // ─── Documentation Tools ──────────────────────────────────────────────────
+
+  async _readDoc(docPath) {
+    if (!docPath) return { success: false, error: 'docPath is required' };
+    const fs = require('fs');
+    const projRoot = this.projectPath || process.cwd();
+
+    // Auto-locate common doc names
+    const docNameMap = {
+      'README': ['README.md', 'README.txt', 'README.rst', 'README'],
+      'CHANGELOG': ['CHANGELOG.md', 'CHANGELOG.txt', 'CHANGES.md', 'HISTORY.md'],
+      'CONTRIBUTING': ['CONTRIBUTING.md', 'CONTRIBUTING.txt'],
+      'LICENSE': ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENCE'],
+      'API': ['docs/API.md', 'API.md', 'docs/api.md'],
+    };
+
+    let resolvedPath;
+    const candidates = docNameMap[docPath.toUpperCase()] || [docPath];
+    for (const c of candidates) {
+      const full = path.isAbsolute(c) ? c : path.join(projRoot, c);
+      if (fs.existsSync(full)) {
+        resolvedPath = full;
+        break;
+      }
+    }
+
+    if (!resolvedPath) {
+      // Try as direct path
+      const direct = path.isAbsolute(docPath) ? docPath : path.join(projRoot, docPath);
+      if (fs.existsSync(direct)) {
+        resolvedPath = direct;
+      }
+    }
+
+    if (!resolvedPath) {
+      return { success: false, error: `Documentation file not found: ${docPath}` };
+    }
+
+    try {
+      const content = fs.readFileSync(resolvedPath, 'utf8');
+      const stat = fs.statSync(resolvedPath);
+      return {
+        success: true,
+        path: resolvedPath,
+        size: stat.size,
+        content: content.substring(0, 50000), // Cap at 50KB
+        truncated: content.length > 50000,
+      };
+    } catch (e) {
+      return { success: false, error: `Failed to read doc: ${e.message}` };
+    }
+  }
+
+  async _searchDocs(query, maxResults = 10) {
+    if (!query) return { success: false, error: 'query is required' };
+    const fs = require('fs');
+    const projRoot = this.projectPath || process.cwd();
+    const results = [];
+
+    // Search in common doc locations
+    const docDirs = ['docs', 'wiki', 'doc', 'documentation'];
+    const docFiles = [];
+    const mdExt = new Set(['.md', '.mdx', '.rst', '.txt', '.adoc']);
+
+    function walkDir(dir, depth = 0) {
+      if (depth > 4 || docFiles.length > 200) return;
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            walkDir(full, depth + 1);
+          } else if (mdExt.has(path.extname(entry.name).toLowerCase())) {
+            docFiles.push(full);
+          }
+        }
+      } catch {}
+    }
+
+    // Walk project root for top-level docs
+    try {
+      const rootEntries = fs.readdirSync(projRoot, { withFileTypes: true });
+      for (const entry of rootEntries) {
+        if (entry.name.startsWith('.')) continue;
+        const full = path.join(projRoot, entry.name);
+        if (entry.isDirectory() && docDirs.includes(entry.name.toLowerCase())) {
+          walkDir(full);
+        } else if (entry.isFile() && mdExt.has(path.extname(entry.name).toLowerCase())) {
+          docFiles.push(full);
+        }
+      }
+    } catch {}
+
+    // Also walk docs/ if it exists
+    const docsDir = path.join(projRoot, 'docs');
+    if (fs.existsSync(docsDir)) walkDir(docsDir);
+
+    // Search query in each doc file
+    const queryLower = query.toLowerCase();
+    for (const docFile of docFiles) {
+      if (results.length >= maxResults) break;
+      try {
+        const content = fs.readFileSync(docFile, 'utf8');
+        const lines = content.split('\n');
+        const matches = [];
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].toLowerCase().includes(queryLower)) {
+            matches.push({ line: i + 1, text: lines[i].trim().substring(0, 200) });
+            if (matches.length >= 3) break;
+          }
+        }
+        if (matches.length > 0) {
+          results.push({
+            path: path.relative(projRoot, docFile),
+            matches,
+          });
+        }
+      } catch {}
+    }
+
+    return { success: true, query, results, count: results.length };
   }
 
   // ─── Response Processing (parseToolCalls + processResponse) ──────────────

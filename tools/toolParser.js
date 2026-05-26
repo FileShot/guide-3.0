@@ -120,6 +120,16 @@ const VALID_TOOLS = new Set([
   'write_scratchpad', 'read_scratchpad',
   'http_request', 'check_port', 'open_file_in_editor', 'generate_image', 'diff_files',
   'save_rule', 'list_rules',
+  // Phase 6: Process/System tools
+  'list_processes', 'kill_process', 'get_system_info', 'get_env_var', 'set_env_var',
+  // Phase 6: Network tools
+  'ping_host', 'dns_lookup', 'download_file',
+  // Phase 6: Code quality tools
+  'run_linter', 'run_tests', 'run_formatter',
+  // Phase 6: IDE integration tools
+  'open_terminal', 'switch_file', 'get_diagnostics', 'get_selection',
+  // Phase 6: Documentation tools
+  'read_doc', 'search_docs',
 ]);
 
 // ─── JSON Repair Utilities ───
