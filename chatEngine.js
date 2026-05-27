@@ -1138,7 +1138,8 @@ class ChatEngine extends EventEmitter {
       const _resolvedThinkMode = this._modelProfile?.thinkTokens?.mode;
       this._thinkingCapable = _resolvedThinkMode !== 'none';
       const _chatTemplateKwargs = {};
-      if (s.enableThinking && _templateSupportsThinking && _resolvedThinkMode !== 'none') {
+      const _thinkingModeForcedOff = s.thinkingMode === 'off';
+      if (s.enableThinking && !_thinkingModeForcedOff && _templateSupportsThinking && _resolvedThinkMode !== 'none') {
         _chatTemplateKwargs.enable_thinking = true;
       } else {
         _chatTemplateKwargs.enable_thinking = false;
@@ -1653,6 +1654,7 @@ class ChatEngine extends EventEmitter {
               const thinkContent = _sfThinkBuf.slice(0, -8);
               // B4: Suppress raw-text emit if native segment path already handled this content.
               if (thinkContent && onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
+                _sfNativeThinkChars += thinkContent.length; // B03: count raw-text thinking
                 onStreamEvent('llm-thinking-token', thinkContent);
                 onStreamEvent('llm-thinking-end', {
                   position: _sfVisibleChars,
@@ -1675,6 +1677,7 @@ class ChatEngine extends EventEmitter {
               const thinkBeforeFence = _sfThinkBuf.slice(0, fenceStart).replace(/\n$/, '');
               // Flush any thinking content before the fence
               if (thinkBeforeFence && onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
+                _sfNativeThinkChars += thinkBeforeFence.length; // B03: count raw-text thinking
                 onStreamEvent('llm-thinking-token', thinkBeforeFence);
               }
               console.log('[ChatEngine] code fence inside  thinking — deferring close decision until fence content is known');
@@ -1697,6 +1700,7 @@ class ChatEngine extends EventEmitter {
               const toKeep = _sfThinkBuf.slice(-CLOSE_TAG_TAIL);
               // B4: Suppress raw-text emit if native segment path already handled this content.
               if (toEmit && onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
+                _sfNativeThinkChars += toEmit.length; // B03: count raw-text thinking
                 onStreamEvent('llm-thinking-token', toEmit);
               }
               _sfThinkBuf = toKeep;
@@ -1715,6 +1719,13 @@ class ChatEngine extends EventEmitter {
               _sfThinkTagMatch = '';
               if (_sfNativeThinkActive) {
                 console.log('[ChatEngine] <think> open tag consumed (native segments active — tag stripped)');
+                continue;
+              }
+              // Suppress think-tag detection inside streamed file content.
+              // File content inside a write_file JSON string is opaque; any <think> tags here are artifacts
+              // and must not flip routing to the thinking channel mid-file.
+              if (_sfContentStreamActive) {
+                console.log('[ChatEngine] thinking-tag in content stream - suppressed (opaque file content)');
                 continue;
               }
               // Full open match — enter thinking mode, discard the tag
@@ -1910,6 +1921,7 @@ class ChatEngine extends EventEmitter {
                   // Case (a): tool call inside think — implicit close, route as tool call
                   console.log('[ChatEngine] fence-in-think: tool call detected — implicit think close');
                   if (_sfThinkBuf && onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
+                    _sfNativeThinkChars += _sfThinkBuf.length; // B03: count raw-text thinking
                     onStreamEvent('llm-thinking-token', _sfThinkBuf);
                     onStreamEvent('llm-thinking-end', { position: _sfVisibleChars, length: _sfThinkBuf.length, content: _sfThinkBuf });
                   }
@@ -1921,6 +1933,7 @@ class ChatEngine extends EventEmitter {
                   // Case (b): prose fence inside think — emit as thinking content, stay in think
                   console.log('[ChatEngine] fence-in-think: non-tool fence — emitting as thinking content');
                   if (onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
+                    _sfNativeThinkChars += _sfFenceBuf.length; // B03: count raw-text thinking
                     onStreamEvent('llm-thinking-token', _sfFenceBuf);
                   }
                   _sfFenceBuf = '';
@@ -2487,7 +2500,19 @@ class ChatEngine extends EventEmitter {
       // Set maxTokens to guarantee generation space (node-llama-cpp will use remaining context)
       // This ensures the model always has room to output tool calls
       // S4: Respect user-set maxResponseTokens (passed as options.maxTokens) as a cap
-      const userMaxTokens = (options.maxTokens > 0) ? options.maxTokens : Infinity;
+      const profileMaxResponse = Number(this._modelProfile?.context?.maxResponseTokens);
+      const profileReservePct = Number(this._modelProfile?.context?.responseReservePct);
+      const reservePct = Number.isFinite(profileReservePct) && profileReservePct > 0 ? profileReservePct : 0;
+      const reserveTokens = reservePct > 0 ? Math.floor(contextSize * reservePct) : 0;
+      const autoCap = Number.isFinite(profileMaxResponse) && profileMaxResponse > 0 ? Math.floor(profileMaxResponse) : Infinity;
+      const userCap = (options.maxTokens > 0) ? options.maxTokens : Infinity;
+      // Auto path: use profile maxResponseTokens and keep a reserve for future turns/tool results.
+      const computedAuto = Math.max(
+        MIN_GENERATION_TOKENS,
+        Math.min(Math.max(0, availableForGeneration - reserveTokens), autoCap),
+      );
+      const effectiveCap = userCap === Infinity ? computedAuto : userCap;
+      const userMaxTokens = effectiveCap;
       genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, Math.min(availableForGeneration, userMaxTokens));
       // Log generation setup for diagnostics
       console.log(`[ChatEngine] Generation setup: maxTokens=${genOptions.maxTokens}, contextSize=${contextSize}, usedTokens=${usedTokens}, available=${availableForGeneration}, chatHistory=${this._chatHistory.length} msgs, temperature=${genOptions.temperature}`);

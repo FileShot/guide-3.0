@@ -56,6 +56,7 @@ class MCPToolServer {
     this._executionPolicy = options.executionPolicy || 'auto';
     this._commandAllowList = new Set(options.commandAllowList || []);
     this._commandDenyList = new Set(options.commandDenyList || []);
+    this._commandShell = (options.commandShell || 'powershell'); // Windows default for run_command
     this.browserManager = null;
     this.playwrightBrowser = null;
     this.gitManager = null;
@@ -334,10 +335,10 @@ class MCPToolServer {
       },
       {
         name: 'run_command',
-        description: 'Execute a shell command in the project directory and return the output. Default timeout 60 seconds, maximum 5 minutes. IMPORTANT: Each call spawns a fresh shell — cd, set VAR=, export VAR= do NOT persist between calls. Use absolute paths or chain commands with && to work around this. Default shell: Windows = cmd.exe, Unix = /bin/sh. Set shell="powershell" on Windows to use PowerShell (cmdlets like Remove-Item, Get-ChildItem, Invoke-RestMethod work in this mode). WAIT/SLEEP: Windows cmd = "timeout /t 5 /nobreak >nul", PowerShell = "Start-Sleep -Seconds 5", Unix = "sleep 5". POLLING: Windows = "ping -n 6 127.0.0.1 >nul", Unix = "while ! command; do sleep 1; done". BACKGROUND: Windows = "start /b command", Unix = "command &".',
+        description: 'Execute a shell command in the project directory and return the output. Default timeout 60 seconds, maximum 5 minutes. IMPORTANT: Each call spawns a fresh shell — cd, set VAR=, export VAR= do NOT persist between calls. Use absolute paths or chain commands with && to work around this. Default shell: Windows = PowerShell, Unix = /bin/sh. Set shell="cmd" on Windows to force cmd.exe (for cmd-specific syntax). WAIT/SLEEP: Windows cmd = "timeout /t 5 /nobreak >nul", PowerShell = "Start-Sleep -Seconds 5", Unix = "sleep 5". POLLING: Windows = "ping -n 6 127.0.0.1 >nul", Unix = "while ! command; do sleep 1; done". BACKGROUND: Windows = "start /b command", Unix = "command &".',
         parameters: {
           command: { type: 'string', description: 'Command to execute', required: true },
-          shell: { type: 'string', description: 'Shell to use: "cmd" (default) or "powershell" (Windows only)', required: false },
+          shell: { type: 'string', description: 'Shell to use on Windows: "powershell" (default) or "cmd". Ignored on Unix.', required: false },
           cwd: { type: 'string', description: 'Working directory', required: false },
           timeout: { type: 'number', description: 'Timeout in ms (default 60000)', required: false },
           reason: { type: 'string', description: 'One sentence explaining why this command needs to be run', required: false },
@@ -2114,7 +2115,11 @@ class MCPToolServer {
       //     -EncodedCommand <Base64> — avoids all quoting issues by encoding the
       //     entire script as UTF-16LE Base64. PowerShell cmdlets work in this mode.
       //   Unix: /bin/sh -c — standard POSIX shell.
-      const usePowerShell = isWindows && shell && shell.toLowerCase() === 'powershell';
+      // Default to PowerShell on Windows unless explicitly overridden to cmd.
+      // This matches how users (and models) typically express Windows commands (cmdlets, pipelines).
+      const shellNorm = shell ? String(shell).trim().toLowerCase() : '';
+      const effectiveShell = shellNorm || (this._commandShell || 'powershell');
+      const usePowerShell = isWindows && effectiveShell !== 'cmd';
       let shellBin, shellArgs;
       if (usePowerShell) {
         // Encode command as UTF-16LE Base64 for -EncodedCommand (bulletproof quoting)
@@ -2265,6 +2270,12 @@ class MCPToolServer {
   setCommandLists(allowList, denyList) {
     this._commandAllowList = new Set(allowList || []);
     this._commandDenyList = new Set(denyList || []);
+  }
+
+  setCommandShell(shell) {
+    const s = (shell || '').toString().trim().toLowerCase();
+    this._commandShell = (s === 'cmd' || s === 'powershell') ? s : 'powershell';
+    console.log(`[MCPToolServer] Command shell set to "${this._commandShell}"`);
   }
 
   // ─── Persistent Terminal (node-pty) ──────────────────────────────────────

@@ -1850,6 +1850,8 @@ const useAppStore = create((set, get) => ({
 
       enableGrammar: false,
 
+      enableNativeFC: false,
+
       autoLintFix: true,       // Plan F: auto-inject lint correction after file writes
 
       enableSubAgents: false,  // Plan G: allow model to spawn isolated sub-agents
@@ -1872,6 +1874,9 @@ const useAppStore = create((set, get) => ({
       vramBalance: 'balanced',
 
       kvCacheType: 'q4_0',      // 'f16' | 'q8_0' | 'q4_0' | 'q3_0' | 'q4_1' | 'off' — lower = more context, less precision
+
+      // Command execution
+      commandShell: 'powershell', // Windows default for run_command: 'powershell' | 'cmd'
 
       // Editor
 
@@ -1981,7 +1986,11 @@ const useAppStore = create((set, get) => ({
 
       enableThinkingFilter: false, enableGrammar: false,
 
+      enableNativeFC: false,
+
       autoLintFix: true, enableSubAgents: false,
+
+      commandShell: 'powershell',
 
       kvCacheType: 'q4_0',
 

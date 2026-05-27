@@ -37,12 +37,14 @@ const SETTINGS_DEFAULTS = {
   maxIterations: 0,
   generationTimeoutSec: 0,
   enableGrammar: false,
-  enableNativeFC: true,         // When true, node-llama-cpp native function calling (GBNF grammar) is used. When false, model writes prose tool calls parsed by toolParser.js. Disable if model hangs generating FC JSON.
+  enableNativeFC: false,         // Default OFF: models use prose tool calls parsed by toolParser.js unless user enables native FC.
   enableContextSummarizer: true,  // When true, generates a progress summary from dropped context during context shifts using the loaded model (sub-context pattern)
   // Command Execution Policy
   // 'disabled' = all commands require approval, 'allowlist' = only allowlisted auto-execute,
   // 'auto' = agent judges safety (default), 'turbo' = all auto-execute except denylisted
   executionPolicy: 'auto',
+  // Default shell for run_command on Windows (cmd vs PowerShell). Ignored on Unix.
+  commandShell: 'powershell',
   commandAllowList: ['git status', 'git log', 'git diff', 'git branch', 'ls', 'dir', 'pwd', 'echo', 'cat', 'type', 'node --version', 'npm --version', 'python --version', 'pip --version', 'npm list', 'npm run', 'npm test', 'npm start', 'npm run build', 'npm run lint', 'npx tsc --noEmit'],
   commandDenyList: ['rm -rf /', 'rm -rf ~', 'rm -rf C:\\', 'format C:', 'mkfs', 'shutdown', 'reboot', 'poweroff', 'dd of=/dev/', 'curl | sh', 'wget | sh'],
   // System Prompt

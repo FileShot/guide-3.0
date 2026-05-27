@@ -68,7 +68,7 @@ async function runCloudAgenticChat({
   let displayResponse = '';
   let totalToolCalls = 0;
   let nextUserPrompt = userMessage;
-  const contextTokens = settings.maxTokens > 0 ? settings.maxTokens : 8192;
+  const contextTokens = settings.maxResponseTokens > 0 ? settings.maxResponseTokens : 8192;
 
   const streamFilter = createStripBasedStreamFilter({ onToken, onStreamEvent });
 
@@ -77,7 +77,7 @@ async function runCloudAgenticChat({
     model: cloudModel,
     systemPrompt,
     temperature: settings.temperature,
-    maxTokens: settings.maxTokens || -1,
+    maxTokens: settings.maxResponseTokens || -1,
     topP: settings.topP,
     images,
     onThinkingToken,

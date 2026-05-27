@@ -228,6 +228,7 @@ const ragEngine = new RAGEngine();
 const mcpToolServer = new MCPToolServer({
   projectPath: null, webSearch, ragEngine,
   executionPolicy: settingsManager.get('executionPolicy'),
+  commandShell: settingsManager.get('commandShell'),
   commandAllowList: settingsManager.get('commandAllowList'),
   commandDenyList: settingsManager.get('commandDenyList'),
   userDataPath,
@@ -430,7 +431,9 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     try {
       console.log(`[electron-main] ai-chat: cloud path provider=${cloudProvider}`);
       agenticCancelled = false;
-      const settings = chatContext?.params || chatContext?.settings || {};
+      // Prefer persisted settings as source of truth; allow chatContext to override
+      // ephemeral/per-request flags (askOnly/planMode/etc).
+      const settings = { ...(currentSettings || {}), ...(chatContext?.params || chatContext?.settings || {}) };
       const attachments = Array.isArray(chatContext?.attachments) ? chatContext.attachments : [];
       const images = attachments.filter(a => (a.mimeType || a.type || '').startsWith('image/'));
 
@@ -522,7 +525,9 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
   try {
     console.log('[electron-main] ai-chat: local model path');
     agenticCancelled = false;
-    const settings = chatContext?.params || chatContext?.settings || {};
+    // Prefer persisted settings as source of truth; allow chatContext to override
+    // ephemeral/per-request flags (askOnly/planMode/etc).
+    const settings = { ...(currentSettings || {}), ...(chatContext?.params || chatContext?.settings || {}) };
 
     const askOnly = !!(settings.askOnly);
     const planMode = !!(settings.planMode);
@@ -582,7 +587,8 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       guideInstructionsPath: settings.guideInstructionsPath || undefined,
       temperature: settings.temperature,
       temperatureIsDefault: settings.temperature === settings._defaultTemperature,
-      maxTokens: settings.maxTokens || -1,
+      // UI setting is maxResponseTokens (0 = auto). Pass through as maxTokens for ChatEngine.
+      maxTokens: settings.maxResponseTokens || -1,
       topP: settings.topP,
       topK: settings.topK,
       repeatPenalty: settings.repeatPenalty,
@@ -1781,8 +1787,9 @@ app.whenReady().then(async () => {
       else autoUpdater.stopPeriodicCheck();
     }
     // React to execution policy changes at runtime
-    if (key === 'executionPolicy' || key === 'commandAllowList' || key === 'commandDenyList' || key === null) {
+    if (key === 'executionPolicy' || key === 'commandShell' || key === 'commandAllowList' || key === 'commandDenyList' || key === null) {
       mcpToolServer.setExecutionPolicy(settingsManager.get('executionPolicy'));
+      mcpToolServer.setCommandShell(settingsManager.get('commandShell'));
       mcpToolServer.setCommandLists(settingsManager.get('commandAllowList'), settingsManager.get('commandDenyList'));
     }
   });

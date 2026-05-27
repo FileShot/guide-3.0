@@ -1583,6 +1583,20 @@ function SettingsPanel() {
       {/* Command Execution Policy */}
       <SettingsSection title="Command Execution" icon={<Shield size={13} />}>
         <div>
+          <label className="text-[11px] text-vsc-text-dim block mb-1">Default Shell (Windows)</label>
+          <select
+            className="w-full text-[11px] bg-vsc-input border border-vsc-panel-border/50 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
+            value={settings.commandShell || 'powershell'}
+            onChange={e => updateSetting('commandShell', e.target.value)}
+          >
+            <option value="powershell">PowerShell (default)</option>
+            <option value="cmd">CMD</option>
+          </select>
+          <p className="text-[10px] text-vsc-text-muted mt-1">
+            Controls which shell `run_command` uses by default on Windows. Individual tool calls can still override via the `shell` parameter.
+          </p>
+        </div>
+        <div>
           <label className="text-[11px] text-vsc-text-dim block mb-1">Execution Policy</label>
           <select
             className="w-full text-[11px] bg-vsc-input border border-vsc-panel-border/50 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
