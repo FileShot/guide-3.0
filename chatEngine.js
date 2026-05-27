@@ -116,8 +116,6 @@ const RE_FILE_WRITE_TOOLS = /write_file|create_file|append_to_file/;
 const RE_CONTENT_START = /"content"\s*:\s*"$/;
 const RE_FILE_PATH = /"(?:filePath|path)"\s*:\s*"([^"]*)"/;
 const RE_TOOL_OR_SYSTEM_INJECT = /^\[(?:Tool Results|System)\]/i;
-/** Reserved generation headroom — matches chat() MIN_GENERATION_TOKENS. */
-const MIN_GENERATION_TOKENS_RESERVE = 512;
 const RE_CONTEXT_ROTATED = /\[System: Context rotated\]/i;
 
 /** Web-facing tools â€” if these share a batch with workspace navigation tools, drop the latter (structural conflict rule). */
@@ -2440,82 +2438,20 @@ class ChatEngine extends EventEmitter {
         };
       }
 
-      // ─── Minimum generation token reservation ───
-      // ROOT CAUSE of "model says I'll check then hits EOS": the prompt consumes
-      // the entire context window, leaving zero tokens for generation. The model
-      // can't output tool call JSON because there's literally no room.
-      // Fix: ensure at least MIN_GENERATION_TOKENS of generation space remain.
-      // If not enough space, progressively trim the prompt BEFORE generation.
-      const MIN_GENERATION_TOKENS = 512;
+      // ─── Generation context size ───
       const contextSize = this._context.contextSize;
       const usedTokens = this._sequence.nextTokenIndex;
       const availableForGeneration = contextSize - usedTokens;
 
-      if (availableForGeneration < MIN_GENERATION_TOKENS) {
-        console.warn(`[ChatEngine] ⚠ GENERATION SPACE CRITICAL: ${availableForGeneration}/${contextSize} tokens available, need ${MIN_GENERATION_TOKENS}. Trimming prompt.`);
-        console.warn(`[ChatEngine]   ctx state: usedTokens=${usedTokens}, contextSize=${contextSize}, chatHistory=${this._chatHistory.length} msgs`);
-
-        // Progressive trimming: try compact prompt first, then trim compact, then trim history
-        if (compactToolPrompt && !useCompact) {
-          // Step 1: Switch to compact prompt
-          const compactTokens = Math.ceil(compactToolPrompt.length / 3.5);
-          const savedTokens = Math.ceil(effectiveToolPrompt.length / 3.5) - compactTokens;
-          if (savedTokens > 0) {
-            effectiveToolPrompt = compactToolPrompt;
-            this._chatHistory[0].text = basePrompt + '\n\n' + effectiveToolPrompt;
-            console.log(`[ChatEngine] Switched to compact prompt, saved ~${savedTokens} tokens`);
-          }
-        }
-
-        // Step 2: If still too large, trim compact prompt aggressively
-        if (typeof effectiveToolPrompt === 'string' && effectiveToolPrompt.length > 500) {
-          const lines = effectiveToolPrompt.split('\n');
-          const toolLineIdx = [];
-          lines.forEach((l, i) => { if (l.startsWith('- **')) toolLineIdx.push(i); });
-          // Keep only first 4 tool descriptions + header
-          if (toolLineIdx.length > 4) {
-            effectiveToolPrompt = lines.slice(0, toolLineIdx[4]).join('\n') + '\n…and more tools available\n';
-            this._chatHistory[0].text = basePrompt + '\n\n' + effectiveToolPrompt;
-            console.log(`[ChatEngine] Trimmed tool prompt to 4 tools (${effectiveToolPrompt.length} chars)`);
-          }
-        }
-
-        // Step 3: If STILL not enough, trim conversation history from the middle
-        const recheckAvailable = contextSize - this._sequence.nextTokenIndex;
-        if (recheckAvailable < MIN_GENERATION_TOKENS && this._chatHistory.length > 4) {
-          // Remove oldest exchanges (keep system prompt + last user message)
-          const systemMsg = this._chatHistory[0];
-          const lastUserMsg = this._chatHistory[this._chatHistory.length - 1];
-          const recentMsgs = this._chatHistory.slice(Math.max(1, this._chatHistory.length - 4));
-          this._chatHistory.length = 0;
-          this._chatHistory.push(systemMsg, ...recentMsgs);
-          // Ensure last message is still the user message
-          if (this._chatHistory[this._chatHistory.length - 1] !== lastUserMsg) {
-            this._chatHistory.push(lastUserMsg);
-          }
-          console.log(`[ChatEngine] Trimmed history to ${this._chatHistory.length} messages for generation space`);
-        }
-      }
-
-      // Set maxTokens to guarantee generation space (node-llama-cpp will use remaining context)
-      // This ensures the model always has room to output tool calls
-      // S4: Respect user-set maxResponseTokens (passed as options.maxTokens) as a cap
-      const profileMaxResponse = Number(this._modelProfile?.context?.maxResponseTokens);
-      const profileReservePct = Number(this._modelProfile?.context?.responseReservePct);
-      const reservePct = Number.isFinite(profileReservePct) && profileReservePct > 0 ? profileReservePct : 0;
-      const reserveTokens = reservePct > 0 ? Math.floor(contextSize * reservePct) : 0;
-      const autoCap = Number.isFinite(profileMaxResponse) && profileMaxResponse > 0 ? Math.floor(profileMaxResponse) : Infinity;
+      // Only honor an explicit user-provided maxTokens cap.
+      // Default: no cap — the library's contextShiftSize handles rotation transparently.
       const userCap = (options.maxTokens > 0) ? options.maxTokens : Infinity;
-      // Auto path: use profile maxResponseTokens and keep a reserve for future turns/tool results.
-      const computedAuto = Math.max(
-        MIN_GENERATION_TOKENS,
-        Math.min(Math.max(0, availableForGeneration - reserveTokens), autoCap),
-      );
-      const effectiveCap = userCap === Infinity ? computedAuto : userCap;
-      const userMaxTokens = effectiveCap;
-      genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, Math.min(availableForGeneration, userMaxTokens));
+      const userMaxTokens = userCap;
+      if (userCap !== Infinity) {
+        genOptions.maxTokens = Math.min(userCap, availableForGeneration);
+      }
       // Log generation setup for diagnostics
-      console.log(`[ChatEngine] Generation setup: maxTokens=${genOptions.maxTokens}, contextSize=${contextSize}, usedTokens=${usedTokens}, available=${availableForGeneration}, chatHistory=${this._chatHistory.length} msgs, temperature=${genOptions.temperature}`);
+      console.log(`[ChatEngine] Generation setup: maxTokens=${genOptions.maxTokens || '(unlimited)'}, contextSize=${contextSize}, usedTokens=${usedTokens}, available=${availableForGeneration}, chatHistory=${this._chatHistory.length} msgs, temperature=${genOptions.temperature}`);
 
       // Generate response — model outputs text which may contain tool call JSON blocks
       const roundStartTime = Date.now();
@@ -2629,11 +2565,14 @@ class ChatEngine extends EventEmitter {
         // Recalculate maxTokens for this round
         const _seamlessCtxUsed = this._sequence?.nextTokenIndex || 0;
         const _seamlessCtxAvail = contextSize - _seamlessCtxUsed;
-        if (_seamlessCtxAvail < MIN_GENERATION_TOKENS) {
+        if (_seamlessCtxAvail < 1) {
           console.log(`[ChatEngine] Seamless continuation: insufficient context (${_seamlessCtxAvail} tokens) — stopping`);
           break;
         }
-        genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, Math.min(_seamlessCtxAvail, userMaxTokens));
+        // Do not recalculate or shrink maxTokens during continuation.
+        if (userMaxTokens !== Infinity) {
+          genOptions.maxTokens = Math.min(userMaxTokens, _seamlessCtxAvail);
+        }
 
         console.log(`[ChatEngine] Seamless continuation #${_seamlessRound}: maxTokens=${genOptions.maxTokens}, ctxUsed=${_seamlessCtxUsed}/${contextSize}`);
 
@@ -2767,7 +2706,9 @@ class ChatEngine extends EventEmitter {
             }
 
             const ctxAvailNow = contextSize - (this._sequence?.nextTokenIndex || 0);
-            genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, ctxAvailNow);
+            if (userMaxTokens !== Infinity) {
+              genOptions.maxTokens = Math.min(userMaxTokens, ctxAvailNow);
+            }
             result = await this._generateResponseSafe(genOptions, {
               contextSize,
               onStreamEvent,
@@ -2804,11 +2745,13 @@ class ChatEngine extends EventEmitter {
 
               const _tlCtxUsed = this._sequence?.nextTokenIndex || 0;
               const _tlCtxAvail = contextSize - _tlCtxUsed;
-              if (_tlCtxAvail < MIN_GENERATION_TOKENS) {
+              if (_tlCtxAvail < 1) {
                 console.log(`[ChatEngine] Tool-loop seamless: insufficient context (${_tlCtxAvail} tokens) — stopping`);
                 break;
               }
-              genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, Math.min(_tlCtxAvail, userMaxTokens));
+              if (userMaxTokens !== Infinity) {
+                genOptions.maxTokens = Math.min(userMaxTokens, _tlCtxAvail);
+              }
               console.log(`[ChatEngine] Tool-loop seamless continuation #${_toolLoopSeamlessRound}: maxTokens=${genOptions.maxTokens}, ctxUsed=${_tlCtxUsed}/${contextSize}`);
 
               result = await this._generateResponseSafe(genOptions, {
@@ -3353,7 +3296,9 @@ class ChatEngine extends EventEmitter {
           // Recalculate maxTokens for this round — tool results consumed context space
           const ctxUsedNow = this._sequence?.nextTokenIndex || 0;
           const ctxAvailNow = contextSize - ctxUsedNow;
-          genOptions.maxTokens = Math.max(MIN_GENERATION_TOKENS, ctxAvailNow);
+          if (userMaxTokens !== Infinity) {
+            genOptions.maxTokens = Math.min(userMaxTokens, ctxAvailNow);
+          }
           const _prefillStart = Date.now();
           console.log(`[ChatEngine] Continuation maxTokens: ${genOptions.maxTokens} (ctx used: ${ctxUsedNow}/${contextSize})`);
 
@@ -4118,7 +4063,7 @@ class ChatEngine extends EventEmitter {
     });
     const kvUsed = this._sequence?.nextTokenIndex || 0;
     const genRoom = contextSize - kvUsed;
-    const needsShift = measured > maxTokensCount || genRoom < MIN_GENERATION_TOKENS_RESERVE;
+    const needsShift = measured > maxTokensCount || genRoom < 1;
     if (!needsShift) return;
 
     console.log(`[ChatEngine] Context pre-flight: renderedTokens=${measured} budget=${maxTokensCount} kvUsed=${kvUsed}/${contextSize}`);
@@ -4188,10 +4133,17 @@ class ChatEngine extends EventEmitter {
     if (contextSize && this._sequence) {
       const postPreflightUsed = this._sequence.nextTokenIndex;
       const postPreflightAvail = contextSize - postPreflightUsed;
-      const newMax = Math.max(MIN_GENERATION_TOKENS_RESERVE, Math.min(postPreflightAvail, userMaxTokensCap));
-      if (newMax !== genOptions.maxTokens) {
-        console.log(`[ChatEngine] maxTokens updated post-preflight: ${genOptions.maxTokens} → ${newMax} (postPreflightAvail=${postPreflightAvail})`);
-        genOptions.maxTokens = newMax;
+      // After preflight shifts context, MORE tokens are available. maxTokens should
+      // only increase (or stay same), never decrease.
+      if (genOptions.maxTokens != null && userMaxTokensCap != null) {
+        const newMax = Math.max(
+          genOptions.maxTokens,
+          Math.min(postPreflightAvail, userMaxTokensCap)
+        );
+        if (newMax > genOptions.maxTokens) {
+          console.log(`[ChatEngine] maxTokens increased post-preflight: ${genOptions.maxTokens} → ${newMax} (postPreflightAvail=${postPreflightAvail})`);
+          genOptions.maxTokens = newMax;
+        }
       }
     }
     // Cap thinking budget to 75% of maxTokens to guarantee prose response space.

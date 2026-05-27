@@ -29,10 +29,7 @@
   ],
   "win": {
     "icon": "build/icon.ico",
-    "publisherName": "GraySoft LLC",
-    "signDlls": true,
-    "rfc3161TimeStampServer": "http://timestamp.digicert.com",
-    "timeStampServer": "http://timestamp.digicert.com",
+    "sign": false,
     "target": [
       {
         "target": "nsis",
