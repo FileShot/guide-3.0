@@ -2305,7 +2305,8 @@ class ChatEngine extends EventEmitter {
         !options.askOnly &&
         _toolsEnabled &&
         !_modeCWrapper &&
-        !genOptions.grammar
+        !genOptions.grammar &&
+        options.enableNativeFC !== false
       );
       if (_useNativeFunctions) {
         genOptions.functions = functions;
@@ -2328,7 +2329,7 @@ class ChatEngine extends EventEmitter {
           // ── Per-call state ───────────────────────────────────────────────────
           if (!_fcStreams.has(callIndex)) {
             _fcStreams.set(callIndex, {
-              logBuf: '', buf: '', phase: 0,
+              logBuf: '', buf: '', phase: 0, chunkCount: 0,
               filePath: '', fileName: '', ext: '', escPending: false,
             });
             // File-write ops are shown via FileContentBlock — all others get a tool-generating card
@@ -2338,12 +2339,23 @@ class ChatEngine extends EventEmitter {
             }
           }
           const s = _fcStreams.get(callIndex);
+          s.chunkCount++;
 
-          // ── Consolidated logging: one line per call at [DONE] ────────────────
+          // ── Comprehensive FC logging: every token accounted for ──────────────
+          // First chunk: log immediately so we see function name + JSON start
+          // Every 100 chunks: log progress (cumulative byte count + last 100 chars)
+          // Done: log full params (capped at 600 chars with head+tail)
+          // Never skips a token — chunkCount proves every chunk arrived
           s.logBuf += paramsChunk;
+          if (s.chunkCount === 1) {
+            console.log(`[StreamDiag] FC ${functionName}[${callIndex}] START chunk#1: "${s.logBuf.slice(0, 120)}"`);
+          } else if (s.chunkCount % 100 === 0) {
+            console.log(`[StreamDiag] FC ${functionName}[${callIndex}] @chunk=${s.chunkCount} bytes=${s.logBuf.length} last100="${s.logBuf.slice(-100)}"`);
+          }
           if (done) {
             const total = s.logBuf.length;
-            console.log(`[StreamDiag] FC ${functionName}[${callIndex}]: ${total} chars [DONE] "${s.logBuf}"`);
+            const preview = total > 600 ? `${s.logBuf.slice(0, 300)} ... ${s.logBuf.slice(-300)}` : s.logBuf;
+            console.log(`[StreamDiag] FC ${functionName}[${callIndex}] DONE chunks=${s.chunkCount} bytes=${total}: "${preview}"`);
           }
 
           // ── write_file content streaming → file-content-start/token/end ─────

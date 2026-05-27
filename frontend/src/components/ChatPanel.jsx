@@ -1968,27 +1968,61 @@ export default function ChatPanel() {
 
       {/* Header */}
 
-      <div className="h-[35px] flex items-center justify-between px-3 border-b border-vsc-panel-border/50 no-select flex-shrink-0 bg-vsc-sidebar/80 backdrop-blur-sm shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
+      <div className="h-[35px] flex items-center px-3 border-b border-vsc-panel-border/50 no-select flex-shrink-0 bg-vsc-sidebar/80 backdrop-blur-sm shadow-[0_1px_0_rgba(255,255,255,0.03)_inset] gap-1">
 
-        <div className="flex items-center gap-2 text-vsc-sm font-medium text-vsc-text min-w-0">
+        <span className="text-vsc-sm font-medium text-vsc-text flex-shrink-0 pr-1">Chat</span>
 
-          <span className="text-vsc-text flex-shrink-0">Chat</span>
+        <div className="flex items-center flex-1 min-w-0 overflow-x-hidden">
 
-          {modelInfo && (
+          {conversationTabs.map((tab) => (
 
-            <span className="text-[10px] text-vsc-text-dim/70 truncate max-w-[140px]" title={modelInfo.name}>
+            <button
 
-              {(modelInfo.name || '').split('.gguf')[0]}
+              key={tab.id}
 
-            </span>
+              className={`px-3 h-[33px] text-[11px] truncate max-w-[140px] border-b-2 transition-colors flex-shrink-0 ${
+                (tab.id === 'current' ? activeConversationId === 'current' : activeConversationId === tab.id)
+                  ? 'border-vsc-accent text-vsc-text'
+                  : 'border-transparent text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/30'
+              }`}
+
+              title={tab.title}
+
+              onClick={() => {
+
+                if (tab.isCurrent) { setActiveConversationId('current'); return; }
+
+                openSavedSession(tab.session);
+
+              }}
+
+            >
+
+              {tab.title}
+
+            </button>
+
+          ))}
+
+          {filteredSessions.length > 1 && (
+
+            <button
+
+              className="px-2 h-[33px] text-[11px] text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/30 border-b-2 border-transparent flex-shrink-0"
+
+              title="More conversations"
+
+              onClick={() => setHistoryOpen(v => !v)}
+
+            >···</button>
 
           )}
 
-          {chatStreaming && <Loader size={12} className="animate-spin text-vsc-accent flex-shrink-0" />}
-
         </div>
 
-        <div className="flex items-center gap-1 relative" ref={historyMenuRef}>
+        <div className="flex items-center gap-1 flex-shrink-0 relative" ref={historyMenuRef}>
+
+          {chatStreaming && <Loader size={12} className="animate-spin text-vsc-accent flex-shrink-0" />}
 
           <button className="p-1 hover:bg-vsc-list-hover rounded" title="New Chat" onClick={handleClear}>
 
@@ -2066,59 +2100,6 @@ export default function ChatPanel() {
 
 
 
-      {/* Conversation tabs */}
-
-      <div className="flex items-center border-b border-vsc-panel-border/40 bg-vsc-sidebar/55 no-select">
-
-        {conversationTabs.map((tab) => (
-
-          <button
-
-            key={tab.id}
-
-            className={`px-3 h-[30px] text-[11px] truncate max-w-[140px] border-b-2 transition-colors flex-shrink-0 ${
-
-              (tab.id === 'current' ? activeConversationId === 'current' : activeConversationId === tab.id)
-
-                ? 'border-vsc-accent text-vsc-text'
-
-                : 'border-transparent text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/30'
-
-            }`}
-
-            title={tab.title}
-
-            onClick={() => {
-
-              if (tab.isCurrent) { setActiveConversationId('current'); return; }
-
-              openSavedSession(tab.session);
-
-            }}
-
-          >
-
-            {tab.title}
-
-          </button>
-
-        ))}
-
-        {filteredSessions.length > 1 && (
-
-          <button
-
-            className="px-2 h-[30px] text-[11px] text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/30 border-b-2 border-transparent flex-shrink-0"
-
-            title="More conversations"
-
-            onClick={() => setHistoryOpen(v => !v)}
-
-          >···</button>
-
-        )}
-
-      </div>
 
 
 

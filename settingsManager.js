@@ -37,6 +37,7 @@ const SETTINGS_DEFAULTS = {
   maxIterations: 0,
   generationTimeoutSec: 0,
   enableGrammar: false,
+  enableNativeFC: true,         // When true, node-llama-cpp native function calling (GBNF grammar) is used. When false, model writes prose tool calls parsed by toolParser.js. Disable if model hangs generating FC JSON.
   enableContextSummarizer: true,  // When true, generates a progress summary from dropped context during context shifts using the loaded model (sub-context pattern)
   // Command Execution Policy
   // 'disabled' = all commands require approval, 'allowlist' = only allowlisted auto-execute,

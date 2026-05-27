@@ -1563,9 +1563,12 @@ function SettingsPanel() {
         <SettingToggle label="Tools Enabled" value={settings.toolsEnabled !== false}
           onChange={v => updateSetting('toolsEnabled', v)}
           hint="When off, no tool definitions are passed to the model. Useful for testing thinking display in isolation." />
+        <SettingToggle label="Native Function Calling (GBNF)" value={settings.enableNativeFC !== false}
+          onChange={v => updateSetting('enableNativeFC', v)}
+          hint="Use node-llama-cpp GBNF grammar to constrain FC generation. Disable if the model hangs for minutes generating tool call JSON — falling back to prose tool call parsing (toolParser.js)." />
         <SettingToggle label="Grammar-Constrained Tool Calls" value={settings.enableGrammar}
           onChange={v => updateSetting('enableGrammar', v)}
-          hint="Forces valid tool calls. May cause hangs on small models." />
+          hint="Forces JSON schema grammar on raw output. Mutually exclusive with Native FC — enabling this disables native FC. May cause hangs on small models." />
         <SettingToggle label="Context Summarizer" value={settings.enableContextSummarizer !== false}
           onChange={v => updateSetting('enableContextSummarizer', v)}
           hint="On context shift, generate a progress summary from dropped turns so the model can continue the task without losing track." />

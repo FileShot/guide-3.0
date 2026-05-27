@@ -592,6 +592,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       enableThinkingFilter: settings.enableThinkingFilter,
       toolsEnabled: settings.toolsEnabled !== false,
       enableGrammar: settings.enableGrammar,
+      enableNativeFC: settings.enableNativeFC !== false,
       enableContextSummarizer: settings.enableContextSummarizer !== false,
       maxIterations: settings.maxIterations || 0,
       generationTimeoutSec: settings.generationTimeoutSec || 0,
