@@ -986,7 +986,7 @@ const useAppStore = create((set, get) => ({
     }
 
     const existingIdx = store.streamingFileBlocks.findIndex(
-      b => b.fileKey === normalizedKey && !b.complete,
+      b => b.fileKey === normalizedKey,
     );
     let newBlocks;
     let fileIndex;

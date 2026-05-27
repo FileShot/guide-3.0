@@ -1632,6 +1632,9 @@ function SettingsPanel() {
           />
           <p className="text-[10px] text-vsc-text-muted mt-1">Commands that are always blocked regardless of policy level.</p>
         </div>
+        <SettingToggle label="Require Tool Approval" value={settings.requireToolApproval === true}
+          onChange={v => updateSetting('requireToolApproval', v)}
+          hint="When on, destructive tools (write_file, delete_file, etc.) and blocked commands show an approval popup. When off (default), all tools auto-execute." />
       </SettingsSection>
 
       {/* System Prompt */}

@@ -57,6 +57,8 @@ class MCPToolServer {
     this._commandAllowList = new Set(options.commandAllowList || []);
     this._commandDenyList = new Set(options.commandDenyList || []);
     this._commandShell = (options.commandShell || 'powershell'); // Windows default for run_command
+    // When false (default), all tools auto-execute without frontend approval.
+    this._requireToolApproval = options.requireToolApproval !== undefined ? options.requireToolApproval : false;
     this.browserManager = null;
     this.playwrightBrowser = null;
     this.gitManager = null;
@@ -1091,8 +1093,8 @@ class MCPToolServer {
       }
     }
 
-    // Permission gate for destructive operations
-    if (this.onPermissionRequest && this._destructiveTools.has(toolName)) {
+    // Permission gate for destructive operations (skipped when auto-allow is enabled)
+    if (this._requireToolApproval && this.onPermissionRequest && this._destructiveTools.has(toolName)) {
       const reason = `Tool "${toolName}" may modify or delete files/data.`;
       const allowed = await this.onPermissionRequest(toolName, params, reason);
       if (!allowed) {
@@ -1104,7 +1106,7 @@ class MCPToolServer {
     if (toolName === 'run_command' || toolName === 'terminal_run') {
       const policyResult = this._checkExecutionPolicy(toolName, params);
       if (!policyResult.allowed) {
-        if (this.onPermissionRequest) {
+        if (this._requireToolApproval && this.onPermissionRequest) {
           const allowed = await this.onPermissionRequest(toolName, params, policyResult.reason);
           if (!allowed) {
             return { success: false, error: 'Command requires approval', permissionDenied: true, policyReason: policyResult.reason };

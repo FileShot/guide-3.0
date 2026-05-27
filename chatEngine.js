@@ -4004,7 +4004,10 @@ class ChatEngine extends EventEmitter {
       subContext = null;
 
       // Step 6-8: Recreate main context, sequence, chat
-      this._context = await this._model.createContext(this._baseCtxOpts);
+      this._context = await this._model.createContext({
+        ...this._baseCtxOpts,
+        failedCreationRemedy: { retries: 4, autoContextSizeShrink: 0.4 },
+      });
       this._sequence = this._context.getSequence();
       this._chat = new LlamaChat({ contextSequence: this._sequence, chatWrapper: savedWrapper });
       this._chatHistory = savedHistory;

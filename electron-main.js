@@ -231,6 +231,7 @@ const mcpToolServer = new MCPToolServer({
   commandShell: settingsManager.get('commandShell'),
   commandAllowList: settingsManager.get('commandAllowList'),
   commandDenyList: settingsManager.get('commandDenyList'),
+  requireToolApproval: settingsManager.get('requireToolApproval'),
   userDataPath,
 });
 

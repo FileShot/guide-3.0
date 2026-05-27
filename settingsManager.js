@@ -43,6 +43,9 @@ const SETTINGS_DEFAULTS = {
   // 'disabled' = all commands require approval, 'allowlist' = only allowlisted auto-execute,
   // 'auto' = agent judges safety (default), 'turbo' = all auto-execute except denylisted
   executionPolicy: 'auto',
+  // When false (default), all tools auto-execute without approval popups.
+  // When true, destructive tools and policy-blocked commands show the approval banner.
+  requireToolApproval: false,
   // Default shell for run_command on Windows (cmd vs PowerShell). Ignored on Unix.
   commandShell: 'powershell',
   commandAllowList: ['git status', 'git log', 'git diff', 'git branch', 'ls', 'dir', 'pwd', 'echo', 'cat', 'type', 'node --version', 'npm --version', 'python --version', 'pip --version', 'npm list', 'npm run', 'npm test', 'npm start', 'npm run build', 'npm run lint', 'npx tsc --noEmit'],
