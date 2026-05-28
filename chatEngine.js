@@ -1566,8 +1566,7 @@ class ChatEngine extends EventEmitter {
       const _sfStreamedFileWrites = new Set();
       const _sfProsedFileWrites = new Set(); // files whose write_file JSON was flushed as prose (not streamed)
       let _sfVisibleChars = 0; // tracks chars forwarded to frontend (after filter removes tool JSON)
-      let _sfPostFenceSuppress = false; // Fix 4: suppress hallucinated prose after confirmed tool fence closes
-      let _sfFenceInThink = false; // Fix 4: fence that opened inside think mode
+      let _sfFenceInThink = false; // fence that opened inside think mode
 
       const _sfForward = (text) => {
         _sfVisibleChars += text.length;
@@ -1586,12 +1585,17 @@ class ChatEngine extends EventEmitter {
           onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
           _sfContentStreamActive = false;
         } else if (_sfBuf) {
-          // Track write_file JSON that is about to be forwarded as prose
-          if (RE_FILE_WRITE_TOOLS.test(_sfBuf) && (RE_TOOL_KEY.test(_sfBuf) || RE_NAME_KEY.test(_sfBuf))) {
+          // Flush-guard: if the buffer contains tool-call JSON, discard it.
+          // The toolParser will extract the call from the full response text post-generation.
+          // This prevents raw JSON from appearing as visible text in the chat.
+          const _isToolCall = RE_TOOL_KEY.test(_sfBuf) || (RE_NAME_KEY.test(_sfBuf) && RE_PARAMS_KEY.test(_sfBuf));
+          if (_isToolCall) {
+            console.log(`[ChatEngine] _sfFlush: discarding tool-call JSON (${_sfBuf.length} chars)`);
             const _fpM = _sfBuf.match(RE_FILE_PATH);
             if (_fpM && _fpM[1]) _sfProsedFileWrites.add(_fpM[1]);
+          } else {
+            _sfForward(_sfBuf);
           }
-          _sfForward(_sfBuf);
         }
         _sfBuf = '';
         _sfDepth = 0;
@@ -1608,7 +1612,6 @@ class ChatEngine extends EventEmitter {
         _sfThinkTagMatch = '';
         _sfInThink = false;     // ensure think-state never bleeds into the next generation
         _sfThinkBuf = '';
-        // _sfPostFenceSuppress NOT reset here — must persist across continuation rounds
       };
 
       const _sfFlushFence = () => {
@@ -1621,12 +1624,17 @@ class ChatEngine extends EventEmitter {
           _sfContentStreamActive = false;
         }
         if (_sfFenceBuf) {
-          // Track write_file JSON that is about to be forwarded as prose
-          if (RE_FILE_WRITE_TOOLS.test(_sfFenceBuf) && (RE_TOOL_KEY.test(_sfFenceBuf) || RE_NAME_KEY.test(_sfFenceBuf))) {
+          // Flush-guard: if the fence buffer contains tool-call JSON, discard it.
+          // This happens when generation stops mid-fence (maxTokens hit) — the closing
+          // ``` was never emitted, so the fence buffer still has the full tool JSON.
+          const _isToolCall = RE_TOOL_KEY.test(_sfFenceBuf) || (RE_NAME_KEY.test(_sfFenceBuf) && RE_PARAMS_KEY.test(_sfFenceBuf));
+          if (_isToolCall) {
+            console.log(`[ChatEngine] _sfFlushFence: discarding tool-call JSON (${_sfFenceBuf.length} chars)`);
             const _fpM = _sfFenceBuf.match(RE_FILE_PATH);
             if (_fpM && _fpM[1]) _sfProsedFileWrites.add(_fpM[1]);
+          } else {
+            _sfForward(_sfFenceBuf);
           }
-          _sfForward(_sfFenceBuf);
           _sfFenceBuf = '';
         }
         _sfInFence = false;
@@ -1641,8 +1649,7 @@ class ChatEngine extends EventEmitter {
         _sfUnicodeChars = '';
         _sfInThink = false;     // ensure think-state never bleeds into the next generation
         _sfThinkBuf = '';
-        _sfFenceInThink = false; // Fix 4: fence that opened inside think mode
-        // _sfPostFenceSuppress NOT reset here — must persist across continuation rounds
+        _sfFenceInThink = false;
       };
 
       const _sfProcessChunk = (chunk) => {
@@ -1937,7 +1944,6 @@ class ChatEngine extends EventEmitter {
                   _sfInThink = false;
                   _sfThinkBuf = '';
                   _sfFenceBuf = '';
-                  _sfPostFenceSuppress = true;
                 } else {
                   // Case (b): prose fence inside think — emit as thinking content, stay in think
                   console.log('[ChatEngine] fence-in-think: non-tool fence — emitting as thinking content');
@@ -1952,7 +1958,6 @@ class ChatEngine extends EventEmitter {
                 // Normal fence close (not inside think)
                 if (RE_TOOL_KEY.test(_sfFenceBuf) || (RE_NAME_KEY.test(_sfFenceBuf) && RE_PARAMS_KEY.test(_sfFenceBuf))) {
                   _sfFenceBuf = '';
-                  _sfPostFenceSuppress = true;
                 } else {
                   _sfFlushFence();
                 }
@@ -1970,49 +1975,6 @@ class ChatEngine extends EventEmitter {
 
           // ── Normal mode ──
           if (!_sfActive) {
-            // Fix 4: Post-fence suppression — after a confirmed tool fence closes,
-            // suppress hallucinated prose until a new fence or raw JSON opens.
-            // This preserves multi-tool sequences (multiple tool calls per generation)
-            // while hiding the model's "Please wait..." / "I'll now..." filler text.
-            if (_sfPostFenceSuppress) {
-              // Check for new fence opening (multi-tool continuation)
-              if (ch === '`' && _sfLastCharWasNewlineOrStart) {
-                _sfFenceTickCount++;
-                if (_sfFenceTickCount >= 3) {
-                  // New tool fence — stop suppressing, enter fence mode
-                  _sfPostFenceSuppress = false;
-                  _sfInFence = true;
-                  _sfFenceBuf = '```';
-                  _sfFenceTickCount = 0;
-                  _sfFenceStreamPlain = false;
-                  _sfFencePlainTick = 0;
-                  _sfLastCharWasNewlineOrStart = false;
-                  continue;
-                }
-                continue; // keep buffering backticks
-              }
-              if (_sfFenceTickCount > 0 && ch !== '`') {
-                // Not enough backticks for a fence — this is suppressed prose
-                _sfFenceTickCount = 0;
-              }
-              // Check for raw JSON tool call opening (multi-tool continuation)
-              if (ch === '{' && _sfLastCharWasNewlineOrStart) {
-                _sfPostFenceSuppress = false;
-                _sfActive = true;
-                _sfBuf = '{';
-                _sfDepth = 1;
-                _sfConfirmed = false;
-                _sfInStr = false;
-                _sfEscaped = false;
-                _sfLastCharWasNewlineOrStart = false;
-                continue;
-              }
-              // Suppress this character (hallucinated prose after tool fence)
-              _sfLastCharWasNewlineOrStart = (ch === '\n' || ch === '\r');
-              if (ch === ' ' || ch === '\t') { /* keep the flag */ }
-              else if (ch !== '\n' && ch !== '\r') _sfLastCharWasNewlineOrStart = false;
-              continue;
-            }
 
             // Detect opening ``` at line start
             if (ch === '`' && _sfLastCharWasNewlineOrStart) {
@@ -2154,7 +2116,6 @@ class ChatEngine extends EventEmitter {
                 _sfContentBuf = '';
               }
               _sfBuf = '';
-              _sfPostFenceSuppress = true; // Fix 4: suppress hallucinated prose after raw JSON tool call too
             } else {
               // Unconfirmed buffer reached depth 0 — flush as normal prose
               _sfFlush();
@@ -2568,7 +2529,6 @@ class ChatEngine extends EventEmitter {
         _sfUnicodeCount = 0; _sfUnicodeChars = '';
         _sfInThink = false; _sfThinkBuf = ''; _sfThinkTagMatch = '';
         _sfFenceInThink = false;
-        // _sfPostFenceSuppress NOT reset here — must persist across continuation rounds
         _sfFenceStreamPlain = false; _sfFencePlainTick = 0;
         _sfNativeThinkActive = false;
         this._nativeThinkLogged = false;
@@ -2753,7 +2713,6 @@ class ChatEngine extends EventEmitter {
               _sfUnicodeCount = 0; _sfUnicodeChars = '';
               _sfInThink = false; _sfThinkBuf = ''; _sfThinkTagMatch = '';
               _sfFenceInThink = false;
-              // _sfPostFenceSuppress NOT reset here — must persist across continuation rounds
               _sfFenceStreamPlain = false; _sfFencePlainTick = 0;
               _sfNativeThinkActive = false;
               this._nativeThinkLogged = false;
@@ -3302,7 +3261,6 @@ class ChatEngine extends EventEmitter {
           _sfThinkBuf = '';
           _sfThinkTagMatch = '';
           _sfFenceInThink = false;
-          // _sfPostFenceSuppress NOT reset here — must persist across continuation rounds
           _sfFenceStreamPlain = false;
           _sfFencePlainTick = 0;
           _sfNativeThinkActive = false;
@@ -3812,23 +3770,22 @@ class ChatEngine extends EventEmitter {
       return null;
     }
 
-    // B1: VRAM gate — skip sub-context creation if insufficient free VRAM.
-    // On a 4GB GPU with a 9B model, weights consume ~3.7GB leaving no room
-    // for even a 256-token KV cache. Skip straight to deterministic summary.
+    // B1: VRAM gate — if insufficient free VRAM for a GPU sub-context,
+    // try CPU-only sub-context (gpuLayers: 0) before falling to deterministic.
+    // On a 4GB GPU with a 9B model, GPU sub-context fails but CPU works — it's
+    // just slower. This produces real summaries instead of garbage.
+    let _summarizerUseCpu = false;
     if (this._llama && this.gpuPreference !== 'cpu') {
       try {
         const vramState = await this._llama.getVramState();
         const vramFree = vramState?.free || 0;
-        // Conservative: need at least 64MB free for a minimal sub-context KV cache.
-        // 256 tokens * ~2 bytes/token (f16 KV) * n_layers ≈ 50-100MB for a 9B model.
         const MIN_SUB_CONTEXT_VRAM = 64 * 1024 * 1024; // 64 MB
         if (vramFree < MIN_SUB_CONTEXT_VRAM) {
-          console.log(`[ChatEngine] Summarizer SKIP: insufficient VRAM (${Math.round(vramFree / 1024 / 1024)}MB free < ${Math.round(MIN_SUB_CONTEXT_VRAM / 1024 / 1024)}MB minimum)`);
-          return this._extractDeterministicSummary(droppedItems);
+          console.log(`[ChatEngine] Summarizer: insufficient VRAM for GPU sub-context (${Math.round(vramFree / 1024 / 1024)}MB free), trying CPU-only sub-context`);
+          _summarizerUseCpu = true;
         }
       } catch (e) {
         console.warn('[ChatEngine] Summarizer VRAM gate check failed:', e.message);
-        // If we can't query VRAM, proceed with attempt (it may succeed on larger GPUs)
       }
     }
 
@@ -3843,6 +3800,7 @@ class ChatEngine extends EventEmitter {
       subContext = await this._model.createContext({
         contextSize: { min: 256, max: subCtxSize },
         failedCreationRemedy: { retries: 4, autoContextSizeShrink: 0.4 },
+        ...(_summarizerUseCpu ? { gpuLayers: 0 } : {}),
       });
       const subSequence = subContext.getSequence();
       const subChat = new LlamaChat({
@@ -3992,19 +3950,20 @@ class ChatEngine extends EventEmitter {
       if (item.type === 'user') {
         lines.push(`- User: ${text.slice(0, 300)}`);
       } else if (item.type === 'model') {
-        // Extract tool calls from model responses for task continuity
-        const toolCalls = text.match(/(?:write_file|read_file|web_search|fetch_webpage|edit_file|run_terminal_command|browser_screenshot|browser_click|browser_navigate|browser_type|browser_fill_form)\s*\([^)]*\)/g);
-        if (toolCalls) {
-          lines.push(`- Tools: ${toolCalls.join(', ')}`);
-        }
-        // Extract file paths when no tool calls found
-        const filePaths = text.match(/["']([\w/\\]+\.\w+)["']/g);
-        if (filePaths && !toolCalls) {
-          lines.push(`- Files: ${filePaths.slice(0, 5).join(', ')}`);
-        }
-        // Always include a snippet of the response for context
-        if (!toolCalls && !filePaths) {
-          lines.push(`- Assistant: ${text.slice(0, 200)}`);
+        // Extract tool calls from model responses — matches both JSON format
+        // {"tool":"write_file","params":{"filePath":"..."}} and fenced blocks.
+        const toolNames = text.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/g);
+        const filePaths = text.match(/"(?:filePath|path)"\s*:\s*"([^"]+)"/g);
+        if (toolNames) {
+          const names = toolNames.map(m => m.replace(/"(?:tool|name)"\s*:\s*"/, '').replace(/"$/, ''));
+          const paths = filePaths ? filePaths.map(m => m.replace(/"(?:filePath|path)"\s*:\s*"/, '').replace(/"$/, '')) : [];
+          const detail = paths.length > 0 ? `${names.join(', ')} → ${paths.join(', ')}` : names.join(', ');
+          lines.push(`- Tools: ${detail}`);
+        } else if (filePaths) {
+          lines.push(`- Files: ${filePaths.slice(0, 5).map(m => m.replace(/"(?:filePath|path)"\s*:\s*"/, '').replace(/"$/, '')).join(', ')}`);
+        } else {
+          // No tool calls — include a prose snippet for context
+          lines.push(`- Assistant: ${text.slice(0, 300)}`);
         }
       }
     }
