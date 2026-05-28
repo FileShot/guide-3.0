@@ -825,44 +825,30 @@ const useAppStore = create((set, get) => ({
     }
 
     // R37-Step4: If a block with the same filePath already exists, resume into it
+
     // instead of creating a new block. This prevents multiple blocks appearing
+
     // for the same file across continuation iterations.
-    // FIX: Also resume into COMPLETE blocks — when the model re-writes the same file
-    // in a continuation round, the previous block is complete, and without this check
-    // a duplicate block+segment would be created, causing the file to render twice.
-    const existingIdx = store.streamingFileBlocks.findIndex(b => b.fileKey === normalizedKey);
+
+    const existingIdx = store.streamingFileBlocks.findIndex(b => b.fileKey === normalizedKey && !b.complete);
 
     if (existingIdx !== -1) {
 
-      const existingBlock = store.streamingFileBlocks[existingIdx];
+      // Block already exists — just update text/timer state, don't create new block or segment
 
-      if (existingBlock.complete) {
-        // Previous write of this file is complete — reset it for the new write.
-        // Keep the same block index so existing segment references stay valid.
-        const updatedBlocks = [...store.streamingFileBlocks];
-        updatedBlocks[existingIdx] = {
-          ...existingBlock,
-          content: '',
-          complete: false,
-        };
-        set({
-          activeStreamingFileKey: normalizedKey,
-          streamingFileBlocks: updatedBlocks,
-          chatStreamingText: currentText,
-          streamingSegments: currentSegs,
-          _textTokenBuffer: null,
-          _textTokenTimer: null,
-        });
-      } else {
-        // Block already exists and is still streaming — just update active key
-        set({
-          activeStreamingFileKey: normalizedKey,
-          chatStreamingText: currentText,
-          streamingSegments: currentSegs,
-          _textTokenBuffer: null,
-          _textTokenTimer: null,
-        });
-      }
+      set({
+
+        activeStreamingFileKey: normalizedKey,
+
+        chatStreamingText: currentText,
+
+        streamingSegments: currentSegs,
+
+        _textTokenBuffer: null,
+
+        _textTokenTimer: null,
+
+      });
 
       return;
 
