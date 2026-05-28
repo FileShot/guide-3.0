@@ -1423,25 +1423,32 @@ export default function ChatPanel() {
 
             if (block) {
 
-              // Text fallback: still include as markdown fence for content field
+              // Dedup: if a file block with this filePath already exists, update it instead of creating duplicate
+              const existingFileIdx = messageFileBlocks.findIndex(b => b.filePath === block.filePath);
+              if (existingFileIdx !== -1) {
+                messageFileBlocks[existingFileIdx] = {
+                  ...messageFileBlocks[existingFileIdx],
+                  content: block.content,
+                };
+              } else {
+                // Text fallback: still include as markdown fence for content field
+                messageContent += `\n\`\`\`${block.language || 'text'}\n${block.content}\n\`\`\`\n`;
 
-              messageContent += `\n\`\`\`${block.language || 'text'}\n${block.content}\n\`\`\`\n`;
+                // Structured data: reference into messageFileBlocks array
+                messageSegments.push({ type: 'file', index: messageFileBlocks.length });
 
-              // Structured data: reference into messageFileBlocks array
+                messageFileBlocks.push({
 
-              messageSegments.push({ type: 'file', index: messageFileBlocks.length });
+                  filePath: block.filePath,
 
-              messageFileBlocks.push({
+                  language: block.language,
 
-                filePath: block.filePath,
+                  fileName: block.fileName,
 
-                language: block.language,
+                  content: block.content,
 
-                fileName: block.fileName,
-
-                content: block.content,
-
-              });
+                });
+              }
 
             }
 

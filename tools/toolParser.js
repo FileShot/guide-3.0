@@ -388,20 +388,32 @@ function extractJsonObjects(text) {
   // Handle truncated JSON (unclosed braces)
   if (depth > 0 && start >= 0) {
     const partial = text.slice(start);
-    const pathMatch = partial.match(/"(?:filePath|path)"\s*:\s*"([^"]+)"/);
-    const contentMatch = partial.match(/"content"\s*:\s*"([\s\S]{20,})$/);
-    if (pathMatch && contentMatch) {
-      let truncatedContent = contentMatch[1];
-      truncatedContent = truncatedContent
-        .replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r')
-        .replace(/\\'/g, "'").replace(/\\\\/g, '\\');
-      const toolMatch = partial.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
-      const recoveredTool = toolMatch ? (TOOL_NAME_ALIASES[toolMatch[1].toLowerCase()] || toolMatch[1].toLowerCase()) : 'write_file';
-      objects.push({
-        tool: VALID_TOOLS.has(recoveredTool) ? recoveredTool : 'write_file',
-        params: { filePath: pathMatch[1], content: truncatedContent },
-        _truncated: true,
-      });
+    // C1: Scope-aware recovery — extract tool name FIRST, then find the LAST
+    // filePath/content pair that belongs to the same tool call.
+    const toolMatch = partial.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
+    if (toolMatch) {
+      const recoveredTool = TOOL_NAME_ALIASES[toolMatch[1].toLowerCase()] || toolMatch[1].toLowerCase();
+      // Find the LAST occurrence of filePath and content in the partial string
+      const pathMatches = [...partial.matchAll(/"(?:filePath|path)"\s*:\s*"([^"]+)"/g)];
+      const contentMatches = [...partial.matchAll(/"content"\s*:\s*"([\s\S]{20,})$/g)];
+      if (pathMatches.length > 0 && contentMatches.length > 0) {
+        const lastPath = pathMatches[pathMatches.length - 1][1];
+        const lastContent = contentMatches[contentMatches.length - 1][1];
+        // Heuristic: only pair them if they appear close together (within 200 chars)
+        const lastPathIdx = partial.lastIndexOf(pathMatches[pathMatches.length - 1][0]);
+        const lastContentIdx = partial.lastIndexOf(contentMatches[contentMatches.length - 1][0]);
+        if (Math.abs(lastPathIdx - lastContentIdx) < 200) {
+          let truncatedContent = lastContent;
+          truncatedContent = truncatedContent
+            .replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r')
+            .replace(/\\'/g, "'").replace(/\\\\/g, '\\');
+          objects.push({
+            tool: VALID_TOOLS.has(recoveredTool) ? recoveredTool : 'write_file',
+            params: { filePath: lastPath, content: truncatedContent },
+            _truncated: true,
+          });
+        }
+      }
     }
 
     // Fix 40A: General recovery for ANY tool call with malformed JSON (e.g. missing closing braces).
@@ -543,80 +555,89 @@ function parseToolCalls(text) {
 
     // Method 1.1 (Fix D): Regex fallback when JSON.parse fails on large fenced content
     // If the fenced block clearly contains a tool call but extractJsonObjects failed,
-    // recover the tool call via regex extraction of tool name, filePath, and content.
+    // recover ALL tool calls via regex extraction (not just the first).
     if (objects.length === 0 && fenceContent.length > 50) {
-      const toolMatch = fenceContent.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
-      if (toolMatch) {
-        console.log(`[ToolParser] Method 1.1: JSON parse failed but found tool name "${toolMatch[1]}" — attempting regex recovery`);
+      const toolMatches = [...fenceContent.matchAll(/"(?:tool|name)"\s*:\s*"([^"]+)"/g)];
+      for (const toolMatch of toolMatches) {
         const rawToolName = toolMatch[1].toLowerCase().replace(/-/g, '_');
         const toolName = TOOL_NAME_ALIASES[rawToolName] || rawToolName;
-        if (VALID_TOOLS.has(toolName)) {
-          const call = { tool: toolName, params: {}, _regexRecovered: true };
-          // Extract filePath
-          const pathMatch = fenceContent.match(/"(?:filePath|file_path|path|filename)"\s*:\s*"([^"]+)"/i);
-          if (pathMatch) call.params.filePath = pathMatch[1];
-          // Extract content for write/append tools
-          if (toolName === 'write_file' || toolName === 'append_to_file') {
-            const contentIdx = fenceContent.indexOf('"content"');
-            if (contentIdx >= 0) {
-              const colonIdx = fenceContent.indexOf(':', contentIdx + 9);
-              if (colonIdx >= 0) {
-                const quoteIdx = fenceContent.indexOf('"', colonIdx + 1);
-                if (quoteIdx >= 0) {
-                  let rawContent = fenceContent.slice(quoteIdx + 1);
-                  rawContent = rawContent.replace(/"\s*\}\s*\}\s*\]?\s*$/, '');
-                  rawContent = rawContent.replace(/"\s*\}\s*$/, '');
-                  try {
-                    rawContent = rawContent
-                      .replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r')
-                      .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-                  } catch (_) {}
-                  if (rawContent.trim().startsWith('{"tool":') || rawContent.trim().startsWith('{"tool" :')) {
-                    console.log(`[ToolParser] Method 1.1: Skipping recovered content — looks like tool call JSON leak`);
-                  } else if (rawContent.trim().length > 10) {
-                    call.params.content = rawContent;
-                    console.log(`[ToolParser] Method 1.1: Recovered ${toolName} with content (${rawContent.length} chars)`);
-                  }
+        if (!VALID_TOOLS.has(toolName)) continue;
+        console.log(`[ToolParser] Method 1.1: JSON parse failed but found tool name "${toolMatch[1]}" — attempting regex recovery`);
+        const call = { tool: toolName, params: {}, _regexRecovered: true };
+        // Extract filePath — find the one closest to this tool name match
+        const pathMatches = [...fenceContent.matchAll(/"(?:filePath|file_path|path|filename)"\s*:\s*"([^"]+)"/gi)];
+        if (pathMatches.length > 0) {
+          // Use the path closest to this tool name (within 500 chars before or after)
+          const toolIdx = toolMatch.index;
+          let bestPath = null;
+          let bestDist = Infinity;
+          for (const pm of pathMatches) {
+            const dist = Math.abs(pm.index - toolIdx);
+            if (dist < bestDist) { bestDist = dist; bestPath = pm[1]; }
+          }
+          if (bestDist < 500) call.params.filePath = bestPath;
+        }
+        // Extract content for write/append tools
+        if (toolName === 'write_file' || toolName === 'append_to_file') {
+          const contentIdx = fenceContent.indexOf('"content"', toolMatch.index);
+          if (contentIdx >= 0 && contentIdx - toolMatch.index < 500) {
+            const colonIdx = fenceContent.indexOf(':', contentIdx + 9);
+            if (colonIdx >= 0) {
+              const quoteIdx = fenceContent.indexOf('"', colonIdx + 1);
+              if (quoteIdx >= 0) {
+                let rawContent = fenceContent.slice(quoteIdx + 1);
+                rawContent = rawContent.replace(/"\s*\}\s*\}\s*\]?\s*$/, '');
+                rawContent = rawContent.replace(/"\s*\}\s*$/, '');
+                try {
+                  rawContent = rawContent
+                    .replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r')
+                    .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+                } catch (_) {}
+                if (rawContent.trim().startsWith('{"tool":') || rawContent.trim().startsWith('{"tool" :')) {
+                  console.log(`[ToolParser] Method 1.1: Skipping recovered content — looks like tool call JSON leak`);
+                } else if (rawContent.trim().length > 10) {
+                  call.params.content = rawContent;
+                  console.log(`[ToolParser] Method 1.1: Recovered ${toolName} with content (${rawContent.length} chars)`);
                 }
               }
             }
           }
-          // Extract oldText/newText for edit_file
-          if (toolName === 'edit_file') {
-            const oldMatch = fenceContent.match(/"oldText"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-            if (oldMatch) {
-              try { call.params.oldText = oldMatch[1].replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r').replace(/\\"/g, '"').replace(/\\\\/g, '\\'); } catch (_) { call.params.oldText = oldMatch[1]; }
-            }
-            const newMatch = fenceContent.match(/"newText"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-            if (newMatch) {
-              try { call.params.newText = newMatch[1].replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r').replace(/\\"/g, '"').replace(/\\\\/g, '\\'); } catch (_) { call.params.newText = newMatch[1]; }
-            }
-            // If oldText is empty and newText has content, convert to write_file
-            if (!call.params.oldText && call.params.newText && call.params.newText.length > 10) {
-              console.log(`[ToolParser] Method 1.1: edit_file with empty oldText → converting to write_file`);
-              call.tool = 'write_file';
-              call.params.content = call.params.newText;
-              delete call.params.oldText;
-              delete call.params.newText;
-            }
-          }
-          // Extract other common params via regex
-          const _unescape = s => s.replace(/\\(.)/g, '$1');
-          const queryMatch = fenceContent.match(/"query"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-          if (queryMatch) call.params.query = _unescape(queryMatch[1]);
-          const cmdMatch = fenceContent.match(/"command"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-          if (cmdMatch) call.params.command = _unescape(cmdMatch[1]);
-          const urlMatch = fenceContent.match(/"url"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-          if (urlMatch) call.params.url = _unescape(urlMatch[1]);
-          const dirMatch = fenceContent.match(/"dirPath"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-          if (dirMatch) call.params.dirPath = _unescape(dirMatch[1]);
-          // Infer filePath from content if missing
-          if (!call.params.filePath && call.params.content) {
-            call.params.filePath = _inferFilePath(text, call.params.content);
-            console.log(`[ToolParser] Method 1.1: Inferred filePath: ${call.params.filePath}`);
-          }
-          addCall(call);
         }
+        // Extract oldText/newText for edit_file
+        if (toolName === 'edit_file') {
+          const oldMatch = fenceContent.match(/"oldText"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+          if (oldMatch) {
+            try { call.params.oldText = oldMatch[1].replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r').replace(/\\"/g, '"').replace(/\\\\/g, '\\'); } catch (_) { call.params.oldText = oldMatch[1]; }
+          }
+          const newMatch = fenceContent.match(/"newText"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+          if (newMatch) {
+            try { call.params.newText = newMatch[1].replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r').replace(/\\"/g, '"').replace(/\\\\/g, '\\'); } catch (_) { call.params.newText = newMatch[1]; }
+          }
+          // If oldText is empty and newText has content, convert to write_file
+          if (!call.params.oldText && call.params.newText && call.params.newText.length > 10) {
+            console.log(`[ToolParser] Method 1.1: edit_file with empty oldText → converting to write_file`);
+            call.tool = 'write_file';
+            call.params.content = call.params.newText;
+            delete call.params.oldText;
+            delete call.params.newText;
+          }
+        }
+        // Extract other common params via regex
+        const _unescape = s => s.replace(/\\(.)/g, '$1');
+        const queryMatch = fenceContent.match(/"query"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+        if (queryMatch) call.params.query = _unescape(queryMatch[1]);
+        const cmdMatch = fenceContent.match(/"command"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+        if (cmdMatch) call.params.command = _unescape(cmdMatch[1]);
+        const urlMatch = fenceContent.match(/"url"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+        if (urlMatch) call.params.url = _unescape(urlMatch[1]);
+        const dirMatch = fenceContent.match(/"dirPath"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+        if (dirMatch) call.params.dirPath = _unescape(dirMatch[1]);
+        // Infer filePath from content if missing
+        if (!call.params.filePath && call.params.content) {
+          call.params.filePath = _inferFilePath(text, call.params.content);
+          console.log(`[ToolParser] Method 1.1: Inferred filePath: ${call.params.filePath}`);
+        }
+        addCall(call);
       }
     }
   }

@@ -1564,6 +1564,7 @@ class ChatEngine extends EventEmitter {
       let _sfNativeThinkChars = 0; // B03: native thought segment chars (not in fullResponse)
       let nativeThinkFullText = ''; // accumulates native segment thinking text for logging
       const _sfStreamedFileWrites = new Set();
+      const _sfProsedFileWrites = new Set(); // files whose write_file JSON was flushed as prose (not streamed)
       let _sfVisibleChars = 0; // tracks chars forwarded to frontend (after filter removes tool JSON)
       let _sfPostFenceSuppress = false; // Fix 4: suppress hallucinated prose after confirmed tool fence closes
       let _sfFenceInThink = false; // Fix 4: fence that opened inside think mode
@@ -1585,6 +1586,11 @@ class ChatEngine extends EventEmitter {
           onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
           _sfContentStreamActive = false;
         } else if (_sfBuf) {
+          // Track write_file JSON that is about to be forwarded as prose
+          if (RE_FILE_WRITE_TOOLS.test(_sfBuf) && (RE_TOOL_KEY.test(_sfBuf) || RE_NAME_KEY.test(_sfBuf))) {
+            const _fpM = _sfBuf.match(RE_FILE_PATH);
+            if (_fpM && _fpM[1]) _sfProsedFileWrites.add(_fpM[1]);
+          }
           _sfForward(_sfBuf);
         }
         _sfBuf = '';
@@ -1602,7 +1608,7 @@ class ChatEngine extends EventEmitter {
         _sfThinkTagMatch = '';
         _sfInThink = false;     // ensure think-state never bleeds into the next generation
         _sfThinkBuf = '';
-        _sfPostFenceSuppress = false; // Fix 4: reset on flush
+        // _sfPostFenceSuppress NOT reset here — must persist across continuation rounds
       };
 
       const _sfFlushFence = () => {
@@ -1615,6 +1621,11 @@ class ChatEngine extends EventEmitter {
           _sfContentStreamActive = false;
         }
         if (_sfFenceBuf) {
+          // Track write_file JSON that is about to be forwarded as prose
+          if (RE_FILE_WRITE_TOOLS.test(_sfFenceBuf) && (RE_TOOL_KEY.test(_sfFenceBuf) || RE_NAME_KEY.test(_sfFenceBuf))) {
+            const _fpM = _sfFenceBuf.match(RE_FILE_PATH);
+            if (_fpM && _fpM[1]) _sfProsedFileWrites.add(_fpM[1]);
+          }
           _sfForward(_sfFenceBuf);
           _sfFenceBuf = '';
         }
@@ -1631,7 +1642,7 @@ class ChatEngine extends EventEmitter {
         _sfInThink = false;     // ensure think-state never bleeds into the next generation
         _sfThinkBuf = '';
         _sfFenceInThink = false; // Fix 4: fence that opened inside think mode
-        _sfPostFenceSuppress = false; // Fix 4: reset on fence flush
+        // _sfPostFenceSuppress NOT reset here — must persist across continuation rounds
       };
 
       const _sfProcessChunk = (chunk) => {
@@ -2556,7 +2567,8 @@ class ChatEngine extends EventEmitter {
         _sfContentEsc = false; _sfContentBuf = ''; _sfContentFilePath = '';
         _sfUnicodeCount = 0; _sfUnicodeChars = '';
         _sfInThink = false; _sfThinkBuf = ''; _sfThinkTagMatch = '';
-        _sfFenceInThink = false; _sfPostFenceSuppress = false;
+        _sfFenceInThink = false;
+        // _sfPostFenceSuppress NOT reset here — must persist across continuation rounds
         _sfFenceStreamPlain = false; _sfFencePlainTick = 0;
         _sfNativeThinkActive = false;
         this._nativeThinkLogged = false;
@@ -2655,7 +2667,9 @@ class ChatEngine extends EventEmitter {
               // causing write_file calls from Qwen/DeepSeek native FC to produce no code blocks.
               if (_NATIVE_FILE_WRITE_OPS.has(toolName) && toolParams?.content && onStreamEvent) {
                 const _fp = toolParams.filePath || toolParams.path || '';
-                emitCompleteFileContentBlock(onStreamEvent, _fp, toolParams.content);
+                if (!_sfStreamedFileWrites.has(_fp)) {
+                  emitCompleteFileContentBlock(onStreamEvent, _fp, toolParams.content);
+                }
               }
 
               const _toolStart = Date.now();
@@ -2738,7 +2752,8 @@ class ChatEngine extends EventEmitter {
               _sfContentEsc = false; _sfContentBuf = ''; _sfContentFilePath = '';
               _sfUnicodeCount = 0; _sfUnicodeChars = '';
               _sfInThink = false; _sfThinkBuf = ''; _sfThinkTagMatch = '';
-              _sfFenceInThink = false; _sfPostFenceSuppress = false;
+              _sfFenceInThink = false;
+              // _sfPostFenceSuppress NOT reset here — must persist across continuation rounds
               _sfFenceStreamPlain = false; _sfFencePlainTick = 0;
               _sfNativeThinkActive = false;
               this._nativeThinkLogged = false;
@@ -2861,7 +2876,7 @@ class ChatEngine extends EventEmitter {
             // can show a FileContentBlock with syntax highlighting
             if (FILE_WRITE_OPS.has(call.tool) && call.params?.content && onStreamEvent) {
               const filePath = call.params.filePath || call.params.path || '';
-              if (!_sfStreamedFileWrites.has(filePath)) {
+              if (!_sfStreamedFileWrites.has(filePath) && !_sfProsedFileWrites.has(filePath)) {
                 emitCompleteFileContentBlock(onStreamEvent, filePath, call.params.content);
               }
             }
@@ -3287,7 +3302,7 @@ class ChatEngine extends EventEmitter {
           _sfThinkBuf = '';
           _sfThinkTagMatch = '';
           _sfFenceInThink = false;
-          _sfPostFenceSuppress = false;
+          // _sfPostFenceSuppress NOT reset here — must persist across continuation rounds
           _sfFenceStreamPlain = false;
           _sfFencePlainTick = 0;
           _sfNativeThinkActive = false;
