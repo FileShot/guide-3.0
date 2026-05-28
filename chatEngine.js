@@ -3797,6 +3797,26 @@ class ChatEngine extends EventEmitter {
       return null;
     }
 
+    // B1: VRAM gate — skip sub-context creation if insufficient free VRAM.
+    // On a 4GB GPU with a 9B model, weights consume ~3.7GB leaving no room
+    // for even a 256-token KV cache. Skip straight to deterministic summary.
+    if (this._llama && this.gpuPreference !== 'cpu') {
+      try {
+        const vramState = await this._llama.getVramState();
+        const vramFree = vramState?.free || 0;
+        // Conservative: need at least 64MB free for a minimal sub-context KV cache.
+        // 256 tokens * ~2 bytes/token (f16 KV) * n_layers ≈ 50-100MB for a 9B model.
+        const MIN_SUB_CONTEXT_VRAM = 64 * 1024 * 1024; // 64 MB
+        if (vramFree < MIN_SUB_CONTEXT_VRAM) {
+          console.log(`[ChatEngine] Summarizer SKIP: insufficient VRAM (${Math.round(vramFree / 1024 / 1024)}MB free < ${Math.round(MIN_SUB_CONTEXT_VRAM / 1024 / 1024)}MB minimum)`);
+          return this._extractDeterministicSummary(droppedItems);
+        }
+      } catch (e) {
+        console.warn('[ChatEngine] Summarizer VRAM gate check failed:', e.message);
+        // If we can't query VRAM, proceed with attempt (it may succeed on larger GPUs)
+      }
+    }
+
     const subCtxSize = Math.min(4096, Math.max(1024, Math.floor(mainCtx * 0.1)));
     const inputCharCap = Math.max(600, (subCtxSize - 500) * 3);
     let subContext = null;
@@ -3864,49 +3884,45 @@ class ChatEngine extends EventEmitter {
   }
 
   /**
-   * Summarize dropped context by disposing the main context to free VRAM,
-   * creating a summarizer sub-context in the freed space, running summarization,
-   * then recreating the main context and re-prefilling on next generation.
-   * This is the production-grade solution for VRAM-constrained systems where
-   * the normal sub-context creation fails because the main context occupies
-   * 100% of available VRAM.
+   * Summarize dropped context by creating a small sub-context alongside the
+   * main context. Unlike the old dispose-and-recreate approach, this method
+   * NEVER disposes the main context, so there is no crash path that leaves
+   * _chat as null.
    *
-   * Cost: ~60 seconds on a 4GB GPU (25s summarization + 34s re-prefill).
-   * Cursor takes minutes for the same operation. The user sees a
-   * "Condensing context" status event throughout.
+   * If sub-context creation fails (VRAM too tight), falls back to
+   * _extractDeterministicSummary which requires zero VRAM.
    *
-   * Recovery guarantee: if anything fails, the catch block always attempts
-   * to recreate the main context. If even that fails, isReady=false + error
-   * status event, and the user must reload the model.
+   * B3: LlamaChat is imported at the TOP of this method so it's available
+   * in both try and catch blocks (fixes the ReferenceError crash).
    */
   async _summarizeWithVramReclaim(droppedItems, taskHint) {
     if (!this._baseCtxOpts || !this._model) return null;
-    console.log('[ChatEngine] Summarizer VRAM reclaim: disposing main context to free VRAM');
+    console.log('[ChatEngine] Summarizer fallback ENTER (non-destructive, no main context disposal)');
 
-    // Step 1: Save state that must survive the cycle
-    const savedHistory = this._chatHistory;
-    const savedWrapper = this._chatWrapper;
+    // B3: Import LlamaChat at method scope — available in both try and catch
+    const llamaCppPath = this._getNodeLlamaCppPath();
+    let LlamaChat;
+    try {
+      ({ LlamaChat } = await import(pathToFileURL(llamaCppPath).href));
+    } catch (importErr) {
+      console.warn(`[ChatEngine] Summarizer fallback: LlamaChat import failed: ${importErr.message}`);
+      return this._extractDeterministicSummary(droppedItems);
+    }
 
-    // Step 2: Dispose main context (frees ALL KV cache VRAM)
-    try { this._sequence?.dispose(); } catch (_) {}
-    try { await this._context?.dispose(); } catch (_) {}
-    this._sequence = null;
-    this._context = null;
-    this._chat = null;
-
-    // Step 3-4: Create summarizer sub-context and run summarization
     let subContext = null;
     try {
+      // Try creating a small sub-context with aggressive shrink retries.
+      // This may succeed on GPUs with enough leftover VRAM after the main context.
+      // On 4GB GPUs it will likely fail — that's fine, we fall back gracefully.
       const subCtxSize = Math.min(4096, Math.max(1024, Math.floor((this._baseCtxOpts.contextSize || 4096) * 0.1)));
       subContext = await this._model.createContext({
         contextSize: { min: 256, max: subCtxSize },
+        failedCreationRemedy: { retries: 6, autoContextSizeShrink: 0.4 },
       });
       const subSequence = subContext.getSequence();
-      const llamaCppPath = this._getNodeLlamaCppPath();
-      const { LlamaChat } = await import(pathToFileURL(llamaCppPath).href);
       const subChat = new LlamaChat({
         contextSequence: subSequence,
-        chatWrapper: savedWrapper || 'auto',
+        chatWrapper: this._chatWrapper || 'auto',
       });
 
       // Build compact text from dropped items (same logic as _summarizeDroppedContext)
@@ -3942,43 +3958,13 @@ class ChatEngine extends EventEmitter {
         onTextChunk: (chunk) => { summary += chunk; },
       });
       summary = summary.trim();
-      console.log(`[ChatEngine] Summarizer VRAM reclaim DONE: ${summary.length} chars from ${droppedItems.length} items`);
-
-      // Step 5: Dispose sub-context
-      try { subContext?.dispose(); } catch (_) {}
-      subContext = null;
-
-      // Step 6-8: Recreate main context, sequence, chat
-      this._context = await this._model.createContext({
-        ...this._baseCtxOpts,
-        failedCreationRemedy: { retries: 4, autoContextSizeShrink: 0.4 },
-      });
-      this._sequence = this._context.getSequence();
-      this._chat = new LlamaChat({ contextSequence: this._sequence, chatWrapper: savedWrapper });
-      this._chatHistory = savedHistory;
-      this._lastEvaluation = null; // Force full re-prefill on next generateResponse
-
-      console.log('[ChatEngine] Summarizer VRAM reclaim: main context recreated, re-prefill will occur on next generation');
+      console.log(`[ChatEngine] Summarizer fallback DONE: ${summary.length} chars from ${droppedItems.length} items`);
       return summary || null;
     } catch (err) {
-      console.warn(`[ChatEngine] Summarizer VRAM reclaim FAILED: ${err.message}`);
-      // Recovery: ensure main context is recreated even if summarization failed
-      if (!this._context && this._model && this._baseCtxOpts) {
-        try {
-          this._context = await this._model.createContext(this._baseCtxOpts);
-          this._sequence = this._context.getSequence();
-          this._chat = new LlamaChat({ contextSequence: this._sequence, chatWrapper: savedWrapper });
-          this._chatHistory = savedHistory;
-          this._lastEvaluation = null;
-          console.log('[ChatEngine] Summarizer VRAM reclaim: main context recovered after failure');
-        } catch (recoveryErr) {
-          console.error(`[ChatEngine] Summarizer VRAM reclaim: FATAL — context recovery failed: ${recoveryErr.message}`);
-          this.isReady = false;
-          this.emit('status', { state: 'error', message: `Context recovery failed: ${recoveryErr.message}. Please reload the model.` });
-        }
-      }
-      try { subContext?.dispose(); } catch (_) {}
+      console.warn(`[ChatEngine] Summarizer fallback FAILED: ${err.message}`);
       return this._extractDeterministicSummary(droppedItems);
+    } finally {
+      try { subContext?.dispose(); } catch (_) {}
     }
   }
 
@@ -4155,6 +4141,14 @@ class ChatEngine extends EventEmitter {
         console.log(`[ChatEngine] thoughtTokens capped: ${genOptions.budgets.thoughtTokens} → ${maxThink} (maxTokens=${genOptions.maxTokens})`);
         genOptions.budgets = { ...genOptions.budgets, thoughtTokens: maxThink };
       }
+    }
+    // B4: Null guard — if summarizer or any recovery path left _chat/_sequence as null,
+    // throw a descriptive error instead of letting a null-deref TypeError crash the app.
+    if (!this._chat || !this._sequence) {
+      console.error('[ChatEngine] FATAL: _chat or _sequence is null before generateResponse');
+      this.isReady = false;
+      this.emit('status', { state: 'error', message: 'Chat engine context was lost during summarization. Please reload the model.' });
+      throw new Error('Chat engine context was lost during summarization and could not be recovered.');
     }
     try {
       return await this._chat.generateResponse(this._chatHistory, genOptions);
