@@ -511,6 +511,15 @@ function StreamingFooter() {
 
           if (!block) return null;
 
+          // Dedup: skip if previous segment is a file block for the same filePath
+          if (i > 0) {
+            const prev = streamingSegments[i - 1];
+            if (prev.type === 'file') {
+              const prevBlock = streamingFileBlocks[prev.index];
+              if (prevBlock && prevBlock.filePath === block.filePath) return null;
+            }
+          }
+
           return (
 
             <FileContentBlock
@@ -1422,6 +1431,17 @@ export default function ChatPanel() {
             const block = fileBlocks[seg.index];
 
             if (block) {
+
+              // Dedup: skip if previous segment was a file block for the same filePath
+              const prevSeg = messageSegments.length > 0 ? messageSegments[messageSegments.length - 1] : null;
+              if (prevSeg && prevSeg.type === 'file') {
+                const prevBlock = messageFileBlocks[prevSeg.index];
+                if (prevBlock && prevBlock.filePath === block.filePath) {
+                  // Update existing block content instead of creating duplicate
+                  messageFileBlocks[prevSeg.index] = { ...prevBlock, content: block.content };
+                  continue;
+                }
+              }
 
               // Text fallback: still include as markdown fence for content field
 
@@ -2379,6 +2399,15 @@ export default function ChatPanel() {
                             const block = msg.fileBlocks?.[seg.index];
 
                             if (!block) return null;
+
+                            // Dedup: skip if previous segment is a file block for the same filePath
+                            if (i > 0) {
+                              const prev = msg.segments[i - 1];
+                              if (prev.type === 'file') {
+                                const prevBlock = msg.fileBlocks?.[prev.index];
+                                if (prevBlock && prevBlock.filePath === block.filePath) return null;
+                              }
+                            }
 
                             return (
 
