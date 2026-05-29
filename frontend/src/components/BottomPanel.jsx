@@ -116,12 +116,6 @@ export default function BottomPanel() {
           >
             <Plus size={13} />
           </button>
-          <button className="p-1 hover:bg-vsc-list-hover rounded text-vsc-text-dim hover:text-vsc-text flex-shrink-0" title="More terminal options">
-            <ChevronDown size={13} />
-          </button>
-          <button className="p-1 hover:bg-vsc-list-hover rounded text-vsc-text-dim hover:text-vsc-text flex-shrink-0" title="More actions">
-            <MoreHorizontal size={13} />
-          </button>
           <button className="p-1 hover:bg-vsc-list-hover rounded flex-shrink-0" title="Clear" onClick={() => {}}>
             <Trash2 size={13} className="text-vsc-text-dim" />
           </button>

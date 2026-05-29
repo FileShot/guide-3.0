@@ -2074,7 +2074,7 @@ export default function ChatPanel() {
 
 
           <SlideDown isOpen={historyOpen}>
-            <div className="absolute right-0 top-[32px] z-20 w-[320px] max-h-[320px] overflow-y-auto rounded-lg border border-vsc-panel-border bg-vsc-sidebar/95 shadow-[0_10px_30px_rgba(0,0,0,0.45)] p-1.5">
+            <div className="absolute right-0 top-[32px] z-20 w-[320px] max-h-[320px] overflow-y-auto rounded-lg border border-vsc-panel-border bg-vsc-sidebar shadow-[0_10px_30px_rgba(0,0,0,0.45)] p-1.5">
               <div className="text-[10px] font-medium text-vsc-text-dim px-1 py-1">History</div>
 
               {filteredSessions.length === 0 ? (

@@ -119,7 +119,7 @@ function FileExplorer() {
 
   return (
     <div className="flex flex-col h-full bg-vsc-sidebar/85 backdrop-blur-sm">
-      <div className="sidebar-header justify-between border-b border-vsc-panel-border/18 shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]">
+      <div className="sidebar-header justify-between">
         <span>Explorer</span>
         <div className="flex items-center gap-1">
           <button className="p-1 hover:bg-vsc-list-hover rounded" title="New File" onClick={() => {}}>
@@ -456,8 +456,8 @@ function FileTreeItem({ item, depth }) {
       <SlideDown isOpen={expanded && !!item.children}>
         <div className="relative">
           <div
-            className="absolute top-0 bottom-0 w-px bg-vsc-panel-border/40 pointer-events-none"
-            style={{ left: Math.max(indent - 2, 0) }}
+            className="absolute top-0 bottom-0 w-px bg-vsc-panel-border/60 pointer-events-none"
+            style={{ left: Math.max(indent + 6, 0) }}
           />
           {item.children && item.children.map((child, idx) => (
             <FileTreeItem key={child.path || idx} item={child} depth={depth + 1} />

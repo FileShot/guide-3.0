@@ -139,10 +139,10 @@ export default function TitleBar() {
   };
 
   return (
-    <div className="h-titlebar bg-vsc-titlebar grid grid-cols-[1fr_auto_1fr] items-center no-select text-vsc-sm border-b border-vsc-panel-border/25"
+    <div className="h-titlebar bg-vsc-titlebar flex items-center no-select text-vsc-sm border-b border-vsc-panel-border/25"
          style={{ WebkitAppRegion: 'drag' }}>
       {/* Brand + Hamburger */}
-      <div className="flex items-center pl-2 pr-2 gap-1" style={{ WebkitAppRegion: 'no-drag' }}>
+      <div className="flex items-center pl-2 pr-2 gap-1 flex-shrink-0" style={{ WebkitAppRegion: 'no-drag' }}>
         {/* Hamburger button */}
         <button
           className={`hamburger-trigger p-1.5 rounded transition-colors duration-150
@@ -152,20 +152,11 @@ export default function TitleBar() {
           {openMenu ? <X size={14} /> : <Menu size={14} />}
         </button>
 
-        <div
-          className="w-4 h-4 flex-shrink-0 bg-vsc-accent"
-          style={{
-            maskImage: 'url(/zzz.png)',
-            WebkitMaskImage: 'url(/zzz.png)',
-            maskSize: 'contain',
-            WebkitMaskSize: 'contain',
-            maskPosition: 'center',
-            WebkitMaskPosition: 'center',
-            maskRepeat: 'no-repeat',
-            WebkitMaskRepeat: 'no-repeat',
-          }}
-          title="guIDE"
-        />
+        <div className="flex items-center gap-0.5 flex-shrink-0" title="guIDE">
+          <span className="text-[13px] font-bold text-vsc-accent">g</span>
+          <span className="text-[13px] font-bold text-vsc-text">u</span>
+          <span className="text-[11px] font-bold text-vsc-text opacity-70">IDE</span>
+        </div>
       </div>
 
       {/* Hamburger Panel */}
@@ -205,8 +196,8 @@ export default function TitleBar() {
       </SlideDown>
 
       {/* Center â€” Search Bar */}
-      <div className="flex justify-center" style={{ WebkitAppRegion: 'no-drag' }}>
-        <div className="search-bar-container relative w-full max-w-[480px]">
+      <div className="flex justify-center flex-1 min-w-0">
+        <div className="search-bar-container relative w-full max-w-[380px]">
           {searchActive ? (
             <>
               <div className="flex items-center bg-vsc-input border border-vsc-input-border rounded-md px-2.5 py-0.5 gap-1.5 shadow-lg">
@@ -267,8 +258,8 @@ export default function TitleBar() {
         </div>
       </div>
 
-      {/* Right â€” Layout toggles + status */}
-      <div className="flex items-center justify-end gap-0.5 pr-1" style={{ WebkitAppRegion: 'no-drag' }}>
+      {/* Right â€” Layout toggles + window controls + status */}
+      <div className="flex items-center justify-end gap-0.5 pr-1 flex-shrink-0 ml-auto" style={{ WebkitAppRegion: 'no-drag' }}>
         {/* Layout toggle buttons â€” VS Code title bar style */}
         <button
           className={`p-1 rounded transition-colors duration-150 ${sidebarVisible ? 'text-vsc-text hover:bg-vsc-list-hover/60' : 'text-vsc-text-dim/50 hover:bg-vsc-list-hover/40 hover:text-vsc-text-dim'}`}
@@ -302,7 +293,7 @@ export default function TitleBar() {
             <LayoutTemplate size={14} />
           </button>
           <SlideDown isOpen={layoutMenuOpen}>
-            <div className="absolute top-full right-0 mt-1 bg-vsc-dropdown/95 backdrop-blur-xl border border-vsc-dropdown-border rounded-lg shadow-2xl z-[9999] w-[180px] py-1 text-[12px]">
+            <div className="absolute top-full right-0 mt-1 bg-vsc-dropdown border border-vsc-dropdown-border rounded-lg shadow-2xl z-[9999] w-[180px] py-1 text-[12px]">
               <button
                 className="flex items-center w-full px-3 py-1.5 text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/60 transition-colors"
                 onClick={() => {
@@ -337,10 +328,10 @@ export default function TitleBar() {
         {/* Connection status dot */}
         <div className={`w-1.5 h-1.5 rounded-full ml-1 ${connected ? 'bg-vsc-success' : 'bg-vsc-error'}`}
              title={connected ? 'Connected' : 'Disconnected'} />
-      </div>
 
-      {/* Window Controls */}
-      <div className="flex items-stretch h-full ml-1" style={{ WebkitAppRegion: 'no-drag' }}>
+        <div className="w-px h-4 bg-vsc-panel-border/25 mx-1" />
+
+        {/* Window Controls */}
         <WinBtn title="Minimize" onClick={() => wc()?.minimize()}>
           <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
         </WinBtn>
