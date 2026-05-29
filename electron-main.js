@@ -745,11 +745,7 @@ ipcMain.handle('set-thinking-mode', async (_e, mode) => {
 });
 
 ipcMain.handle('ui-log', (_e, msg) => {
-  const s = String(msg ?? '');
-  console.log(`[UI] ${s}`);
-  if (s.includes('[StreamingErrorBoundary]')) {
-    log.warn('UI', s);
-  }
+  console.log(`[UI] ${String(msg ?? '')}`);
 });
 
 // Handle answer from frontend for ask_question tool

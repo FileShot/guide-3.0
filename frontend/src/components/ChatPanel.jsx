@@ -101,11 +101,7 @@ class StreamingErrorBoundary extends Component {
 
   componentDidCatch(error) {
 
-    const msg = `[StreamingErrorBoundary] MarkdownRenderer error: ${error.message}`;
-
-    console.warn(msg);
-
-    try { window.electronAPI?.uiLog?.(msg); } catch (_) {}
+    console.warn('[StreamingErrorBoundary] MarkdownRenderer error caught:', error.message);
 
   }
 
@@ -125,25 +121,15 @@ class StreamingErrorBoundary extends Component {
 
     if (this.state.hasError) {
 
-      const content = this.props.fallbackContent || '';
-
-      const paragraphs = content ? content.split(/\n\n+/) : [''];
+      // Show raw text as fallback
 
       return (
 
-        <div className="markdown-body">
+        <pre className="whitespace-pre-wrap text-vsc-sm text-vsc-text p-2">
 
-          {paragraphs.map((para, i) => (
+          {this.props.fallbackContent || ''}
 
-            <p key={i} className="my-1.5 leading-relaxed whitespace-pre-wrap">
-
-              {para}
-
-            </p>
-
-          ))}
-
-        </div>
+        </pre>
 
       );
 
