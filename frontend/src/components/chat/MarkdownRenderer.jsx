@@ -47,16 +47,15 @@ const markdownComponents = {
   },
 
   code({ node, className, children, ...props }) {
+    const isInline = !className && !node?.position?.start?.line;
+    // Check if parent is a <pre> (block code) vs inline
     // rehype-highlight adds className like "language-javascript hljs"
     const hasLanguageClass = /language-/.test(className || '');
 
     // R43-Fix-A: Sanitize children before passing to React DOM
     const safeChildren = sanitizeChildren(children);
-    const text = Array.isArray(safeChildren) ? safeChildren.join('') : String(safeChildren || '');
-    const isMultilineBlock = text.includes('\n');
 
-    // Block code only when fenced/language hint or multiline hljs block — not any className on code
-    if (hasLanguageClass || (className?.includes('hljs') && isMultilineBlock)) {
+    if (hasLanguageClass || (node?.tagName === 'code' && node?.properties?.className)) {
       // Block code — render in CodeBlock (or MermaidBlock for mermaid)
       // Extract language, filtering out 'hljs' which rehype-highlight adds as a utility class
       const classTokens = (className || '').split(' ').filter(c => c && c !== 'hljs');
@@ -230,21 +229,6 @@ function MarkdownRendererImpl({ content, streaming }) {
   }, [content]);
 
   if (!content) return null;
-
-  // While streaming: plain prose paragraphs only. remark/rehype on partial post-tool
-  // segments mis-parses as code blocks (mono box). Finalized uses streaming={false}.
-  if (streaming) {
-    const paragraphs = displayContent.split(/\n\n+/).filter((p) => p.length > 0);
-    return (
-      <div className="markdown-body">
-        {paragraphs.map((para, i) => (
-          <p key={i} className="my-1.5 leading-relaxed whitespace-pre-wrap">
-            {para}
-          </p>
-        ))}
-      </div>
-    );
-  }
 
   return (
     <div className="markdown-body">
