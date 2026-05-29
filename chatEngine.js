@@ -1493,6 +1493,7 @@ class ChatEngine extends EventEmitter {
 
     this._abortController = new AbortController();
     let fullResponse = '';
+    let visibleResponse = '';
     let _proseLogBuf = '';
     let _thinkLogBuf = '';
     let tokensSinceLastUsageReport = 0;
@@ -3423,14 +3424,15 @@ class ChatEngine extends EventEmitter {
         });
       }
 
-      console.log(`[ChatEngine] chat() returning: textLen=${fullResponse.length}, stopReason=${stopReason}, toolCalls=${totalToolCalls}`);
+      visibleResponse = stripToolCallText(fullResponse);
+      console.log(`[ChatEngine] chat() returning: textLen=${visibleResponse.length}, stopReason=${stopReason}, toolCalls=${totalToolCalls}`);
       if (onComplete) onComplete(fullResponse);
-      return { text: fullResponse, stopReason, toolCallCount: totalToolCalls };
+      return { text: visibleResponse, stopReason, toolCallCount: totalToolCalls };
     } catch (err) {
       console.error(`[ChatEngine] chat() CATCH: ${err.name}: ${err.message}`);
       if (err.name === 'AbortError' || this._abortController?.signal?.aborted) {
         console.log('[ChatEngine] chat() returning cancelled');
-        return { text: fullResponse, stopReason: 'cancelled', toolCallCount: totalToolCalls };
+        return { text: stripToolCallText(fullResponse), stopReason: 'cancelled', toolCallCount: totalToolCalls };
       }
       const isContextFull = /context shift strategy|did not return a history that fits|context size is too small/i.test(err.message || '');
       if (onStreamEvent) {
