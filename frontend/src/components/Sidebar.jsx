@@ -1,5 +1,5 @@
 ﻿/**
- * Sidebar â€” Renders the active sidebar panel based on ActivityBar selection.
+ * Sidebar — Renders the active sidebar panel based on ActivityBar selection.
  * Panels: Explorer (file tree), Search, Git, Settings
  */
 import { useState, useCallback, useRef, useEffect } from 'react';
@@ -119,7 +119,7 @@ function FileExplorer() {
 
   return (
     <div className="flex flex-col h-full bg-vsc-sidebar/85 backdrop-blur-sm">
-      <div className="sidebar-header justify-between border-b border-vsc-panel-border/18 shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]">
+      <div className="sidebar-header justify-between">
         <span>Explorer</span>
         <div className="flex items-center gap-1">
           <button className="p-1 hover:bg-vsc-list-hover rounded" title="New File" onClick={() => {}}>
@@ -198,7 +198,7 @@ function FileExplorer() {
                     // Dispatch a custom event that EditorArea listens for to jump to line
                     window.dispatchEvent(new CustomEvent('guide-goto-line', { detail: { line: sym.line } }));
                   }}
-                  title={`${sym.kind} â€” line ${sym.line}`}
+                  title={`${sym.kind} — line ${sym.line}`}
                 >
                   <span className={`flex-shrink-0 text-[10px] ${
                     sym.kind === 'class' ? 'text-yellow-400' :
@@ -418,7 +418,7 @@ function FileTreeItem({ item, depth }) {
               const store = useAppStore.getState();
               const existingTab = store.openTabs.find(t => t.path === item.path);
               if (existingTab) {
-                // File already open â€” just toggle preview mode
+                // File already open — just toggle preview mode
                 store.setActiveTabId(existingTab.id);
                 store.togglePreviewMode(existingTab.id);
               } else {
@@ -456,8 +456,8 @@ function FileTreeItem({ item, depth }) {
       <SlideDown isOpen={expanded && !!item.children}>
         <div className="relative">
           <div
-            className="absolute top-0 bottom-0 w-px bg-vsc-panel-border/40 pointer-events-none"
-            style={{ left: Math.max(indent - 2, 0) }}
+            className="absolute top-0 bottom-0 w-px bg-vsc-panel-border/60 pointer-events-none"
+            style={{ left: indent + 6 }}
           />
           {item.children && item.children.map((child, idx) => (
             <FileTreeItem key={child.path || idx} item={child} depth={depth + 1} />
@@ -1131,7 +1131,7 @@ function CloudProviderSettings() {
               {/* Free tier badge */}
               {isFree && (
                 <div className="text-[10px] text-green-400 bg-green-500/10 px-2 py-1 rounded">
-                  Free tier â€” no API key needed. Bundled keys rotate automatically.
+                  Free tier — no API key needed. Bundled keys rotate automatically.
                 </div>
               )}
 
@@ -1201,7 +1201,7 @@ function CloudProviderSettings() {
   );
 }
 
-// Auto-update settings â€” exposes the existing AutoUpdater (electron-updater wrapper).
+// Auto-update settings — exposes the existing AutoUpdater (electron-updater wrapper).
 // Periodic checking is opt-in. The user picks a cadence (off / hourly / daily / weekly)
 // and the backend listens for the change to schedule or cancel its setInterval.
 // A manual "Check now" button always works regardless of the periodic setting.
@@ -1225,7 +1225,7 @@ function UpdatesSettings({ settings, updateSetting }) {
     setBusy(true);
     fetch('/api/updater/check', { method: 'POST' })
       .then(r => r.json())
-      .then(() => { addNotification({ type: 'info', message: 'Checking for updatesâ€¦', duration: 2000 }); setTimeout(refreshStatus, 1500); })
+      .then(() => { addNotification({ type: 'info', message: 'Checking for updates…', duration: 2000 }); setTimeout(refreshStatus, 1500); })
       .catch(e => addNotification({ type: 'error', message: e.message }))
       .finally(() => setBusy(false));
   };
@@ -1243,10 +1243,10 @@ function UpdatesSettings({ settings, updateSetting }) {
 
   const statusLabel =
     status?.available === false ? 'Updater unavailable (dev/web mode)'
-      : status?.status === 'checking' ? 'Checkingâ€¦'
+      : status?.status === 'checking' ? 'Checking…'
         : status?.status === 'available' ? `Update available: v${status?.updateInfo?.version || '?'}`
-          : status?.status === 'downloading' ? `Downloadingâ€¦ ${Math.round(status?.progress?.percent || 0)}%`
-            : status?.status === 'downloaded' ? `Downloaded v${status?.updateInfo?.version || '?'} â€” ready to install`
+          : status?.status === 'downloading' ? `Downloading… ${Math.round(status?.progress?.percent || 0)}%`
+            : status?.status === 'downloaded' ? `Downloaded v${status?.updateInfo?.version || '?'} — ready to install`
               : status?.status === 'error' ? `Error: ${status?.error || 'unknown'}`
                 : 'Up to date';
 
@@ -1385,7 +1385,7 @@ function SettingsPanel() {
     try {
       await updateSetting('thinkingMode', mode);
       window.electronAPI?.uiLog?.(`applyThinkingMode after updateSetting OK`);
-      addNotification({ type: 'info', message: `Thinking mode â†’ ${mode} â€” reloading modelâ€¦`, duration: 2500 });
+      addNotification({ type: 'info', message: `Thinking mode → ${mode} — reloading model…`, duration: 2500 });
       triggerModelReload('thinkingMode');
     } catch (e) {
       addNotification({ type: 'error', message: e.message || 'Failed to save thinking mode' });
@@ -1466,11 +1466,11 @@ function SettingsPanel() {
           onChange={v => updateSetting('temperature', v)} tooltip="Lower = more focused, higher = more creative" />
         <SettingNumberField label="Max Response Tokens" value={settings.maxResponseTokens}
           min={0} max={8192} step={256} onChange={v => updateSetting('maxResponseTokens', v)}
-          hint="0 = auto â€” use all available context space for generation" />
+          hint="0 = auto — use all available context space for generation" />
         <div>
           <SettingNumberField label="Context Size" value={settings.contextSize}
             min={0} max={131072} step={1024} onChange={v => updateSettingWithReload('contextSize', v)}
-            hint="0 = auto â€” use the largest context the model allows and VRAM can fit (recommended). Otherwise set an explicit token budget." />
+            hint="0 = auto — use the largest context the model allows and VRAM can fit (recommended). Otherwise set an explicit token budget." />
           <div className="text-[10px] text-yellow-400/80 mt-0.5">Requires model reload to apply</div>
         </div>
         <SettingSlider label="Top P" value={settings.topP} min={0} max={1} step={0.05}
@@ -1562,7 +1562,7 @@ function SettingsPanel() {
         <div className="mb-2">
           <label className="text-[11px] text-vsc-text-dim block mb-1">
             Thinking Wrapper Mode
-            <span className="ml-1 text-vsc-text-muted">(reloads model â€” shows loading spinner)</span>
+            <span className="ml-1 text-vsc-text-muted">(reloads model — shows loading spinner)</span>
           </label>
           <select
             className="w-full bg-vsc-input border border-vsc-border rounded text-[11px] text-vsc-text px-2 py-1 focus:outline-none focus:border-vsc-focus"
@@ -1572,13 +1572,13 @@ function SettingsPanel() {
               applyThinkingMode(e.target.value);
             }}
           >
-            <option value="C">C â€” ThinkingOpen (inject &lt;think&gt; prefix)</option>
-            <option value="B">B â€” Jinja, no prefix (raw enable_thinking=true)</option>
-            <option value="auto">auto â€” node-llama-cpp auto resolver</option>
-            <option value="off">off â€” Jinja, thinking disabled</option>
+            <option value="C">C — ThinkingOpen (inject &lt;think&gt; prefix)</option>
+            <option value="B">B — Jinja, no prefix (raw enable_thinking=true)</option>
+            <option value="auto">auto — node-llama-cpp auto resolver</option>
+            <option value="off">off — Jinja, thinking disabled</option>
           </select>
           <p className="text-[10px] text-vsc-text-muted mt-1">
-            Resets on model load: GLM-4.6V â†’ off; others â†’ auto. C/B = Jinja paths. auto = Qwen/GPT/Phi. off = template thinking disabled.
+            Resets on model load: GLM-4.6V → off; others → auto. C/B = Jinja paths. auto = Qwen/GPT/Phi. off = template thinking disabled.
           </p>
         </div>
         <SettingToggle label="Filter Thinking Tokens" value={settings.enableThinkingFilter}
@@ -1589,10 +1589,10 @@ function SettingsPanel() {
           hint="When off, no tool definitions are passed to the model. Useful for testing thinking display in isolation." />
         <SettingToggle label="Native Function Calling (GBNF)" value={settings.enableNativeFC !== false}
           onChange={v => updateSetting('enableNativeFC', v)}
-          hint="Use node-llama-cpp GBNF grammar to constrain FC generation. Disable if the model hangs for minutes generating tool call JSON â€” falling back to prose tool call parsing (toolParser.js)." />
+          hint="Use node-llama-cpp GBNF grammar to constrain FC generation. Disable if the model hangs for minutes generating tool call JSON — falling back to prose tool call parsing (toolParser.js)." />
         <SettingToggle label="Grammar-Constrained Tool Calls" value={settings.enableGrammar}
           onChange={v => updateSetting('enableGrammar', v)}
-          hint="Forces JSON schema grammar on raw output. Mutually exclusive with Native FC â€” enabling this disables native FC. May cause hangs on small models." />
+          hint="Forces JSON schema grammar on raw output. Mutually exclusive with Native FC — enabling this disables native FC. May cause hangs on small models." />
         <SettingToggle label="Context Summarizer" value={settings.enableContextSummarizer !== false}
           onChange={v => updateSetting('enableContextSummarizer', v)}
           hint="On context shift, generate a progress summary from dropped turns so the model can continue the task without losing track." />
@@ -1601,7 +1601,7 @@ function SettingsPanel() {
           hint="Auto-inject lint correction into model context after file writes detect errors." />
         <SettingToggle label="Sub-Agents (Experimental)" value={!!settings.enableSubAgents}
           onChange={v => updateSetting('enableSubAgents', v)}
-          hint="Allow model to spawn focused sub-agents using a fresh context window. Off by default â€” uses extra VRAM." />
+          hint="Allow model to spawn focused sub-agents using a fresh context window. Off by default — uses extra VRAM." />
       </SettingsSection>
 
       {/* Command Execution Policy */}
@@ -1627,10 +1627,10 @@ function SettingsPanel() {
             value={settings.executionPolicy || 'auto'}
             onChange={e => updateSetting('executionPolicy', e.target.value)}
           >
-            <option value="disabled">Disabled â€” All commands require approval</option>
-            <option value="allowlist">Allowlist â€” Only safe commands auto-execute</option>
-            <option value="auto">Auto â€” Agent judges safety (recommended)</option>
-            <option value="turbo">Turbo â€” All commands auto-execute (except denylisted)</option>
+            <option value="disabled">Disabled — All commands require approval</option>
+            <option value="allowlist">Allowlist — Only safe commands auto-execute</option>
+            <option value="auto">Auto — Agent judges safety (recommended)</option>
+            <option value="turbo">Turbo — All commands auto-execute (except denylisted)</option>
           </select>
           <p className="text-[10px] text-vsc-text-muted mt-1">
             Controls how the agent executes shell commands. "Auto" lets the agent decide based on safety heuristics. "Turbo" auto-executes everything except explicitly denylisted commands. "Allowlist" only auto-executes commands in the allow list. "Disabled" requires approval for every command.
@@ -1819,7 +1819,7 @@ function SettingsPanel() {
           onChange={v => updateSetting('formatOnType', v)} />
       </SettingsSection>
 
-      {/* Auto-Update â€” opt-in, off by default */}
+      {/* Auto-Update — opt-in, off by default */}
       <UpdatesSettings settings={settings} updateSetting={updateSetting} />
 
       {/* Cloud AI Provider */}
@@ -1842,7 +1842,7 @@ function SettingsPanel() {
                 {modelInfo.contextHardwareCap != null && (
                   <span>HW cap: {Number(modelInfo.contextHardwareCap).toLocaleString()}{modelInfo.kvMemSource ? ` (${modelInfo.kvMemSource})` : ''}</span>
                 )}
-                {modelInfo.contextHardwareCap != null && modelInfo.contextTrainMax != null && <span> Â· </span>}
+                {modelInfo.contextHardwareCap != null && modelInfo.contextTrainMax != null && <span> · </span>}
                 {modelInfo.contextTrainMax != null && (
                   <span>Train max: {Number(modelInfo.contextTrainMax).toLocaleString()}</span>
                 )}
@@ -2459,7 +2459,7 @@ function DebugPanel() {
     }
   }, [expandedFrames]);
 
-  // No active session â€” show launch config
+  // No active session — show launch config
   if (!isActive) {
     return (
       <div className="flex flex-col h-full">
@@ -2531,7 +2531,7 @@ function DebugPanel() {
     );
   }
 
-  // Active session â€” show debugger controls
+  // Active session — show debugger controls
   return (
     <div className="flex flex-col h-full">
       <div className="sidebar-header justify-between">
@@ -2602,7 +2602,7 @@ function DebugPanel() {
                     key={frame.id || i}
                     className={`w-full text-left px-3 py-0.5 text-vsc-xs hover:bg-vsc-bg-light rounded truncate ${i === 0 ? 'text-yellow-300' : 'text-vsc-text-dim'}`}
                     onClick={() => loadFrameScopes(i)}
-                    title={`${frame.name} â€” ${frame.source || 'unknown'}:${frame.line || '?'}`}
+                    title={`${frame.name} — ${frame.source || 'unknown'}:${frame.line || '?'}`}
                   >
                     <span className="text-vsc-text">{frame.name || '<anonymous>'}</span>
                     {frame.source && (

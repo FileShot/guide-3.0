@@ -1,5 +1,5 @@
 ﻿/**
- * InlineChat â€” Floating chat input at the editor cursor position.
+ * InlineChat — Floating chat input at the editor cursor position.
  * Triggered by Ctrl+I. Sends selected code + prompt to AI,
  * then shows a diff preview with accept/reject buttons.
  */
@@ -133,10 +133,10 @@ export default function InlineChat({ position, selectedText, onClose, onApplyEdi
         // Show diff between selected code and proposed replacement
         setProposedEdit({ original: selectedText, modified: codeBlock });
       } else if (codeBlock) {
-        // No selection â€” just show the proposed code for review
+        // No selection — just show the proposed code for review
         setProposedEdit({ original: '', modified: codeBlock });
       } else {
-        // No code block found â€” just show the text response
+        // No code block found — just show the text response
         addChatMessage({ role: 'assistant', content: responseText });
         onClose();
         return;

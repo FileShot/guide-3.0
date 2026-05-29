@@ -1,5 +1,5 @@
 ﻿/**
- * MermaidBlock â€” Renders mermaid diagram code into an SVG.
+ * MermaidBlock — Renders mermaid diagram code into an SVG.
  * Used by MarkdownRenderer when a code block has language "mermaid".
  */
 import { useEffect, useRef, useState } from 'react';

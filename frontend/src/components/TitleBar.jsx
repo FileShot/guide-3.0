@@ -1,5 +1,5 @@
 ﻿/**
- * TitleBar â€” Custom title bar with guIDE branding (Audiowide font).
+ * TitleBar — Custom title bar with guIDE branding (Audiowide font).
  * Shows hamburger menu, centered search bar, and window controls.
  * Requires frame:false in BrowserWindow + preload.js windowControls IPC.
  */
@@ -37,7 +37,7 @@ export default function TitleBar() {
     // One-shot read on mount, then subscribe to push events from the main
     // process. The 500ms isMaximized() poll was replaced with this event
     // subscription because the underlying OS already emits maximize/unmaximize
-    // â€” polling was pure waste.
+    // — polling was pure waste.
     let cancelled = false;
     (async () => {
       try {
@@ -155,8 +155,8 @@ export default function TitleBar() {
         <div
           className="w-4 h-4 flex-shrink-0 bg-vsc-accent"
           style={{
-            maskImage: 'url(/zzz.png)',
-            WebkitMaskImage: 'url(/zzz.png)',
+            maskImage: 'url(./zzz.png)',
+            WebkitMaskImage: 'url(./zzz.png)',
             maskSize: 'contain',
             WebkitMaskSize: 'contain',
             maskPosition: 'center',
@@ -204,7 +204,7 @@ export default function TitleBar() {
         </div>
       </SlideDown>
 
-      {/* Center â€” Search Bar */}
+      {/* Center — Search Bar */}
       <div className="flex justify-center" style={{ WebkitAppRegion: 'no-drag' }}>
         <div className="search-bar-container relative w-full max-w-[480px]">
           {searchActive ? (
@@ -267,9 +267,9 @@ export default function TitleBar() {
         </div>
       </div>
 
-      {/* Right â€” Layout toggles + status */}
+      {/* Right — Layout toggles + status */}
       <div className="flex items-center justify-end gap-0.5 pr-1" style={{ WebkitAppRegion: 'no-drag' }}>
-        {/* Layout toggle buttons â€” VS Code title bar style */}
+        {/* Layout toggle buttons — VS Code title bar style */}
         <button
           className={`p-1 rounded transition-colors duration-150 ${sidebarVisible ? 'text-vsc-text hover:bg-vsc-list-hover/60' : 'text-vsc-text-dim/50 hover:bg-vsc-list-hover/40 hover:text-vsc-text-dim'}`}
           title="Toggle Primary Sidebar"
@@ -337,10 +337,10 @@ export default function TitleBar() {
         {/* Connection status dot */}
         <div className={`w-1.5 h-1.5 rounded-full ml-1 ${connected ? 'bg-vsc-success' : 'bg-vsc-error'}`}
              title={connected ? 'Connected' : 'Disconnected'} />
-      </div>
 
-      {/* Window Controls */}
-      <div className="flex items-stretch h-full ml-1" style={{ WebkitAppRegion: 'no-drag' }}>
+        <div className="w-px h-4 bg-vsc-panel-border/25 mx-1" />
+
+        {/* Window Controls */}
         <WinBtn title="Minimize" onClick={() => wc()?.minimize()}>
           <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
         </WinBtn>
@@ -367,7 +367,7 @@ export default function TitleBar() {
   );
 }
 
-// â”€â”€â”€ Menu definitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Menu definitions ────────────────────────────────────
 
 const MENUS = [
   {
@@ -456,7 +456,7 @@ const MENUS = [
   },
 ];
 
-// â”€â”€â”€ Action handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Action handler ──────────────────────────────────────
 
 function executeMenuAction(action) {
   const store = useAppStore.getState();
@@ -523,7 +523,7 @@ function executeMenuAction(action) {
       wc()?.close();
       return;
 
-    // Edit â€” these dispatch native browser commands, Monaco handles them
+    // Edit — these dispatch native browser commands, Monaco handles them
     case 'undo': document.execCommand('undo'); return;
     case 'redo': document.execCommand('redo'); return;
     case 'cut': document.execCommand('cut'); return;
@@ -563,7 +563,7 @@ function executeMenuAction(action) {
     case 'showShortcuts': store.setActiveActivity('settings'); return;
     case 'about': {
       const v = store.appVersion || '...';
-      store.addNotification({ type: 'info', message: `guIDE ${v} â€” Local-first AI IDE. Built for offline inference.`, duration: 8000 });
+      store.addNotification({ type: 'info', message: `guIDE ${v} — Local-first AI IDE. Built for offline inference.`, duration: 8000 });
       return;
     }
 
@@ -571,7 +571,7 @@ function executeMenuAction(action) {
   }
 }
 
-// â”€â”€â”€ Win button component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Win button component ────────────────────────────
 
 function WinBtn({ children, onClick, title, isClose }) {
   return (

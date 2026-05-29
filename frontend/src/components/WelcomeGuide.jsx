@@ -133,7 +133,7 @@ export default function WelcomeGuide() {
   );
 }
 
-/* â”€â”€ Section content components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── Section content components ─────────────────────────────────────────────── */
 
 function SectionTitle({ children }) {
   return <h3 className="text-[14px] font-semibold text-vsc-text mb-3">{children}</h3>;
@@ -177,7 +177,7 @@ function GettingStarted() {
     <>
       <SectionTitle>Getting Started</SectionTitle>
       <Paragraph>
-        guIDE is a local-first AI IDE. All AI inference runs on your machine â€” no cloud
+        guIDE is a local-first AI IDE. All AI inference runs on your machine — no cloud
         required, no data leaves your computer.
       </Paragraph>
 
@@ -254,7 +254,7 @@ function AiChat() {
       <SectionTitle>AI & Chat</SectionTitle>
       <Paragraph>
         guIDE's AI assistant can read your code, write files, search your project,
-        run terminal commands, and manage git â€” all from the chat panel.
+        run terminal commands, and manage git — all from the chat panel.
       </Paragraph>
 
       <FeatureItem icon={Zap} title="Auto Mode">
@@ -325,7 +325,7 @@ function BuiltInTools() {
       </Paragraph>
 
       <FeatureItem icon={FileCode} title="File Operations">
-        read_file, write_file, list_directory, search_files â€” the AI can navigate and modify
+        read_file, write_file, list_directory, search_files — the AI can navigate and modify
         your entire project structure.
       </FeatureItem>
 
@@ -340,7 +340,7 @@ function BuiltInTools() {
       </FeatureItem>
 
       <FeatureItem icon={GitBranch} title="Git Operations">
-        Stage, commit, diff, branch, and checkout â€” all available as tools.
+        Stage, commit, diff, branch, and checkout — all available as tools.
         The AI can manage your version control workflow.
       </FeatureItem>
 
@@ -364,11 +364,11 @@ function TipsAndTricks() {
 
       <FeatureItem icon={Command} title="Command Palette">
         Press <strong>Ctrl+Shift+P</strong> to access every command in guIDE.
-        Start typing to filter â€” it's the fastest way to do anything.
+        Start typing to filter — it's the fastest way to do anything.
       </FeatureItem>
 
       <FeatureItem icon={Cpu} title="GPU Memory">
-        The status bar shows GPU VRAM usage. Choose a model size that fits your GPU â€”
+        The status bar shows GPU VRAM usage. Choose a model size that fits your GPU —
         quantized models (Q4_K_M, Q8_0) use less memory with minimal quality loss.
       </FeatureItem>
 

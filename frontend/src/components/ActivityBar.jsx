@@ -1,6 +1,6 @@
 ﻿/**
- * ActivityBar â€” Left icon strip with activity icons.
- * Theme-aware â€” all colors from CSS variables.
+ * ActivityBar — Left icon strip with activity icons.
+ * Theme-aware — all colors from CSS variables.
  */
 import useAppStore from '../stores/appStore';
 import { Files, Search, GitBranch, MessageSquare, Blocks, Settings, Bug, UserCircle, Globe } from 'lucide-react';

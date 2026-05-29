@@ -118,7 +118,7 @@ const RE_FILE_PATH = /"(?:filePath|path)"\s*:\s*"([^"]*)"/;
 const RE_TOOL_OR_SYSTEM_INJECT = /^\[(?:Tool Results|System)\]/i;
 const RE_CONTEXT_ROTATED = /\[System: Context rotated\]/i;
 
-/** Web-facing tools â€” if these share a batch with workspace navigation tools, drop the latter (structural conflict rule). */
+/** Web-facing tools — if these share a batch with workspace navigation tools, drop the latter (structural conflict rule). */
 const WEB_TOOL_BATCH = new Set(['web_search', 'fetch_webpage', 'http_request']);
 const WORKSPACE_NAV_TOOLS = new Set(['list_directory', 'get_project_structure']);
 
@@ -546,7 +546,7 @@ function buildEngineLoadSettings(raw = {}) {
   const gpuPreference = raw.gpuPreference === 'cpu' ? 'cpu' : 'auto';
   const gpuLayers = typeof raw.gpuLayers === 'number' ? raw.gpuLayers : -1;
   const ctx = Number(raw.contextSize);
-  // 0 = auto â€” use model train cap (and VRAM) as upper bound, not a fixed 16k default
+  // 0 = auto — use model train cap (and VRAM) as upper bound, not a fixed 16k default
   const contextSize = !Number.isFinite(ctx) || ctx < 0 ? 0 : Math.floor(ctx);
   return {
     gpuPreference,
@@ -1503,7 +1503,7 @@ class ChatEngine extends EventEmitter {
 
     try {
       console.log(`[ChatEngine] chat() try block ENTER: abortController=${!!this._abortController}`);
-      // â”€â”€ Streaming tool call filter â”€â”€
+      // ── Streaming tool call filter ──
       // Two-layer suppression of tool call JSON from the UI:
       //
       // Layer 1 (real-time): This filter processes each token character-by-character.
@@ -1788,9 +1788,9 @@ class ChatEngine extends EventEmitter {
             }
           }
 
-          // â”€â”€ Fence mode: accumulating content inside ```...``` â”€â”€
+          // ── Fence mode: accumulating content inside ```...``` ──
           if (_sfInFence) {
-            // Stream normal markdown code fences (```html, ```css, â€¦) to the UI immediately.
+            // Stream normal markdown code fences (```html, ```css, …) to the UI immediately.
             // Only JSON tool-call fences stay buffered until close (so we can strip/suppress).
             if (_sfFenceStreamPlain) {
               if (ch === '`') {
@@ -1834,10 +1834,10 @@ class ChatEngine extends EventEmitter {
               if (lang === 'json' || lang === '') {
                 // Always buffer JSON fences until close. At close, tool calls are discarded
                 // and non-tool content is forwarded with fence markers stripped.
-                // Never stream JSON fences as plain mid-generation â€” they contain raw
+                // Never stream JSON fences as plain mid-generation — they contain raw
                 // tool-call JSON that must not leak to visible prose.
                 if (RE_TOOL_KEY.test(afterHeader.slice(0, 6000))) {
-                  /* keep buffering â€” tool JSON fence */
+                  /* keep buffering — tool JSON fence */
                 }
                 // Removed: else-if branch that streamed JSON fences as plain after 100 chars
               }
@@ -2025,10 +2025,10 @@ class ChatEngine extends EventEmitter {
             continue;
           }
 
-          // â”€â”€ Inside a potential raw JSON tool call â”€â”€
+          // ── Inside a potential raw JSON tool call ──
           _sfBuf += ch;
 
-          // â”€â”€ Real-time file content streaming â”€â”€
+          // ── Real-time file content streaming ──
           // When inside a confirmed file-write tool call, intercept the "content"
           // field value and stream decoded characters to file-content-token events.
           if (_sfContentStreamActive) {

@@ -1,5 +1,5 @@
 ﻿/**
- * MarkdownRenderer â€” ReactMarkdown wrapper with syntax highlighting and custom components.
+ * MarkdownRenderer — ReactMarkdown wrapper with syntax highlighting and custom components.
  * Uses rehype-highlight for code, remark-gfm for tables/strikethrough.
  * Code blocks render via CodeBlock component with copy/apply toolbar.
  */
@@ -13,7 +13,7 @@ import CodeBlock from './CodeBlock';
 import MermaidBlock from './MermaidBlock';
 import 'katex/dist/katex.min.css';
 
-// R43-Fix-A: Sanitize children at the HASTâ†’React boundary.
+// R43-Fix-A: Sanitize children at the HAST→React boundary.
 // rehype-highlight/rehype-katex can occasionally produce HAST nodes that
 // hast-util-to-jsx-runtime fails to convert to valid React elements,
 // especially during rapid streaming updates. These arrive as plain JS objects
@@ -23,14 +23,14 @@ function sanitizeChildren(children) {
   if (children == null || typeof children === 'string' || typeof children === 'number' || typeof children === 'boolean') {
     return children;
   }
-  // Valid React element â€” has $$typeof
+  // Valid React element — has $$typeof
   if (children != null && typeof children === 'object' && children.$$typeof) {
     return children;
   }
   if (Array.isArray(children)) {
     return children.map(sanitizeChildren);
   }
-  // Plain object â€” likely unconverted HAST node. Extract text value if available.
+  // Plain object — likely unconverted HAST node. Extract text value if available.
   if (typeof children === 'object') {
     if (children.value != null) return String(children.value);
     if (children.children) return sanitizeChildren(children.children);
@@ -41,7 +41,7 @@ function sanitizeChildren(children) {
 
 // Custom components for ReactMarkdown
 const markdownComponents = {
-  // Code blocks â€” delegate to CodeBlock for block code, inline stays styled
+  // Code blocks — delegate to CodeBlock for block code, inline stays styled
   pre({ children }) {
     return <>{children}</>;
   },
@@ -56,7 +56,7 @@ const markdownComponents = {
     const safeChildren = sanitizeChildren(children);
 
     if (hasLanguageClass || (node?.tagName === 'code' && node?.properties?.className)) {
-      // Block code â€” render in CodeBlock (or MermaidBlock for mermaid)
+      // Block code — render in CodeBlock (or MermaidBlock for mermaid)
       // Extract language, filtering out 'hljs' which rehype-highlight adds as a utility class
       const classTokens = (className || '').split(' ').filter(c => c && c !== 'hljs');
       const langToken = classTokens.find(c => c.startsWith('language-'));
@@ -80,7 +80,7 @@ const markdownComponents = {
     );
   },
 
-  // Tables â€” theme-aware
+  // Tables — theme-aware
   table({ children }) {
     return (
       <div className="overflow-x-auto my-2 rounded-md border border-vsc-panel-border/20">
@@ -174,7 +174,7 @@ const markdownComponents = {
 };
 
 const remarkPlugins = [remarkGfm, [remarkMath, { singleDollarTextMath: false }]];
-// F2: detect:false â€” disable highlight.js auto-language detection. The detector
+// F2: detect:false — disable highlight.js auto-language detection. The detector
 // runs every language pattern against every code block on every render, which was
 // a major streaming hot path. Models almost always include a language hint (```js,
 // ```python, etc.); blocks without a hint render unhighlighted but still readable.
@@ -198,7 +198,7 @@ function MarkdownRendererImpl({ content, streaming }) {
     let openFenceLen = 0; // length of the opening fence backticks (0 = not inside a fence)
     // R51-Fix: Escape HTML entities outside code fences. When the model outputs HTML
     // tags (like <div>, <script>, <head>) in its prose text, ReactMarkdown strips them
-    // silently â€” the tags vanish and their text children appear as a jumbled mess of
+    // silently — the tags vanish and their text children appear as a jumbled mess of
     // "naked code." By escaping < and > to &lt; &gt; outside of fences, the HTML appears
     // as visible code text in the chat instead of being stripped or rendered.
     const escapedLines = [];
@@ -211,13 +211,13 @@ function MarkdownRendererImpl({ content, streaming }) {
         } else if (len >= openFenceLen) {
           openFenceLen = 0; // closing fence
         }
-        // else: inner backticks with fewer ticks than opener â€” ignored
+        // else: inner backticks with fewer ticks than opener — ignored
         escapedLines.push(line);
       } else if (openFenceLen > 0) {
-        // Inside a code fence â€” leave as-is
+        // Inside a code fence — leave as-is
         escapedLines.push(line);
       } else {
-        // Outside a code fence â€” escape HTML tags so they render as visible text
+        // Outside a code fence — escape HTML tags so they render as visible text
         escapedLines.push(line.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
       }
     }

@@ -1,5 +1,5 @@
 ﻿/**
- * WelcomeScreen â€” Full-page overlay shown on app startup.
+ * WelcomeScreen — Full-page overlay shown on app startup.
  * Premium Windsurf/Cursor-inspired design with animated wavy background,
  * glassmorphism cards, recommended model downloads, and smooth animations.
  */
@@ -12,7 +12,7 @@ import {
   Cpu, Sparkles, Globe,
 } from 'lucide-react';
 
-// Recommended models â€” curated for first-time users
+// Recommended models — curated for first-time users
 const RECOMMENDED_MODELS = [
   {
     name: 'Qwen 3.5 4B',
@@ -217,7 +217,7 @@ export default function WelcomeScreen() {
                style={{ background: 'radial-gradient(circle, rgb(var(--guide-accent) / 0.15) 0%, transparent 70%)' }} />
         </div>
         <p className="text-[13px] text-vsc-text-dim/70 mt-1 font-light">
-          Local AI â€” No cloud required
+          Local AI — No cloud required
         </p>
       </div>
 
@@ -247,7 +247,7 @@ export default function WelcomeScreen() {
       {/* Main content grid */}
       <div className="w-full max-w-[920px] px-6 flex gap-6 min-h-0 pb-12 relative z-10">
 
-        {/* Left Column â€” Recent + Shortcuts */}
+        {/* Left Column — Recent + Shortcuts */}
         <div className="flex-1 min-w-0" style={anim(0.3)}>
           {recentFolders.length > 0 ? (
             <div className="glass-card rounded-2xl p-4 mb-5">
@@ -317,7 +317,7 @@ export default function WelcomeScreen() {
           </div>
         </div>
 
-        {/* Right Column â€” Models */}
+        {/* Right Column — Models */}
         <div className={recentFolders.length > 0 ? 'w-[340px] flex-shrink-0' : 'flex-1 min-w-0'} style={anim(0.4)}>
           {/* Cloud AI Card */}
           <div className="glass-card rounded-2xl p-4 mb-5">
@@ -502,7 +502,7 @@ export default function WelcomeScreen() {
 
       {/* Footer */}
       <div className="pb-6 text-[10px] text-vsc-text-dim/30 select-none relative z-10" style={anim(0.5)}>
-        guIDE {appVersion || ''} â€” Local-first AI IDE. Built for offline inference.
+        guIDE {appVersion || ''} — Local-first AI IDE. Built for offline inference.
       </div>
     </div>
   );

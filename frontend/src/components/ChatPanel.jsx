@@ -1,6 +1,6 @@
 ﻿/**
 
- * ChatPanel â€” AI chat interface with streaming markdown rendering.
+ * ChatPanel — AI chat interface with streaming markdown rendering.
 
  * Features a cohesive unified input container with toolbar.
 
@@ -37,13 +37,13 @@ import {
 
 
 
-// guIDE Cloud AI â€” bundled providers with pre-seeded keys, rotated for rate-limit avoidance
+// guIDE Cloud AI — bundled providers with pre-seeded keys, rotated for rate-limit avoidance
 
 const GUIDE_CLOUD_PROVIDERS = new Set(['cerebras', 'groq', 'sambanova', 'google', 'openrouter']);
 
 const FILE_WRITE_TOOL_NAMES = new Set(['write_file', 'create_file', 'append_to_file']);
 
-/** Canonicalize a file path for dedup â€” backslashesâ†’forward-slashes, collapse dupes, lowercase drive letter. */
+/** Canonicalize a file path for dedup — backslashes→forward-slashes, collapse dupes, lowercase drive letter. */
 function canonicalizeFilePath(filePath) {
   if (!filePath) return '';
   const normalized = String(filePath).trim().replace(/\\/g, '/').replace(/\/+/g, '/');
@@ -107,7 +107,7 @@ class StreamingErrorBoundary extends Component {
 
   componentDidUpdate(prevProps) {
 
-    // Auto-recover when content changes â€” the new content might render fine
+    // Auto-recover when content changes — the new content might render fine
 
     if (this.state.hasError && prevProps.fallbackContent !== this.props.fallbackContent) {
 
@@ -143,7 +143,7 @@ class StreamingErrorBoundary extends Component {
 
 
 
-// Finalized thinking block â€” shown on already-completed assistant messages.
+// Finalized thinking block — shown on already-completed assistant messages.
 
 // Collapsed by default (unlike streaming ThinkingBlock which auto-expands).
 
@@ -153,7 +153,7 @@ function FinalizedThinkingBlock({ text }) {
 
   const lines = text.split('\n').filter(l => l.trim());
 
-  // Auto-collapse after completion (smooth UX â€” thinking starts expanded, then collapses)
+  // Auto-collapse after completion (smooth UX — thinking starts expanded, then collapses)
   useEffect(() => {
     const timer = setTimeout(() => setExpanded(false), 2000);
     return () => clearTimeout(timer);
@@ -218,7 +218,7 @@ function FinalizedThinkingBlock({ text }) {
 
 
 
-// R44-Fix-2: Stable Header component â€” defined at module level so Virtuoso
+// R44-Fix-2: Stable Header component — defined at module level so Virtuoso
 
 // receives a stable function reference. Reads state from store directly,
 
@@ -278,7 +278,7 @@ function StreamingHeader() {
 
 
 
-// R44-Fix-2: Stable Footer component â€” defined at module level so Virtuoso
+// R44-Fix-2: Stable Footer component — defined at module level so Virtuoso
 
 // receives a stable function reference. Reads state from store directly,
 
@@ -314,7 +314,7 @@ function StreamingFooter() {
 
 
 
-  // Thinking block state â€” VS Code style with elapsed time tracking
+  // Thinking block state — VS Code style with elapsed time tracking
 
   const [thinkingExpanded, setThinkingExpanded] = useState(true);
 
@@ -416,7 +416,7 @@ function StreamingFooter() {
 
           <>
 
-            <span className="text-vsc-text-dim/60 font-normal normal-case tracking-normal">â€”</span>
+            <span className="text-vsc-text-dim/60 font-normal normal-case tracking-normal">—</span>
 
             <span className="text-[10px] text-vsc-text-dim font-normal normal-case tracking-normal flex items-center gap-1">
 
@@ -1052,7 +1052,7 @@ export default function ChatPanel() {
 
 
 
-  // Core send logic â€” takes explicit text param so queue auto-send can use it
+  // Core send logic — takes explicit text param so queue auto-send can use it
 
   const doSend = useCallback(async (text, { skipAddMessage } = {}) => {
 
@@ -1277,7 +1277,7 @@ export default function ChatPanel() {
       // and when vision fails, it injects an instruction for the model to ask the user.
       // Raw metadata like "[Attached context]\n- 1. filename (image/png, 419861 bytes)"
       // persists in chat history across all subsequent tool calls, and the model eventually
-      // echoes it verbatim as its response â€” even after 20+ tool calls on a different topic.
+      // echoes it verbatim as its response — even after 20+ tool calls on a different topic.
       const modelInputText = text;
 
       const result = window.electronAPI?.aiChat
@@ -1288,7 +1288,7 @@ export default function ChatPanel() {
 
 
 
-      // Quota exceeded â€” show upgrade prompt instead of empty message
+      // Quota exceeded — show upgrade prompt instead of empty message
 
       if (result?.isQuotaError || result?.error === '__QUOTA_EXCEEDED__') {
 
@@ -1310,7 +1310,7 @@ export default function ChatPanel() {
 
         if (!isAuthenticated) {
 
-          // No account â€” prompt to create one first
+          // No account — prompt to create one first
 
           useAppStore.getState().addChatMessage({
 
@@ -1326,7 +1326,7 @@ export default function ChatPanel() {
 
         } else {
 
-          // Has account but free plan â€” prompt to upgrade
+          // Has account but free plan — prompt to upgrade
 
           useAppStore.getState().addChatMessage({
 
@@ -1352,7 +1352,7 @@ export default function ChatPanel() {
 
       // R33-Phase4: Use streamingSegments for correct ordering
 
-      // R27-B: Use fresh getState() â€” store snapshot from L125 is stale after long await
+      // R27-B: Use fresh getState() — store snapshot from L125 is stale after long await
 
       // R35-L4: Store segment structure on message for rendering with FileContentBlock
 
@@ -1466,7 +1466,7 @@ export default function ChatPanel() {
           } else if (seg.type === 'thinking') {
 
             // Thinking content stays in segments for FinalizedThinkingBlock rendering.
-            // It is NOT appended to messageContent â€” that would duplicate it in the main message display.
+            // It is NOT appended to messageContent — that would duplicate it in the main message display.
             messageSegments.push({ type: 'thinking', content: seg.content });
 
           } else if (seg.type === 'tool') {
@@ -1542,7 +1542,7 @@ export default function ChatPanel() {
       // R53-Fix: Guard against Electron IPC ordering lag where the ai-chat invoke reply
       // is processed before all llm-token events arrive, leaving streamingSegments
       // with fewer prose chars than the backend actually generated.
-      // result.text (from the invoke reply payload) is always complete â€” it arrives
+      // result.text (from the invoke reply payload) is always complete — it arrives
       // in the same message as the reply and is never subject to IPC event lag.
       {
 
@@ -1550,7 +1550,7 @@ export default function ChatPanel() {
 
         if (_backendProse.trim() && _backendProse.trim().length > messageContent.trim().length) {
 
-          console.warn(`[ChatPanel] R53-Fix: IPC lag detected â€” segments=${messageContent.trim().length} chars, backend=${_backendProse.trim().length} chars. Correcting.`);
+          console.warn(`[ChatPanel] R53-Fix: IPC lag detected — segments=${messageContent.trim().length} chars, backend=${_backendProse.trim().length} chars. Correcting.`);
 
           const textSegIndices = [];
 
@@ -1628,7 +1628,7 @@ export default function ChatPanel() {
 
       // setChatStreaming(false) clears chatThinkingText.
 
-      // Also: safety net â€” if content was visible during streaming but finalization
+      // Also: safety net — if content was visible during streaming but finalization
 
       // would discard it, force-create the message with the streaming text.
 
@@ -1678,9 +1678,9 @@ export default function ChatPanel() {
 
         // R51-Safety: Content was visible during streaming but segments/messageContent
 
-        // is empty â€” something went wrong in segment tracking. Preserve the visible text.
+        // is empty — something went wrong in segment tracking. Preserve the visible text.
 
-        console.warn('[ChatPanel] R51-Safety: streamingText had content but messageContent was empty â€” forcing message creation');
+        console.warn('[ChatPanel] R51-Safety: streamingText had content but messageContent was empty — forcing message creation');
 
         useAppStore.getState().addChatMessage({
 
@@ -1716,7 +1716,7 @@ export default function ChatPanel() {
 
         // This can happen if IPC events were lost or arrived after handle reply.
 
-        console.warn('[ChatPanel] R51-Safety: result.text had content but streaming state was empty â€” forcing message creation');
+        console.warn('[ChatPanel] R51-Safety: result.text had content but streaming state was empty — forcing message creation');
 
         useAppStore.getState().addChatMessage({
 
@@ -1965,7 +1965,7 @@ export default function ChatPanel() {
 
       tabs.push({ id: s.id, title: s.title || 'Chat session', isCurrent: false, session: s });
 
-      if (tabs.length >= 2) break; // current + 1 recent max; rest via Â·Â·Â· history
+      if (tabs.length >= 2) break; // current + 1 recent max; rest via ··· history
 
     }
 
@@ -2037,7 +2037,7 @@ export default function ChatPanel() {
 
               onClick={() => setHistoryOpen(v => !v)}
 
-            >Â·Â·Â·</button>
+            >···</button>
 
           )}
 
@@ -2074,7 +2074,7 @@ export default function ChatPanel() {
 
 
           <SlideDown isOpen={historyOpen}>
-            <div className="absolute right-0 top-[32px] z-20 w-[320px] max-h-[320px] overflow-y-auto rounded-lg border border-vsc-panel-border bg-vsc-sidebar/95 shadow-[0_10px_30px_rgba(0,0,0,0.45)] p-1.5">
+            <div className="absolute right-0 top-[32px] z-20 w-[320px] max-h-[320px] overflow-y-auto rounded-lg border border-vsc-panel-border bg-vsc-sidebar shadow-[0_10px_30px_rgba(0,0,0,0.45)] p-1.5">
               <div className="text-[10px] font-medium text-vsc-text-dim px-1 py-1">History</div>
 
               {filteredSessions.length === 0 ? (
@@ -2128,7 +2128,7 @@ export default function ChatPanel() {
 
       <div className="flex-1 min-h-0 bg-gradient-to-b from-transparent to-vsc-bg/20" onWheel={handleUserWheel}>
 
-        {/* Session history shown when chat is empty â€” filtered to current project */}
+        {/* Session history shown when chat is empty — filtered to current project */}
 
         {chatMessages.length === 0 && savedSessions.length > 0 && (() => {
 
@@ -2679,7 +2679,7 @@ export default function ChatPanel() {
 
 
 
-      {/* â”€â”€â”€ Unified Input Container â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ─── Unified Input Container ──────────────────────── */}
 
       <div className="flex-shrink-0 p-2 relative">
 
@@ -2747,7 +2747,7 @@ export default function ChatPanel() {
 
 
 
-          {/* Files changed by AI â€” VS Code-style banner */}
+          {/* Files changed by AI — VS Code-style banner */}
 
           {chatFilesChanged.length > 0 && (
 
@@ -3385,7 +3385,7 @@ export default function ChatPanel() {
 
 
 
-            {/* Mode selector â€” Dropdown */}
+            {/* Mode selector — Dropdown */}
 
             {(() => {
 
@@ -3525,7 +3525,7 @@ export default function ChatPanel() {
 
                 disabled={stopPending}
 
-                title={stopPending ? 'Stoppingâ€¦' : 'Stop generation'}
+                title={stopPending ? 'Stopping…' : 'Stop generation'}
 
               >
 
@@ -3559,7 +3559,7 @@ export default function ChatPanel() {
 
 
 
-        {/* Model picker dropdown â€” positioned relative to outer container */}
+        {/* Model picker dropdown — positioned relative to outer container */}
 
         <div className={`transition-all duration-200 ease-out overflow-hidden ${modelPickerOpen ? 'max-h-[600px] opacity-100 mt-1' : 'max-h-0 opacity-0'}`}>
 
@@ -3589,7 +3589,7 @@ export default function ChatPanel() {
 
 
 
-// â”€â”€ Generation Error Card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Generation Error Card ──────────────────────────────────────────────────
 
 function GenerationErrorCard({ message, suggestion }) {
 
@@ -3663,7 +3663,7 @@ function GenerationErrorCard({ message, suggestion }) {
 
 
 
-// â”€â”€ Quota Exceeded Prompt â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Quota Exceeded Prompt ──────────────────────────────────────────────────
 
 function QuotaExceededPrompt({ needsAccount }) {
 
@@ -3793,7 +3793,7 @@ function QuotaExceededPrompt({ needsAccount }) {
 
 
 
-// â”€â”€ Vision capability lookup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Vision capability lookup ──────────────────────────────────────────────────
 
 const VISION_MODEL_SUBSTRINGS = {
 
@@ -3827,7 +3827,7 @@ function isVisionModel(provider, modelId) {
 
 
 
-// â”€â”€ Provider metadata for display & signup URLs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Provider metadata for display & signup URLs ──────────────────────────────
 
 const PROVIDER_INFO = {
 
@@ -4702,7 +4702,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-          {/* â”€â”€ Favorites â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+          {/* ── Favorites ──────────────────────────────────────── */}
 
           {(cloudFavorites.length > 0 || localFavorites.length > 0) && (
 
@@ -4806,7 +4806,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-          {/* â”€â”€ Current model (unload option) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+          {/* ── Current model (unload option) ─────────────────── */}
 
           {currentModel && !isUsingCloud && (
 
@@ -4874,7 +4874,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-          {/* â”€â”€ Cloud Providers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+          {/* ── Cloud Providers ────────────────────────────────── */}
 
           <div className="border-b border-vsc-panel-border/15">
 
@@ -4900,7 +4900,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
               <div>
 
-                {/* guIDE Cloud AI â€” bundled entry */}
+                {/* guIDE Cloud AI — bundled entry */}
 
                 <button
 
@@ -4930,7 +4930,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-                {/* Add Your Own Key â€” Free */}
+                {/* Add Your Own Key — Free */}
 
                 <div>
 
@@ -4990,7 +4990,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-          {/* â”€â”€ Quick Add â€” Recommended Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+          {/* ── Quick Add — Recommended Models ────────────────── */}
 
           <div className="border-b border-vsc-panel-border/15">
 
@@ -5004,7 +5004,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
               {showRecommended ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
 
-              <FolderPlus size={10} /> Quick Add â€” Download Models
+              <FolderPlus size={10} /> Quick Add — Download Models
 
             </button>
 
@@ -5200,7 +5200,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                     })}
 
-                    {/* Other models â€” may exceed VRAM */}
+                    {/* Other models — may exceed VRAM */}
 
                     {(recommendedModels.other || []).length > 0 && (
 
@@ -5296,7 +5296,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                                   }}
 
-                                  title={`Download ${m.name} (${m.size}GB) â€” may not fit`}
+                                  title={`Download ${m.name} (${m.size}GB) — may not fit`}
 
                                 >
 
@@ -5328,7 +5328,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-          {/* â”€â”€ Local LLM Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+          {/* ── Local LLM Models ──────────────────────────────── */}
 
           <div className="px-2 py-1 text-[10px] text-vsc-text-dim tracking-wider bg-vsc-sidebar/80 border-b border-vsc-panel-border/15 border-t flex items-center gap-1">
 
@@ -5412,7 +5412,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-          {/* â”€â”€ Image Models (only if diffusion models exist) â”€â”€ */}
+          {/* ── Image Models (only if diffusion models exist) ── */}
 
           {diffusionModels.length > 0 && (
 
@@ -5562,7 +5562,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
               } else {
 
-                // Browser fallback â€” open file picker
+                // Browser fallback — open file picker
 
                 modelFileInputRef.current?.click();
 

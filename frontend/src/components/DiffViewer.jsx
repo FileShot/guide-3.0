@@ -1,5 +1,5 @@
 ﻿/**
- * DiffViewer â€” Side-by-side diff viewer using Monaco's DiffEditor.
+ * DiffViewer — Side-by-side diff viewer using Monaco's DiffEditor.
  * Opened via store.openDiff(original, modified, title).
  */
 import { useState } from 'react';

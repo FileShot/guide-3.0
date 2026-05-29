@@ -1,5 +1,5 @@
 ﻿/**
- * CodeBlock â€” Syntax-highlighted code block with toolbar.
+ * CodeBlock — Syntax-highlighted code block with toolbar.
  * Features: language label, copy button, line numbers, apply-to-file stub.
  * Receives pre-highlighted HTML from rehype-highlight (via MarkdownRenderer).
  */
@@ -48,7 +48,7 @@ export default function CodeBlock({ language, children, className }) {
   }, [getTextContent]);
 
   const handleApply = useCallback(() => {
-    // Stub â€” will integrate with editor tab system later
+    // Stub — will integrate with editor tab system later
   }, []);
 
   const handleDownload = useCallback(() => {
@@ -87,7 +87,7 @@ export default function CodeBlock({ language, children, className }) {
     // Initial count
     syncCount();
 
-    // Watch for DOM changes â€” write to ref only (no state update)
+    // Watch for DOM changes — write to ref only (no state update)
     const observer = new MutationObserver(() => {
       const text = el.textContent || '';
       lineCountRef.current = text ? text.split('\n').length : 0;
