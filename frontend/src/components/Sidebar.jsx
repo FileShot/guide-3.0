@@ -457,7 +457,7 @@ function FileTreeItem({ item, depth }) {
         <div className="relative">
           <div
             className="absolute top-0 bottom-0 w-px bg-vsc-panel-border/60 pointer-events-none"
-            style={{ left: indent + 6 }}
+            style={{ left: Math.max(indent + 6, 0) }}
           />
           {item.children && item.children.map((child, idx) => (
             <FileTreeItem key={child.path || idx} item={child} depth={depth + 1} />
