@@ -1832,14 +1832,14 @@ class ChatEngine extends EventEmitter {
                 continue;
               }
               if (lang === 'json' || lang === '') {
+                // Always buffer JSON fences until close. At close, tool calls are discarded
+                // and non-tool content is forwarded with fence markers stripped.
+                // Never stream JSON fences as plain mid-generation â€” they contain raw
+                // tool-call JSON that must not leak to visible prose.
                 if (RE_TOOL_KEY.test(afterHeader.slice(0, 6000))) {
                   /* keep buffering â€” tool JSON fence */
-                } else if (afterHeader.length >= 100) {
-                  _sfFenceStreamPlain = true;
-                  _sfForward(_sfFenceBuf);
-                  _sfFenceBuf = '';
-                  continue;
                 }
+                // Removed: else-if branch that streamed JSON fences as plain after 100 chars
               }
             }
 
