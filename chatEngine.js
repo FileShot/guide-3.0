@@ -610,6 +610,9 @@ When you receive an image description from the vision system, treat it as what y
 ## Planning
 For multi-step work, you may use planning tools from ## Tools when they fit the task. For simple requests, act directly without unnecessary planning overhead.
 
+## Todo List Discipline (CRITICAL)
+If you call write_todos to create a plan, you MUST maintain it. Call update_todo immediately when you start a task step (status: 'in-progress') and immediately when you finish it (status: 'done'). Do not leave todos at 0/N completed — the user sees the list in real time and relies on it to track progress. A stale todo list is worse than no list at all.
+
 ## Context rotation
 When you see [System: Context rotated], older turns were removed from the live context window. The progress summary embedded in the rotation notice contains the key details you need to continue. Do not call read_file to recover context — the summary is already in your context.
 
@@ -1565,6 +1568,13 @@ class ChatEngine extends EventEmitter {
       let nativeThinkFullText = ''; // accumulates native segment thinking text for logging
       const _sfStreamedFileWrites = new Set();
       const _sfProsedFileWrites = new Set(); // files whose write_file JSON was flushed as prose (not streamed)
+      // Canonicalize paths for dedup — backslashes→forward-slashes, collapse dupes, lowercase drive letter.
+      const _normalizePath = (p) => {
+        if (!p) return '';
+        const n = String(p).trim().replace(/\\/g, '/').replace(/\/+/g, '/');
+        if (!n) return '';
+        return /^[a-z]:\//i.test(n) ? n.toLowerCase() : n;
+      };
       let _sfVisibleChars = 0; // tracks chars forwarded to frontend (after filter removes tool JSON)
       let _sfFenceInThink = false; // fence that opened inside think mode
 
@@ -1592,7 +1602,7 @@ class ChatEngine extends EventEmitter {
           if (_isToolCall) {
             console.log(`[ChatEngine] _sfFlush: discarding tool-call JSON (${_sfBuf.length} chars)`);
             const _fpM = _sfBuf.match(RE_FILE_PATH);
-            if (_fpM && _fpM[1]) _sfProsedFileWrites.add(_fpM[1]);
+            if (_fpM && _fpM[1]) _sfProsedFileWrites.add(_normalizePath(_fpM[1]));
           } else {
             _sfForward(_sfBuf);
           }
@@ -1631,9 +1641,10 @@ class ChatEngine extends EventEmitter {
           if (_isToolCall) {
             console.log(`[ChatEngine] _sfFlushFence: discarding tool-call JSON (${_sfFenceBuf.length} chars)`);
             const _fpM = _sfFenceBuf.match(RE_FILE_PATH);
-            if (_fpM && _fpM[1]) _sfProsedFileWrites.add(_fpM[1]);
+            if (_fpM && _fpM[1]) _sfProsedFileWrites.add(_normalizePath(_fpM[1]));
           } else {
-            _sfForward(_sfFenceBuf);
+            const cleaned = _sfFenceBuf.replace(/^```[a-z0-9]*\s*\n?/i, '');
+            if (cleaned.length > 0) _sfForward(cleaned);
           }
           _sfFenceBuf = '';
         }
@@ -1790,7 +1801,7 @@ class ChatEngine extends EventEmitter {
                   _sfFenceStreamPlain = false;
                   _sfFencePlainTick = 0;
                   _sfFenceBuf = '';
-                  _sfLastCharWasNewlineOrStart = (ch === '\n' || ch === '\r');
+                  _sfLastCharWasNewlineOrStart = true;
                 }
               } else {
                 if (_sfFencePlainTick > 0) {
@@ -1889,7 +1900,7 @@ class ChatEngine extends EventEmitter {
                 if (onStreamEvent) {
                   onStreamEvent('file-content-start', { filePath: _sfContentFilePath, fileName, language: ext, fileKey: _sfContentFilePath });
                 }
-                _sfStreamedFileWrites.add(_sfContentFilePath);
+                _sfStreamedFileWrites.add(_normalizePath(_sfContentFilePath));
               }
             }
             // Emit tool-generating for ANY tool call inside a fence (not just file-write)
@@ -1967,7 +1978,7 @@ class ChatEngine extends EventEmitter {
               _sfToolCallNotified = false;
               _sfContentDone = false;
               _sfContentEsc = false;
-              _sfLastCharWasNewlineOrStart = (ch === '\n' || ch === '\r');
+              _sfLastCharWasNewlineOrStart = true;
               continue;
             }
             continue;
@@ -2075,7 +2086,7 @@ class ChatEngine extends EventEmitter {
               if (onStreamEvent) {
                 onStreamEvent('file-content-start', { filePath: _sfContentFilePath, fileName, language: ext, fileKey: _sfContentFilePath });
               }
-              _sfStreamedFileWrites.add(_sfContentFilePath);
+              _sfStreamedFileWrites.add(_normalizePath(_sfContentFilePath));
             }
           }
           if (_sfConfirmed && !_sfFileWriteDetected && _sfBuf.length > 15) {
@@ -2627,7 +2638,7 @@ class ChatEngine extends EventEmitter {
               // causing write_file calls from Qwen/DeepSeek native FC to produce no code blocks.
               if (_NATIVE_FILE_WRITE_OPS.has(toolName) && toolParams?.content && onStreamEvent) {
                 const _fp = toolParams.filePath || toolParams.path || '';
-                if (!_sfStreamedFileWrites.has(_fp)) {
+                if (!_sfStreamedFileWrites.has(_normalizePath(_fp))) {
                   emitCompleteFileContentBlock(onStreamEvent, _fp, toolParams.content);
                 }
               }
@@ -2835,7 +2846,8 @@ class ChatEngine extends EventEmitter {
             // can show a FileContentBlock with syntax highlighting
             if (FILE_WRITE_OPS.has(call.tool) && call.params?.content && onStreamEvent) {
               const filePath = call.params.filePath || call.params.path || '';
-              if (!_sfStreamedFileWrites.has(filePath) && !_sfProsedFileWrites.has(filePath)) {
+              const _np = _normalizePath(filePath);
+              if (!_sfStreamedFileWrites.has(_np) && !_sfProsedFileWrites.has(_np)) {
                 emitCompleteFileContentBlock(onStreamEvent, filePath, call.params.content);
               }
             }
@@ -3954,10 +3966,16 @@ class ChatEngine extends EventEmitter {
         // {"tool":"write_file","params":{"filePath":"..."}} and fenced blocks.
         const toolNames = text.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/g);
         const filePaths = text.match(/"(?:filePath|path)"\s*:\s*"([^"]+)"/g);
+        const todoMatch = text.match(/"items"\s*:\s*\[([^\]]*)\]/);
         if (toolNames) {
           const names = toolNames.map(m => m.replace(/"(?:tool|name)"\s*:\s*"/, '').replace(/"$/, ''));
           const paths = filePaths ? filePaths.map(m => m.replace(/"(?:filePath|path)"\s*:\s*"/, '').replace(/"$/, '')) : [];
-          const detail = paths.length > 0 ? `${names.join(', ')} → ${paths.join(', ')}` : names.join(', ');
+          let detail = paths.length > 0 ? `${names.join(', ')} → ${paths.join(', ')}` : names.join(', ');
+          // Include todo items in summary so they survive context rotation
+          if (names.includes('write_todos') && todoMatch) {
+            const itemsText = todoMatch[1].replace(/"/g, '').replace(/,/g, ', ').slice(0, 200);
+            detail += ` [${itemsText}]`;
+          }
           lines.push(`- Tools: ${detail}`);
         } else if (filePaths) {
           lines.push(`- Files: ${filePaths.slice(0, 5).map(m => m.replace(/"(?:filePath|path)"\s*:\s*"/, '').replace(/"$/, '')).join(', ')}`);
@@ -3970,6 +3988,7 @@ class ChatEngine extends EventEmitter {
     if (!lines.length) return null;
     const summary = lines.join('\n');
     console.log(`[ChatEngine] Summarizer FALLBACK: extracted ${lines.length} lines from ${droppedItems.length} dropped items`);
+    console.log(`[ChatEngine] Summarizer FALLBACK content:\n${summary}`);
     return summary;
   }
 

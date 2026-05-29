@@ -169,7 +169,7 @@ export default function CommandPalette() {
             return (
               <React.Fragment key={cmd.id}>
                 {showSeparator && (
-                  <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-vsc-text-dim font-semibold">
+                  <div className="px-3 pt-2 pb-1 text-[10px] tracking-wider text-vsc-text-dim font-semibold">
                     {cmd.category}
                   </div>
                 )}

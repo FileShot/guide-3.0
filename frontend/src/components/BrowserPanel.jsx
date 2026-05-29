@@ -181,7 +181,7 @@ export default function BrowserPanel() {
               <button
                 onClick={startPreview}
                 disabled={loading}
-                className="px-3 py-1.5 bg-vsc-accent text-white text-vsc-xs rounded hover:bg-vsc-accent/80 transition-colors"
+                className="btn btn-primary"
               >
                 {loading ? 'Starting...' : 'Start Preview'}
               </button>

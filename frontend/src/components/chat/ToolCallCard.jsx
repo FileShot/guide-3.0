@@ -285,7 +285,7 @@ export default function ToolCallCard({ toolCall, count }) {
   const hasExpandable = !!(params || (result !== undefined && result !== null));
 
   return (
-    <div className="my-px rounded-md shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04),inset_0_1px_2px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),inset_0_1px_3px_rgba(0,0,0,0.35),0_1px_2px_rgba(0,0,0,0.2)]">
+    <div className="my-px rounded-md">
       <button
         className={`flex items-center gap-1.5 w-full px-1.5 py-[3px] text-left rounded transition-colors hover:bg-vsc-list-hover/30 ${isError ? 'text-vsc-error/70' : 'text-vsc-text-dim'}`}
         onClick={() => hasExpandable && setExpanded(!expanded)}
@@ -314,7 +314,7 @@ export default function ToolCallCard({ toolCall, count }) {
         <div className="ml-5 pl-2 border-l border-vsc-panel-border/20 mt-0.5 mb-1">
           {params && (
             <div className="mb-1">
-              <div className="text-[10px] text-vsc-text-dim/50 uppercase tracking-wider font-medium mb-0.5">Parameters</div>
+              <div className="text-[10px] text-vsc-text-dim/50 tracking-wider font-medium mb-0.5">Parameters</div>
               <pre className="text-[10px] text-vsc-text-dim/60 overflow-auto max-h-[120px] whitespace-pre-wrap font-vsc-code bg-vsc-sidebar/50 rounded px-1.5 py-1">
                 {typeof params === 'string' ? params : JSON.stringify(params, null, 2)}
               </pre>
@@ -322,7 +322,7 @@ export default function ToolCallCard({ toolCall, count }) {
           )}
           {result !== undefined && result !== null && (
             <div>
-              <div className="text-[10px] text-vsc-text-dim/50 uppercase tracking-wider font-medium mb-0.5">Result</div>
+              <div className="text-[10px] text-vsc-text-dim/50 tracking-wider font-medium mb-0.5">Result</div>
               <pre className={`text-[10px] overflow-auto max-h-[120px] whitespace-pre-wrap font-vsc-code bg-vsc-sidebar/50 rounded px-1.5 py-1 ${isError ? 'text-vsc-error/70' : 'text-vsc-text-dim/60'}`}>
                 {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
               </pre>

@@ -1,5 +1,5 @@
-/**
- * InlineChat — Floating chat input at the editor cursor position.
+﻿/**
+ * InlineChat â€” Floating chat input at the editor cursor position.
  * Triggered by Ctrl+I. Sends selected code + prompt to AI,
  * then shows a diff preview with accept/reject buttons.
  */
@@ -133,10 +133,10 @@ export default function InlineChat({ position, selectedText, onClose, onApplyEdi
         // Show diff between selected code and proposed replacement
         setProposedEdit({ original: selectedText, modified: codeBlock });
       } else if (codeBlock) {
-        // No selection — just show the proposed code for review
+        // No selection â€” just show the proposed code for review
         setProposedEdit({ original: '', modified: codeBlock });
       } else {
-        // No code block found — just show the text response
+        // No code block found â€” just show the text response
         addChatMessage({ role: 'assistant', content: responseText });
         onClose();
         return;
@@ -177,7 +177,7 @@ export default function InlineChat({ position, selectedText, onClose, onApplyEdi
       }}
     >
       {/* Input bar */}
-      <div className="flex items-center gap-2 px-2 py-1.5 border-b border-vsc-panel-border/30">
+      <div className="flex items-center gap-2 px-2 py-1.5 border-b border-vsc-panel-border/15">
         <Sparkles size={12} className="text-vsc-accent flex-shrink-0" />
         <input
           ref={inputRef}
@@ -189,7 +189,7 @@ export default function InlineChat({ position, selectedText, onClose, onApplyEdi
           disabled={loading}
         />
         <button
-          className="p-1 bg-vsc-accent hover:bg-vsc-accent-hover text-white rounded transition-colors disabled:opacity-30"
+          className="btn btn-primary p-1 disabled:opacity-30"
           onClick={handleSubmit}
           disabled={!input.trim() || loading}
         >
@@ -218,12 +218,12 @@ export default function InlineChat({ position, selectedText, onClose, onApplyEdi
 
       {/* Diff preview */}
       {proposedEdit && (
-        <div className="border-t border-vsc-panel-border/30">
+        <div className="border-t border-vsc-panel-border/15">
           <div className="px-2 py-1 text-[10px] text-vsc-text-dim border-b border-vsc-panel-border/20 bg-vsc-bg/50">
             Proposed changes
           </div>
           <DiffLines original={proposedEdit.original} modified={proposedEdit.modified} />
-          <div className="flex items-center gap-2 px-2 py-1.5 border-t border-vsc-panel-border/30">
+          <div className="flex items-center gap-2 px-2 py-1.5 border-t border-vsc-panel-border/15">
             <button
               className="flex items-center gap-1 px-2 py-1 text-[10px] bg-green-600/80 hover:bg-green-500 text-white rounded transition-colors"
               onClick={handleAccept}

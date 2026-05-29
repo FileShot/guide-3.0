@@ -1,6 +1,6 @@
-/**
- * ActivityBar — Left icon strip with activity icons.
- * Theme-aware — all colors from CSS variables.
+﻿/**
+ * ActivityBar â€” Left icon strip with activity icons.
+ * Theme-aware â€” all colors from CSS variables.
  */
 import useAppStore from '../stores/appStore';
 import { Files, Search, GitBranch, MessageSquare, Blocks, Settings, Bug, UserCircle, Globe } from 'lucide-react';
@@ -21,7 +21,7 @@ export default function ActivityBar() {
   const toggleChatPanel = useAppStore(s => s.toggleChatPanel);
 
   return (
-    <div className="w-activitybar bg-vsc-activitybar flex flex-col items-center no-select border-r border-vsc-panel-border/30">
+    <div className="w-activitybar bg-vsc-activitybar flex flex-col items-center no-select border-r border-vsc-panel-border/15">
       {/* Top activities */}
       <div className="flex flex-col">
         {activities.map(({ id, icon: Icon, label }) => (

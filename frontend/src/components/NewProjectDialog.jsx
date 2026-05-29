@@ -236,7 +236,7 @@ export default function NewProjectDialog() {
             Cancel
           </button>
           <button
-            className="px-3 py-1.5 text-vsc-sm bg-vsc-accent text-white rounded hover:opacity-90 disabled:opacity-50"
+            className="btn btn-primary disabled:opacity-50"
             disabled={!parentDir.trim() || !projectName.trim() || !selectedTemplate || creating}
             onClick={handleCreate}
           >

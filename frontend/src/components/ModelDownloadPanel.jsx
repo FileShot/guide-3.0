@@ -164,7 +164,7 @@ export default function ModelDownloadPanel({ onBack }) {
         {/* Active downloads */}
         {activeDownloads.length > 0 && (
           <div className="border-t border-vsc-panel-border p-2 space-y-1.5">
-            <p className="text-[10px] font-medium text-vsc-foreground/60 uppercase tracking-wider px-1">Downloads</p>
+            <p className="text-[10px] font-medium text-vsc-foreground/60 tracking-wider px-1">Downloads</p>
             {activeDownloads.map(dl => (
               <DownloadProgressBar key={dl.id} dl={dl} onCancel={() => cancelDownload(dl.id)} />
             ))}
@@ -252,7 +252,7 @@ export default function ModelDownloadPanel({ onBack }) {
       {/* Active downloads bar */}
       {activeDownloads.length > 0 && (
         <div className="border-t border-vsc-panel-border p-2 space-y-1.5">
-          <p className="text-[10px] font-medium text-vsc-foreground/60 uppercase tracking-wider px-1">
+          <p className="text-[10px] font-medium text-vsc-foreground/60 tracking-wider px-1">
             Downloading ({activeDownloads.length})
           </p>
           {activeDownloads.map(dl => (

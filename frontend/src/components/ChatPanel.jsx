@@ -1,6 +1,6 @@
-/**
+﻿/**
 
- * ChatPanel — AI chat interface with streaming markdown rendering.
+ * ChatPanel â€” AI chat interface with streaming markdown rendering.
 
  * Features a cohesive unified input container with toolbar.
 
@@ -13,6 +13,7 @@ import useAppStore from '../stores/appStore';
 import MarkdownRenderer from './chat/MarkdownRenderer';
 
 import ToolCallCard from './chat/ToolCallCard';
+import SlideDown from './SlideDown';
 
 import FileContentBlock from './chat/FileContentBlock';
 
@@ -36,27 +37,37 @@ import {
 
 
 
-// guIDE Cloud AI — bundled providers with pre-seeded keys, rotated for rate-limit avoidance
+// guIDE Cloud AI â€” bundled providers with pre-seeded keys, rotated for rate-limit avoidance
 
 const GUIDE_CLOUD_PROVIDERS = new Set(['cerebras', 'groq', 'sambanova', 'google', 'openrouter']);
 
 const FILE_WRITE_TOOL_NAMES = new Set(['write_file', 'create_file', 'append_to_file']);
 
+/** Canonicalize a file path for dedup â€” backslashesâ†’forward-slashes, collapse dupes, lowercase drive letter. */
+function canonicalizeFilePath(filePath) {
+  if (!filePath) return '';
+  const normalized = String(filePath).trim().replace(/\\/g, '/').replace(/\/+/g, '/');
+  if (!normalized) return '';
+  return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
 /** Safety net: rebuild file segments from write_file tool params when IPC file blocks were lost. */
 function synthesizeFileBlocksFromToolCalls(toolCalls, messageSegments, messageFileBlocks) {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) return;
-  const existingPaths = new Set(messageFileBlocks.map((b) => b.filePath));
+  const existingPaths = new Set(messageFileBlocks.map((b) => canonicalizeFilePath(b.filePath)));
   for (const tc of toolCalls) {
     if (!FILE_WRITE_TOOL_NAMES.has(tc.functionName)) continue;
     const content = tc.params?.content;
-    const filePath = tc.params?.filePath || tc.params?.path || '';
-    if (!content || !filePath || existingPaths.has(filePath)) continue;
-    existingPaths.add(filePath);
-    const fileName = filePath.split(/[\\/]/).pop() || filePath;
+    const rawFilePath = tc.params?.filePath || tc.params?.path || '';
+    if (!content || !rawFilePath) continue;
+    const normalizedFilePath = canonicalizeFilePath(rawFilePath);
+    if (existingPaths.has(normalizedFilePath)) continue;
+    existingPaths.add(normalizedFilePath);
+    const fileName = rawFilePath.split(/[\\/]/).pop() || rawFilePath;
     const language = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
     messageSegments.push({ type: 'file', index: messageFileBlocks.length });
     messageFileBlocks.push({
-      filePath,
+      filePath: rawFilePath,
       language,
       fileName,
       content: String(content),
@@ -96,7 +107,7 @@ class StreamingErrorBoundary extends Component {
 
   componentDidUpdate(prevProps) {
 
-    // Auto-recover when content changes — the new content might render fine
+    // Auto-recover when content changes â€” the new content might render fine
 
     if (this.state.hasError && prevProps.fallbackContent !== this.props.fallbackContent) {
 
@@ -132,7 +143,7 @@ class StreamingErrorBoundary extends Component {
 
 
 
-// Finalized thinking block — shown on already-completed assistant messages.
+// Finalized thinking block â€” shown on already-completed assistant messages.
 
 // Collapsed by default (unlike streaming ThinkingBlock which auto-expands).
 
@@ -142,7 +153,7 @@ function FinalizedThinkingBlock({ text }) {
 
   const lines = text.split('\n').filter(l => l.trim());
 
-  // Auto-collapse after completion (smooth UX — thinking starts expanded, then collapses)
+  // Auto-collapse after completion (smooth UX â€” thinking starts expanded, then collapses)
   useEffect(() => {
     const timer = setTimeout(() => setExpanded(false), 2000);
     return () => clearTimeout(timer);
@@ -207,7 +218,7 @@ function FinalizedThinkingBlock({ text }) {
 
 
 
-// R44-Fix-2: Stable Header component — defined at module level so Virtuoso
+// R44-Fix-2: Stable Header component â€” defined at module level so Virtuoso
 
 // receives a stable function reference. Reads state from store directly,
 
@@ -267,7 +278,7 @@ function StreamingHeader() {
 
 
 
-// R44-Fix-2: Stable Footer component — defined at module level so Virtuoso
+// R44-Fix-2: Stable Footer component â€” defined at module level so Virtuoso
 
 // receives a stable function reference. Reads state from store directly,
 
@@ -303,7 +314,7 @@ function StreamingFooter() {
 
 
 
-  // Thinking block state — VS Code style with elapsed time tracking
+  // Thinking block state â€” VS Code style with elapsed time tracking
 
   const [thinkingExpanded, setThinkingExpanded] = useState(true);
 
@@ -389,7 +400,7 @@ function StreamingFooter() {
 
     <div className="chat-message assistant">
 
-      <div className="text-vsc-xs text-vsc-text-dim mb-1 font-medium uppercase tracking-wider flex items-center gap-2">
+      <div className="text-vsc-xs text-vsc-text-dim mb-1 font-medium tracking-wider flex items-center gap-2">
 
         {(() => {
 
@@ -405,7 +416,7 @@ function StreamingFooter() {
 
           <>
 
-            <span className="text-vsc-text-dim/60 font-normal normal-case tracking-normal">—</span>
+            <span className="text-vsc-text-dim/60 font-normal normal-case tracking-normal">â€”</span>
 
             <span className="text-[10px] text-vsc-text-dim font-normal normal-case tracking-normal flex items-center gap-1">
 
@@ -1041,7 +1052,7 @@ export default function ChatPanel() {
 
 
 
-  // Core send logic — takes explicit text param so queue auto-send can use it
+  // Core send logic â€” takes explicit text param so queue auto-send can use it
 
   const doSend = useCallback(async (text, { skipAddMessage } = {}) => {
 
@@ -1266,7 +1277,7 @@ export default function ChatPanel() {
       // and when vision fails, it injects an instruction for the model to ask the user.
       // Raw metadata like "[Attached context]\n- 1. filename (image/png, 419861 bytes)"
       // persists in chat history across all subsequent tool calls, and the model eventually
-      // echoes it verbatim as its response — even after 20+ tool calls on a different topic.
+      // echoes it verbatim as its response â€” even after 20+ tool calls on a different topic.
       const modelInputText = text;
 
       const result = window.electronAPI?.aiChat
@@ -1277,7 +1288,7 @@ export default function ChatPanel() {
 
 
 
-      // Quota exceeded — show upgrade prompt instead of empty message
+      // Quota exceeded â€” show upgrade prompt instead of empty message
 
       if (result?.isQuotaError || result?.error === '__QUOTA_EXCEEDED__') {
 
@@ -1299,7 +1310,7 @@ export default function ChatPanel() {
 
         if (!isAuthenticated) {
 
-          // No account — prompt to create one first
+          // No account â€” prompt to create one first
 
           useAppStore.getState().addChatMessage({
 
@@ -1315,7 +1326,7 @@ export default function ChatPanel() {
 
         } else {
 
-          // Has account but free plan — prompt to upgrade
+          // Has account but free plan â€” prompt to upgrade
 
           useAppStore.getState().addChatMessage({
 
@@ -1341,7 +1352,7 @@ export default function ChatPanel() {
 
       // R33-Phase4: Use streamingSegments for correct ordering
 
-      // R27-B: Use fresh getState() — store snapshot from L125 is stale after long await
+      // R27-B: Use fresh getState() â€” store snapshot from L125 is stale after long await
 
       // R35-L4: Store segment structure on message for rendering with FileContentBlock
 
@@ -1424,7 +1435,7 @@ export default function ChatPanel() {
             if (block) {
 
               // Dedup: if a file block with this filePath already exists, update it instead of creating duplicate
-              const existingFileIdx = messageFileBlocks.findIndex(b => b.filePath === block.filePath);
+              const existingFileIdx = messageFileBlocks.findIndex(b => canonicalizeFilePath(b.filePath) === canonicalizeFilePath(block.filePath));
               if (existingFileIdx !== -1) {
                 messageFileBlocks[existingFileIdx] = {
                   ...messageFileBlocks[existingFileIdx],
@@ -1455,7 +1466,7 @@ export default function ChatPanel() {
           } else if (seg.type === 'thinking') {
 
             // Thinking content stays in segments for FinalizedThinkingBlock rendering.
-            // It is NOT appended to messageContent — that would duplicate it in the main message display.
+            // It is NOT appended to messageContent â€” that would duplicate it in the main message display.
             messageSegments.push({ type: 'thinking', content: seg.content });
 
           } else if (seg.type === 'tool') {
@@ -1508,6 +1519,13 @@ export default function ChatPanel() {
 
       synthesizeFileBlocksFromToolCalls(finalToolCalls, messageSegments, messageFileBlocks);
 
+      // R54-Diag: Log if multiple segments reference files with the same display name
+      const fileSegPaths = messageSegments.filter(s => s.type === 'file').map(s => canonicalizeFilePath(messageFileBlocks[s.index]?.filePath));
+      const dupFilePaths = fileSegPaths.filter((item, index) => fileSegPaths.indexOf(item) !== index);
+      if (dupFilePaths.length > 0) {
+        console.warn('[ChatPanel] R54-Diag: Duplicate file segments detected:', dupFilePaths);
+      }
+
       if (fileBlocks.length > 0) {
 
         useAppStore.getState().clearFileContentBlocks();
@@ -1524,7 +1542,7 @@ export default function ChatPanel() {
       // R53-Fix: Guard against Electron IPC ordering lag where the ai-chat invoke reply
       // is processed before all llm-token events arrive, leaving streamingSegments
       // with fewer prose chars than the backend actually generated.
-      // result.text (from the invoke reply payload) is always complete — it arrives
+      // result.text (from the invoke reply payload) is always complete â€” it arrives
       // in the same message as the reply and is never subject to IPC event lag.
       {
 
@@ -1532,7 +1550,7 @@ export default function ChatPanel() {
 
         if (_backendProse.trim() && _backendProse.trim().length > messageContent.trim().length) {
 
-          console.warn(`[ChatPanel] R53-Fix: IPC lag detected — segments=${messageContent.trim().length} chars, backend=${_backendProse.trim().length} chars. Correcting.`);
+          console.warn(`[ChatPanel] R53-Fix: IPC lag detected â€” segments=${messageContent.trim().length} chars, backend=${_backendProse.trim().length} chars. Correcting.`);
 
           const textSegIndices = [];
 
@@ -1610,7 +1628,7 @@ export default function ChatPanel() {
 
       // setChatStreaming(false) clears chatThinkingText.
 
-      // Also: safety net — if content was visible during streaming but finalization
+      // Also: safety net â€” if content was visible during streaming but finalization
 
       // would discard it, force-create the message with the streaming text.
 
@@ -1660,9 +1678,9 @@ export default function ChatPanel() {
 
         // R51-Safety: Content was visible during streaming but segments/messageContent
 
-        // is empty — something went wrong in segment tracking. Preserve the visible text.
+        // is empty â€” something went wrong in segment tracking. Preserve the visible text.
 
-        console.warn('[ChatPanel] R51-Safety: streamingText had content but messageContent was empty — forcing message creation');
+        console.warn('[ChatPanel] R51-Safety: streamingText had content but messageContent was empty â€” forcing message creation');
 
         useAppStore.getState().addChatMessage({
 
@@ -1698,7 +1716,7 @@ export default function ChatPanel() {
 
         // This can happen if IPC events were lost or arrived after handle reply.
 
-        console.warn('[ChatPanel] R51-Safety: result.text had content but streaming state was empty — forcing message creation');
+        console.warn('[ChatPanel] R51-Safety: result.text had content but streaming state was empty â€” forcing message creation');
 
         useAppStore.getState().addChatMessage({
 
@@ -1947,7 +1965,7 @@ export default function ChatPanel() {
 
       tabs.push({ id: s.id, title: s.title || 'Chat session', isCurrent: false, session: s });
 
-      if (tabs.length >= 2) break; // current + 1 recent max; rest via ··· history
+      if (tabs.length >= 2) break; // current + 1 recent max; rest via Â·Â·Â· history
 
     }
 
@@ -1975,11 +1993,9 @@ export default function ChatPanel() {
 
       {/* Header */}
 
-      <div className="h-[35px] flex items-center px-3 border-b border-vsc-panel-border/50 no-select flex-shrink-0 bg-vsc-sidebar/80 backdrop-blur-sm shadow-[0_1px_0_rgba(255,255,255,0.03)_inset] gap-1">
+      <div className="h-[35px] flex items-center px-3 border-b border-vsc-panel-border/25 no-select flex-shrink-0 bg-vsc-sidebar/80 backdrop-blur-sm shadow-[0_1px_0_rgba(255,255,255,0.03)_inset] gap-1">
 
-        <span className="text-vsc-sm font-medium text-vsc-text flex-shrink-0 pr-1">Chat</span>
-
-        <div className="flex items-center flex-1 min-w-0 overflow-x-hidden">
+        <div className="flex items-center flex-1 min-w-0 overflow-x-hidden pl-1">
 
           {conversationTabs.map((tab) => (
 
@@ -2021,7 +2037,7 @@ export default function ChatPanel() {
 
               onClick={() => setHistoryOpen(v => !v)}
 
-            >···</button>
+            >Â·Â·Â·</button>
 
           )}
 
@@ -2057,11 +2073,9 @@ export default function ChatPanel() {
 
 
 
-          {historyOpen && (
-
-            <div className="absolute right-0 top-[32px] z-20 w-[320px] max-h-[320px] overflow-y-auto rounded-lg border border-vsc-panel-border bg-vsc-sidebar shadow-[0_10px_30px_rgba(0,0,0,0.45)] p-1.5">
-
-              <div className="text-[10px] font-medium text-vsc-text-dim uppercase tracking-wider px-1 py-1">History</div>
+          <SlideDown isOpen={historyOpen}>
+            <div className="absolute right-0 top-[32px] z-20 w-[320px] max-h-[320px] overflow-y-auto rounded-lg border border-vsc-panel-border bg-vsc-sidebar/95 shadow-[0_10px_30px_rgba(0,0,0,0.45)] p-1.5">
+              <div className="text-[10px] font-medium text-vsc-text-dim px-1 py-1">History</div>
 
               {filteredSessions.length === 0 ? (
 
@@ -2099,7 +2113,7 @@ export default function ChatPanel() {
 
             </div>
 
-          )}
+          </SlideDown>
 
         </div>
 
@@ -2114,7 +2128,7 @@ export default function ChatPanel() {
 
       <div className="flex-1 min-h-0 bg-gradient-to-b from-transparent to-vsc-bg/20" onWheel={handleUserWheel}>
 
-        {/* Session history shown when chat is empty — filtered to current project */}
+        {/* Session history shown when chat is empty â€” filtered to current project */}
 
         {chatMessages.length === 0 && savedSessions.length > 0 && (() => {
 
@@ -2130,7 +2144,7 @@ export default function ChatPanel() {
 
           <div className="px-3 py-3">
 
-            <div className="text-[10px] font-medium text-vsc-text-dim uppercase tracking-wider mb-2">Recent Chats</div>
+            <div className="text-[10px] font-medium text-vsc-text-dim tracking-wider mb-2">Recent Chats</div>
 
             <div className="flex flex-col gap-0.5">
 
@@ -2236,7 +2250,7 @@ export default function ChatPanel() {
 
                   <button
 
-                    className="flex items-center gap-1 text-[9px] text-vsc-text-dim/60 hover:text-vsc-text-dim px-1.5 py-0.5 rounded-md border border-vsc-panel-border/40 bg-vsc-bg/30 hover:bg-vsc-list-hover/30 transition-colors shadow-[0_1px_4px_rgba(0,0,0,0.2)]"
+                    className="flex items-center gap-1 text-[9px] text-vsc-text-dim/60 hover:text-vsc-text-dim px-1.5 py-0.5 rounded-md border border-vsc-panel-border/20 bg-vsc-bg/30 hover:bg-vsc-list-hover/30 transition-colors shadow-[0_1px_4px_rgba(0,0,0,0.2)]"
 
                     title="Restore conversation to this point"
 
@@ -2306,7 +2320,7 @@ export default function ChatPanel() {
 
                 ) : (
 
-                  <div className="text-vsc-xs text-vsc-text-dim italic px-2 py-1 border-l-2 border-vsc-panel-border/50">
+                  <div className="text-vsc-xs text-vsc-text-dim italic px-2 py-1 border-l-2 border-vsc-panel-border/25">
 
                     {msg.content}
 
@@ -2320,9 +2334,9 @@ export default function ChatPanel() {
 
                   <div className="flex items-center gap-2 mb-1">
 
-                    <span className="text-vsc-xs font-medium uppercase tracking-wider text-vsc-text-dim">
+                    <span className="text-vsc-xs font-medium tracking-wider text-vsc-text-dim">
 
-                      {msg.role === 'user' ? 'You' : (msg.model || modelInfo?.name || 'guIDE').split('/').pop().split('-Q')[0]}
+                      {msg.role === 'user' ? 'User' : (msg.model || modelInfo?.name || 'guIDE').split('/').pop().split('-Q')[0]}
 
                     </span>
 
@@ -2503,7 +2517,7 @@ export default function ChatPanel() {
 
                                 alt={img.name || 'Attached image'}
 
-                                className="h-16 w-16 rounded-md border border-vsc-panel-border/60 object-cover"
+                                className="h-16 w-16 rounded-md border border-vsc-panel-border/30 object-cover"
 
                               />
 
@@ -2521,7 +2535,7 @@ export default function ChatPanel() {
 
                           <textarea
 
-                            className="w-full bg-vsc-input/80 border border-vsc-panel-border/60 rounded-md px-2 py-1.5 text-vsc-text text-[13px] resize-none focus:outline-none focus:border-vsc-accent/60 transition-colors"
+                            className="w-full bg-vsc-input/80 border border-vsc-panel-border/30 rounded-md px-2 py-1.5 text-vsc-text text-[13px] resize-none focus:outline-none focus:border-vsc-accent/60 transition-colors"
 
                             rows={Math.min(8, Math.max(2, editText.split('\n').length))}
 
@@ -2617,7 +2631,7 @@ export default function ChatPanel() {
 
                         <div className="group relative">
 
-                          <div className="whitespace-pre-wrap pr-5">{msg.content}</div>
+                          <div className="whitespace-pre-wrap pr-5 text-right">{msg.content}</div>
 
                           {!chatStreaming && (
 
@@ -2665,11 +2679,11 @@ export default function ChatPanel() {
 
 
 
-      {/* ─── Unified Input Container ──────────────────────── */}
+      {/* â”€â”€â”€ Unified Input Container â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
 
       <div className="flex-shrink-0 p-2 relative">
 
-        <div className="rounded-xl border border-vsc-panel-border/60 bg-vsc-sidebar/88 backdrop-blur-sm overflow-visible shadow-[0_8px_30px_rgba(0,0,0,0.28),0_1px_0_rgba(255,255,255,0.03)_inset]">
+        <div className="rounded-xl border border-vsc-panel-border/30 bg-vsc-sidebar/88 backdrop-blur-sm overflow-visible shadow-[0_8px_30px_rgba(0,0,0,0.28),0_1px_0_rgba(255,255,255,0.03)_inset]">
 
 
 
@@ -2733,11 +2747,11 @@ export default function ChatPanel() {
 
 
 
-          {/* Files changed by AI — VS Code-style banner */}
+          {/* Files changed by AI â€” VS Code-style banner */}
 
           {chatFilesChanged.length > 0 && (
 
-            <div className="border-b border-vsc-panel-border/30">
+            <div className="border-b border-vsc-panel-border/15">
 
               {/* Single-line summary with Keep/Undo text buttons */}
 
@@ -2965,13 +2979,13 @@ export default function ChatPanel() {
 
                       alt={a.name}
 
-                      className="h-12 w-12 object-cover rounded-md border border-vsc-panel-border/40 cursor-pointer hover:border-vsc-accent/60 transition-colors"
+                      className="h-12 w-12 object-cover rounded-md border border-vsc-panel-border/20 cursor-pointer hover:border-vsc-accent/60 transition-colors"
                       onClick={() => openFile({ path: a.url, name: a.name, extension: a.name?.split(`.`).pop()?.toLowerCase() || `png` })}
                     />
 
                   ) : (
 
-                    <div className="h-12 px-2 flex items-center gap-1 bg-vsc-panel-border/20 rounded-md border border-vsc-panel-border/40">
+                    <div className="h-12 px-2 flex items-center gap-1 bg-vsc-panel-border/20 rounded-md border border-vsc-panel-border/20">
 
                       <FileCode size={12} className="text-vsc-text-dim flex-shrink-0" />
 
@@ -3007,7 +3021,7 @@ export default function ChatPanel() {
 
           {pendingQuestion && (
 
-            <div className="border-b border-vsc-panel-border/40 px-3 py-2 bg-vsc-editor/50">
+            <div className="border-b border-vsc-panel-border/20 px-3 py-2 bg-vsc-editor/50">
 
               <div className="flex items-start gap-2">
 
@@ -3065,7 +3079,7 @@ export default function ChatPanel() {
 
                     <input
 
-                      className="flex-1 text-[12px] bg-vsc-input border border-vsc-panel-border/50 rounded-sm px-2 py-1 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
+                      className="flex-1 text-[12px] bg-vsc-input border border-vsc-panel-border/25 rounded-sm px-2 py-1 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
 
                       placeholder="Type your answer..."
 
@@ -3143,7 +3157,7 @@ export default function ChatPanel() {
 
           {pendingPermission && (
 
-            <div className="border-b border-vsc-panel-border/40 px-3 py-2 bg-vsc-editor/50">
+            <div className="border-b border-vsc-panel-border/20 px-3 py-2 bg-vsc-editor/50">
 
               <div className="flex items-start gap-2">
 
@@ -3207,7 +3221,7 @@ export default function ChatPanel() {
 
           {messageQueue.length > 0 && (
 
-            <div className="border-b border-vsc-panel-border/30 px-3 py-1.5">
+            <div className="border-b border-vsc-panel-border/15 px-3 py-1.5">
 
               <div className="text-[10px] font-medium text-vsc-text-dim mb-1">Queue ({messageQueue.length})</div>
 
@@ -3371,7 +3385,7 @@ export default function ChatPanel() {
 
 
 
-            {/* Mode selector — Dropdown */}
+            {/* Mode selector â€” Dropdown */}
 
             {(() => {
 
@@ -3493,94 +3507,6 @@ export default function ChatPanel() {
 
 
 
-            {/* Execution policy toggle — styled like Windsurf/Cursor */}
-
-            {(() => {
-
-              const policyLevels = [
-
-                { id: 'disabled', label: 'Disabled', icon: Shield, desc: 'All commands require approval', color: 'text-vsc-error', bg: 'bg-vsc-error/10' },
-
-                { id: 'allowlist', label: 'Allowlist', icon: Shield, desc: 'Only allowlisted commands auto-execute', color: 'text-vsc-warning', bg: 'bg-vsc-warning/10' },
-
-                { id: 'auto', label: 'Auto', icon: Zap, desc: 'Agent judges safety (recommended)', color: 'text-vsc-accent', bg: 'bg-vsc-accent/10' },
-
-                { id: 'turbo', label: 'Turbo', icon: Zap, desc: 'All commands auto-execute except denylisted', color: 'text-vsc-text-dim', bg: 'bg-vsc-list-hover/60' },
-
-              ];
-
-              const currentPolicy = settings?.executionPolicy || 'auto';
-
-              const current = policyLevels.find(l => l.id === currentPolicy) || policyLevels[2];
-
-              return (
-
-                <div className="relative">
-
-                  <button
-
-                    className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium transition-colors ${current.bg} ${current.color} hover:opacity-80`}
-
-                    onClick={() => setPolicyDropdownOpen(!policyDropdownOpen)}
-
-                    title={`Execution policy: ${current.label}`}
-
-                  >
-
-                    <current.icon size={10} />
-
-                    <span>{current.label}</span>
-
-                  </button>
-
-                  {policyDropdownOpen && (
-
-                    <div className="absolute bottom-full left-0 mb-1 w-56 bg-vsc-dropdown border border-vsc-panel-border rounded-lg shadow-xl z-50 py-1 overflow-hidden">
-
-                      {policyLevels.map(level => (
-
-                        <button
-
-                          key={level.id}
-
-                          className={`w-full flex items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-vsc-list-hover ${
-
-                            currentPolicy === level.id ? 'bg-vsc-list-hover/50' : ''
-
-                          }`}
-
-                          onClick={() => { updateSetting('executionPolicy', level.id); setPolicyDropdownOpen(false); }}
-
-                        >
-
-                          <level.icon size={14} className={`mt-0.5 flex-shrink-0 ${currentPolicy === level.id ? level.color : 'text-vsc-text-dim'}`} />
-
-                          <div className="min-w-0">
-
-                            <div className={`text-[11px] font-semibold ${currentPolicy === level.id ? level.color : 'text-vsc-text'}`}>{level.label}</div>
-
-                            <div className="text-[10px] text-vsc-text-dim leading-tight">{level.desc}</div>
-
-                          </div>
-
-                          {currentPolicy === level.id && <Check size={12} className={`ml-auto mt-0.5 flex-shrink-0 ${level.color}`} />}
-
-                        </button>
-
-                      ))}
-
-                    </div>
-
-                  )}
-
-                </div>
-
-              );
-
-            })()}
-
-
-
             {/* Spacer */}
 
             <div className="flex-1" />
@@ -3599,7 +3525,7 @@ export default function ChatPanel() {
 
                 disabled={stopPending}
 
-                title={stopPending ? 'Stopping…' : 'Stop generation'}
+                title={stopPending ? 'Stoppingâ€¦' : 'Stop generation'}
 
               >
 
@@ -3633,21 +3559,25 @@ export default function ChatPanel() {
 
 
 
-        {/* Model picker dropdown — positioned relative to outer container */}
+        {/* Model picker dropdown â€” positioned relative to outer container */}
 
-        {modelPickerOpen && (
+        <div className={`transition-all duration-200 ease-out overflow-hidden ${modelPickerOpen ? 'max-h-[600px] opacity-100 mt-1' : 'max-h-0 opacity-0'}`}>
 
-          <ModelPickerDropdown
+          {modelPickerOpen && (
 
-            onClose={() => setModelPickerOpen(false)}
+            <ModelPickerDropdown
 
-            models={availableModels}
+              onClose={() => setModelPickerOpen(false)}
 
-            currentModel={modelInfo}
+              models={availableModels}
 
-          />
+              currentModel={modelInfo}
 
-        )}
+            />
+
+          )}
+
+        </div>
 
       </div>
 
@@ -3659,7 +3589,7 @@ export default function ChatPanel() {
 
 
 
-// ── Generation Error Card ──────────────────────────────────────────────────
+// â”€â”€ Generation Error Card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function GenerationErrorCard({ message, suggestion }) {
 
@@ -3733,7 +3663,7 @@ function GenerationErrorCard({ message, suggestion }) {
 
 
 
-// ── Quota Exceeded Prompt ──────────────────────────────────────────────────
+// â”€â”€ Quota Exceeded Prompt â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function QuotaExceededPrompt({ needsAccount }) {
 
@@ -3815,7 +3745,7 @@ function QuotaExceededPrompt({ needsAccount }) {
 
             onClick={() => setActiveActivity('account')}
 
-            className="px-3 py-1.5 bg-vsc-accent text-white text-vsc-xs rounded hover:bg-vsc-accent/80 transition-colors font-medium"
+            className="btn btn-primary"
 
           >
 
@@ -3831,7 +3761,7 @@ function QuotaExceededPrompt({ needsAccount }) {
 
             disabled={upgrading}
 
-            className="px-3 py-1.5 bg-vsc-accent text-white text-vsc-xs rounded hover:bg-vsc-accent/80 transition-colors font-medium"
+            className="btn btn-primary"
 
           >
 
@@ -3863,7 +3793,7 @@ function QuotaExceededPrompt({ needsAccount }) {
 
 
 
-// ── Vision capability lookup ──────────────────────────────────────────────────
+// â”€â”€ Vision capability lookup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const VISION_MODEL_SUBSTRINGS = {
 
@@ -3897,7 +3827,7 @@ function isVisionModel(provider, modelId) {
 
 
 
-// ── Provider metadata for display & signup URLs ──────────────────────────────
+// â”€â”€ Provider metadata for display & signup URLs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const PROVIDER_INFO = {
 
@@ -4397,8 +4327,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-        {isExpanded && (
-
+        <SlideDown isOpen={isExpanded}>
           <div className="px-2 pb-2 bg-vsc-bg/30">
 
             {/* Inline API key input */}
@@ -4411,7 +4340,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                 type="password"
 
-                className="flex-1 px-1.5 py-1 bg-vsc-input border border-vsc-panel-border/50 rounded text-[11px] text-vsc-text outline-none focus:border-vsc-accent/50"
+                className="flex-1 px-1.5 py-1 bg-vsc-input border border-vsc-panel-border/25 rounded text-[11px] text-vsc-text outline-none focus:border-vsc-accent/50"
 
                 placeholder={info.placeholder}
 
@@ -4425,7 +4354,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
               <button
 
-                className="px-1.5 py-1 text-[10px] bg-vsc-accent text-white rounded hover:bg-vsc-accent-hover transition-colors"
+                className="btn btn-primary text-[10px] px-1.5 py-1"
 
                 onClick={() => saveInlineKey(provider)}
 
@@ -4479,7 +4408,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                 <button
 
-                  className="px-2 py-0.5 text-[10px] text-vsc-text-dim border border-vsc-panel-border/50 rounded hover:bg-vsc-list-hover transition-colors disabled:opacity-50"
+                  className="px-2 py-0.5 text-[10px] text-vsc-text-dim border border-vsc-panel-border/25 rounded hover:bg-vsc-list-hover transition-colors disabled:opacity-50"
 
                   onClick={() => testProviderKey(provider)}
 
@@ -4513,7 +4442,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                   type="text"
 
-                  className="w-full px-1.5 py-1 bg-vsc-input border border-vsc-panel-border/50 rounded text-[10px] text-vsc-text outline-none focus:border-vsc-accent/50 mb-1"
+                  className="w-full px-1.5 py-1 bg-vsc-input border border-vsc-panel-border/25 rounded text-[10px] text-vsc-text outline-none focus:border-vsc-accent/50 mb-1"
 
                   placeholder="Search OpenRouter models..."
 
@@ -4545,7 +4474,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                             <>
 
-                              <div className="text-[9px] text-vsc-success uppercase tracking-wider px-1 py-0.5 font-medium">Free</div>
+                              <div className="text-[9px] text-vsc-success tracking-wider px-1 py-0.5 font-medium">Free</div>
 
                               {freeModels.slice(0, 50).map(m => (
 
@@ -4591,7 +4520,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                             <>
 
-                              <div className="text-[9px] text-vsc-text-dim uppercase tracking-wider px-1 py-0.5 mt-1 font-medium">Paid</div>
+                              <div className="text-[9px] text-vsc-text-dim tracking-wider px-1 py-0.5 mt-1 font-medium">Paid</div>
 
                               {paidModels.slice(0, 50).map(m => (
 
@@ -4709,7 +4638,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
           </div>
 
-        )}
+        </SlideDown>
 
       </div>
 
@@ -4729,15 +4658,15 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
         {/* Search */}
 
-        <div className="p-2 border-b border-vsc-panel-border/50">
+        <div className="p-2 border-b border-vsc-panel-border/25">
 
-          <div className="text-vsc-xs font-medium text-vsc-text-dim uppercase tracking-wider px-1 mb-1.5">Models</div>
+          <div className="text-vsc-xs font-medium text-vsc-text-dim tracking-wider px-1 mb-1.5">Models</div>
 
           <input
 
             type="text"
 
-            className="w-full px-2 py-1 bg-vsc-input border border-vsc-panel-border/50 rounded text-vsc-xs text-vsc-text outline-none focus:border-vsc-accent/50"
+            className="w-full px-2 py-1 bg-vsc-input border border-vsc-panel-border/25 rounded text-vsc-xs text-vsc-text outline-none focus:border-vsc-accent/50"
 
             placeholder="Search models..."
 
@@ -4757,7 +4686,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
         {modelLoading && (
 
-          <div className="px-3 py-2 border-b border-vsc-panel-border/30 flex items-center gap-2 text-vsc-xs text-vsc-accent">
+          <div className="px-3 py-2 border-b border-vsc-panel-border/15 flex items-center gap-2 text-vsc-xs text-vsc-accent">
 
             <Loader size={12} className="animate-spin" />
 
@@ -4773,13 +4702,13 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-          {/* ── Favorites ──────────────────────────────────────── */}
+          {/* â”€â”€ Favorites â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
 
           {(cloudFavorites.length > 0 || localFavorites.length > 0) && (
 
-            <div className="border-b border-vsc-panel-border/30">
+            <div className="border-b border-vsc-panel-border/15">
 
-              <div className="px-2 py-1 text-[10px] text-vsc-text-dim uppercase tracking-wider bg-vsc-sidebar/80 flex items-center gap-1">
+              <div className="px-2 py-1 text-[10px] text-vsc-text-dim tracking-wider bg-vsc-sidebar/80 flex items-center gap-1">
 
                 <Star size={10} className="text-yellow-400" /> Favorites
 
@@ -4877,11 +4806,11 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-          {/* ── Current model (unload option) ─────────────────── */}
+          {/* â”€â”€ Current model (unload option) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
 
           {currentModel && !isUsingCloud && (
 
-            <div className="p-1 border-b border-vsc-panel-border/30">
+            <div className="p-1 border-b border-vsc-panel-border/15">
 
               <div className="px-2 py-1.5 rounded-md bg-vsc-list-active">
 
@@ -4945,13 +4874,13 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-          {/* ── Cloud Providers ────────────────────────────────── */}
+          {/* â”€â”€ Cloud Providers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
 
-          <div className="border-b border-vsc-panel-border/30">
+          <div className="border-b border-vsc-panel-border/15">
 
             <button
 
-              className="w-full flex items-center gap-2 px-2 py-1.5 text-[10px] text-vsc-text-dim uppercase tracking-wider bg-vsc-sidebar/80 hover:bg-vsc-list-hover/30 transition-colors"
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-[10px] text-vsc-text-dim tracking-wider bg-vsc-sidebar/80 hover:bg-vsc-list-hover/30 transition-colors"
 
               onClick={() => setShowCloudProviders(!showCloudProviders)}
 
@@ -4971,7 +4900,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
               <div>
 
-                {/* guIDE Cloud AI — bundled entry */}
+                {/* guIDE Cloud AI â€” bundled entry */}
 
                 <button
 
@@ -5001,7 +4930,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-                {/* Add Your Own Key — Free */}
+                {/* Add Your Own Key â€” Free */}
 
                 <div>
 
@@ -5061,13 +4990,13 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-          {/* ── Quick Add — Recommended Models ────────────────── */}
+          {/* â”€â”€ Quick Add â€” Recommended Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
 
-          <div className="border-b border-vsc-panel-border/30">
+          <div className="border-b border-vsc-panel-border/15">
 
             <button
 
-              className="w-full flex items-center gap-2 px-2 py-1.5 text-[10px] text-vsc-text-dim uppercase tracking-wider bg-vsc-sidebar/80 hover:bg-vsc-list-hover/30 transition-colors"
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-[10px] text-vsc-text-dim tracking-wider bg-vsc-sidebar/80 hover:bg-vsc-list-hover/30 transition-colors"
 
               onClick={() => setShowRecommended(!showRecommended)}
 
@@ -5075,7 +5004,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
               {showRecommended ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
 
-              <FolderPlus size={10} /> Quick Add — Download Models
+              <FolderPlus size={10} /> Quick Add â€” Download Models
 
             </button>
 
@@ -5207,7 +5136,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                             <button
 
-                              className="p-1 bg-vsc-accent text-white rounded hover:bg-vsc-accent-hover flex-shrink-0 transition-colors"
+                              className="btn btn-primary p-1 flex-shrink-0"
 
                               onClick={async () => {
 
@@ -5271,7 +5200,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                     })}
 
-                    {/* Other models — may exceed VRAM */}
+                    {/* Other models â€” may exceed VRAM */}
 
                     {(recommendedModels.other || []).length > 0 && (
 
@@ -5367,7 +5296,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                                   }}
 
-                                  title={`Download ${m.name} (${m.size}GB) — may not fit`}
+                                  title={`Download ${m.name} (${m.size}GB) â€” may not fit`}
 
                                 >
 
@@ -5399,9 +5328,9 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-          {/* ── Local LLM Models ──────────────────────────────── */}
+          {/* â”€â”€ Local LLM Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
 
-          <div className="px-2 py-1 text-[10px] text-vsc-text-dim uppercase tracking-wider bg-vsc-sidebar/80 border-b border-vsc-panel-border/30 border-t flex items-center gap-1">
+          <div className="px-2 py-1 text-[10px] text-vsc-text-dim tracking-wider bg-vsc-sidebar/80 border-b border-vsc-panel-border/15 border-t flex items-center gap-1">
 
             <Cpu size={10} /> Local Models
 
@@ -5483,13 +5412,13 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
 
 
-          {/* ── Image Models (only if diffusion models exist) ── */}
+          {/* â”€â”€ Image Models (only if diffusion models exist) â”€â”€ */}
 
           {diffusionModels.length > 0 && (
 
             <>
 
-              <div className="px-2 py-1 text-[10px] text-purple-400 uppercase tracking-wider bg-vsc-sidebar/80 border-b border-vsc-panel-border/30 border-t flex items-center gap-1">
+              <div className="px-2 py-1 text-[10px] text-purple-400 tracking-wider bg-vsc-sidebar/80 border-b border-vsc-panel-border/15 border-t flex items-center gap-1">
 
                 <ImageIcon size={10} /> Image Models
 
@@ -5607,7 +5536,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
           <button
 
-            className="w-full text-left px-2 py-1.5 text-[11px] text-vsc-accent hover:bg-vsc-list-hover border-t border-vsc-panel-border/30 flex items-center gap-2"
+            className="w-full text-left px-2 py-1.5 text-[11px] text-vsc-accent hover:bg-vsc-list-hover border-t border-vsc-panel-border/15 flex items-center gap-2"
 
             onClick={async () => {
 
@@ -5633,7 +5562,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
               } else {
 
-                // Browser fallback — open file picker
+                // Browser fallback â€” open file picker
 
                 modelFileInputRef.current?.click();
 
@@ -5787,7 +5716,7 @@ function TodoDropdown({ todos }) {
 
   return (
 
-    <div className="border-b border-vsc-panel-border/30">
+    <div className="border-b border-vsc-panel-border/15">
 
       <button
 

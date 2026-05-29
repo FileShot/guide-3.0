@@ -1,11 +1,12 @@
-/**
- * TitleBar — Custom title bar with guIDE branding (Audiowide font).
+﻿/**
+ * TitleBar â€” Custom title bar with guIDE branding (Audiowide font).
  * Shows hamburger menu, centered search bar, and window controls.
  * Requires frame:false in BrowserWindow + preload.js windowControls IPC.
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import useAppStore from '../stores/appStore';
 import { Search, Menu, ChevronRight, X, PanelLeft, PanelBottom, PanelRight, LayoutTemplate } from 'lucide-react';
+import SlideDown from './SlideDown';
 
 const wc = () => window.electronAPI?.windowControls;
 
@@ -36,7 +37,7 @@ export default function TitleBar() {
     // One-shot read on mount, then subscribe to push events from the main
     // process. The 500ms isMaximized() poll was replaced with this event
     // subscription because the underlying OS already emits maximize/unmaximize
-    // — polling was pure waste.
+    // â€” polling was pure waste.
     let cancelled = false;
     (async () => {
       try {
@@ -138,7 +139,7 @@ export default function TitleBar() {
   };
 
   return (
-    <div className="h-titlebar bg-vsc-titlebar flex items-center no-select text-vsc-sm border-b border-vsc-panel-border/50"
+    <div className="h-titlebar bg-vsc-titlebar grid grid-cols-[1fr_auto_1fr] items-center no-select text-vsc-sm border-b border-vsc-panel-border/25"
          style={{ WebkitAppRegion: 'drag' }}>
       {/* Brand + Hamburger */}
       <div className="flex items-center pl-2 pr-2 gap-1" style={{ WebkitAppRegion: 'no-drag' }}>
@@ -153,13 +154,22 @@ export default function TitleBar() {
 
         <div
           className="w-4 h-4 flex-shrink-0 bg-vsc-accent"
-          style={{ mask: 'url(/icon.png) center/contain no-repeat', WebkitMask: 'url(/icon.png) center/contain no-repeat' }}
+          style={{
+            maskImage: 'url(/zzz.png)',
+            WebkitMaskImage: 'url(/zzz.png)',
+            maskSize: 'contain',
+            WebkitMaskSize: 'contain',
+            maskPosition: 'center',
+            WebkitMaskPosition: 'center',
+            maskRepeat: 'no-repeat',
+            WebkitMaskRepeat: 'no-repeat',
+          }}
           title="guIDE"
         />
       </div>
 
       {/* Hamburger Panel */}
-      {openMenu && (
+      <SlideDown isOpen={openMenu}>
         <div className="hamburger-panel absolute top-titlebar left-2 bg-vsc-dropdown/95 backdrop-blur-xl border border-vsc-dropdown-border rounded-lg shadow-2xl z-[9999] w-[280px] py-1.5 max-h-[80vh] overflow-y-auto">
           {MENUS.map(menu => (
             <div key={menu.label}>
@@ -170,11 +180,11 @@ export default function TitleBar() {
                 <ChevronRight size={12} className={`mr-1.5 text-vsc-text-dim transition-transform duration-150 ${expandedCat === menu.label ? 'rotate-90' : ''}`} />
                 <span>{menu.label}</span>
               </button>
-              {expandedCat === menu.label && (
+              <SlideDown isOpen={expandedCat === menu.label}>
                 <div className="pl-3 pb-1">
                   {menu.items.map((item, i) => {
                     if (item.type === 'separator') {
-                      return <div key={i} className="border-t border-vsc-panel-border/30 my-1 mx-2" />;
+                      return <div key={i} className="border-t border-vsc-panel-border/15 my-1 mx-2" />;
                     }
                     return (
                       <button
@@ -188,15 +198,15 @@ export default function TitleBar() {
                     );
                   })}
                 </div>
-              )}
+              </SlideDown>
             </div>
           ))}
         </div>
-      )}
+      </SlideDown>
 
-      {/* Center — Search Bar */}
-      <div className="flex-1 flex justify-center px-4">
-        <div className="search-bar-container relative w-full max-w-[480px]" style={{ WebkitAppRegion: 'no-drag' }}>
+      {/* Center â€” Search Bar */}
+      <div className="flex justify-center" style={{ WebkitAppRegion: 'no-drag' }}>
+        <div className="search-bar-container relative w-full max-w-[480px]">
           {searchActive ? (
             <>
               <div className="flex items-center bg-vsc-input border border-vsc-input-border rounded-md px-2.5 py-0.5 gap-1.5 shadow-lg">
@@ -247,7 +257,7 @@ export default function TitleBar() {
             </>
           ) : (
             <button
-              className="flex items-center justify-center gap-1.5 w-full px-3 py-0.5 rounded-md text-vsc-xs text-vsc-text-dim/70 hover:text-vsc-text-dim hover:bg-vsc-list-hover/40 transition-colors duration-150 border border-transparent hover:border-vsc-panel-border/30"
+              className="flex items-center justify-center gap-1.5 w-full px-3 py-0.5 rounded-md text-vsc-xs text-vsc-text-dim/70 hover:text-vsc-text-dim hover:bg-vsc-list-hover/40 transition-colors duration-150 border border-transparent hover:border-vsc-panel-border/15"
               onClick={() => setSearchActive(true)}
             >
               <Search size={11} />
@@ -257,9 +267,9 @@ export default function TitleBar() {
         </div>
       </div>
 
-      {/* Right — Layout toggles + status */}
-      <div className="flex items-center gap-0.5 pr-1" style={{ WebkitAppRegion: 'no-drag' }}>
-        {/* Layout toggle buttons — VS Code title bar style */}
+      {/* Right â€” Layout toggles + status */}
+      <div className="flex items-center justify-end gap-0.5 pr-1" style={{ WebkitAppRegion: 'no-drag' }}>
+        {/* Layout toggle buttons â€” VS Code title bar style */}
         <button
           className={`p-1 rounded transition-colors duration-150 ${sidebarVisible ? 'text-vsc-text hover:bg-vsc-list-hover/60' : 'text-vsc-text-dim/50 hover:bg-vsc-list-hover/40 hover:text-vsc-text-dim'}`}
           title="Toggle Primary Sidebar"
@@ -291,7 +301,7 @@ export default function TitleBar() {
           >
             <LayoutTemplate size={14} />
           </button>
-          {layoutMenuOpen && (
+          <SlideDown isOpen={layoutMenuOpen}>
             <div className="absolute top-full right-0 mt-1 bg-vsc-dropdown/95 backdrop-blur-xl border border-vsc-dropdown-border rounded-lg shadow-2xl z-[9999] w-[180px] py-1 text-[12px]">
               <button
                 className="flex items-center w-full px-3 py-1.5 text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/60 transition-colors"
@@ -321,7 +331,7 @@ export default function TitleBar() {
                 Show all panels
               </button>
             </div>
-          )}
+          </SlideDown>
         </div>
 
         {/* Connection status dot */}
@@ -357,7 +367,7 @@ export default function TitleBar() {
   );
 }
 
-// ─── Menu definitions ────────────────────────────────────
+// â”€â”€â”€ Menu definitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const MENUS = [
   {
@@ -446,7 +456,7 @@ const MENUS = [
   },
 ];
 
-// ─── Action handler ──────────────────────────────────────
+// â”€â”€â”€ Action handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function executeMenuAction(action) {
   const store = useAppStore.getState();
@@ -513,7 +523,7 @@ function executeMenuAction(action) {
       wc()?.close();
       return;
 
-    // Edit — these dispatch native browser commands, Monaco handles them
+    // Edit â€” these dispatch native browser commands, Monaco handles them
     case 'undo': document.execCommand('undo'); return;
     case 'redo': document.execCommand('redo'); return;
     case 'cut': document.execCommand('cut'); return;
@@ -553,7 +563,7 @@ function executeMenuAction(action) {
     case 'showShortcuts': store.setActiveActivity('settings'); return;
     case 'about': {
       const v = store.appVersion || '...';
-      store.addNotification({ type: 'info', message: `guIDE ${v} — Local-first AI IDE. Built for offline inference.`, duration: 8000 });
+      store.addNotification({ type: 'info', message: `guIDE ${v} â€” Local-first AI IDE. Built for offline inference.`, duration: 8000 });
       return;
     }
 
@@ -561,7 +571,7 @@ function executeMenuAction(action) {
   }
 }
 
-// ─── Win button component ────────────────────────────
+// â”€â”€â”€ Win button component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function WinBtn({ children, onClick, title, isClose }) {
   return (

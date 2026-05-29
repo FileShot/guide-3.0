@@ -1,5 +1,5 @@
-/**
- * CodeBlock — Syntax-highlighted code block with toolbar.
+﻿/**
+ * CodeBlock â€” Syntax-highlighted code block with toolbar.
  * Features: language label, copy button, line numbers, apply-to-file stub.
  * Receives pre-highlighted HTML from rehype-highlight (via MarkdownRenderer).
  */
@@ -48,7 +48,7 @@ export default function CodeBlock({ language, children, className }) {
   }, [getTextContent]);
 
   const handleApply = useCallback(() => {
-    // Stub — will integrate with editor tab system later
+    // Stub â€” will integrate with editor tab system later
   }, []);
 
   const handleDownload = useCallback(() => {
@@ -87,7 +87,7 @@ export default function CodeBlock({ language, children, className }) {
     // Initial count
     syncCount();
 
-    // Watch for DOM changes — write to ref only (no state update)
+    // Watch for DOM changes â€” write to ref only (no state update)
     const observer = new MutationObserver(() => {
       const text = el.textContent || '';
       lineCountRef.current = text ? text.split('\n').length : 0;
@@ -119,10 +119,10 @@ export default function CodeBlock({ language, children, className }) {
   }, [getTextContent, langDisplay]);
 
   return (
-    <div className="code-block-container group relative my-2 rounded-md overflow-hidden border border-vsc-panel-border/40">
+    <div className="code-block-container group relative my-2 rounded-md overflow-hidden border border-vsc-panel-border/20">
       {/* Header bar */}
-      <div className="code-block-header flex items-center justify-between px-3 py-1 bg-vsc-sidebar/80 border-b border-vsc-panel-border/30">
-        <span className="text-[11px] text-vsc-text-dim font-medium uppercase tracking-wide">
+      <div className="code-block-header flex items-center justify-between px-3 py-1 bg-vsc-sidebar/80 border-b border-vsc-panel-border/15">
+        <span className="text-[11px] text-vsc-text-dim font-medium tracking-wide">
           {langDisplay || 'text'}{lineCount > 0 && ` (${lineCount} lines)`}
         </span>
         <div className="flex items-center gap-0.5">

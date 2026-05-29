@@ -1332,8 +1332,8 @@ const themes = {
 };
 
 const ThemeContext = createContext({
-  themeId: 'carbon',
-  theme: themes.carbon,
+  themeId: 'monolith-warm',
+  theme: themes['monolith-warm'],
   setTheme: () => {},
   themeIds: Object.keys(themes),
 });
@@ -1357,7 +1357,7 @@ export default function ThemeProvider({ children }) {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved && themes[saved]) return saved;
     } catch (_) {}
-    return 'carbon';
+    return 'monolith-warm';
   });
 
   const theme = themes[themeId] || themes.carbon;

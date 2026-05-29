@@ -50,7 +50,7 @@ export default function Notifications() {
                     {notif.actions.map((action, idx) => (
                       <button
                         key={idx}
-                        className="px-2 py-1 text-vsc-xs bg-vsc-button hover:bg-vsc-button-hover text-white rounded"
+                        className="btn btn-primary text-[10px] px-2 py-1"
                         onClick={() => {
                           action.onClick?.();
                           dismissNotification(notif.id);

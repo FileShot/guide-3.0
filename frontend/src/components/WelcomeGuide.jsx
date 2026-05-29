@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import useAppStore from '../stores/appStore';
 import {
   X, Rocket, Keyboard, Brain, Code2, Wrench, Lightbulb,
@@ -70,7 +70,7 @@ export default function WelcomeGuide() {
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className="w-[720px] max-w-[90vw] h-[520px] max-h-[80vh] bg-vsc-sidebar rounded-xl border border-vsc-panel-border shadow-2xl flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-vsc-panel-border/50">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-vsc-panel-border/25">
           <h2 className="text-[15px] font-semibold text-vsc-text">Welcome to guIDE</h2>
           <button
             onClick={handleClose}
@@ -83,7 +83,7 @@ export default function WelcomeGuide() {
         {/* Body: sidebar + content */}
         <div className="flex flex-1 min-h-0">
           {/* Sidebar */}
-          <div className="w-[200px] flex-shrink-0 border-r border-vsc-panel-border/50 py-2">
+          <div className="w-[200px] flex-shrink-0 border-r border-vsc-panel-border/25 py-2">
             {SECTIONS.map(section => {
               const Icon = section.icon;
               const isActive = section.id === activeSection;
@@ -111,7 +111,7 @@ export default function WelcomeGuide() {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-5 py-3 border-t border-vsc-panel-border/50">
+        <div className="flex items-center justify-between px-5 py-3 border-t border-vsc-panel-border/25">
           <label className="flex items-center gap-2 cursor-pointer select-none">
             <input
               type="checkbox"
@@ -133,7 +133,7 @@ export default function WelcomeGuide() {
   );
 }
 
-/* ── Section content components ─────────────────────────────────────────────── */
+/* â”€â”€ Section content components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 function SectionTitle({ children }) {
   return <h3 className="text-[14px] font-semibold text-vsc-text mb-3">{children}</h3>;
@@ -177,7 +177,7 @@ function GettingStarted() {
     <>
       <SectionTitle>Getting Started</SectionTitle>
       <Paragraph>
-        guIDE is a local-first AI IDE. All AI inference runs on your machine — no cloud
+        guIDE is a local-first AI IDE. All AI inference runs on your machine â€” no cloud
         required, no data leaves your computer.
       </Paragraph>
 
@@ -210,7 +210,7 @@ function Shortcuts() {
       <Paragraph>Essential shortcuts to navigate guIDE efficiently.</Paragraph>
 
       <div className="mb-4">
-        <div className="text-[11px] font-medium uppercase tracking-wider text-vsc-text-dim mb-2">General</div>
+        <div className="text-[11px] font-medium tracking-wider text-vsc-text-dim mb-2">General</div>
         <ShortcutTable shortcuts={[
           ['Ctrl+Shift+P', 'Command Palette'],
           ['Ctrl+P', 'Quick Open File'],
@@ -223,7 +223,7 @@ function Shortcuts() {
       </div>
 
       <div className="mb-4">
-        <div className="text-[11px] font-medium uppercase tracking-wider text-vsc-text-dim mb-2">AI & Chat</div>
+        <div className="text-[11px] font-medium tracking-wider text-vsc-text-dim mb-2">AI & Chat</div>
         <ShortcutTable shortcuts={[
           ['Ctrl+L', 'Toggle AI Chat Panel'],
           ['Ctrl+I', 'Inline Chat (in editor)'],
@@ -233,7 +233,7 @@ function Shortcuts() {
       </div>
 
       <div>
-        <div className="text-[11px] font-medium uppercase tracking-wider text-vsc-text-dim mb-2">Editor</div>
+        <div className="text-[11px] font-medium tracking-wider text-vsc-text-dim mb-2">Editor</div>
         <ShortcutTable shortcuts={[
           ['Ctrl+/', 'Toggle Line Comment'],
           ['Ctrl+D', 'Select Next Occurrence'],
@@ -254,7 +254,7 @@ function AiChat() {
       <SectionTitle>AI & Chat</SectionTitle>
       <Paragraph>
         guIDE's AI assistant can read your code, write files, search your project,
-        run terminal commands, and manage git — all from the chat panel.
+        run terminal commands, and manage git â€” all from the chat panel.
       </Paragraph>
 
       <FeatureItem icon={Zap} title="Auto Mode">
@@ -325,7 +325,7 @@ function BuiltInTools() {
       </Paragraph>
 
       <FeatureItem icon={FileCode} title="File Operations">
-        read_file, write_file, list_directory, search_files — the AI can navigate and modify
+        read_file, write_file, list_directory, search_files â€” the AI can navigate and modify
         your entire project structure.
       </FeatureItem>
 
@@ -340,7 +340,7 @@ function BuiltInTools() {
       </FeatureItem>
 
       <FeatureItem icon={GitBranch} title="Git Operations">
-        Stage, commit, diff, branch, and checkout — all available as tools.
+        Stage, commit, diff, branch, and checkout â€” all available as tools.
         The AI can manage your version control workflow.
       </FeatureItem>
 
@@ -364,11 +364,11 @@ function TipsAndTricks() {
 
       <FeatureItem icon={Command} title="Command Palette">
         Press <strong>Ctrl+Shift+P</strong> to access every command in guIDE.
-        Start typing to filter — it's the fastest way to do anything.
+        Start typing to filter â€” it's the fastest way to do anything.
       </FeatureItem>
 
       <FeatureItem icon={Cpu} title="GPU Memory">
-        The status bar shows GPU VRAM usage. Choose a model size that fits your GPU —
+        The status bar shows GPU VRAM usage. Choose a model size that fits your GPU â€”
         quantized models (Q4_K_M, Q8_0) use less memory with minimal quality loss.
       </FeatureItem>
 

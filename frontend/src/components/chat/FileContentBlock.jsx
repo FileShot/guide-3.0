@@ -1,9 +1,9 @@
-/**
- * FileContentBlock — Renders a single file being generated via file-content events.
+﻿/**
+ * FileContentBlock â€” Renders a single file being generated via file-content events.
  * Shows filename, growing line count, raw content, collapse/expand, copy, download.
  * R34: Inline styles for height (bypass Tailwind JIT). React.memo to prevent unnecessary re-renders.
  * R36-Phase1: Auto-scroll collapsed view to show trailing content during streaming.
- * R37-Step8: Expanded state lifted to Zustand store — survives component unmount/remount
+ * R37-Step8: Expanded state lifted to Zustand store â€” survives component unmount/remount
  *            across continuation iterations. Key = filePath.
  * R37-Step9: Bottom padding on pre when streaming+collapsed so newest lines are visible
  *            above the gradient overlay instead of being hidden under it.
@@ -22,7 +22,7 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
 
   // Plan F: read lint errors emitted by backend after this file was written
   const lintErrors = useAppStore(s => s.fileLintErrors[filePath]);
-  // Auto-fix toggle is the real global setting — toggling it here changes backend behaviour for ALL future file writes
+  // Auto-fix toggle is the real global setting â€” toggling it here changes backend behaviour for ALL future file writes
   const autoFixEnabled = useAppStore(s => s.settings.autoLintFix !== false);
   const updateSetting = useAppStore(s => s.updateSetting);
   const scrollContainerRef = useRef(null);
@@ -102,8 +102,8 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
     }
   }, [content, complete, isCollapsed]);
 
-  // Inline styles — bypass Tailwind JIT entirely
-  // R44: Always allow scrolling — 'hidden' on complete blocks prevented Show More / scroll
+  // Inline styles â€” bypass Tailwind JIT entirely
+  // R44: Always allow scrolling â€” 'hidden' on complete blocks prevented Show More / scroll
   const contentStyle = isCollapsed
     ? { maxHeight: '240px', overflowY: 'auto', overflowX: 'auto' }
     : { maxHeight: '80vh', overflowY: 'auto', overflowX: 'auto' };
@@ -113,13 +113,13 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
   const preStyle = (isCollapsed && !complete) ? { paddingBottom: '80px' } : undefined;
 
   return (
-    <div className="code-block-container group relative my-2 rounded-md overflow-hidden border border-vsc-panel-border/40 flex flex-col">
+    <div className="code-block-container group relative my-2 rounded-md overflow-hidden border border-vsc-panel-border/20 flex flex-col">
       {/* Header */}
-      <div className="code-block-header flex items-center justify-between px-3 py-1 bg-vsc-sidebar/80 border-b border-vsc-panel-border/30">
+      <div className="code-block-header flex items-center justify-between px-3 py-1 bg-vsc-sidebar/80 border-b border-vsc-panel-border/15">
         <div className="flex items-center gap-1.5">
           <FileCode size={12} className="text-vsc-accent" />
           <span className="text-[11px] text-vsc-text font-medium">{displayName}</span>
-          {language && <span className="text-[10px] text-vsc-text-dim uppercase">{language}</span>}
+          {language && <span className="text-[10px] text-vsc-text-dim">{language}</span>}
           {lineCount > 0 && <span className="text-[10px] text-vsc-text-dim">({lineCount} lines)</span>}
           {!complete && <Loader size={10} className="animate-spin text-vsc-accent ml-1" />}
         </div>
@@ -154,7 +154,7 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
         </div>
       </div>
 
-      {/* Plan F: Lint auto-fix pill — shown when backend detected errors after writing this file */}
+      {/* Plan F: Lint auto-fix pill â€” shown when backend detected errors after writing this file */}
       {complete && lintErrors && lintErrors.errors > 0 && (
         <div className="flex items-center justify-between px-3 py-1 bg-yellow-500/10 border-t border-yellow-400/30">
           <div className="flex items-center gap-1.5 text-yellow-300/90 text-[10px]">
@@ -165,10 +165,10 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
             className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] border transition-colors ${
               autoFixEnabled
                 ? 'bg-green-500/20 border-green-400/50 text-green-300'
-                : 'bg-vsc-panel-border/20 border-vsc-panel-border/40 text-vsc-text-dim'
+                : 'bg-vsc-panel-border/20 border-vsc-panel-border/20 text-vsc-text-dim'
             }`}
             onClick={() => updateSetting('autoLintFix', !autoFixEnabled)}
-            title={autoFixEnabled ? 'Auto-fix is ON — model will fix errors automatically' : 'Auto-fix is OFF — errors will not be auto-fixed'}
+            title={autoFixEnabled ? 'Auto-fix is ON â€” model will fix errors automatically' : 'Auto-fix is OFF â€” errors will not be auto-fixed'}
           >
             <Wrench size={9} />
             Auto-fix {autoFixEnabled ? 'ON' : 'OFF'}

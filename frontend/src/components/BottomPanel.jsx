@@ -1,18 +1,21 @@
-/**
- * BottomPanel — Terminal, Output, Problems, Debug Console, and Ports tabs.
+﻿/**
+ * BottomPanel â€” Terminal, Output, Problems, Debug Console, and Ports tabs.
  * VS Code-style: tabs left, terminal instance list right, badge on Problems.
  */
 import { useState, useRef, useEffect, useCallback } from 'react';
 import useAppStore from '../stores/appStore';
 import { Terminal as TerminalIcon, FileOutput, AlertTriangle, X, Plus, Trash2, Globe, Bug, ChevronDown, MoreHorizontal, CheckSquare, RefreshCw } from 'lucide-react';
 
-const panelTabs = [
-  { id: 'problems', label: 'PROBLEMS', icon: AlertTriangle },
-  { id: 'output', label: 'OUTPUT', icon: FileOutput },
-  { id: 'todo', label: 'TODO', icon: CheckSquare },
-  { id: 'debug', label: 'DEBUG CONSOLE', icon: Bug },
-  { id: 'terminal', label: 'TERMINAL', icon: TerminalIcon },
-  { id: 'ports', label: 'PORTS', icon: Globe },
+const mainTabs = [
+  { id: 'problems', label: 'Problems', icon: AlertTriangle },
+  { id: 'output', label: 'Output', icon: FileOutput },
+  { id: 'todo', label: 'Todo', icon: CheckSquare },
+  { id: 'terminal', label: 'Terminal', icon: TerminalIcon },
+];
+
+const moreTabs = [
+  { id: 'debug', label: 'Debug Console', icon: Bug },
+  { id: 'ports', label: 'Ports', icon: Globe },
 ];
 
 export default function BottomPanel() {
@@ -24,17 +27,18 @@ export default function BottomPanel() {
   const setActiveTerminalTab = useAppStore(s => s.setActiveTerminalTab);
   const addTerminalTab = useAppStore(s => s.addTerminalTab);
   const closeTerminalTab = useAppStore(s => s.closeTerminalTab);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
 
-  // Problems count — reads from store (set to 0 by default, wired to Monaco diagnostics later)
+  // Problems count â€” reads from store (set to 0 by default, wired to Monaco diagnostics later)
   const problemsCount = useAppStore(s => s.problemsCount ?? 0);
 
   return (
     <div className="flex flex-col h-full bg-vsc-panel">
       {/* Tab bar */}
-      <div className="flex items-center h-[35px] border-b border-vsc-panel-border no-select flex-shrink-0">
+      <div className="flex items-center h-[28px] border-b border-vsc-panel-border no-select flex-shrink-0">
         {/* Left: panel type tabs */}
         <div className="flex items-center flex-1 min-w-0 overflow-hidden">
-          {panelTabs.map(({ id, label, icon: Icon }, idx) => (
+          {mainTabs.map(({ id, label, icon: Icon }, idx) => (
             <div key={id} className="flex items-center flex-shrink-0">
               {idx > 0 && (
                 <span className="text-vsc-text-dim/25 text-[11px] mx-0.5 select-none">/</span>
@@ -53,10 +57,36 @@ export default function BottomPanel() {
               </button>
             </div>
           ))}
+          {/* More dropdown for Debug Console & Ports */}
+          <div className="relative flex-shrink-0">
+            <button
+              className={`panel-tab flex items-center gap-1 ${moreTabs.some(t => t.id === activePanelTab) ? 'active' : ''}`}
+              onClick={() => setMoreMenuOpen(v => !v)}
+            >
+              <MoreHorizontal size={14} />
+            </button>
+            {moreMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setMoreMenuOpen(false)} />
+                <div className="absolute top-full left-0 mt-0.5 z-50 bg-vsc-sidebar border border-vsc-panel-border rounded-md shadow-lg py-1 min-w-[140px]">
+                  {moreTabs.map(({ id, label, icon: Icon }) => (
+                    <button
+                      key={id}
+                      className={`flex items-center gap-2 w-full px-3 py-1.5 text-vsc-xs hover:bg-vsc-list-hover ${activePanelTab === id ? 'text-vsc-text-bright' : 'text-vsc-text-dim'}`}
+                      onClick={() => { setActivePanelTab(id); setMoreMenuOpen(false); }}
+                    >
+                      <Icon size={12} />
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
         {/* Right: terminal instance tabs (always visible, not just when terminal active) */}
-        <div className="flex items-center gap-0.5 pl-2 border-l border-vsc-panel-border/30 flex-shrink-0">
+        <div className="flex items-center gap-0.5 pl-2 border-l border-vsc-panel-border/15 flex-shrink-0">
           {activePanelTab === 'terminal' && terminalTabs.map(tab => (
             <div
               key={tab.id}
@@ -138,7 +168,7 @@ function XTermPanel() {
     if (projectPath && xtermRef.current && termIdRef.current && modeRef.current === 'pty') {
       const api = window.electronAPI;
       if (api?.terminal) {
-        // PowerShell on Windows, bash elsewhere — both accept double-quoted paths
+        // PowerShell on Windows, bash elsewhere â€” both accept double-quoted paths
         const escaped = projectPath.replace(/"/g, '\\"');
         api.terminal.write(termIdRef.current, `cd "${escaped}"\r`);
       }
@@ -252,7 +282,7 @@ function XTermPanel() {
               }
             });
           } else {
-            // PTY not available — exec fallback
+            // PTY not available â€” exec fallback
             modeRef.current = 'exec';
             term.writeln('Terminal');
             term.writeln('\x1b[90mnode-pty not available \u2014 using command execution fallback\x1b[0m');
@@ -261,7 +291,7 @@ function XTermPanel() {
             _setupExecMode(term);
           }
         } else {
-          // No Electron API — try legacy WebSocket
+          // No Electron API â€” try legacy WebSocket
           const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
           const wsUrl = `${protocol}//${window.location.host}/ws/terminal`;
           const ws = new WebSocket(wsUrl);
@@ -496,7 +526,7 @@ function TodoPanel() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center gap-2 px-2 py-1 border-b border-vsc-panel-border/30 flex-shrink-0">
+      <div className="flex items-center gap-2 px-2 py-1 border-b border-vsc-panel-border/15 flex-shrink-0">
         <button
           className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover transition-colors"
           onClick={scanTodos}

@@ -1,5 +1,5 @@
-/**
- * Sidebar — Renders the active sidebar panel based on ActivityBar selection.
+﻿/**
+ * Sidebar â€” Renders the active sidebar panel based on ActivityBar selection.
  * Panels: Explorer (file tree), Search, Git, Settings
  */
 import { useState, useCallback, useRef, useEffect } from 'react';
@@ -7,6 +7,7 @@ import useAppStore from '../stores/appStore';
 import { useTheme, themeList } from './ThemeProvider';
 import AccountPanel from './AccountPanel';
 import BrowserPanel from './BrowserPanel';
+import SlideDown from './SlideDown';
 import FileIcon from './FileIcon';
 import {
   ChevronRight, ChevronDown, FileCode,
@@ -23,17 +24,24 @@ import {
 export default function Sidebar() {
   const activeActivity = useAppStore(s => s.activeActivity);
 
+  let panel;
   switch (activeActivity) {
-    case 'explorer': return <FileExplorer />;
-    case 'search': return <SearchPanel />;
-    case 'git': return <GitPanel />;
-    case 'settings': return <SettingsPanel />;
-    case 'debug': return <DebugPanel />;
-    case 'extensions': return <ExtensionsPanel />;
-    case 'browser': return <BrowserPanel />;
-    case 'account': return <AccountPanel />;
-    default: return <FileExplorer />;
+    case 'explorer': panel = <FileExplorer />; break;
+    case 'search': panel = <SearchPanel />; break;
+    case 'git': panel = <GitPanel />; break;
+    case 'settings': panel = <SettingsPanel />; break;
+    case 'debug': panel = <DebugPanel />; break;
+    case 'extensions': panel = <ExtensionsPanel />; break;
+    case 'browser': panel = <BrowserPanel />; break;
+    case 'account': panel = <AccountPanel />; break;
+    default: panel = <FileExplorer />; break;
   }
+
+  return (
+    <div className="animate-slide-right">
+      {panel}
+    </div>
+  );
 }
 
 function FileExplorer() {
@@ -111,7 +119,7 @@ function FileExplorer() {
 
   return (
     <div className="flex flex-col h-full bg-vsc-sidebar/85 backdrop-blur-sm">
-      <div className="sidebar-header justify-between border-b border-vsc-panel-border/35 shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]">
+      <div className="sidebar-header justify-between border-b border-vsc-panel-border/18 shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]">
         <span>Explorer</span>
         <div className="flex items-center gap-1">
           <button className="p-1 hover:bg-vsc-list-hover rounded" title="New File" onClick={() => {}}>
@@ -130,7 +138,7 @@ function FileExplorer() {
         <div className="flex flex-col items-center justify-center flex-1 p-4 text-vsc-text-dim text-vsc-sm">
           <p className="mb-3 text-center">No folder opened</p>
           <button
-            className="px-3 py-1.5 bg-vsc-button hover:bg-vsc-button-hover text-white rounded text-vsc-sm"
+            className="btn btn-primary"
             onClick={openFolder}
           >
             Open Folder
@@ -190,7 +198,7 @@ function FileExplorer() {
                     // Dispatch a custom event that EditorArea listens for to jump to line
                     window.dispatchEvent(new CustomEvent('guide-goto-line', { detail: { line: sym.line } }));
                   }}
-                  title={`${sym.kind} — line ${sym.line}`}
+                  title={`${sym.kind} â€” line ${sym.line}`}
                 >
                   <span className={`flex-shrink-0 text-[10px] ${
                     sym.kind === 'class' ? 'text-yellow-400' :
@@ -407,22 +415,30 @@ function FileTreeItem({ item, depth }) {
             className="ml-auto p-0.5 hover:bg-vsc-list-hover rounded text-vsc-success opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity"
             onClick={(e) => {
               e.stopPropagation();
-              // R46-B: Open file as tab, then signal EditorArea to show preview
-              fetch(`/api/files/read?path=${encodeURIComponent(item.path)}`)
-                .then(r => r.json())
-                .then(f => {
-                  if (f.content !== undefined) {
-                    useAppStore.getState().openFile({
-                      path: item.path,
-                      name: item.name,
-                      extension: item.extension,
-                      content: f.content,
-                    });
-                    // Set preview request flag — EditorArea will pick this up
-                    useAppStore.getState().setPreviewRequested(true);
-                  }
-                })
-                .catch(() => {});
+              const store = useAppStore.getState();
+              const existingTab = store.openTabs.find(t => t.path === item.path);
+              if (existingTab) {
+                // File already open â€” just toggle preview mode
+                store.setActiveTabId(existingTab.id);
+                store.togglePreviewMode(existingTab.id);
+              } else {
+                // Open file and show preview
+                fetch(`/api/files/read?path=${encodeURIComponent(item.path)}`)
+                  .then(r => r.json())
+                  .then(f => {
+                    if (f.content !== undefined) {
+                      store.openFile({
+                        path: item.path,
+                        name: item.name,
+                        extension: item.extension,
+                        content: f.content,
+                      });
+                      const newTab = store.openTabs.find(t => t.path === item.path);
+                      if (newTab) store.setPreviewMode(newTab.id, true);
+                    }
+                  })
+                  .catch(() => {});
+              }
             }}
             title="Preview in viewport"
           >
@@ -437,9 +453,17 @@ function FileTreeItem({ item, depth }) {
           </span>
         )}
       </div>
-      {expanded && item.children && item.children.map((child, idx) => (
-        <FileTreeItem key={child.path || idx} item={child} depth={depth + 1} />
-      ))}
+      <SlideDown isOpen={expanded && !!item.children}>
+        <div className="relative">
+          <div
+            className="absolute top-0 bottom-0 w-px bg-vsc-panel-border/40 pointer-events-none"
+            style={{ left: Math.max(indent - 2, 0) }}
+          />
+          {item.children && item.children.map((child, idx) => (
+            <FileTreeItem key={child.path || idx} item={child} depth={depth + 1} />
+          ))}
+        </div>
+      </SlideDown>
 
       {/* Context Menu */}
       {contextMenu && (
@@ -822,7 +846,7 @@ function GitPanel() {
       </div>
 
       {/* Branch bar */}
-      <div className="px-3 py-1 text-vsc-xs text-vsc-text-dim border-b border-vsc-panel-border/50 flex items-center gap-1">
+      <div className="px-3 py-1 text-vsc-xs text-vsc-text-dim border-b border-vsc-panel-border/25 flex items-center gap-1">
         <GitBranch size={12} />
         <span>{branch || '(no branch)'}</span>
         {totalChanges > 0 && <span className="ml-auto text-[10px] bg-vsc-accent/20 text-vsc-accent px-1.5 rounded-full">{totalChanges}</span>}
@@ -830,7 +854,7 @@ function GitPanel() {
 
       {/* Branch picker */}
       {showBranches && (
-        <div className="border-b border-vsc-panel-border/50 bg-vsc-sidebar-bg">
+        <div className="border-b border-vsc-panel-border/25 bg-vsc-sidebar-bg">
           <div className="px-2 py-1 flex gap-1">
             <input
               className="flex-1 bg-vsc-input-bg border border-vsc-input-border rounded px-2 py-0.5 text-vsc-sm text-vsc-text focus:outline-none focus:border-vsc-accent"
@@ -839,7 +863,7 @@ function GitPanel() {
               onChange={e => setNewBranch(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && createBranch()}
             />
-            <button className="px-2 py-0.5 bg-vsc-accent text-white rounded text-vsc-xs hover:bg-vsc-accent/80" onClick={createBranch}>Create</button>
+            <button className="btn btn-primary text-[10px] px-2 py-0.5" onClick={createBranch}>Create</button>
           </div>
           <div className="max-h-32 overflow-y-auto scrollbar-thin">
             {branches.map(b => (
@@ -857,7 +881,7 @@ function GitPanel() {
       )}
 
       {/* Commit message + button */}
-      <div className="px-2 py-1.5 border-b border-vsc-panel-border/50">
+      <div className="px-2 py-1.5 border-b border-vsc-panel-border/25">
         <textarea
           className="w-full bg-vsc-input-bg border border-vsc-input-border rounded px-2 py-1 text-vsc-sm text-vsc-text resize-none focus:outline-none focus:border-vsc-accent"
           rows={2}
@@ -868,7 +892,7 @@ function GitPanel() {
         />
         <div className="flex gap-1 mt-1">
           <button
-            className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-vsc-accent text-white rounded text-vsc-xs hover:bg-vsc-accent/80 disabled:opacity-50"
+            className="btn btn-primary flex-1 flex items-center justify-center gap-1 disabled:opacity-50"
             onClick={commit}
             disabled={!commitMsg.trim() || committing}
           >
@@ -877,7 +901,7 @@ function GitPanel() {
           </button>
           {(modified.length > 0 || untracked.length > 0) && (
             <button
-              className="px-2 py-1 bg-vsc-list-hover text-vsc-text rounded text-vsc-xs hover:bg-vsc-list-hover/80"
+              className="btn flex items-center justify-center gap-1 px-2 py-1"
               onClick={() => stageFiles(null, true)}
               title="Stage All"
             >
@@ -889,8 +913,8 @@ function GitPanel() {
 
       {/* Commit history */}
       {showLog && (
-        <div className="border-b border-vsc-panel-border/50 max-h-48 overflow-y-auto scrollbar-thin">
-          <div className="px-2 py-1 text-vsc-xs font-medium text-vsc-text uppercase tracking-wider">Recent Commits</div>
+        <div className="border-b border-vsc-panel-border/25 max-h-48 overflow-y-auto scrollbar-thin">
+          <div className="px-2 py-1 text-vsc-xs font-medium text-vsc-text tracking-wider">Recent Commits</div>
           {logEntries.length === 0 && <p className="px-3 py-1 text-vsc-text-dim text-vsc-xs">No commits</p>}
           {logEntries.map((e, i) => (
             <div key={i} className="px-3 py-0.5 hover:bg-vsc-list-hover text-vsc-xs">
@@ -942,7 +966,7 @@ function GitFileSection({ title, files, badge, badgeColor, onStage, onStageAll, 
   const [expanded, setExpanded] = useState(true);
   return (
     <div>
-      <div className="flex items-center px-2 py-1 hover:bg-vsc-list-hover text-vsc-text font-medium text-vsc-xs uppercase tracking-wider">
+      <div className="flex items-center px-2 py-1 hover:bg-vsc-list-hover text-vsc-text font-medium text-vsc-xs tracking-wider">
         <button className="flex items-center gap-1 flex-1 text-left" onClick={() => setExpanded(!expanded)}>
           {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           <span>{title}</span>
@@ -1053,7 +1077,7 @@ function CloudProviderSettings() {
   const isFree = currentProvider?.isFree;
 
   return (
-    <div className="px-3 py-2 border-b border-vsc-panel-border/50">
+    <div className="px-3 py-2 border-b border-vsc-panel-border/25">
       <button
         className="flex items-center gap-1.5 w-full text-left mb-1"
         onClick={() => setCollapsed(c => !c)}
@@ -1107,7 +1131,7 @@ function CloudProviderSettings() {
               {/* Free tier badge */}
               {isFree && (
                 <div className="text-[10px] text-green-400 bg-green-500/10 px-2 py-1 rounded">
-                  Free tier — no API key needed. Bundled keys rotate automatically.
+                  Free tier â€” no API key needed. Bundled keys rotate automatically.
                 </div>
               )}
 
@@ -1124,7 +1148,7 @@ function CloudProviderSettings() {
                       placeholder="sk-..."
                     />
                     <button
-                      className="px-2 h-6 text-[10px] bg-vsc-button hover:bg-vsc-button-hover text-white rounded-sm"
+                      className="btn btn-primary text-[10px] px-2 h-6 rounded-sm"
                       onClick={saveApiKey}
                     >
                       Save
@@ -1163,7 +1187,7 @@ function CloudProviderSettings() {
 
               {/* Set Active button */}
               <button
-                className="w-full px-3 py-1.5 bg-vsc-button hover:bg-vsc-button-hover text-white rounded text-vsc-xs"
+                className="btn btn-primary w-full"
                 onClick={setActive}
                 disabled={!selectedModel && models.length > 0}
               >
@@ -1177,7 +1201,7 @@ function CloudProviderSettings() {
   );
 }
 
-// Auto-update settings — exposes the existing AutoUpdater (electron-updater wrapper).
+// Auto-update settings â€” exposes the existing AutoUpdater (electron-updater wrapper).
 // Periodic checking is opt-in. The user picks a cadence (off / hourly / daily / weekly)
 // and the backend listens for the change to schedule or cancel its setInterval.
 // A manual "Check now" button always works regardless of the periodic setting.
@@ -1201,7 +1225,7 @@ function UpdatesSettings({ settings, updateSetting }) {
     setBusy(true);
     fetch('/api/updater/check', { method: 'POST' })
       .then(r => r.json())
-      .then(() => { addNotification({ type: 'info', message: 'Checking for updates…', duration: 2000 }); setTimeout(refreshStatus, 1500); })
+      .then(() => { addNotification({ type: 'info', message: 'Checking for updatesâ€¦', duration: 2000 }); setTimeout(refreshStatus, 1500); })
       .catch(e => addNotification({ type: 'error', message: e.message }))
       .finally(() => setBusy(false));
   };
@@ -1219,10 +1243,10 @@ function UpdatesSettings({ settings, updateSetting }) {
 
   const statusLabel =
     status?.available === false ? 'Updater unavailable (dev/web mode)'
-      : status?.status === 'checking' ? 'Checking…'
+      : status?.status === 'checking' ? 'Checkingâ€¦'
         : status?.status === 'available' ? `Update available: v${status?.updateInfo?.version || '?'}`
-          : status?.status === 'downloading' ? `Downloading… ${Math.round(status?.progress?.percent || 0)}%`
-            : status?.status === 'downloaded' ? `Downloaded v${status?.updateInfo?.version || '?'} — ready to install`
+          : status?.status === 'downloading' ? `Downloadingâ€¦ ${Math.round(status?.progress?.percent || 0)}%`
+            : status?.status === 'downloaded' ? `Downloaded v${status?.updateInfo?.version || '?'} â€” ready to install`
               : status?.status === 'error' ? `Error: ${status?.error || 'unknown'}`
                 : 'Up to date';
 
@@ -1250,7 +1274,7 @@ function UpdatesSettings({ settings, updateSetting }) {
 
       <div className="flex gap-1.5 flex-wrap">
         <button
-          className="px-2.5 py-1 bg-vsc-button hover:bg-vsc-button-hover text-white rounded text-vsc-xs disabled:opacity-50"
+          className="btn btn-primary disabled:opacity-50"
           onClick={checkNow}
           disabled={busy || status?.available === false}
         >
@@ -1258,7 +1282,7 @@ function UpdatesSettings({ settings, updateSetting }) {
         </button>
         {status?.status === 'available' && (
           <button
-            className="px-2.5 py-1 bg-vsc-accent hover:brightness-110 text-vsc-bg rounded text-vsc-xs"
+            className="btn btn-primary px-2.5 py-1"
             onClick={downloadNow}
           >
             Download
@@ -1266,7 +1290,7 @@ function UpdatesSettings({ settings, updateSetting }) {
         )}
         {status?.status === 'downloaded' && (
           <button
-            className="px-2.5 py-1 bg-vsc-accent hover:brightness-110 text-vsc-bg rounded text-vsc-xs"
+            className="btn btn-primary px-2.5 py-1"
             onClick={installNow}
           >
             Restart & install
@@ -1361,7 +1385,7 @@ function SettingsPanel() {
     try {
       await updateSetting('thinkingMode', mode);
       window.electronAPI?.uiLog?.(`applyThinkingMode after updateSetting OK`);
-      addNotification({ type: 'info', message: `Thinking mode → ${mode} — reloading model…`, duration: 2500 });
+      addNotification({ type: 'info', message: `Thinking mode â†’ ${mode} â€” reloading modelâ€¦`, duration: 2500 });
       triggerModelReload('thinkingMode');
     } catch (e) {
       addNotification({ type: 'error', message: e.message || 'Failed to save thinking mode' });
@@ -1408,7 +1432,7 @@ function SettingsPanel() {
         </button>
       </div>
 
-      <div className="px-3 pt-2 pb-1 text-[10px] text-vsc-text-dim border-b border-vsc-panel-border/40">
+      <div className="px-3 pt-2 pb-1 text-[10px] text-vsc-text-dim border-b border-vsc-panel-border/20">
         <div>Most settings apply on the next request immediately.</div>
         <div className="text-yellow-300/80">Model context/GPU settings require model reload.</div>
         {settingsSyncStatus === 'error' && settingsSyncError && (
@@ -1442,11 +1466,11 @@ function SettingsPanel() {
           onChange={v => updateSetting('temperature', v)} tooltip="Lower = more focused, higher = more creative" />
         <SettingNumberField label="Max Response Tokens" value={settings.maxResponseTokens}
           min={0} max={8192} step={256} onChange={v => updateSetting('maxResponseTokens', v)}
-          hint="0 = auto — use all available context space for generation" />
+          hint="0 = auto â€” use all available context space for generation" />
         <div>
           <SettingNumberField label="Context Size" value={settings.contextSize}
             min={0} max={131072} step={1024} onChange={v => updateSettingWithReload('contextSize', v)}
-            hint="0 = auto — use the largest context the model allows and VRAM can fit (recommended). Otherwise set an explicit token budget." />
+            hint="0 = auto â€” use the largest context the model allows and VRAM can fit (recommended). Otherwise set an explicit token budget." />
           <div className="text-[10px] text-yellow-400/80 mt-0.5">Requires model reload to apply</div>
         </div>
         <SettingSlider label="Top P" value={settings.topP} min={0} max={1} step={0.05}
@@ -1538,7 +1562,7 @@ function SettingsPanel() {
         <div className="mb-2">
           <label className="text-[11px] text-vsc-text-dim block mb-1">
             Thinking Wrapper Mode
-            <span className="ml-1 text-vsc-text-muted">(reloads model — shows loading spinner)</span>
+            <span className="ml-1 text-vsc-text-muted">(reloads model â€” shows loading spinner)</span>
           </label>
           <select
             className="w-full bg-vsc-input border border-vsc-border rounded text-[11px] text-vsc-text px-2 py-1 focus:outline-none focus:border-vsc-focus"
@@ -1548,13 +1572,13 @@ function SettingsPanel() {
               applyThinkingMode(e.target.value);
             }}
           >
-            <option value="C">C — ThinkingOpen (inject &lt;think&gt; prefix)</option>
-            <option value="B">B — Jinja, no prefix (raw enable_thinking=true)</option>
-            <option value="auto">auto — node-llama-cpp auto resolver</option>
-            <option value="off">off — Jinja, thinking disabled</option>
+            <option value="C">C â€” ThinkingOpen (inject &lt;think&gt; prefix)</option>
+            <option value="B">B â€” Jinja, no prefix (raw enable_thinking=true)</option>
+            <option value="auto">auto â€” node-llama-cpp auto resolver</option>
+            <option value="off">off â€” Jinja, thinking disabled</option>
           </select>
           <p className="text-[10px] text-vsc-text-muted mt-1">
-            Resets on model load: GLM-4.6V → off; others → auto. C/B = Jinja paths. auto = Qwen/GPT/Phi. off = template thinking disabled.
+            Resets on model load: GLM-4.6V â†’ off; others â†’ auto. C/B = Jinja paths. auto = Qwen/GPT/Phi. off = template thinking disabled.
           </p>
         </div>
         <SettingToggle label="Filter Thinking Tokens" value={settings.enableThinkingFilter}
@@ -1565,10 +1589,10 @@ function SettingsPanel() {
           hint="When off, no tool definitions are passed to the model. Useful for testing thinking display in isolation." />
         <SettingToggle label="Native Function Calling (GBNF)" value={settings.enableNativeFC !== false}
           onChange={v => updateSetting('enableNativeFC', v)}
-          hint="Use node-llama-cpp GBNF grammar to constrain FC generation. Disable if the model hangs for minutes generating tool call JSON — falling back to prose tool call parsing (toolParser.js)." />
+          hint="Use node-llama-cpp GBNF grammar to constrain FC generation. Disable if the model hangs for minutes generating tool call JSON â€” falling back to prose tool call parsing (toolParser.js)." />
         <SettingToggle label="Grammar-Constrained Tool Calls" value={settings.enableGrammar}
           onChange={v => updateSetting('enableGrammar', v)}
-          hint="Forces JSON schema grammar on raw output. Mutually exclusive with Native FC — enabling this disables native FC. May cause hangs on small models." />
+          hint="Forces JSON schema grammar on raw output. Mutually exclusive with Native FC â€” enabling this disables native FC. May cause hangs on small models." />
         <SettingToggle label="Context Summarizer" value={settings.enableContextSummarizer !== false}
           onChange={v => updateSetting('enableContextSummarizer', v)}
           hint="On context shift, generate a progress summary from dropped turns so the model can continue the task without losing track." />
@@ -1577,7 +1601,7 @@ function SettingsPanel() {
           hint="Auto-inject lint correction into model context after file writes detect errors." />
         <SettingToggle label="Sub-Agents (Experimental)" value={!!settings.enableSubAgents}
           onChange={v => updateSetting('enableSubAgents', v)}
-          hint="Allow model to spawn focused sub-agents using a fresh context window. Off by default — uses extra VRAM." />
+          hint="Allow model to spawn focused sub-agents using a fresh context window. Off by default â€” uses extra VRAM." />
       </SettingsSection>
 
       {/* Command Execution Policy */}
@@ -1585,7 +1609,7 @@ function SettingsPanel() {
         <div>
           <label className="text-[11px] text-vsc-text-dim block mb-1">Default Shell (Windows)</label>
           <select
-            className="w-full text-[11px] bg-vsc-input border border-vsc-panel-border/50 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
+            className="w-full text-[11px] bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
             value={settings.commandShell || 'powershell'}
             onChange={e => updateSetting('commandShell', e.target.value)}
           >
@@ -1599,14 +1623,14 @@ function SettingsPanel() {
         <div>
           <label className="text-[11px] text-vsc-text-dim block mb-1">Execution Policy</label>
           <select
-            className="w-full text-[11px] bg-vsc-input border border-vsc-panel-border/50 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
+            className="w-full text-[11px] bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
             value={settings.executionPolicy || 'auto'}
             onChange={e => updateSetting('executionPolicy', e.target.value)}
           >
-            <option value="disabled">Disabled — All commands require approval</option>
-            <option value="allowlist">Allowlist — Only safe commands auto-execute</option>
-            <option value="auto">Auto — Agent judges safety (recommended)</option>
-            <option value="turbo">Turbo — All commands auto-execute (except denylisted)</option>
+            <option value="disabled">Disabled â€” All commands require approval</option>
+            <option value="allowlist">Allowlist â€” Only safe commands auto-execute</option>
+            <option value="auto">Auto â€” Agent judges safety (recommended)</option>
+            <option value="turbo">Turbo â€” All commands auto-execute (except denylisted)</option>
           </select>
           <p className="text-[10px] text-vsc-text-muted mt-1">
             Controls how the agent executes shell commands. "Auto" lets the agent decide based on safety heuristics. "Turbo" auto-executes everything except explicitly denylisted commands. "Allowlist" only auto-executes commands in the allow list. "Disabled" requires approval for every command.
@@ -1615,7 +1639,7 @@ function SettingsPanel() {
         <div>
           <label className="text-[11px] text-vsc-text-dim block mb-1">Allow List (one per line)</label>
           <textarea
-            className="w-full text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/50 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50 resize-y min-h-[60px] max-h-[120px]"
+            className="w-full text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50 resize-y min-h-[60px] max-h-[120px]"
             value={(settings.commandAllowList || []).join('\n')}
             onChange={e => updateSetting('commandAllowList', e.target.value.split('\n').map(s => s.trim()).filter(Boolean))}
             placeholder="git status&#10;git log&#10;npm test"
@@ -1625,7 +1649,7 @@ function SettingsPanel() {
         <div>
           <label className="text-[11px] text-vsc-text-dim block mb-1">Deny List (one per line)</label>
           <textarea
-            className="w-full text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/50 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50 resize-y min-h-[60px] max-h-[120px]"
+            className="w-full text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50 resize-y min-h-[60px] max-h-[120px]"
             value={(settings.commandDenyList || []).join('\n')}
             onChange={e => updateSetting('commandDenyList', e.target.value.split('\n').map(s => s.trim()).filter(Boolean))}
             placeholder="rm -rf /&#10;format C:&#10;shutdown"
@@ -1795,7 +1819,7 @@ function SettingsPanel() {
           onChange={v => updateSetting('formatOnType', v)} />
       </SettingsSection>
 
-      {/* Auto-Update — opt-in, off by default */}
+      {/* Auto-Update â€” opt-in, off by default */}
       <UpdatesSettings settings={settings} updateSetting={updateSetting} />
 
       {/* Cloud AI Provider */}
@@ -1818,7 +1842,7 @@ function SettingsPanel() {
                 {modelInfo.contextHardwareCap != null && (
                   <span>HW cap: {Number(modelInfo.contextHardwareCap).toLocaleString()}{modelInfo.kvMemSource ? ` (${modelInfo.kvMemSource})` : ''}</span>
                 )}
-                {modelInfo.contextHardwareCap != null && modelInfo.contextTrainMax != null && <span> · </span>}
+                {modelInfo.contextHardwareCap != null && modelInfo.contextTrainMax != null && <span> Â· </span>}
                 {modelInfo.contextTrainMax != null && (
                   <span>Train max: {Number(modelInfo.contextTrainMax).toLocaleString()}</span>
                 )}
@@ -1847,7 +1871,7 @@ function SettingsPanel() {
             <div className="spinner" /><span>Loading model...</span>
           </div>
         )}
-        <button className="w-full mt-2 px-3 py-1.5 bg-vsc-button hover:bg-vsc-button-hover text-white rounded text-vsc-xs"
+        <button className="btn btn-primary w-full mt-2"
           onClick={() => {
             fetch('/api/models/scan', { method: 'POST' })
               .then(r => r.json())
@@ -1859,13 +1883,19 @@ function SettingsPanel() {
       </SettingsSection>
 
       {/* Tool Toggles */}
-      <ToolToggles />
+      <SettingsSection title="Tools" icon={<Wrench size={13} />} defaultOpen={false}>
+        <ToolToggles />
+      </SettingsSection>
 
       {/* MCP Servers */}
-      <MCPConfigPanel />
+      <SettingsSection title="MCP Servers" icon={<Server size={13} />} defaultOpen={false}>
+        <MCPConfigPanel />
+      </SettingsSection>
 
       {/* Keyboard Shortcuts */}
-      <KeyboardShortcuts />
+      <SettingsSection title="Keyboard Shortcuts" icon={<Keyboard size={13} />} defaultOpen={false}>
+        <KeyboardShortcuts />
+      </SettingsSection>
     </div>
   );
 }
@@ -1874,16 +1904,18 @@ function SettingsPanel() {
 function SettingsSection({ title, icon, defaultOpen = false, children }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="border-b border-vsc-panel-border/50">
+    <div className="border-b border-vsc-panel-border/25">
       <button
-        className="w-full flex items-center gap-2 py-2.5 px-3 text-[11px] font-semibold uppercase tracking-wider text-vsc-text-dim hover:bg-vsc-list-hover transition-colors"
+        className="w-full flex items-center gap-2 py-2.5 px-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim hover:bg-vsc-list-hover transition-colors"
         onClick={() => setOpen(v => !v)}
       >
         <ChevronRight size={12} className={`transition-transform flex-shrink-0 ${open ? 'rotate-90' : ''}`} />
         {icon}
         {title}
       </button>
-      {open && <div className="px-3 pb-3 space-y-3">{children}</div>}
+      <SlideDown isOpen={open}>
+        <div className="px-3 pb-3 space-y-3">{children}</div>
+      </SlideDown>
     </div>
   );
 }
@@ -2104,7 +2136,7 @@ function ToolToggles() {
   };
 
   return (
-    <div className="px-3 py-2 border-t border-vsc-panel-border/50">
+    <div className="px-3 py-2 border-t border-vsc-panel-border/25">
       <h3 className="text-vsc-sm font-semibold text-vsc-text mb-1 flex items-center gap-1.5">
         <Wrench size={14} className="text-vsc-accent" />
         Tools
@@ -2166,16 +2198,16 @@ function ToolToggles() {
 
 function KeyboardShortcuts() {
   return (
-    <div className="px-3 py-2 border-t border-vsc-panel-border/50">
+    <div className="px-3 py-2 border-t border-vsc-panel-border/25 overflow-x-auto">
       <h3 className="text-vsc-sm font-semibold text-vsc-text mb-2 flex items-center gap-1.5">
         <Keyboard size={14} className="text-vsc-accent" />
         Keyboard Shortcuts
       </h3>
       <div className="space-y-0.5">
         {KEYBOARD_SHORTCUTS.map(s => (
-          <div key={s.keys} className="flex items-center justify-between px-1 py-0.5 text-vsc-xs">
-            <span className="text-vsc-text-dim">{s.action}</span>
-            <kbd className="bg-vsc-badge px-1.5 py-0.5 rounded text-[10px] font-mono text-vsc-text-bright">{s.keys}</kbd>
+          <div key={s.keys} className="flex items-center justify-between px-1 py-0.5 text-vsc-xs min-w-0">
+            <span className="text-vsc-text-dim truncate mr-2">{s.action}</span>
+            <kbd className="bg-vsc-badge px-1.5 py-0.5 rounded text-[10px] font-mono text-vsc-text-bright flex-shrink-0">{s.keys}</kbd>
           </div>
         ))}
       </div>
@@ -2238,7 +2270,7 @@ function MCPConfigPanel() {
   };
 
   return (
-    <div className="px-3 py-2 border-t border-vsc-panel-border/50">
+    <div className="px-3 py-2 border-t border-vsc-panel-border/25">
       <h3 className="text-vsc-sm font-semibold text-vsc-text mb-2 flex items-center gap-1.5">
         <Server size={14} className="text-vsc-accent" />
         MCP Servers
@@ -2272,7 +2304,7 @@ function MCPConfigPanel() {
       </div>
 
       {adding ? (
-        <div className="space-y-1.5 p-2 bg-vsc-bg rounded border border-vsc-panel-border/30">
+        <div className="space-y-1.5 p-2 bg-vsc-bg rounded border border-vsc-panel-border/15">
           <input
             className="w-full h-6 px-2 text-vsc-xs bg-vsc-input border border-vsc-input-border rounded-sm"
             placeholder="Server name"
@@ -2294,14 +2326,14 @@ function MCPConfigPanel() {
           />
           <div className="flex gap-1.5">
             <button
-              className="flex-1 px-2 py-1 bg-vsc-accent hover:bg-vsc-accent-hover text-white rounded text-vsc-xs disabled:opacity-40"
+              className="btn btn-primary flex-1 disabled:opacity-40"
               onClick={handleAdd}
               disabled={!name.trim() || !command.trim()}
             >
               Add
             </button>
             <button
-              className="flex-1 px-2 py-1 bg-vsc-input hover:bg-vsc-list-hover text-vsc-text rounded text-vsc-xs"
+              className="btn flex-1"
               onClick={() => { setAdding(false); setName(''); setCommand(''); setArgs(''); }}
             >
               Cancel
@@ -2427,12 +2459,12 @@ function DebugPanel() {
     }
   }, [expandedFrames]);
 
-  // No active session — show launch config
+  // No active session â€” show launch config
   if (!isActive) {
     return (
       <div className="flex flex-col h-full">
         <div className="sidebar-header">
-          <span className="font-semibold text-vsc-xs uppercase tracking-wider">Run and Debug</span>
+          <span className="font-semibold text-vsc-xs tracking-wider">Run and Debug</span>
         </div>
         <div className="flex-1 overflow-y-auto scrollbar-vsc p-3 space-y-3">
           {debugError && (
@@ -2479,7 +2511,7 @@ function DebugPanel() {
           </div>
 
           <button
-            className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 bg-vsc-accent hover:bg-vsc-accent/80 text-white rounded text-vsc-sm disabled:opacity-50"
+            className="btn btn-primary w-full flex items-center justify-center gap-1.5 disabled:opacity-50"
             onClick={handleStart}
             disabled={actionLoading || !program.trim()}
           >
@@ -2499,11 +2531,11 @@ function DebugPanel() {
     );
   }
 
-  // Active session — show debugger controls
+  // Active session â€” show debugger controls
   return (
     <div className="flex flex-col h-full">
       <div className="sidebar-header justify-between">
-        <span className="font-semibold text-vsc-xs uppercase tracking-wider">
+        <span className="font-semibold text-vsc-xs tracking-wider">
           <Bug size={12} className="inline mr-1" />
           Debugging
         </span>
@@ -2552,7 +2584,7 @@ function DebugPanel() {
         {/* Call Stack */}
         <div className="border-b border-vsc-border">
           <button
-            className="w-full flex items-center gap-1 px-3 py-1.5 text-vsc-xs font-semibold uppercase tracking-wider text-vsc-text-dim hover:text-vsc-text"
+            className="w-full flex items-center gap-1 px-3 py-1.5 text-vsc-xs font-semibold tracking-wider text-vsc-text-dim hover:text-vsc-text"
             onClick={() => setShowCallStack(v => !v)}
           >
             {showCallStack ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -2570,7 +2602,7 @@ function DebugPanel() {
                     key={frame.id || i}
                     className={`w-full text-left px-3 py-0.5 text-vsc-xs hover:bg-vsc-bg-light rounded truncate ${i === 0 ? 'text-yellow-300' : 'text-vsc-text-dim'}`}
                     onClick={() => loadFrameScopes(i)}
-                    title={`${frame.name} — ${frame.source || 'unknown'}:${frame.line || '?'}`}
+                    title={`${frame.name} â€” ${frame.source || 'unknown'}:${frame.line || '?'}`}
                   >
                     <span className="text-vsc-text">{frame.name || '<anonymous>'}</span>
                     {frame.source && (
@@ -2588,7 +2620,7 @@ function DebugPanel() {
         {/* Variables */}
         <div className="border-b border-vsc-border">
           <button
-            className="w-full flex items-center gap-1 px-3 py-1.5 text-vsc-xs font-semibold uppercase tracking-wider text-vsc-text-dim hover:text-vsc-text"
+            className="w-full flex items-center gap-1 px-3 py-1.5 text-vsc-xs font-semibold tracking-wider text-vsc-text-dim hover:text-vsc-text"
             onClick={() => setShowVariables(v => !v)}
           >
             {showVariables ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -2640,7 +2672,7 @@ function DebugPanel() {
         {/* Debug Console */}
         <div>
           <button
-            className="w-full flex items-center gap-1 px-3 py-1.5 text-vsc-xs font-semibold uppercase tracking-wider text-vsc-text-dim hover:text-vsc-text"
+            className="w-full flex items-center gap-1 px-3 py-1.5 text-vsc-xs font-semibold tracking-wider text-vsc-text-dim hover:text-vsc-text"
             onClick={() => setShowConsole(v => !v)}
           >
             {showConsole ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -2670,7 +2702,7 @@ function DebugPanel() {
                     onKeyDown={e => e.key === 'Enter' && handleEvaluate()}
                   />
                   <button
-                    className="px-2 py-1 bg-vsc-accent hover:bg-vsc-accent/80 text-white rounded text-vsc-xs disabled:opacity-50"
+                    className="btn btn-primary px-2 py-1 disabled:opacity-50"
                     onClick={handleEvaluate}
                     disabled={!evalExpr.trim()}
                   >

@@ -92,7 +92,9 @@ export default function EditorArea() {
   const closeDiff = useAppStore(s => s.closeDiff);
   const [tabContextMenu, setTabContextMenu] = useState(null);
   const [inlineChat, setInlineChat] = useState(null);
-  const [previewMode, setPreviewMode] = useState({}); // { [tabId]: boolean }
+  const previewMode = useAppStore(s => s.previewMode);
+  const setPreviewMode = useAppStore(s => s.setPreviewMode);
+  const togglePreviewMode = useAppStore(s => s.togglePreviewMode);
   const editorRef = useRef(null);
   const dirtyDecorationsRef = useRef(null);
   const previewRequested = useAppStore(s => s.previewRequested);
@@ -102,7 +104,7 @@ export default function EditorArea() {
   useEffect(() => {
     if (previewRequested && activeTabId) {
       closeDiff();
-      setPreviewMode(p => ({ ...p, [activeTabId]: true }));
+      setPreviewMode(activeTabId, true);
       useAppStore.getState().setPreviewRequested(false);
     }
   }, [previewRequested, activeTabId, closeDiff]);
@@ -322,9 +324,9 @@ export default function EditorArea() {
                   onClick={(e) => { 
                     e.stopPropagation(); 
                     closeDiff();
-                    setPreviewMode(p => ({ ...p, [tab.id]: true }));
+                    togglePreviewMode(tab.id);
                   }}
-                  title="Preview in viewport"
+                  title={previewMode[tab.id] ? 'Show code' : 'Preview in viewport'}
                 >
                   <Play size={12} />
                 </button>
@@ -427,7 +429,7 @@ export default function EditorArea() {
               }`}
               onClick={() => {
                 closeDiff();
-                setPreviewMode(p => ({ ...p, [activeTab.id]: !p[activeTab.id] }));
+                togglePreviewMode(activeTab.id);
               }}
               title={previewMode[activeTab.id] ? 'Show code' : 'Show preview'}
             >
@@ -534,7 +536,7 @@ export default function EditorArea() {
         ) : activeTab && previewMode[activeTab.id] && getPreviewType(activeTab.path) ? (
           (() => {
             const type = getPreviewType(activeTab.path);
-            const toggle = () => setPreviewMode(p => ({ ...p, [activeTab.id]: false }));
+            const toggle = () => setPreviewMode(activeTab.id, false);
             switch (type) {
               case 'html': return <HtmlPreview content={activeTab.content} filePath={activeTab.path} onToggleCode={toggle} />;
               case 'markdown': return <MarkdownPreview content={activeTab.content} filePath={activeTab.path} onToggleCode={toggle} />;
@@ -749,7 +751,7 @@ function WelcomeScreen() {
       <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4 w-full max-w-xl mx-auto text-left relative z-10">
         {/* Start */}
         <div>
-          <h3 className="text-vsc-xs font-semibold text-vsc-text-dim uppercase tracking-wider mb-2">Start</h3>
+          <h3 className="text-vsc-xs font-semibold text-vsc-text-dim tracking-wider mb-2">Start</h3>
           <div className="flex flex-col gap-1">
             <button className="welcome-action" onClick={openFolder}>
               <FolderOpen size={16} />
@@ -772,7 +774,7 @@ function WelcomeScreen() {
 
         {/* Shortcuts */}
         <div>
-          <h3 className="text-vsc-xs font-semibold text-vsc-text-dim uppercase tracking-wider mb-2">Keyboard Shortcuts</h3>
+          <h3 className="text-vsc-xs font-semibold text-vsc-text-dim tracking-wider mb-2">Keyboard Shortcuts</h3>
           <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-vsc-xs">
             <kbd className="kbd">Ctrl+Shift+P</kbd><span className="text-vsc-text">Command Palette</span>
             <kbd className="kbd">Ctrl+B</kbd><span className="text-vsc-text">Toggle Sidebar</span>

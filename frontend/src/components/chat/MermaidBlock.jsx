@@ -1,5 +1,5 @@
-/**
- * MermaidBlock — Renders mermaid diagram code into an SVG.
+﻿/**
+ * MermaidBlock â€” Renders mermaid diagram code into an SVG.
  * Used by MarkdownRenderer when a code block has language "mermaid".
  */
 import { useEffect, useRef, useState } from 'react';
@@ -52,7 +52,7 @@ export default function MermaidBlock({ children }) {
 
   if (!svg) {
     return (
-      <div className="my-2 p-4 rounded-md bg-vsc-sidebar border border-vsc-panel-border/40 text-vsc-text-dim text-vsc-sm">
+      <div className="my-2 p-4 rounded-md bg-vsc-sidebar border border-vsc-panel-border/20 text-vsc-text-dim text-vsc-sm">
         Rendering diagram...
       </div>
     );
@@ -61,7 +61,7 @@ export default function MermaidBlock({ children }) {
   return (
     <div
       ref={containerRef}
-      className="my-2 p-4 rounded-md bg-vsc-sidebar border border-vsc-panel-border/40 overflow-x-auto"
+      className="my-2 p-4 rounded-md bg-vsc-sidebar border border-vsc-panel-border/20 overflow-x-auto"
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   );

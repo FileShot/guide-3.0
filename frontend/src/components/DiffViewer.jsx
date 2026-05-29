@@ -1,5 +1,5 @@
-/**
- * DiffViewer — Side-by-side diff viewer using Monaco's DiffEditor.
+﻿/**
+ * DiffViewer â€” Side-by-side diff viewer using Monaco's DiffEditor.
  * Opened via store.openDiff(original, modified, title).
  */
 import { useState } from 'react';
@@ -17,7 +17,7 @@ export default function DiffViewer() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="h-[35px] flex items-center justify-between px-3 border-b border-vsc-panel-border/50 no-select flex-shrink-0 bg-vsc-tab-border">
+      <div className="h-[35px] flex items-center justify-between px-3 border-b border-vsc-panel-border/25 no-select flex-shrink-0 bg-vsc-tab-border">
         <div className="flex items-center gap-2 text-vsc-sm text-vsc-text">
           <span className="text-vsc-accent font-medium">Diff</span>
           <span className="text-vsc-text-dim truncate max-w-[200px]">{diffState.title || 'Untitled'}</span>

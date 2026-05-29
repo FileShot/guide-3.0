@@ -1,5 +1,5 @@
-/**
- * WelcomeScreen — Full-page overlay shown on app startup.
+﻿/**
+ * WelcomeScreen â€” Full-page overlay shown on app startup.
  * Premium Windsurf/Cursor-inspired design with animated wavy background,
  * glassmorphism cards, recommended model downloads, and smooth animations.
  */
@@ -12,7 +12,7 @@ import {
   Cpu, Sparkles, Globe,
 } from 'lucide-react';
 
-// Recommended models — curated for first-time users
+// Recommended models â€” curated for first-time users
 const RECOMMENDED_MODELS = [
   {
     name: 'Qwen 3.5 4B',
@@ -66,7 +66,7 @@ export default function WelcomeScreen() {
   if (showDownloadPanel) {
     return (
       <div className="fixed inset-0 z-[100] flex items-center justify-center bg-vsc-bg/80 backdrop-blur-sm">
-        <div className="w-full max-w-[500px] h-[80vh] bg-vsc-sidebar rounded-2xl border border-vsc-panel-border/50 shadow-2xl overflow-hidden">
+        <div className="w-full max-w-[500px] h-[80vh] bg-vsc-sidebar rounded-2xl border border-vsc-panel-border/25 shadow-2xl overflow-hidden">
           <ModelDownloadPanel onBack={() => setShowDownloadPanel(false)} />
         </div>
       </div>
@@ -202,19 +202,22 @@ export default function WelcomeScreen() {
           <div
             className="w-20 h-20 mb-4 bg-vsc-accent"
             style={{
-              mask: 'url(./icon.png) center/contain no-repeat',
-              WebkitMask: 'url(./icon.png) center/contain no-repeat',
+              maskImage: 'url(/zzz.png)',
+              WebkitMaskImage: 'url(/zzz.png)',
+              maskSize: 'contain',
+              WebkitMaskSize: 'contain',
+              maskPosition: 'center',
+              WebkitMaskPosition: 'center',
+              maskRepeat: 'no-repeat',
+              WebkitMaskRepeat: 'no-repeat',
               filter: 'drop-shadow(0 0 30px rgb(var(--guide-accent) / 0.5))',
             }}
           />
           <div className="absolute inset-0 w-20 h-20 rounded-full animate-pulse"
                style={{ background: 'radial-gradient(circle, rgb(var(--guide-accent) / 0.15) 0%, transparent 70%)' }} />
         </div>
-        <h1 className="text-[36px] font-brand text-vsc-accent tracking-tight" style={{ textShadow: '0 0 40px rgb(var(--guide-accent) / 0.3)' }}>
-          guIDE
-        </h1>
         <p className="text-[13px] text-vsc-text-dim/70 mt-1 font-light">
-          Local AI — No cloud required
+          Local AI â€” No cloud required
         </p>
       </div>
 
@@ -244,11 +247,11 @@ export default function WelcomeScreen() {
       {/* Main content grid */}
       <div className="w-full max-w-[920px] px-6 flex gap-6 min-h-0 pb-12 relative z-10">
 
-        {/* Left Column — Recent + Shortcuts */}
+        {/* Left Column â€” Recent + Shortcuts */}
         <div className="flex-1 min-w-0" style={anim(0.3)}>
           {recentFolders.length > 0 ? (
             <div className="glass-card rounded-2xl p-4 mb-5">
-              <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold uppercase tracking-wider text-vsc-text-dim/80">
+              <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim/80">
                 <Clock size={12} />
                 Recent Projects
               </div>
@@ -292,7 +295,7 @@ export default function WelcomeScreen() {
 
           {/* Keyboard Shortcuts */}
           <div className="glass-card rounded-2xl p-4">
-            <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold uppercase tracking-wider text-vsc-text-dim/80">
+            <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim/80">
               <Keyboard size={12} />
               Shortcuts
             </div>
@@ -314,11 +317,11 @@ export default function WelcomeScreen() {
           </div>
         </div>
 
-        {/* Right Column — Models */}
+        {/* Right Column â€” Models */}
         <div className={recentFolders.length > 0 ? 'w-[340px] flex-shrink-0' : 'flex-1 min-w-0'} style={anim(0.4)}>
           {/* Cloud AI Card */}
           <div className="glass-card rounded-2xl p-4 mb-5">
-            <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold uppercase tracking-wider text-vsc-text-dim/80">
+            <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim/80">
               <Cloud size={12} />
               Cloud AI
             </div>
@@ -342,7 +345,7 @@ export default function WelcomeScreen() {
 
           {/* Recommended Models */}
           <div className="glass-card rounded-2xl p-4 mb-5">
-            <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold uppercase tracking-wider text-vsc-text-dim/80">
+            <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim/80">
               <Sparkles size={12} />
               Recommended Models
             </div>
@@ -359,7 +362,7 @@ export default function WelcomeScreen() {
                     }`}
                   >
                     {rec.tier === 'recommended' && (
-                      <div className="absolute -top-2 right-3 text-[9px] font-semibold px-2 py-0.5 rounded-full bg-vsc-accent text-vsc-bg uppercase tracking-wider">
+                      <div className="absolute -top-2 right-3 text-[9px] font-semibold px-2 py-0.5 rounded-full bg-vsc-accent text-vsc-bg tracking-wider">
                         Best
                       </div>
                     )}
@@ -399,7 +402,7 @@ export default function WelcomeScreen() {
           {/* Installed Models */}
           {llmModels.length > 0 && (
             <div className="glass-card rounded-2xl p-4">
-              <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold uppercase tracking-wider text-vsc-text-dim/80">
+              <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim/80">
                 <Package size={12} />
                 Installed Models
                 <button
@@ -499,7 +502,7 @@ export default function WelcomeScreen() {
 
       {/* Footer */}
       <div className="pb-6 text-[10px] text-vsc-text-dim/30 select-none relative z-10" style={anim(0.5)}>
-        guIDE {appVersion || ''} — Local-first AI IDE. Built for offline inference.
+        guIDE {appVersion || ''} â€” Local-first AI IDE. Built for offline inference.
       </div>
     </div>
   );

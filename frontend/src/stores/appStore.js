@@ -354,6 +354,16 @@ const useAppStore = create((set, get) => ({
 
   setPreviewRequested: (val) => set({ previewRequested: val }),
 
+  previewMode: {}, // { [tabId]: boolean } — lifted from EditorArea local state so Sidebar can toggle
+
+  setPreviewMode: (tabId, enabled) => set((state) => ({
+    previewMode: { ...state.previewMode, [tabId]: enabled },
+  })),
+
+  togglePreviewMode: (tabId) => set((state) => ({
+    previewMode: { ...state.previewMode, [tabId]: !state.previewMode[tabId] },
+  })),
+
 
 
   // ─── Chat ──────────────────────────────────────────────
@@ -637,7 +647,7 @@ const useAppStore = create((set, get) => ({
 
         set({ chatStreamingText: newText, streamingSegments: newSegs, _textTokenBuffer: null, _textTokenTimer: null });
 
-      }, 80);
+      }, 16);
 
       set({ _textTokenBuffer: token, _textTokenTimer: store._textTokenTimer });
 
@@ -794,7 +804,10 @@ const useAppStore = create((set, get) => ({
 
     const store = get();
 
-    const normalizedKey = fileKey || canonicalizeStreamingFilePath(filePath);
+    // Always canonicalize filePath for dedup — the fileKey from events may be raw
+    // (e.g., regex-captured path with double backslashes from JSON text) which would
+    // mismatch the canonicalized key used by addCompleteFileContentBlock.
+    const normalizedKey = canonicalizeStreamingFilePath(filePath) || fileKey || '';
 
     if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
 
@@ -942,7 +955,7 @@ const useAppStore = create((set, get) => ({
 
         set({ streamingFileBlocks: updated, _fileTokenBuffer: null, _fileTokenTimer: null });
 
-      }, 100);
+      }, 16);
 
       set({ _fileTokenBuffer: chunk, _fileTokenTimer: store._fileTokenTimer });
 
@@ -964,7 +977,10 @@ const useAppStore = create((set, get) => ({
    */
   addCompleteFileContentBlock: ({ filePath, fileKey, language, fileName, content }) => {
     const store = get();
-    const normalizedKey = fileKey || canonicalizeStreamingFilePath(filePath);
+    // Always canonicalize filePath for dedup — the fileKey from events may be raw
+    // (e.g., regex-captured path with double backslashes from JSON text) which would
+    // mismatch the canonicalized key used by startFileContentBlock.
+    const normalizedKey = canonicalizeStreamingFilePath(filePath) || fileKey || '';
     if (!normalizedKey || content == null) return;
 
     if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
