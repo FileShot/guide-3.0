@@ -38,7 +38,7 @@ export default function Sidebar() {
   }
 
   return (
-    <div className="animate-slide-right">
+    <div className="animate-slide-right flex flex-col h-full min-h-0">
       {panel}
     </div>
   );
@@ -118,7 +118,7 @@ function FileExplorer() {
   }, [setProjectPath, setFileTree, addNotification]);
 
   return (
-    <div className="flex flex-col h-full bg-vsc-sidebar/85 backdrop-blur-sm">
+    <div className="flex flex-col h-full min-h-0 bg-vsc-sidebar/85 backdrop-blur-sm">
       <div className="sidebar-header justify-between">
         <span>Explorer</span>
         <div className="flex items-center gap-1">
@@ -145,7 +145,7 @@ function FileExplorer() {
           </button>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin">
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scrollbar-thin">
           <div className="sidebar-section-header shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]">
             <ChevronDown size={12} className="mr-1 flex-shrink-0" />
             <span className="truncate">{projectPath.split(/[\\/]/).pop()}</span>

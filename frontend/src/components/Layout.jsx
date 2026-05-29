@@ -71,7 +71,7 @@ export default function Layout() {
         {/* Sidebar */}
         {sidebarVisible && (
           <>
-            <div style={{ width: sidebarWidth, minWidth: 180 }} className="bg-vsc-sidebar overflow-hidden">
+            <div style={{ width: sidebarWidth, minWidth: 180 }} className="flex flex-col h-full min-h-0 bg-vsc-sidebar overflow-hidden">
               <Sidebar />
             </div>
             <div
