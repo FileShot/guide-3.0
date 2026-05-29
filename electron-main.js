@@ -74,6 +74,7 @@ function createWindow() {
     titleBarStyle: 'hidden',
     autoHideMenuBar: true,
     transparent: true,
+    roundedCorners: true,
     show: false,
     webPreferences: {
       contextIsolation: true,

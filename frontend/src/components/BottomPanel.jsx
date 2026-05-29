@@ -117,45 +117,6 @@ export default function BottomPanel() {
           >
             <Plus size={13} />
           </button>
-          <div className="relative flex-shrink-0">
-            <button className={`p-1 hover:bg-vsc-list-hover rounded text-vsc-text-dim hover:text-vsc-text ${termDropdown === 'select' ? 'bg-vsc-list-hover text-vsc-text' : ''}`} title="Select Terminal" onClick={() => setTermDropdown(termDropdown === 'select' ? null : 'select')}>
-              <ChevronDown size={13} />
-            </button>
-            {termDropdown === 'select' && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setTermDropdown(null)} />
-                <div className="absolute top-full right-0 mt-0.5 z-50 bg-vsc-sidebar border border-vsc-panel-border rounded-md shadow-lg py-1 min-w-[140px]">
-                  {terminalTabs.map(tab => (
-                    <button key={tab.id} className={`flex items-center gap-2 w-full px-3 py-1.5 text-vsc-xs hover:bg-vsc-list-hover ${activeTerminalTab === tab.id ? 'text-vsc-text-bright' : 'text-vsc-text-dim'}`} onClick={() => { setActiveTerminalTab(tab.id); setTermDropdown(null); }}>
-                      <TerminalIcon size={11} />
-                      <span className="truncate">{tab.name}</span>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-          <div className="relative flex-shrink-0">
-            <button className={`p-1 hover:bg-vsc-list-hover rounded text-vsc-text-dim hover:text-vsc-text ${termDropdown === 'actions' ? 'bg-vsc-list-hover text-vsc-text' : ''}`} title="More Actions" onClick={() => setTermDropdown(termDropdown === 'actions' ? null : 'actions')}>
-              <MoreHorizontal size={13} />
-            </button>
-            {termDropdown === 'actions' && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setTermDropdown(null)} />
-                <div className="absolute top-full right-0 mt-0.5 z-50 bg-vsc-sidebar border border-vsc-panel-border rounded-md shadow-lg py-1 min-w-[160px]">
-                  <button className="flex items-center gap-2 w-full px-3 py-1.5 text-vsc-xs text-vsc-text-dim hover:bg-vsc-list-hover hover:text-vsc-text" onClick={() => { addTerminalTab(); setTermDropdown(null); }}>
-                    <Plus size={12} /> New Terminal
-                  </button>
-                  <button className="flex items-center gap-2 w-full px-3 py-1.5 text-vsc-xs text-vsc-text-dim hover:bg-vsc-list-hover hover:text-vsc-text" onClick={() => { closeTerminalTab(activeTerminalTab); setTermDropdown(null); }}>
-                    <X size={12} /> Close Terminal
-                  </button>
-                  <button className="flex items-center gap-2 w-full px-3 py-1.5 text-vsc-xs text-vsc-text-dim hover:bg-vsc-list-hover hover:text-vsc-text" onClick={() => { terminalTabs.forEach(t => closeTerminalTab(t.id)); setTermDropdown(null); }}>
-                    <Trash2 size={12} /> Close All
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
           <button className="p-1 hover:bg-vsc-list-hover rounded flex-shrink-0" title="Clear" onClick={() => {}}>
             <Trash2 size={13} className="text-vsc-text-dim" />
           </button>
