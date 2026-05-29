@@ -49,7 +49,7 @@ export default function Layout() {
 
   return (
     <div
-      className="flex flex-col overflow-hidden bg-vsc-bg w-full h-full rounded-xl"
+      className="flex flex-col overflow-hidden bg-vsc-bg w-full h-full rounded-xl isolation-isolate"
       style={{
         boxShadow: '0 0 0 1px rgba(0,0,0,0.3), 0 4px 24px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.2)',
         ...(zoomLevel !== 1 ? {

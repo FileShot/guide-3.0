@@ -955,10 +955,30 @@ function stripToolCallText(text) {
   }
   console.log(`[ToolParser] stripToolCallText START: textLen=${text.length}`);
   const ranges = [];
+  let m;
+
+  // Pattern 0a: <tool_call>...</tool_call> blocks (GLM/Qwen XML)
+  const toolCallXmlRe = /<tool_call>[\s\S]*?<\/tool_call>/g;
+  while ((m = toolCallXmlRe.exec(text)) !== null) {
+    ranges.push([m.index, m.index + m[0].length]);
+  }
+
+  // Pattern 0b: orphan <tool_call> through end (truncated generation)
+  const orphanToolCallRe = /<tool_call>[\s\S]*$/g;
+  while ((m = orphanToolCallRe.exec(text)) !== null) {
+    if (!_isInsideExistingRange(ranges, m.index)) {
+      ranges.push([m.index, m.index + m[0].length]);
+    }
+  }
+
+  // Pattern 0c: <arg_key>...</arg_key><arg_value>...</arg_value> pairs
+  const argPairRe = /<arg_key>[\s\S]*?<\/arg_key>\s*<arg_value>[\s\S]*?<\/arg_value>/g;
+  while ((m = argPairRe.exec(text)) !== null) {
+    ranges.push([m.index, m.index + m[0].length]);
+  }
 
   // Pattern 1: XML ◠...◠
   const xmlRe = /◠\s*[\s\S]*?\s*<\/tool_call>/g;
-  let m;
   while ((m = xmlRe.exec(text)) !== null) {
     ranges.push([m.index, m.index + m[0].length]);
   }

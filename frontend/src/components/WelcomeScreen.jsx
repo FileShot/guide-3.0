@@ -6,6 +6,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import useAppStore from '../stores/appStore';
 import ModelDownloadPanel from './ModelDownloadPanel';
+import GuideLogo from './GuideLogo';
 import {
   FolderOpen, Plus, Clock, ChevronRight, Package, Cloud,
   Star, Loader2, Zap, Code2, Brain, Keyboard, ArrowRight, Download,
@@ -199,19 +200,10 @@ export default function WelcomeScreen() {
       {/* Logo + Brand */}
       <div className="flex flex-col items-center mt-14 mb-6 select-none relative z-10" style={anim(0.1)}>
         <div className="relative">
-          <div
-            className="w-20 h-20 mb-4 bg-vsc-accent"
-            style={{
-              maskImage: 'url(/zzz.png)',
-              WebkitMaskImage: 'url(/zzz.png)',
-              maskSize: 'contain',
-              WebkitMaskSize: 'contain',
-              maskPosition: 'center',
-              WebkitMaskPosition: 'center',
-              maskRepeat: 'no-repeat',
-              WebkitMaskRepeat: 'no-repeat',
-              filter: 'drop-shadow(0 0 30px rgb(var(--guide-accent) / 0.5))',
-            }}
+          <GuideLogo
+            size={80}
+            className="mb-4"
+            style={{ filter: 'drop-shadow(0 0 30px rgb(var(--guide-accent) / 0.5))' }}
           />
           <div className="absolute inset-0 w-20 h-20 rounded-full animate-pulse"
                style={{ background: 'radial-gradient(circle, rgb(var(--guide-accent) / 0.15) 0%, transparent 70%)' }} />

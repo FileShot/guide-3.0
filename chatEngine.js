@@ -1577,10 +1577,12 @@ class ChatEngine extends EventEmitter {
         return /^[a-z]:\//i.test(n) ? n.toLowerCase() : n;
       };
       let _sfVisibleChars = 0; // tracks chars forwarded to frontend (after filter removes tool JSON)
+      let _sfRoundVisibleBuf = ''; // exact text forwarded this generation round (for llm-replace-last)
       let _sfFenceInThink = false; // fence that opened inside think mode
 
       const _sfForward = (text) => {
         _sfVisibleChars += text.length;
+        _sfRoundVisibleBuf += text;
         if (_sfVisibleChars <= 30 || _sfVisibleChars % 1000 < text.length) {
           console.log(`[StreamDiag] FORWARD: chars=${_sfVisibleChars} tail=${JSON.stringify(text.slice(-10))}`);
         }
@@ -2796,10 +2798,15 @@ class ChatEngine extends EventEmitter {
         // CRITICAL: use _sfVisibleChars (chars actually sent to frontend) not fullResponse.length.
         // fullResponse includes suppressed tool JSON that the frontend never received.
         // Using fullResponse.length causes keepLen=0 in the frontend, destroying ALL previous prose.
-        if (parsedCalls.length > 0 && onStreamEvent) {
-          const cleanText = stripToolCallText(fullResponse);
-          if (cleanText.length < _sfVisibleChars) {
-            onStreamEvent('llm-replace-last', { originalLength: _sfVisibleChars, replacement: cleanText });
+        if (parsedCalls.length > 0 && onStreamEvent && _sfRoundVisibleBuf) {
+          const cleanRound = stripToolCallText(_sfRoundVisibleBuf);
+          if (cleanRound !== _sfRoundVisibleBuf) {
+            console.log(`[ChatEngine] llm-replace-last (primary): visibleRound=${_sfRoundVisibleBuf.length} cleanRound=${cleanRound.length}`);
+            onStreamEvent('llm-replace-last', {
+              originalLength: _sfRoundVisibleBuf.length,
+              replacement: cleanRound,
+            });
+            _sfRoundVisibleBuf = cleanRound;
           }
         }
 
@@ -3270,6 +3277,7 @@ class ChatEngine extends EventEmitter {
           _sfUnicodeCount = 0;
           _sfUnicodeChars = '';
           _sfVisibleChars = 0;
+          _sfRoundVisibleBuf = '';
           _sfInThink = false;
           _sfThinkBuf = '';
           _sfThinkTagMatch = '';
@@ -3289,7 +3297,6 @@ class ChatEngine extends EventEmitter {
           console.log(`[ChatEngine] Continuation maxTokens: ${genOptions.maxTokens} (ctx used: ${ctxUsedNow}/${contextSize})`);
 
           roundStart = fullResponse.length;
-          const _sfVisibleAtRoundStart = _sfVisibleChars; // snapshot before this round's generation
           console.log(`[ChatEngine] Calling generateResponse CONTINUATION: history=${this._chatHistory.length} msgs`);
           result = await this._generateResponseSafe(genOptions, {
             contextSize,
@@ -3334,18 +3341,21 @@ class ChatEngine extends EventEmitter {
 
           // Parse only the NEW text from this round (avoid re-executing previous tool calls)
           const newText = fullResponse.substring(roundStart);
-          const newVisibleChars = _sfVisibleChars - _sfVisibleAtRoundStart; // visible chars from this round only
           parsedCalls = parseToolCalls(newText);
           if (parsedCalls.length > 0) {
             const { repaired } = repairToolCalls(parsedCalls, newText);
             parsedCalls = filterWebWorkspaceToolConflict(repaired);
 
-            // Safety net cleanup for any missed tool JSON in new text
-            // CRITICAL: use newVisibleChars (actual chars sent to frontend this round) not newText.length
-            if (onStreamEvent) {
-              const cleanNewText = stripToolCallText(newText);
-              if (cleanNewText.length < newVisibleChars) {
-                onStreamEvent('llm-replace-last', { originalLength: newVisibleChars, replacement: cleanNewText });
+            // Safety net: strip only what was actually sent to the UI this round (not raw model output)
+            if (onStreamEvent && _sfRoundVisibleBuf) {
+              const cleanRound = stripToolCallText(_sfRoundVisibleBuf);
+              if (cleanRound !== _sfRoundVisibleBuf) {
+                console.log(`[ChatEngine] llm-replace-last (continuation): visibleRound=${_sfRoundVisibleBuf.length} cleanRound=${cleanRound.length}`);
+                onStreamEvent('llm-replace-last', {
+                  originalLength: _sfRoundVisibleBuf.length,
+                  replacement: cleanRound,
+                });
+                _sfRoundVisibleBuf = cleanRound;
               }
             }
           }

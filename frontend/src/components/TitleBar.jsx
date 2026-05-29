@@ -7,6 +7,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import useAppStore from '../stores/appStore';
 import { Search, Menu, ChevronRight, X, PanelLeft, PanelBottom, PanelRight, LayoutTemplate } from 'lucide-react';
 import SlideDown from './SlideDown';
+import GuideLogo from './GuideLogo';
 
 const wc = () => window.electronAPI?.windowControls;
 
@@ -152,11 +153,7 @@ export default function TitleBar() {
           {openMenu ? <X size={14} /> : <Menu size={14} />}
         </button>
 
-        <div className="flex items-center gap-0.5 flex-shrink-0" title="guIDE">
-          <span className="text-[13px] font-bold text-vsc-accent">g</span>
-          <span className="text-[13px] font-bold text-vsc-text">u</span>
-          <span className="text-[11px] font-bold text-vsc-text opacity-70">IDE</span>
-        </div>
+        <GuideLogo size={18} />
 
       {/* Hamburger Panel — absolute so it does not affect grid column width */}
       <SlideDown isOpen={openMenu}>

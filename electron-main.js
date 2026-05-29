@@ -69,7 +69,7 @@ function createWindow() {
     minHeight: 600,
     title: 'guIDE',
     icon: path.join(__dirname, 'build', 'icon.ico'),
-    backgroundColor: '#0d0d0d',
+    backgroundColor: '#00000000',
     frame: false,
     titleBarStyle: 'hidden',
     autoHideMenuBar: true,
@@ -88,6 +88,7 @@ function createWindow() {
   mainWindow.loadURL('data:text/html,' + encodeURIComponent(LOADING_HTML));
 
   mainWindow.once('ready-to-show', () => {
+    try { mainWindow.setBackgroundColor('#00000000'); } catch (_) {}
     mainWindow.show();
     mainWindow.focus();
   });

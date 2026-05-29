@@ -541,6 +541,10 @@ const useAppStore = create((set, get) => ({
 
     const store = get();
 
+    if (originalLength > 0 && !replacement) {
+      console.warn('[ChatPanel] replaceLastStreamingChunk: replacing', originalLength, 'chars with empty string');
+    }
+
     if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
 
     let currentText = store.chatStreamingText;
