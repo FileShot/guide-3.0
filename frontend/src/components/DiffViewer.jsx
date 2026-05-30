@@ -2,7 +2,7 @@
  * DiffViewer — Side-by-side diff viewer using Monaco's DiffEditor.
  * Opened via store.openDiff(original, modified, title).
  */
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { DiffEditor } from '@monaco-editor/react';
 import useAppStore from '../stores/appStore';
 import { X, Columns, Rows } from 'lucide-react';
@@ -11,8 +11,23 @@ export default function DiffViewer() {
   const diffState = useAppStore(s => s.diffState);
   const closeDiff = useAppStore(s => s.closeDiff);
   const [inline, setInline] = useState(false);
+  const diffEditorRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      const editor = diffEditorRef.current;
+      if (editor) {
+        try {
+          editor.setModel(null, null);
+        } catch (_) {}
+        diffEditorRef.current = null;
+      }
+    };
+  }, []);
 
   if (!diffState) return null;
+
+  const diffKey = `${diffState.title}-${(diffState.original || '').length}-${(diffState.modified || '').length}`;
 
   return (
     <div className="flex flex-col h-full">
@@ -43,9 +58,11 @@ export default function DiffViewer() {
       {/* Diff Editor */}
       <div className="flex-1 min-h-0">
         <DiffEditor
+          key={diffKey}
           original={diffState.original || ''}
           modified={diffState.modified || ''}
           theme="vs-dark"
+          onMount={(editor) => { diffEditorRef.current = editor; }}
           options={{
             readOnly: true,
             renderSideBySide: !inline,

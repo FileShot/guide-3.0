@@ -13,6 +13,7 @@ import {
   HtmlPreview, MarkdownPreview, JsonPreview, CsvPreview, SvgPreview, ImagePreview
 } from './EditorPreviews';
 import FileIcon from './FileIcon';
+import GuideLogo from './GuideLogo';
 import {
   X, Circle, FolderOpen, MessageSquare, Settings,
   FileText, Copy,
@@ -110,6 +111,18 @@ export default function EditorArea() {
   }, [previewRequested, activeTabId, closeDiff]);
 
   const activeTab = openTabs.find(t => t.id === activeTabId);
+
+  // Auto-open diff when AI has edited the active file (avoid side effect during render)
+  useEffect(() => {
+    if (!activeTab || diffState) return;
+    const fileChange = chatFilesChanged.find(f => f.path === activeTab.path);
+    if (!fileChange) return;
+    const totalEdits = (fileChange.linesAdded || 0) + (fileChange.linesRemoved || 0);
+    if (totalEdits > 0 && activeTab.originalContent != null) {
+      openDiff(activeTab.originalContent, activeTab.content, activeTab.name);
+    }
+  }, [activeTab, chatFilesChanged, diffState, openDiff]);
+
   const addChatMessage = useAppStore(s => s.addChatMessage);
 
   // Ctrl+I — open inline chat at cursor
@@ -467,10 +480,6 @@ export default function EditorArea() {
         const fileChange = chatFilesChanged.find(f => f.path === activeTab.path);
         if (!fileChange) return null;
         const totalEdits = (fileChange.linesAdded || 0) + (fileChange.linesRemoved || 0);
-        // Auto-open diff when file has AI edits and diff isn't already open
-        if (totalEdits > 0 && activeTab?.originalContent != null && !diffState) {
-          openDiff(activeTab.originalContent, activeTab.content, activeTab.name);
-        }
         return (
           <div className="flex items-center gap-2 px-3 py-1 bg-vsc-accent/5 border-b border-vsc-accent/20 no-select">
             <span className="text-[11px] text-vsc-text font-medium">
@@ -741,10 +750,7 @@ function WelcomeScreen() {
         <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-[300px] h-[200px] rounded-full bg-vsc-accent/[0.03]" style={{ filter: 'blur(80px)' }} />
       </div>
 
-      <div
-        className="relative z-10 w-12 h-12 mb-3 bg-vsc-accent mx-auto"
-        style={{ mask: 'url(/icon.png) center/contain no-repeat', WebkitMask: 'url(/icon.png) center/contain no-repeat' }}
-      />
+      <GuideLogo size={48} className="relative z-10 mb-3 mx-auto" />
       <h1 className="font-brand text-vsc-accent relative z-10">guIDE</h1>
       <p className="relative z-10">Local-first AI-powered IDE. Zero cloud dependency.</p>
 

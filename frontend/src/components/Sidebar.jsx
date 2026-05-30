@@ -419,7 +419,7 @@ function FileTreeItem({ item, depth }) {
               const existingTab = store.openTabs.find(t => t.path === item.path);
               if (existingTab) {
                 // File already open — just toggle preview mode
-                store.setActiveTabId(existingTab.id);
+                store.setActiveTab(existingTab.id);
                 store.togglePreviewMode(existingTab.id);
               } else {
                 // Open file and show preview

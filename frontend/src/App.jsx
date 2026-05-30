@@ -346,7 +346,7 @@ export default function App() {
             if (chatMessages[i].role === 'assistant') {
               const updated = [...chatMessages];
               updated[i] = { ...updated[i], checkpoint: { turnId: cpData.turnId, timestamp: cpData.timestamp, fileCount: cpData.fileCount } };
-              set({ chatMessages: updated });
+              useAppStore.setState({ chatMessages: updated });
               console.log(`[App] tool-checkpoint: attached turnId=${cpData.turnId} to msg[${i}]`);
               break;
             }
