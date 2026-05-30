@@ -13,23 +13,23 @@ import {
   Cpu, Sparkles, Globe,
 } from 'lucide-react';
 
-// Recommended models — curated for first-time users
+// Recommended models — curated for serious local use (one-click HF download)
 const RECOMMENDED_MODELS = [
   {
-    name: 'Qwen 3.5 4B',
-    desc: 'Fast, great for quick tasks. Runs on any modern GPU.',
-    size: '~2.6 GB',
-    hfRepo: 'unsloth/Qwen3.5-4B-GGUF',
-    hfFile: 'Qwen3.5-4B-Q4_K_M.gguf',
-    tier: 'starter',
+    name: 'Qwen 3.6 35B (A3B)',
+    desc: 'Top pick for agentic coding. MoE — strong quality; needs ~20GB+ VRAM.',
+    size: '~19 GB (IQ4_NL)',
+    hfRepo: 'HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive',
+    hfFile: 'Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-IQ4_NL.gguf',
+    tier: 'recommended',
   },
   {
-    name: 'Qwen 3.5 9B',
-    desc: 'Balanced quality and speed. Best all-rounder.',
-    size: '~5.5 GB',
-    hfRepo: 'unsloth/Qwen3.5-9B-GGUF',
-    hfFile: 'Qwen3.5-9B-Q4_K_M.gguf',
-    tier: 'recommended',
+    name: 'Qwen 3.6 27B',
+    desc: 'Dense 27B — excellent balance if 35B is too heavy for your GPU.',
+    size: '~15 GB (IQ4_XS)',
+    hfRepo: 'HauhauCS/Qwen3.6-27B-Uncensored-HauhauCS-Aggressive',
+    hfFile: 'Qwen3.6-27B-Uncensored-HauhauCS-Aggressive-IQ4_XS.gguf',
+    tier: 'performance',
   },
 ];
 
@@ -136,7 +136,8 @@ export default function WelcomeScreen() {
   const downloadRecommended = async (rec) => {
     setDownloadingRec(rec.hfFile);
     try {
-      const url = `https://huggingface.co/${rec.hfRepo}/resolve/main/${rec.hfFile}`;
+      const url = rec.hfUrl
+        || `https://huggingface.co/${rec.hfRepo}/resolve/main/${rec.hfFile}`;
       const r = await fetch('/api/models/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -344,13 +345,23 @@ export default function WelcomeScreen() {
             <div className="flex flex-col gap-2">
               {RECOMMENDED_MODELS.map(rec => {
                 const isDownloading = downloadingRec === rec.hfFile;
-                const alreadyInstalled = llmModels.some(m => (m.name || '').includes(rec.hfFile.replace('.gguf', '')));
+                const matchKey = rec.hfFile.replace('.gguf', '').slice(0, 24);
+                const alreadyInstalled = llmModels.some(m => {
+                  const n = (m.name || m.path || '').toLowerCase();
+                  return n.includes('qwen3.6-35b') && rec.hfFile.includes('35B')
+                    ? n.includes('35b')
+                    : n.includes('qwen3.6-27b') && rec.hfFile.includes('27B')
+                      ? n.includes('27b')
+                      : n.includes(matchKey.toLowerCase());
+                });
                 return (
                   <div key={rec.hfFile}
                     className={`relative flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-all duration-150 ${
                       rec.tier === 'recommended'
                         ? 'bg-vsc-accent/5 border-vsc-accent/20'
-                        : 'bg-white/2 border-white/5'
+                        : rec.tier === 'performance'
+                          ? 'bg-blue-500/5 border-blue-500/20'
+                          : 'bg-white/2 border-white/5'
                     }`}
                   >
                     {rec.tier === 'recommended' && (
@@ -359,12 +370,12 @@ export default function WelcomeScreen() {
                       </div>
                     )}
                     <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                      rec.tier === 'starter' ? 'bg-green-500/10' :
-                      rec.tier === 'recommended' ? 'bg-vsc-accent/10' : 'bg-purple-500/10'
+                      rec.tier === 'recommended' ? 'bg-vsc-accent/10' :
+                      rec.tier === 'performance' ? 'bg-blue-500/10' : 'bg-white/5'
                     }`}>
                       <Cpu size={14} className={
-                        rec.tier === 'starter' ? 'text-green-400' :
-                        rec.tier === 'recommended' ? 'text-vsc-accent' : 'text-purple-400'
+                        rec.tier === 'recommended' ? 'text-vsc-accent' :
+                        rec.tier === 'performance' ? 'text-blue-400' : 'text-vsc-text-dim'
                       } />
                     </div>
                     <div className="flex-1 min-w-0">

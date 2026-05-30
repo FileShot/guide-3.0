@@ -153,20 +153,22 @@ function XTermPanel() {
   const fitAddonRef = useRef(null);
   const termIdRef = useRef(null);
   const modeRef = useRef(null); // 'pty' | 'exec' | null
+  const ptyCwdRef = useRef(null); // cwd the PTY was spawned with (avoid redundant visible cd)
   const [loaded, setLoaded] = useState(false);
   const activeTerminalTab = useAppStore(s => s.activeTerminalTab);
 
   const projectPath = useAppStore(s => s.projectPath);
 
-  // When project path changes, cd the terminal into it
+  // When project changes after PTY exists, cd only if shell cwd differs from spawn cwd
   useEffect(() => {
-    if (projectPath && xtermRef.current && termIdRef.current && modeRef.current === 'pty') {
-      const api = window.electronAPI;
-      if (api?.terminal) {
-        // PowerShell on Windows, bash elsewhere — both accept double-quoted paths
-        const escaped = projectPath.replace(/"/g, '\\"');
-        api.terminal.write(termIdRef.current, `cd "${escaped}"\r`);
-      }
+    if (!projectPath || !xtermRef.current || !termIdRef.current || modeRef.current !== 'pty') return;
+    const norm = (p) => (p || '').replace(/\\/g, '/').toLowerCase();
+    if (norm(ptyCwdRef.current) === norm(projectPath)) return;
+    const api = window.electronAPI;
+    if (api?.terminal) {
+      const escaped = projectPath.replace(/"/g, '\\"');
+      api.terminal.write(termIdRef.current, `cd "${escaped}"\r`);
+      ptyCwdRef.current = projectPath;
     }
   }, [projectPath]);
 
@@ -270,6 +272,7 @@ function XTermPanel() {
 
           if (result?.success) {
             modeRef.current = 'pty';
+            ptyCwdRef.current = projectPath || null;
             // Forward input to PTY via IPC
             term.onData((data) => {
               if (modeRef.current === 'pty') {
