@@ -1,13 +1,23 @@
 /**
  * BrowserPanel — Live preview panel with iframe, URL bar, and controls.
- * Connects to the live server for hot-reload preview of project files.
+ * External/SSO pages cannot be embedded (X-Frame-Options); agent browse shows status instead.
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import useAppStore from '../stores/appStore';
 import {
   Globe, RefreshCw, ArrowLeft, ArrowRight, X,
-  ExternalLink, Play, Square, Maximize2,
+  ExternalLink, Play, Square,
 } from 'lucide-react';
+
+function isLikelyBlockedInIframe(url) {
+  try {
+    const u = new URL(url);
+    if (/^localhost$/i.test(u.hostname) || u.hostname === '127.0.0.1') return false;
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 export default function BrowserPanel() {
   const projectPath = useAppStore(s => s.projectPath);
@@ -19,13 +29,28 @@ export default function BrowserPanel() {
   const [urlInput, setUrlInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [active, setActive] = useState(false);
+  const [agentStatus, setAgentStatus] = useState(null);
   const iframeRef = useRef(null);
 
-  // Listen for preview events from backend
+  const applyAgentStatus = useCallback((data) => {
+    if (!data?.url) return;
+    setAgentStatus({
+      url: data.url,
+      title: data.title || '',
+      message: data.message || 'Agent browser is active. Use browser_snapshot in chat — this site cannot be shown in an embedded preview.',
+      reason: data.reason || '',
+    });
+    setPreviewUrl('');
+    setUrlInput(data.url);
+    setActive(true);
+    setLoading(false);
+  }, []);
+
   useEffect(() => {
     if (!window.electronAPI?.onPreviewEvent) return;
-    window.electronAPI.onPreviewEvent((event, data) => {
+    return window.electronAPI.onPreviewEvent((event, data) => {
       if (event === 'preview-started') {
+        setAgentStatus(null);
         setPreviewUrl(data.url);
         setUrlInput(data.url);
         setActive(true);
@@ -34,20 +59,33 @@ export default function BrowserPanel() {
         setPreviewUrl('');
         setUrlInput('');
         setActive(false);
+        setAgentStatus(null);
       } else if (event === 'preview-navigate') {
-        setPreviewUrl(data.url);
-        setUrlInput(data.url);
+        if (isLikelyBlockedInIframe(data.url)) {
+          applyAgentStatus({ url: data.url, message: 'This URL cannot be embedded in the preview (typical for login/SSO sites). The agent uses Playwright separately.' });
+        } else {
+          setAgentStatus(null);
+          setPreviewUrl(data.url);
+          setUrlInput(data.url);
+        }
+      } else if (event === 'browser-agent-status') {
+        applyAgentStatus(data);
       }
     });
-  }, []);
+  }, [applyAgentStatus]);
 
   useEffect(() => {
     if (!viewportNavigateUrl) return;
-    setPreviewUrl(viewportNavigateUrl);
-    setUrlInput(viewportNavigateUrl);
-    setActive(true);
+    if (isLikelyBlockedInIframe(viewportNavigateUrl)) {
+      applyAgentStatus({ url: viewportNavigateUrl });
+    } else {
+      setAgentStatus(null);
+      setPreviewUrl(viewportNavigateUrl);
+      setUrlInput(viewportNavigateUrl);
+      setActive(true);
+    }
     clearViewportNavigateUrl();
-  }, [viewportNavigateUrl, clearViewportNavigateUrl]);
+  }, [viewportNavigateUrl, clearViewportNavigateUrl, applyAgentStatus]);
 
   const startPreview = useCallback(async () => {
     if (!projectPath) {
@@ -63,6 +101,7 @@ export default function BrowserPanel() {
       });
       const data = await res.json();
       if (data.success) {
+        setAgentStatus(null);
         setPreviewUrl(data.url);
         setUrlInput(data.url);
         setActive(true);
@@ -82,13 +121,13 @@ export default function BrowserPanel() {
     setPreviewUrl('');
     setUrlInput('');
     setActive(false);
+    setAgentStatus(null);
   }, []);
 
   const reload = useCallback(() => {
     if (iframeRef.current) {
       iframeRef.current.src = iframeRef.current.src;
     }
-    // Also tell live server to broadcast reload
     fetch('/api/preview/reload', { method: 'POST' }).catch(() => {});
   }, []);
 
@@ -98,9 +137,14 @@ export default function BrowserPanel() {
     if (!/^https?:\/\//i.test(target) && !target.startsWith('file://')) {
       target = 'http://' + target;
     }
-    setPreviewUrl(target);
-    setUrlInput(target);
-  }, []);
+    if (isLikelyBlockedInIframe(target)) {
+      applyAgentStatus({ url: target });
+    } else {
+      setAgentStatus(null);
+      setPreviewUrl(target);
+      setUrlInput(target);
+    }
+  }, [applyAgentStatus]);
 
   const handleUrlSubmit = useCallback((e) => {
     e.preventDefault();
@@ -108,20 +152,19 @@ export default function BrowserPanel() {
   }, [urlInput, navigate]);
 
   const openExternal = useCallback(() => {
-    if (previewUrl) {
+    const url = agentStatus?.url || previewUrl;
+    if (url) {
       if (window.electronAPI?.openExternal) {
-        window.electronAPI.openExternal(previewUrl);
+        window.electronAPI.openExternal(url);
       } else {
-        window.open(previewUrl, '_blank');
+        window.open(url, '_blank');
       }
     }
-  }, [previewUrl]);
+  }, [previewUrl, agentStatus]);
 
   return (
     <div className="flex flex-col h-full bg-vsc-bg">
-      {/* Toolbar */}
       <div className="flex items-center gap-1 px-2 py-1 border-b border-vsc-panel-border bg-vsc-sidebar">
-        {/* Navigation buttons */}
         <button className="p-1 text-vsc-text-dim hover:text-vsc-text rounded" title="Back"
           onClick={() => iframeRef.current?.contentWindow?.history.back()}>
           <ArrowLeft size={14} />
@@ -135,7 +178,6 @@ export default function BrowserPanel() {
           <RefreshCw size={14} />
         </button>
 
-        {/* URL bar */}
         <form onSubmit={handleUrlSubmit} className="flex-1 flex">
           <div className="flex items-center flex-1 bg-vsc-input border border-vsc-input-border rounded px-2 gap-1">
             <Globe size={12} className="text-vsc-text-dim shrink-0" />
@@ -149,7 +191,6 @@ export default function BrowserPanel() {
           </div>
         </form>
 
-        {/* Action buttons */}
         {active ? (
           <button className="p-1 text-vsc-error hover:text-red-400 rounded" title="Stop preview"
             onClick={stopPreview}>
@@ -167,8 +208,23 @@ export default function BrowserPanel() {
         </button>
       </div>
 
-      {/* Content area */}
-      {previewUrl ? (
+      {agentStatus ? (
+        <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-vsc-text-dim max-w-lg mx-auto">
+          <Globe size={40} className="mb-4 opacity-40 text-vsc-accent" />
+          <p className="text-vsc-sm text-vsc-text mb-2 font-medium">Agent browser session</p>
+          {agentStatus.title && (
+            <p className="text-vsc-xs text-vsc-text-bright mb-1 truncate w-full">{agentStatus.title}</p>
+          )}
+          <p className="text-vsc-xs break-all mb-3 opacity-80">{agentStatus.url}</p>
+          <p className="text-vsc-xs leading-relaxed mb-4">{agentStatus.message}</p>
+          {agentStatus.reason && (
+            <p className="text-[10px] opacity-50 mb-4">{agentStatus.reason}</p>
+          )}
+          <button type="button" className="btn btn-secondary text-vsc-xs" onClick={openExternal}>
+            Open in system browser
+          </button>
+        </div>
+      ) : previewUrl ? (
         <iframe
           ref={iframeRef}
           src={previewUrl}

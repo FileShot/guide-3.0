@@ -1120,7 +1120,13 @@ export default function ChatPanel() {
 
       // Add the message to the UI as a user message
 
-      addChatMessage({ role: 'user', content: text });
+      const injectIdx = addChatMessage({ role: 'user', content: text, injected: true });
+
+      requestAnimationFrame(() => {
+        if (virtuosoRef.current != null && injectIdx >= 0) {
+          virtuosoRef.current.scrollToIndex({ index: injectIdx, align: 'end', behavior: 'auto' });
+        }
+      });
 
       return;
 
@@ -1685,6 +1691,22 @@ export default function ChatPanel() {
           if (!messageSegments.length) {
 
             messageSegments.push({ type: 'text', content: messageContent });
+
+          }
+
+        }
+
+        if (hasToolCalls && (!messageContent || messageContent.trim().length < 240)) {
+
+          const toolNames = [...new Set(finalToolCalls.map((tc) => tc.functionName || tc.tool).filter(Boolean))];
+
+          const toolSummary = `**Tool run** (${finalToolCalls.length} call${finalToolCalls.length === 1 ? '' : 's'}): ${toolNames.slice(0, 16).join(', ')}${toolNames.length > 16 ? '…' : ''}`;
+
+          messageContent = messageContent?.trim() ? `${messageContent.trim()}\n\n${toolSummary}` : toolSummary;
+
+          if (!messageSegments.length) {
+
+            messageSegments.push({ type: 'text', content: toolSummary });
 
           }
 
@@ -2354,6 +2376,8 @@ export default function ChatPanel() {
 
           data={chatMessages}
 
+          computeItemKey={(_idx, msg) => String(msg.insertionSeq ?? msg.id ?? _idx)}
+
           followOutput="auto"
 
           atBottomStateChange={(atBottom) => {
@@ -2778,6 +2802,18 @@ export default function ChatPanel() {
       {/* ─── Unified Input Container ──────────────────────── */}
 
       <div className="flex-shrink-0 p-2 relative">
+
+        {chatMode === 'plan' && (
+
+          <div className="mb-1.5 px-3 py-1.5 rounded-lg border border-vsc-accent/25 bg-vsc-accent/8 text-[11px] text-vsc-text-dim leading-snug">
+
+            <span className="font-semibold text-vsc-text">Plan mode</span>
+
+            {' '}— explore with read/search/git tools; write only <code className="text-vsc-text/90">GUIDE_PLAN.md</code>. Switch to Agent and say &quot;proceed&quot; to implement.
+
+          </div>
+
+        )}
 
         <div className="rounded-xl border border-vsc-panel-border/30 bg-vsc-sidebar/88 backdrop-blur-sm overflow-visible shadow-[0_8px_30px_rgba(0,0,0,0.28),0_1px_0_rgba(255,255,255,0.03)_inset]">
 

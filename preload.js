@@ -179,6 +179,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const unsubs = [
       _on('preview-started', (data) => cb('preview-started', data)),
       _on('preview-navigate', (data) => cb('preview-navigate', data)),
+      _on('browser-agent-status', (data) => cb('browser-agent-status', data)),
       _on('preview-stopped', () => cb('preview-stopped', null)),
     ];
     return () => { for (const u of unsubs) u(); };

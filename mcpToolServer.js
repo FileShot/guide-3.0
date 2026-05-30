@@ -4387,28 +4387,25 @@ class MCPToolServer {
     }
     parts.push(header);
 
-    // Define categories — ALL tools must appear here or they are invisible to the model
-    // FIX-H: Reordered so smallest/most-critical categories come first.
-    // promptAssembler adds categories one-by-one via appendIfBudget until budget is exhausted.
-    // Smallest categories first maximize the number included before budget runs out.
-    // Browser split into Core (4 essential) and Extended (20 specialized) —
-    // if budget drops Extended, model retains all essential functionality.
-    const categories = {
-      'File Operations': ['read_file', 'write_file', 'edit_file', 'append_to_file', 'delete_file', 'rename_file', 'copy_file', 'list_directory', 'find_files', 'create_directory', 'get_project_structure', 'get_file_info', 'open_file_in_editor', 'diff_files'],
-      'Search': ['grep_search', 'search_in_file', 'search_codebase', 'replace_in_files'],
-      'Terminal': ['run_command', 'check_port', 'install_packages'],
-      'Web': ['web_search', 'fetch_webpage', 'http_request'],
-      'Planning': ['write_todos', 'update_todo', 'ask_question'],
-      'Memory': ['save_memory', 'get_memory', 'list_memories'],
-      'Scratchpad': ['write_scratchpad', 'read_scratchpad'],
-      'Rules': ['save_rule', 'list_rules'],
-      'Code Analysis': ['analyze_error'],
-      'Undo': ['undo_edit', 'list_undoable'],
-      'Browser': ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_screenshot'],
-      'Git': ['git_status', 'git_commit', 'git_diff', 'git_log', 'git_branch', 'git_stash', 'git_reset'],
-      'Image Generation': ['generate_image'],
-      'Browser Extended': ['browser_fill_form', 'browser_select_option', 'browser_evaluate', 'browser_scroll', 'browser_back', 'browser_press_key', 'browser_hover', 'browser_drag', 'browser_get_content', 'browser_get_url', 'browser_get_links', 'browser_tabs', 'browser_handle_dialog', 'browser_console_messages', 'browser_file_upload', 'browser_resize', 'browser_wait', 'browser_wait_for', 'browser_close'],
-    };
+    // Tier 0 categories are ALWAYS included in Agent mode (see buildBudgetProportionalToolPrompt).
+    // Order matters: Browser + core file/shell tools first — never drop Browser when budget is tight.
+    const categoryOrder = [
+      ['Browser', ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_screenshot']],
+      ['Core Files', ['read_file', 'list_directory', 'grep_search', 'find_files', 'get_file_info']],
+      ['Terminal', ['run_command', 'check_port', 'install_packages']],
+      ['File Operations', ['write_file', 'edit_file', 'append_to_file', 'delete_file', 'rename_file', 'copy_file', 'create_directory', 'get_project_structure', 'open_file_in_editor', 'diff_files']],
+      ['Search', ['search_in_file', 'search_codebase', 'replace_in_files']],
+      ['Web', ['web_search', 'fetch_webpage', 'http_request']],
+      ['Planning', ['write_todos', 'update_todo', 'ask_question']],
+      ['Memory', ['save_memory', 'get_memory', 'list_memories']],
+      ['Scratchpad', ['write_scratchpad', 'read_scratchpad']],
+      ['Rules', ['save_rule', 'list_rules']],
+      ['Code Analysis', ['analyze_error']],
+      ['Undo', ['undo_edit', 'list_undoable']],
+      ['Git', ['git_status', 'git_commit', 'git_diff', 'git_log', 'git_branch', 'git_stash', 'git_reset']],
+      ['Image Generation', ['generate_image']],
+      ['Browser Extended', ['browser_fill_form', 'browser_select_option', 'browser_evaluate', 'browser_scroll', 'browser_back', 'browser_press_key', 'browser_hover', 'browser_drag', 'browser_get_content', 'browser_get_url', 'browser_get_links', 'browser_tabs', 'browser_handle_dialog', 'browser_console_messages', 'browser_file_upload', 'browser_resize', 'browser_wait', 'browser_wait_for', 'browser_close']],
+    ];
 
     // For minimal mode, build a single part with just core tools
     if (options && options.minimal) {
@@ -4429,7 +4426,7 @@ class MCPToolServer {
 
     // Each category becomes a separate part — prompt assembler adds categories
     // one by one until the token budget is exhausted. No all-or-nothing.
-    for (const [category, names] of Object.entries(categories)) {
+    for (const [category, names] of categoryOrder) {
       const catTools = names.filter(n => toolMap[n]);
       if (catTools.length === 0) continue;
       let catStr = `### ${category}\n`;
@@ -4454,6 +4451,8 @@ class MCPToolServer {
     rules += '- If browser_navigate fails, retry it or use fetch_webpage. Do NOT launch chrome.exe or debug Playwright via run_command.\n';
     parts.push(rules);
 
+    // header + Browser + Core Files + Terminal = tier-0 (always inject in Agent mode)
+    parts._tier0PartCount = 4;
     return parts;
   }
 

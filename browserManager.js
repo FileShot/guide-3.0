@@ -124,18 +124,42 @@ class BrowserManager extends EventEmitter {
     }
   }
 
+  _isExternalWebUrl(url) {
+    try {
+      const u = new URL(url);
+      if (/^localhost$/i.test(u.hostname) || u.hostname === '127.0.0.1') return false;
+      return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }
+
+  _emitBrowserAgentStatus({ url, title, message, reason }) {
+    if (!this.parentWindow?.webContents) return;
+    this.parentWindow.webContents.send('browser-agent-status', {
+      url,
+      title: title || '',
+      message: message || 'Agent browser session is active. Use browser_snapshot in chat — this page cannot be embedded here (login/SSO sites block iframes).',
+      reason: reason || '',
+    });
+  }
+
   _navigateViewportFallback(url, reason) {
     this._showViewportBrowserTab();
     if (this.parentWindow?.webContents) {
-      this.parentWindow.webContents.send('preview-navigate', { url });
+      if (this._isExternalWebUrl(url)) {
+        this._emitBrowserAgentStatus({ url, message: reason });
+      } else {
+        this.parentWindow.webContents.send('preview-navigate', { url });
+      }
     }
     const detail = reason ? ` (${reason})` : '';
-    console.log(`[BrowserManager] navigate: viewport-iframe fallback for ${url}`);
+    console.log(`[BrowserManager] navigate: viewport fallback for ${url} (iframe=${!this._isExternalWebUrl(url)})`);
     return {
       success: true,
       url,
-      method: 'viewport-iframe',
-      warning: `Playwright unavailable${detail}. Page shown in guIDE viewport only — no snapshot/click. Use fetch_webpage for text or allow browser automation setup.`,
+      method: this._isExternalWebUrl(url) ? 'agent-status' : 'viewport-iframe',
+      warning: `Playwright unavailable${detail}. ${this._isExternalWebUrl(url) ? 'External pages cannot be embedded — use browser tools or fetch_webpage.' : 'Page shown in guIDE viewport only.'}`,
     };
   }
 
@@ -218,12 +242,18 @@ class BrowserManager extends EventEmitter {
       try {
         // Use page.goto() return value to get the HTTP response object
         console.log(`[BrowserManager] navigate: page.goto ${url}`);
-        const response = await this._page.goto(url, { waitUntil: 'load', timeout: 90000 });
-        // Wait for SPAs to render — load event fires after initial render,
-        // but SPAs need extra time for JS-driven content
+        const response = await this._page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
         try { await this._page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {}); } catch {}
-        // Brief pause for any post-networkidle JS rendering
-        try { await this._page.waitForTimeout(500).catch(() => {}); } catch {}
+        try {
+          await this._page.waitForFunction(() => {
+            const n = document.querySelectorAll('*').length;
+            const s = window.__guideDomSettle || (window.__guideDomSettle = { last: n, stable: 0, start: Date.now() });
+            if (n === s.last) s.stable += 1;
+            else { s.last = n; s.stable = 0; }
+            return s.stable >= 2 || (Date.now() - s.start) > 3000;
+          }, { timeout: 3500, polling: 150 }).catch(() => {});
+        } catch {}
+        try { await this._page.waitForTimeout(300).catch(() => {}); } catch {}
         const finalUrl = this._page.url();
         const title = await this._page.title().catch(() => '');
         // Detect same-page navigation — model often re-navigates the same URL in a loop
@@ -248,6 +278,9 @@ class BrowserManager extends EventEmitter {
         }
         // Auto-snapshot: include page content so the model can see what's on the page
         // without needing a separate browser_snapshot call
+        if (this._isExternalWebUrl(finalUrl)) {
+          this._emitBrowserAgentStatus({ url: finalUrl, title, message: 'Playwright is browsing this page. The guIDE preview cannot embed authenticated/SSO sites.' });
+        }
         const snapshot = await this.getSnapshot();
         if (snapshot.success) {
           console.log(`[BrowserManager] navigate DONE: success, url=${finalUrl}, snapshotLen=${snapshot.text?.length || 0}`);
@@ -421,16 +454,67 @@ class BrowserManager extends EventEmitter {
         '[contenteditable]', 'summary', 'details',
         'iframe', 'form',
       ];
-      const all = [...document.querySelectorAll(selectors.join(','))]
-        .filter(el => {
-          if (el.offsetParent !== null) return true;
-          if (el.type === 'hidden') return false;
-          const style = window.getComputedStyle(el);
-          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-          if (style.position === 'fixed' || style.position === 'sticky') return true;
-          const rect = el.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0;
-        });
+      const selectorStr = selectors.join(',');
+      const seen = new Set();
+      const all = [];
+
+      const isVisible = (el) => {
+        if (!el || el.nodeType !== 1) return false;
+        if (el.offsetParent !== null) return true;
+        if (el.type === 'hidden') return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        if (style.position === 'fixed' || style.position === 'sticky') return true;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+
+      const tryCollect = (el) => {
+        if (!el || seen.has(el)) return;
+        seen.add(el);
+        if (!isVisible(el)) return;
+        const tag = el.tagName ? el.tagName.toLowerCase() : '';
+        const role = el.getAttribute?.('role') || '';
+        const href = el.href || el.getAttribute?.('href') || '';
+        const isInteractiveTag = /^(a|button|input|select|textarea|iframe|form|summary|details)$/.test(tag);
+        const isRoleInteractive = /^(button|link|textbox|combobox|checkbox|radio|tab|menuitem|option)$/.test(role);
+        const isCustomClickable = el.tagName?.includes?.('-') && (href || role || typeof el.click === 'function');
+        if (isInteractiveTag || isRoleInteractive || isCustomClickable) all.push(el);
+      };
+
+      const walkTree = (root) => {
+        if (!root) return;
+        try {
+          root.querySelectorAll(selectorStr).forEach(tryCollect);
+        } catch {}
+        const children = root.children || [];
+        for (let i = 0; i < children.length; i++) {
+          const child = children[i];
+          if (child.shadowRoot) walkTree(child.shadowRoot);
+          walkTree(child);
+        }
+      };
+
+      walkTree(document.documentElement);
+
+      const collectPageText = (root, parts) => {
+        if (!root) return;
+        if (root.nodeType === 1 && root !== document.documentElement) {
+          const tag = root.tagName?.toLowerCase?.() || '';
+          if (!/^(script|style|noscript)$/i.test(tag)) {
+            const t = (root.innerText || '').trim();
+            if (t && t.length < 8000) parts.push(t);
+          }
+        }
+        const kids = root.children || [];
+        for (let i = 0; i < kids.length; i++) {
+          const c = kids[i];
+          if (c.shadowRoot) collectPageText(c.shadowRoot, parts);
+          collectPageText(c, parts);
+        }
+      };
+      const pageTextParts = [];
+      collectPageText(document.body || document.documentElement, pageTextParts);
       const lines = [];
       for (let i = 0; i < all.length; i++) {
         const el = all[i];
@@ -476,7 +560,9 @@ class BrowserManager extends EventEmitter {
         if (tag === 'select') desc += ' [SELECT]';
         lines.push(desc);
       }
-      const pageText = (document.body?.innerText || '').substring(0, 50000);
+      const pageText = (pageTextParts.length
+        ? [...new Set(pageTextParts)].join('\n')
+        : (document.body?.innerText || '')).substring(0, 50000);
 
       // Extract visible text from same-origin iframes.
       // Many web apps render their main content inside iframes.
@@ -517,6 +603,22 @@ class BrowserManager extends EventEmitter {
 
       return { elementList: lines.join('\n'), pageText: fullPageText };
     });
+  }
+
+  _formatAccessibilityTree(node, depth = 0, lines = [], budget = 4000) {
+    if (!node || lines.join('\n').length >= budget) return lines.join('\n');
+    const role = node.role || '';
+    const name = (node.name || '').trim();
+    const interesting = /link|button|textbox|combobox|checkbox|radio|tab|menuitem|heading|listitem|option/i.test(role);
+    if (interesting && (name || role)) {
+      const indent = '  '.repeat(Math.min(depth, 6));
+      lines.push(`${indent}[${role}] ${name}`.trim());
+    }
+    for (const child of node.children || []) {
+      this._formatAccessibilityTree(child, depth + 1, lines, budget);
+      if (lines.join('\n').length >= budget) break;
+    }
+    return lines.join('\n').slice(0, budget);
   }
 
   async getSnapshot() {
@@ -680,7 +782,15 @@ class BrowserManager extends EventEmitter {
       };
 
       const compressedPageText = _compressPageText(fullPageText);
-      const result = `Page: ${title}\nURL: ${url}\n\nInteractive elements (use the [ref=N] number as the "ref" param, e.g. {"ref":"2"} or {"ref":"[ref=2]"}):\n${fullElementList}\n\nPage text:\n${compressedPageText}`;
+      let a11ySection = '';
+      try {
+        const a11y = await this._page.accessibility.snapshot({ interestingOnly: true });
+        a11ySection = this._formatAccessibilityTree(a11y);
+      } catch (a11yErr) {
+        console.warn(`[BrowserManager] accessibility snapshot skipped: ${a11yErr.message}`);
+      }
+      const a11yBlock = a11ySection ? `\n\nAccessibility tree:\n${a11ySection}` : '';
+      const result = `Page: ${title}\nURL: ${url}\n\nInteractive elements (use the [ref=N] number as the "ref" param, e.g. {"ref":"2"} or {"ref":"[ref=2]"}):\n${fullElementList}\n\nPage text:\n${compressedPageText}${a11yBlock}`;
       this._lastSnapshotUrl = url;
       this._lastSnapshotTime = Date.now();
       // No total cap — the model needs the full snapshot to make correct decisions.
@@ -812,8 +922,10 @@ class BrowserManager extends EventEmitter {
       console.warn('[BrowserManager] click: no page');
       return { success: false, error: 'No browser page open' };
     }
-    // Re-inject data-ref attrs before resolving — they're lost on page navigation/reload
-    await this._ensureRefs();
+    // Stale-ref check BEFORE any DOM mutation — _ensureRefs() here renumbers data-ref
+    // and breaks refs from the last browser_snapshot without updating _snapshotGen.
+    const staleErrEarly = this._isStaleRef(selector);
+    if (staleErrEarly) return { success: false, error: staleErrEarly };
 
     // If this ref maps to a child frame, click directly in that frame.
     // This replaces the blind frame iteration fallback that mismatched element indices.
@@ -1041,8 +1153,8 @@ class BrowserManager extends EventEmitter {
    */
   async type(ref, text, options = {}) {
     if (!(await this._ensurePage())) return { success: false, error: 'No browser page open' };
-    // Re-inject data-ref attrs before resolving — they're lost on page navigation/reload
-    await this._ensureRefs();
+    const staleErrEarly = this._isStaleRef(ref);
+    if (staleErrEarly) return { success: false, error: staleErrEarly };
 
     // If this ref maps to a child frame, type directly in that frame.
     const refNum = this._extractRefNumber(ref);
@@ -1070,7 +1182,11 @@ class BrowserManager extends EventEmitter {
             if (snapshot.success) return { success: true, url: this._page.url(), snapshot: snapshot.text };
           }
           console.log(`[BrowserManager] Typed into ref=${refNum} in child frame directly`);
-          return { success: true };
+          const snapFrame = await this.getSnapshot();
+          if (snapFrame.success) {
+            return { success: true, url: this._page.url(), snapshot: snapFrame.text };
+          }
+          return { success: true, url: this._page.url() };
         } catch (frameErr) {
           console.warn(`[BrowserManager] Direct frame type failed for ref=${refNum}: ${frameErr.message}`);
           // Fall through to main page logic below
@@ -1079,7 +1195,6 @@ class BrowserManager extends EventEmitter {
     }
     }
 
-    // PL7: Stale-ref detection
     const staleErr = this._isStaleRef(ref);
     if (staleErr) return { success: false, error: staleErr };
     const resolved = this._resolveRef(ref);
@@ -1100,7 +1215,11 @@ class BrowserManager extends EventEmitter {
           return { success: true, url: this._page.url(), snapshot: snapshot.text };
         }
       }
-      return { success: true };
+      const snapshotAfterType = await this.getSnapshot();
+      if (snapshotAfterType.success) {
+        return { success: true, url: this._page.url(), snapshot: snapshotAfterType.text };
+      }
+      return { success: true, url: this._page.url() };
     } catch (e) {
       // JS fallback: find visible input by index
       const refMatch = ref?.match?.(/^\[ref\s*=\s*(\d+)\]$/) || ref?.match?.(/^\[(\d+)\]$/) || (typeof ref === 'string' && /^\d+$/.test(ref.trim()) && [null, ref.trim()]);
@@ -1140,8 +1259,6 @@ class BrowserManager extends EventEmitter {
    */
   async selectOption(ref, values) {
     if (!(await this._ensurePage())) return { success: false, error: 'No browser page open' };
-    await this._ensureRefs();
-    // PL7: Stale-ref detection
     const staleErr = this._isStaleRef(ref);
     if (staleErr) return { success: false, error: staleErr };
     const resolved = this._resolveRef(ref);
@@ -1203,8 +1320,6 @@ class BrowserManager extends EventEmitter {
    */
   async hover(ref) {
     if (!(await this._ensurePage())) return { success: false, error: 'No browser page open' };
-    await this._ensureRefs();
-    // PL7: Stale-ref detection
     const staleErr = this._isStaleRef(ref);
     if (staleErr) return { success: false, error: staleErr };
     const resolved = this._resolveRef(ref);

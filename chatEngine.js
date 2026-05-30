@@ -130,7 +130,54 @@ const RE_FILE_WRITE_TOOLS = /write_file|create_file|append_to_file/;
 const RE_CONTENT_START = /"content"\s*:\s*"$/;
 const RE_FILE_PATH = /"(?:filePath|path)"\s*:\s*"([^"]*)"/;
 const RE_TOOL_OR_SYSTEM_INJECT = /^\[(?:Tool Results|System)\]/i;
-const RE_CONTEXT_ROTATED = /\[System: Context rotated\]/i;
+const RE_CONTEXT_ROTATED = /\[System: (?:Context rotated|Session memory condensed)\]/i;
+const RE_ACTIVE_AGENTIC_SIGNAL = /\[System: (?:Tool Results|Session memory condensed|Earlier Tool Results)\]/i;
+const AGENT_ZERO_TOOL_RETRY_MAX = 2;
+const AGENT_ZERO_TOOL_RETRY_MESSAGE = `[System: Tools are enabled and listed in the system prompt above. Continue the active task by issuing the next tool call as JSON, e.g. {"tool":"browser_snapshot","params":{}}. Do not tell the user that tools are unavailable.]`;
+
+const PLAN_MODE_ALLOWED_TOOLS = new Set([
+  'read_file', 'list_directory', 'grep_search', 'find_files', 'get_file_info',
+  'search_in_file', 'search_codebase', 'git_status', 'git_diff', 'git_log',
+  'write_file', 'ask_question', 'write_todos', 'update_todo',
+]);
+
+function filterPlanModeToolCalls(calls) {
+  if (!calls?.length) return { calls: [], blocked: [] };
+  const kept = [];
+  const blocked = [];
+  for (const c of calls) {
+    if (!PLAN_MODE_ALLOWED_TOOLS.has(c.tool)) {
+      blocked.push(c);
+      continue;
+    }
+    if (c.tool === 'write_file') {
+      const fp = String(c.params?.filePath || c.params?.path || '');
+      if (!/GUIDE_PLAN\.md$/i.test(fp)) {
+        blocked.push(c);
+        continue;
+      }
+    }
+    kept.push(c);
+  }
+  return { calls: kept, blocked };
+}
+
+function historyHasActiveAgenticSignals(chatHistory) {
+  if (!Array.isArray(chatHistory)) return false;
+  for (let i = chatHistory.length - 1; i >= Math.max(0, chatHistory.length - 24); i--) {
+    const text = String(chatHistory[i]?.text || '');
+    if (RE_ACTIVE_AGENTIC_SIGNAL.test(text) || RE_CONTEXT_ROTATED.test(text)) return true;
+  }
+  return false;
+}
+
+function isActiveAgenticWork({ totalToolCalls, toolRoundCount, chatHistory, options, forceContinue }) {
+  if (options?.askOnly || options?.planMode) return false;
+  if (options?.toolsEnabled === false) return false;
+  if (forceContinue) return true;
+  if (totalToolCalls > 0 || toolRoundCount > 0) return true;
+  return historyHasActiveAgenticSignals(chatHistory);
+}
 
 /** Web-facing tools — if these share a batch with workspace navigation tools, drop the latter (structural conflict rule). */
 const WEB_TOOL_BATCH = new Set(['web_search', 'fetch_webpage', 'http_request']);
@@ -431,6 +478,10 @@ const TOOL_PROMPT_CHARS_PER_TOKEN = 3.5;
  * Size tool catalog to remaining prompt budget (Bug 5).
  * Appends compact category parts until budget exhausted; falls back to full if it fits.
  */
+/** Tier-0 tool parts: header + Browser + Core Files + Terminal — never dropped in Agent mode. */
+const AGENT_TOOL_TIER0_PART_COUNT = 4;
+const AGENT_MIN_TOOL_PROMPT_CHARS = 10000;
+
 function buildBudgetProportionalToolPrompt({
   contextTokens,
   basePromptChars,
@@ -442,18 +493,24 @@ function buildBudgetProportionalToolPrompt({
   minGenerationReserve = 512,
   maxToolBudgetPct = 0.35,
   maxToolBudgetTokens = 4096,
+  agentMode = false,
 }) {
-  const consumedTokens = Math.ceil((basePromptChars + historyChars + userMessageChars) / TOOL_PROMPT_CHARS_PER_TOKEN);
-  const promptBudgetTokens = Math.max(256, contextTokens - minGenerationReserve - consumedTokens);
-  const maxToolTokens = Math.min(
-    Math.floor(promptBudgetTokens * maxToolBudgetPct),
-    maxToolBudgetTokens,
-  );
-  const maxToolChars = Math.floor(maxToolTokens * TOOL_PROMPT_CHARS_PER_TOKEN);
+  const tier0PartCount = (Array.isArray(compactToolParts) && compactToolParts._tier0PartCount) || AGENT_TOOL_TIER0_PART_COUNT;
 
   const fullToolTokens = Math.ceil((toolPrompt?.length || 0) / TOOL_PROMPT_CHARS_PER_TOKEN);
+  const reservedToolTokens = agentMode
+    ? Math.min(fullToolTokens, Math.max(Math.floor(AGENT_MIN_TOOL_PROMPT_CHARS / TOOL_PROMPT_CHARS_PER_TOKEN), Math.floor(contextTokens * 0.22)))
+    : 0;
+
+  const consumedTokens = Math.ceil((basePromptChars + historyChars + userMessageChars) / TOOL_PROMPT_CHARS_PER_TOKEN);
+  const promptBudgetTokens = Math.max(256, contextTokens - minGenerationReserve - consumedTokens - reservedToolTokens);
+  const maxToolTokens = agentMode
+    ? Math.max(reservedToolTokens, Math.min(Math.floor(promptBudgetTokens * maxToolBudgetPct), maxToolBudgetTokens))
+    : Math.min(Math.floor(promptBudgetTokens * maxToolBudgetPct), maxToolBudgetTokens);
+  let maxToolChars = Math.floor(maxToolTokens * TOOL_PROMPT_CHARS_PER_TOKEN);
+
   if (toolPrompt && fullToolTokens <= maxToolTokens) {
-    return { prompt: toolPrompt, mode: 'full', budgetTokens: maxToolTokens, usedTokens: fullToolTokens };
+    return { prompt: toolPrompt, mode: 'full', budgetTokens: maxToolTokens, usedTokens: fullToolTokens, tier0Ok: true };
   }
 
   const parts = Array.isArray(compactToolParts) && compactToolParts.length > 0
@@ -464,23 +521,34 @@ function buildBudgetProportionalToolPrompt({
     const trimmed = toolPrompt && toolPrompt.length > maxToolChars
       ? toolPrompt.slice(0, maxToolChars) + '\n…and more tools available\n'
       : (toolPrompt || '');
-    return { prompt: trimmed, mode: 'trimmed-full', budgetTokens: maxToolTokens, usedTokens: Math.ceil(trimmed.length / TOOL_PROMPT_CHARS_PER_TOKEN) };
+    return { prompt: trimmed, mode: 'trimmed-full', budgetTokens: maxToolTokens, usedTokens: Math.ceil(trimmed.length / TOOL_PROMPT_CHARS_PER_TOKEN), tier0Ok: !agentMode };
   }
 
   let built = '';
   let partsUsed = 0;
   const headerPart = parts[0] || '';
-  for (const part of parts) {
+  const tier0End = agentMode ? Math.min(tier0PartCount, parts.length) : 0;
+
+  if (agentMode && tier0End > 0) {
+    for (let i = 0; i < tier0End; i++) {
+      built += parts[i];
+      partsUsed++;
+    }
+    maxToolChars = Math.max(maxToolChars, built.length);
+  }
+
+  for (let i = tier0End; i < parts.length; i++) {
+    const part = parts[i];
     const next = built + part;
     if (next.length > maxToolChars && built.length > 0) break;
     built = next;
     partsUsed++;
   }
+
   if (!built && headerPart) {
     built = headerPart.length > maxToolChars ? headerPart.slice(0, maxToolChars) : headerPart;
     partsUsed = 1;
   } else if (headerPart && !built.startsWith(headerPart)) {
-    // Always preserve format header even when budget is tight
     const body = built.slice(headerPart.length);
     const maxBody = Math.max(0, maxToolChars - headerPart.length);
     built = headerPart + (maxBody > 0 ? body.slice(0, maxBody) : '');
@@ -489,12 +557,16 @@ function buildBudgetProportionalToolPrompt({
   if (partsUsed < parts.length) {
     built += '\n…and more tools available\n';
   }
+
+  const tier0Ok = !agentMode || (built.includes('browser_navigate') && built.includes('browser_snapshot'));
   return {
     prompt: built,
-    mode: 'budget-parts',
+    mode: agentMode && tier0End > 0 ? 'agent-tier0' : 'budget-parts',
     budgetTokens: maxToolTokens,
     partsUsed,
     usedTokens: Math.ceil(built.length / TOOL_PROMPT_CHARS_PER_TOKEN),
+    tier0Ok,
+    reservedToolTokens,
   };
 }
 
@@ -627,8 +699,8 @@ For multi-step work, you may use planning tools from ## Tools when they fit the 
 ## Todo List Discipline (CRITICAL)
 If you call write_todos to create a plan, you MUST maintain it. Call update_todo immediately when you start a task step (status: 'in-progress') and immediately when you finish it (status: 'done'). Do not leave todos at 0/N completed — the user sees the list in real time and relies on it to track progress. A stale todo list is worse than no list at all.
 
-## Context rotation
-When you see [System: Context rotated], older turns were removed from the live context window. The progress summary embedded in the rotation notice contains the key details you need to continue. Do not call read_file to recover context — the summary is already in your context.
+## Session memory
+When older turns were condensed, a brief progress summary may appear in context. Never mention context limits, rotation, or compression to the user. Continue the current task immediately using that summary and the next required tool call.
 
 ## Cloud response style (cloud models only)
 When this block is present you are guIDE Cloud AI: keep answers concise — short paragraphs, minimal preamble, no filler. Still use tools whenever the task requires real actions in the project.
@@ -650,7 +722,7 @@ Pattern — user asks to search the web, find current information, or look up so
 Call web_search with a rephrased query. Do not generate an answer from memory if the information may be outdated.
 
 Pattern — user asks to open, navigate, or interact with a website or browser:
-Call browser_navigate first, then use browser_click, browser_type, etc. as needed.
+Call browser_navigate first (returns a snapshot). After browser_type or any action that changes the page, call browser_snapshot before browser_click so [ref=N] numbers match the current DOM. Prefer elements marked [SUBMIT] for login/forms over numeric refs alone.
 
 Pattern — user wants to find files in the project, list a directory, or search codebase:
 Call list_directory, search_codebase, or find_files as appropriate. Do not guess at file contents.
@@ -1470,6 +1542,7 @@ class ChatEngine extends EventEmitter {
     } else if (toolPrompt) {
       const historyChars = this._chatHistory.slice(1).reduce((sum, m) => sum + (String(m.text || '').length), 0);
       const userMessageChars = effectiveUserMessage.length;
+      const agentMode = _toolsEnabled && !options.askOnly;
       const budgetResult = buildBudgetProportionalToolPrompt({
         contextTokens,
         basePromptChars: basePrompt.length,
@@ -1478,15 +1551,26 @@ class ChatEngine extends EventEmitter {
         toolPrompt,
         compactToolParts,
         compactToolPrompt,
+        agentMode,
       });
       effectiveToolPrompt = budgetResult.prompt;
       useCompact = budgetResult.mode !== 'full';
+
+      if (agentMode && budgetResult.tier0Ok === false) {
+        console.error('[ChatEngine] Agent mode tool prompt missing Tier-0 Browser tools — catalog truncated');
+        if (onStreamEvent) {
+          onStreamEvent('generation-warning', {
+            message: 'Tool catalog truncated — Browser tools may be missing. Start a new session or reduce context pressure.',
+            suggestion: 'History was too large; shift conversation or open a fresh session.',
+          });
+        }
+      }
 
       const finalPct = Math.round((budgetResult.usedTokens / contextTokens) * 100);
       const toolPromptTokens = Math.ceil(toolPrompt.length / TOOL_PROMPT_CHARS_PER_TOKEN);
       const toolPct = Math.round((toolPromptTokens / contextTokens) * 100);
 
-      if (toolPct > 50 && onStreamEvent) {
+      if (toolPct > 50 && onStreamEvent && budgetResult.mode === 'full') {
         onStreamEvent('generation-warning', {
           message: `Full tool catalog would use ${toolPct}% of context (${toolPromptTokens.toLocaleString()}/${contextTokens.toLocaleString()} tokens)`,
           suggestion: 'Using budget-proportional tool list. Try a smaller model, reduce context in settings, or start a new session.',
@@ -1494,7 +1578,7 @@ class ChatEngine extends EventEmitter {
       }
 
       this._chatHistory[0].text = basePrompt + '\n\n' + effectiveToolPrompt;
-      console.log(`[ChatEngine] Tool prompt injected (${effectiveToolPrompt.length} chars, mode=${budgetResult.mode}, budget=${budgetResult.budgetTokens} tok, ctx=${contextTokens}, finalPct=${finalPct}%, parts=${budgetResult.partsUsed ?? 'n/a'})`);
+      console.log(`[ChatEngine] Tool prompt injected (${effectiveToolPrompt.length} chars, mode=${budgetResult.mode}, budget=${budgetResult.budgetTokens} tok, ctx=${contextTokens}, finalPct=${finalPct}%, parts=${budgetResult.partsUsed ?? 'n/a'}, tier0Ok=${budgetResult.tier0Ok})`);
       console.log(`[ChatEngine] Prompt assembly: systemChars=${basePrompt.length}, toolChars=${effectiveToolPrompt.length}, totalSystemChars=${basePrompt.length + effectiveToolPrompt.length}, historyMsgs=${this._chatHistory.length - 1}`);
     } else if (functions && Object.keys(functions).length > 0) {
       this._chatHistory[0].text = basePrompt + this._buildToolPrompt(functions);
@@ -1511,6 +1595,7 @@ class ChatEngine extends EventEmitter {
 
     this._abortController = new AbortController();
     this._cancelRequested = false;
+    this._pendingPostRotationContinue = false;
     let fullResponse = '';
     let visibleResponse = '';
     let _proseLogBuf = '';
@@ -2649,6 +2734,25 @@ class ChatEngine extends EventEmitter {
         if (_useNativeFunctions && result.metadata?.stopReason === 'functionCalls' && result.functionCalls?.length) {
           const _nativeSessionId = this._sessionId;
           let pendingCalls = result.functionCalls;
+          if (options.planMode && pendingCalls?.length) {
+            const blockedNative = [];
+            pendingCalls = pendingCalls.filter((fc) => {
+              const name = fc.functionName;
+              if (!PLAN_MODE_ALLOWED_TOOLS.has(name)) { blockedNative.push(name); return false; }
+              if (name === 'write_file') {
+                const fp = String(fc.params?.filePath || fc.params?.path || '');
+                if (!/GUIDE_PLAN\.md$/i.test(fp)) { blockedNative.push(name); return false; }
+              }
+              return true;
+            });
+            if (blockedNative.length) {
+              console.log(`[ChatEngine] Plan mode — blocked native tool(s): ${blockedNative.join(', ')}`);
+              this._chatHistory.push({
+                type: 'user',
+                text: `[System: Plan mode — blocked tools: ${blockedNative.join(', ')}. Use read/search/git and write_file for GUIDE_PLAN.md only.]`,
+              });
+            }
+          }
           const _ctxTokens = this._contextSize || this.modelInfo?.contextSize || 8192;
 
           const _findLatestModelItem = () => {
@@ -2816,6 +2920,58 @@ class ChatEngine extends EventEmitter {
         let roundStart = 0;
         let parsedCalls = []; // Hoisted to function scope for refusal correction access
         parsedCalls = parseToolCalls(fullResponse);
+
+        // Scoped 0-tool retry: mid-task agentic work only (not casual "hello" chat)
+        let _zeroToolRetryCount = 0;
+        while (
+          parsedCalls.length === 0
+          && _zeroToolRetryCount < AGENT_ZERO_TOOL_RETRY_MAX
+          && isActiveAgenticWork({
+            totalToolCalls,
+            toolRoundCount: this._toolRoundCount,
+            chatHistory: this._chatHistory,
+            options,
+            forceContinue: this._pendingPostRotationContinue,
+          })
+        ) {
+          _zeroToolRetryCount++;
+          console.log(`[ChatEngine] Agentic 0-tool retry #${_zeroToolRetryCount} — injecting continuation nudge`);
+          this._chatHistory.push({ type: 'user', text: AGENT_ZERO_TOOL_RETRY_MESSAGE });
+          _sfBuf = ''; _sfDepth = 0; _sfActive = false; _sfConfirmed = false;
+          _sfInStr = false; _sfEscaped = false; _sfLastCharWasNewlineOrStart = true;
+          _sfInFence = false; _sfFenceBuf = ''; _sfFenceTickCount = 0;
+          _sfRoundVisibleBuf = '';
+          const ctxAvailRetry = contextSize - (this._sequence?.nextTokenIndex || 0);
+          if (userMaxTokens !== Infinity) {
+            genOptions.maxTokens = Math.min(userMaxTokens, Math.max(1, ctxAvailRetry));
+          }
+          result = await this._generateResponseSafe(genOptions, {
+            contextSize,
+            onStreamEvent,
+            functions: _useNativeFunctions ? functions : undefined,
+            documentFunctionParams: _useNativeFunctions ? true : undefined,
+            userMaxTokensCap: userMaxTokens,
+          });
+          this._lastEvaluation = result.lastEvaluation;
+          if (result.lastEvaluation?.cleanHistory) {
+            this._chatHistory = result.lastEvaluation.cleanHistory;
+          }
+          if (onContextUsage && this._sequence) {
+            onContextUsage({ used: this._sequence.nextTokenIndex, total: this._context.contextSize });
+          }
+          const retryText = result.response || '';
+          fullResponse += retryText;
+          roundStart = fullResponse.length;
+          parsedCalls = parseToolCalls(fullResponse);
+          if (parsedCalls.length > 0) {
+            console.log(`[ChatEngine] Agentic 0-tool retry succeeded: ${parsedCalls.length} call(s)`);
+            break;
+          }
+        }
+        if (_zeroToolRetryCount > 0 && parsedCalls.length === 0) {
+          console.warn(`[ChatEngine] Agentic 0-tool retry exhausted (${_zeroToolRetryCount} rounds) — returning prose-only`);
+        }
+
         console.log(`[ChatEngine] Tool parse: found ${parsedCalls.length} tool call(s) in ${fullResponse.length} chars of model output`);
         // When 0 calls found, log response preview for diagnostics
         if (parsedCalls.length === 0 && fullResponse.length > 20) {
@@ -2866,6 +3022,17 @@ class ChatEngine extends EventEmitter {
         if (options.askOnly && parsedCalls.length > 0) {
           console.log(`[ChatEngine] Ask mode — discarding ${parsedCalls.length} tool call(s) from model output`);
           parsedCalls = [];
+        }
+        if (options.planMode && parsedCalls.length > 0) {
+          const { calls: planCalls, blocked } = filterPlanModeToolCalls(parsedCalls);
+          if (blocked.length > 0) {
+            console.log(`[ChatEngine] Plan mode — blocked ${blocked.length} tool call(s): [${blocked.map(c => c.tool).join(', ')}]`);
+            this._chatHistory.push({
+              type: 'user',
+              text: `[System: Plan mode — only read/search/git tools and write_file for GUIDE_PLAN.md are allowed. Blocked: ${blocked.map(c => c.tool).join(', ')}. Continue planning with permitted tools.]`,
+            });
+          }
+          parsedCalls = planCalls;
         }
 
         console.log(`[ChatEngine] Tool loop ENTER: ${parsedCalls.length} parsed call(s)`);
@@ -3208,11 +3375,14 @@ class ChatEngine extends EventEmitter {
             const colonIdx = line.indexOf(':');
             if (colonIdx === -1) return line;
             const toolName = line.substring(0, colonIdx);
-            if (toolName === 'browser_snapshot' || toolName === 'browser_navigate') {
+            if (toolName === 'browser_snapshot' || toolName === 'browser_navigate' || toolName === 'browser_click' || toolName === 'browser_type') {
               try {
                 const resultStr = line.substring(colonIdx + 1).trim();
                 const parsed = JSON.parse(resultStr);
-                return `${toolName}: URL=${parsed.url || '?'}, title="${(parsed.title || '').slice(0, 80)}", elements=${parsed.elements?.length || 0}`;
+                const snapText = parsed.text || parsed.snapshot || '';
+                const elCount = Array.isArray(parsed.elements) ? parsed.elements.length
+                  : (snapText.match(/\[ref=\d+\]/g) || []).length;
+                return `${toolName}: URL=${parsed.url || '?'}, title="${(parsed.title || '').slice(0, 80)}", elements=${elCount}`;
               } catch { return `${toolName}: (snapshot — see full result in tool output)`; }
             }
             return line.length > 200 ? line.substring(0, 200) + '...' : line;
@@ -3417,6 +3587,10 @@ class ChatEngine extends EventEmitter {
           if (parsedCalls.length > 0) {
             const { repaired } = repairToolCalls(parsedCalls, newText);
             parsedCalls = filterWebWorkspaceToolConflict(repaired);
+            if (options.planMode) {
+              const { calls: planCalls } = filterPlanModeToolCalls(parsedCalls);
+              parsedCalls = planCalls;
+            }
 
             // Safety net: strip only what was actually sent to the UI this round (not raw model output)
             if (onStreamEvent && _sfRoundVisibleBuf) {
@@ -3532,6 +3706,7 @@ class ChatEngine extends EventEmitter {
       console.log('[ChatEngine] chat() FINALLY: abortController cleared');
       this._abortController = null;
       this._cancelRequested = false;
+      this._pendingPostRotationContinue = false;
     }
   }
 
@@ -3834,7 +4009,7 @@ class ChatEngine extends EventEmitter {
     return '';
   }
 
-  _insertContextRotationNotice(history, droppedCount, pinnedUserText = '') {
+  _insertContextRotationNotice(history, droppedCount, pinnedUserText = '', progressSummary = null) {
     if (!droppedCount || droppedCount <= 0) return history;
     const scratchRel = this._projectPath ? '.guide-scratch/context-state.md' : null;
 
@@ -3844,11 +4019,13 @@ class ChatEngine extends EventEmitter {
     if (existingIdx >= 0) copy.splice(existingIdx, 1);
 
     const taskLine = pinnedUserText
-      ? `Current task: "${pinnedUserText.slice(0, 300)}${pinnedUserText.length > 300 ? '...' : ''}"`
-      : 'Current task: (not found)';
-    const progressLine = 'Progress summary: (generating...)';
+      ? `TASK: "${pinnedUserText.slice(0, 300)}${pinnedUserText.length > 300 ? '...' : ''}"`
+      : 'TASK: (not found)';
+    const progressLine = progressSummary
+      ? `Progress summary:\n${progressSummary}`
+      : 'Progress summary: (generating...)';
 
-    const text = `[System: Context rotated] ${droppedCount} earlier turn(s) compressed.\n${taskLine}\n${progressLine}\nContinue from where you left off. Do not restart completed steps.\n`;
+    const text = `[System: Session memory condensed — continue task silently] ${droppedCount} earlier turn(s) summarized.\n${taskLine}\n${progressLine}\nContinue immediately with the next tool call. Do not mention context limits or rotation to the user.\n`;
 
     copy.splice(Math.max(1, copy.length - 1), 0, { type: 'user', text });
     return copy;
@@ -4043,43 +4220,114 @@ class ChatEngine extends EventEmitter {
     }
   }
 
-  _extractDeterministicSummary(droppedItems) {
+  _extractDeterministicSummary(droppedItems, taskHint = '') {
     if (!droppedItems || droppedItems.length === 0) return null;
-    const lines = [];
+
+    const done = new Set();
+    const browserLines = [];
+    const stateLines = [];
+    const userSnippets = [];
+    let lastUrl = '';
+    let lastClickLabel = '';
+
+    const _pushDone = (line) => { if (line && !done.has(line)) { done.add(line); } };
+
+    const _parseToolResultLine = (toolLine) => {
+      const colon = toolLine.indexOf(':');
+      if (colon < 0) return;
+      const toolName = toolLine.slice(0, colon).trim();
+      const body = toolLine.slice(colon + 1).trim();
+      let parsed = null;
+      try { parsed = JSON.parse(body); } catch { parsed = null; }
+
+      if (/^browser_/.test(toolName)) {
+        const url = parsed?.url || (body.match(/URL[=:]\s*(\S+)/i) || [])[1] || '';
+        if (url) lastUrl = url;
+        const snap = parsed?.text || parsed?.snapshot || '';
+        if (snap && browserLines.length < 3) {
+          const refs = (snap.match(/\[ref=\d+\][^\n]*/g) || []).slice(0, 12);
+          if (refs.length) browserLines.push(refs.join('\n'));
+          const pageText = snap.split('Page text:')[1];
+          if (pageText) browserLines.push(pageText.trim().slice(0, 2000));
+        }
+        if (toolName === 'browser_click' && parsed?.clicked) {
+          lastClickLabel = String(parsed.clicked).slice(0, 120);
+        }
+        _pushDone(`${toolName}${url ? ` @ ${url}` : ''}${lastClickLabel && toolName === 'browser_click' ? ` → "${lastClickLabel}"` : ''}`);
+        return;
+      }
+
+      if (toolName === 'run_command') {
+        const cmd = parsed?.command || parsed?.cmd || body.slice(0, 120);
+        _pushDone(`run_command: ${cmd}`);
+        return;
+      }
+      if (/^write_file|edit_file|append_to_file|read_file$/.test(toolName)) {
+        const fp = parsed?.filePath || parsed?.path || (body.match(/"(?:filePath|path)"\s*:\s*"([^"]+)"/) || [])[1];
+        if (fp) _pushDone(`${toolName}: ${fp}`);
+        return;
+      }
+      if (toolName === 'write_todos' || toolName === 'update_todo') {
+        stateLines.push(body.slice(0, 300));
+        _pushDone(`${toolName}`);
+      }
+    };
+
     for (const item of droppedItems) {
       const text = this._getHistoryItemText(item).trim();
       if (!text) continue;
+
       if (item.type === 'user') {
-        lines.push(`- User: ${text.slice(0, 300)}`);
-      } else if (item.type === 'model') {
-        // Extract tool calls from model responses — matches both JSON format
-        // {"tool":"write_file","params":{"filePath":"..."}} and fenced blocks.
+        if (RE_TOOL_OR_SYSTEM_INJECT.test(text) || RE_CONTEXT_ROTATED.test(text)) {
+          const lines = text.split('\n');
+          for (const line of lines) {
+            if (/^(browser_|read_file|write_file|run_command)/.test(line)) _parseToolResultLine(line);
+            else if (line.includes(':') && /^(browser_|read_file|write_file|run_command)/.test(line.split(':')[0])) {
+              _parseToolResultLine(line);
+            }
+          }
+          continue;
+        }
+        if (!/^\[System:/i.test(text) && userSnippets.length < 3) {
+          userSnippets.push(text.slice(0, 500));
+        }
+        continue;
+      }
+
+      if (item.type === 'model') {
         const toolNames = text.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/g);
         const filePaths = text.match(/"(?:filePath|path)"\s*:\s*"([^"]+)"/g);
-        const todoMatch = text.match(/"items"\s*:\s*\[([^\]]*)\]/);
         if (toolNames) {
-          const names = toolNames.map(m => m.replace(/"(?:tool|name)"\s*:\s*"/, '').replace(/"$/, ''));
-          const paths = filePaths ? filePaths.map(m => m.replace(/"(?:filePath|path)"\s*:\s*"/, '').replace(/"$/, '')) : [];
-          let detail = paths.length > 0 ? `${names.join(', ')} → ${paths.join(', ')}` : names.join(', ');
-          // Include todo items in summary so they survive context rotation
-          if (names.includes('write_todos') && todoMatch) {
-            const itemsText = todoMatch[1].replace(/"/g, '').replace(/,/g, ', ').slice(0, 200);
-            detail += ` [${itemsText}]`;
-          }
-          lines.push(`- Tools: ${detail}`);
-        } else if (filePaths) {
-          lines.push(`- Files: ${filePaths.slice(0, 5).map(m => m.replace(/"(?:filePath|path)"\s*:\s*"/, '').replace(/"$/, '')).join(', ')}`);
-        } else {
-          // No tool calls — include a prose snippet for context
-          lines.push(`- Assistant: ${text.slice(0, 300)}`);
+          const names = [...new Set(toolNames.map(m => m.replace(/"(?:tool|name)"\s*:\s*"/, '').replace(/"$/, '')))];
+          const paths = filePaths ? [...new Set(filePaths.map(m => m.replace(/"(?:filePath|path)"\s*:\s*"/, '').replace(/"$/, '')))] : [];
+          _pushDone(paths.length ? `${names.join(', ')} → ${paths.join(', ')}` : names.join(', '));
         }
       }
     }
-    if (!lines.length) return null;
-    const summary = lines.join('\n');
-    console.log(`[ChatEngine] Summarizer FALLBACK: extracted ${lines.length} lines from ${droppedItems.length} dropped items`);
+
+    const sections = [];
+    if (taskHint) sections.push(`TASK:\n${taskHint.slice(0, 400)}`);
+    else if (userSnippets[0]) sections.push(`TASK:\n${userSnippets[0].slice(0, 400)}`);
+    if (done.size) sections.push(`DONE:\n${[...done].slice(0, 20).join('\n')}`);
+    if (lastUrl || browserLines.length) {
+      const browserBlock = [
+        lastUrl ? `Last URL: ${lastUrl}` : '',
+        lastClickLabel ? `Last click: ${lastClickLabel}` : '',
+        ...browserLines,
+      ].filter(Boolean).join('\n');
+      sections.push(`BROWSER:\n${browserBlock.slice(0, 4000)}`);
+    }
+    if (stateLines.length) sections.push(`STATE:\n${stateLines.join('\n').slice(0, 600)}`);
+    if (userSnippets.length > 1) sections.push(`RECENT USER:\n${userSnippets.slice(-2).join('\n---\n')}`);
+    const nextStep = lastUrl
+      ? 'NEXT: browser_snapshot then continue on the current page.'
+      : (done.size ? 'NEXT: continue with the next tool call for the active task.' : 'NEXT: read_file or list_directory to resume work.');
+    sections.push(nextStep);
+
+    const summary = sections.join('\n\n');
+    console.log(`[ChatEngine] Summarizer FALLBACK: ${sections.length} sections from ${droppedItems.length} dropped items`);
     console.log(`[ChatEngine] Summarizer FALLBACK content:\n${summary}`);
-    return summary;
+    return summary || null;
   }
 
   _writeContextStateFile({ chatHistory, keptIndices, getItemText, used, budget }) {
@@ -4147,50 +4395,45 @@ class ChatEngine extends EventEmitter {
     });
     this._chatHistory = shifted.chatHistory;
     if (shifted.metadata?.droppedCount > 0) {
-      // Emit immediate warning so UI shows activity during summarization
-      if (onStreamEvent) {
-        onStreamEvent('generation-warning', {
-          message: 'Condensing context — generating progress summary...',
-          suggestion: 'The model is summarizing dropped context so it can continue the task.',
-        });
-      }
-
-      // Generate progress summary from dropped context via sub-context
       const { droppedItems, pinnedUserText } = shifted.metadata;
-      const summary = await this._summarizeDroppedContext(droppedItems, pinnedUserText, this._enableContextSummarizer);
-
-      // Inject summary into rotation notice (replace placeholder)
-      if (summary) {
+      const syncFallback = this._extractDeterministicSummary(droppedItems, pinnedUserText);
+      if (syncFallback) {
         const noticeIdx = this._chatHistory.findIndex(
           (m) => m.type === 'user' && RE_CONTEXT_ROTATED.test(String(m.text || ''))
         );
         if (noticeIdx >= 0) {
           const notice = this._chatHistory[noticeIdx];
           notice.text = notice.text.replace(
-            'Progress summary: (generating...)',
-            `Progress summary:\n${summary}`
-          );
-        }
-      } else {
-        // No summary available — replace placeholder with fallback message
-        const noticeIdx = this._chatHistory.findIndex(
-          (m) => m.type === 'user' && RE_CONTEXT_ROTATED.test(String(m.text || ''))
-        );
-        if (noticeIdx >= 0) {
-          const notice = this._chatHistory[noticeIdx];
-          notice.text = notice.text.replace(
-            'Progress summary: (generating...)',
-            'Progress summary: (not available — context was compressed without a summary)'
+            /Progress summary:[\s\S]*?(?=\nContinue immediately|\n$)/,
+            `Progress summary:\n${syncFallback}\n`
           );
         }
       }
+      this._pendingPostRotationContinue = historyHasActiveAgenticSignals(this._chatHistory);
 
-      // Final status event
       if (onStreamEvent) {
         onStreamEvent('generation-warning', {
-          message: summary ? 'Context condensed — progress summary injected' : 'Context compressed — no summary available',
-          suggestion: summary ? 'The model now has a summary of earlier work and will continue from where it left off.' : 'Older messages were dropped. The model will continue based on the remaining context.',
+          message: 'Condensing context — continuing task',
+          suggestion: 'Older messages were summarized. The agent will keep working.',
         });
+      }
+
+      let summary = syncFallback;
+      if (this._enableContextSummarizer) {
+        const gpuSummary = await this._summarizeDroppedContext(droppedItems, pinnedUserText, true);
+        if (gpuSummary && gpuSummary.length > (syncFallback?.length || 0)) {
+          summary = gpuSummary;
+          const noticeIdx = this._chatHistory.findIndex(
+            (m) => m.type === 'user' && RE_CONTEXT_ROTATED.test(String(m.text || ''))
+          );
+          if (noticeIdx >= 0) {
+            const notice = this._chatHistory[noticeIdx];
+            notice.text = notice.text.replace(
+              /Progress summary:[\s\S]*?(?=\nContinue immediately|\n$)/,
+              `Progress summary:\n${summary}\n`
+            );
+          }
+        }
       }
     }
   }
@@ -4465,7 +4708,8 @@ class ChatEngine extends EventEmitter {
 
     let finalHistory = newHistory;
     if (droppedCount > 0) {
-      finalHistory = this._insertContextRotationNotice(finalHistory, droppedCount, pinnedUserText);
+      const syncSummary = this._extractDeterministicSummary(droppedItems, pinnedUserText);
+      finalHistory = this._insertContextRotationNotice(finalHistory, droppedCount, pinnedUserText, syncSummary);
     }
 
     const measureOpts = {
@@ -4497,7 +4741,8 @@ class ChatEngine extends EventEmitter {
 
     const totalDropped = droppedCount + verifyDrops;
     if (verifyDrops > 0) {
-      finalHistory = this._insertContextRotationNotice(finalHistory, totalDropped, pinnedUserText);
+      const syncSummary = this._extractDeterministicSummary([...droppedItems, ...verifyDroppedItems], pinnedUserText);
+      finalHistory = this._insertContextRotationNotice(finalHistory, totalDropped, pinnedUserText, syncSummary);
     }
     console.log(
       `[ChatEngine] Context shift: kept ${keptIndices.size} items, dropped ${droppedCount}, verifyDrops=${verifyDrops}, ` +

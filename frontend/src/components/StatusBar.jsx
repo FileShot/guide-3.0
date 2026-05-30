@@ -48,6 +48,19 @@ export default function StatusBar() {
   const [tokensPerSec, setTokensPerSec] = useState(0);
   const prevTextLenRef = useRef(0);
   const lastTickRef = useRef(Date.now());
+  const statusBarRef = useRef(null);
+  const [hideEditorChips, setHideEditorChips] = useState(false);
+
+  useEffect(() => {
+    const el = statusBarRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect?.width ?? 1200;
+      setHideEditorChips(w < 720);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!chatStreaming) {
@@ -165,9 +178,12 @@ export default function StatusBar() {
   const gpuTotalLayers = typeof gpuMemory?.totalLayers === 'number' ? gpuMemory.totalLayers : modelInfo?.totalLayers;
 
   return (
-    <div className={`h-statusbar flex items-center no-select text-[11px] ${
+    <div
+      ref={statusBarRef}
+      className={`h-statusbar flex items-center no-select text-[11px] ${
       modelLoading ? 'bg-vsc-statusbar-debug' : 'bg-vsc-statusbar'
-    } text-vsc-text-bright`}>
+    } text-vsc-text-bright`}
+    >
       {/* Left section */}
       <div className="flex items-center flex-1 min-w-0">
         {/* Branch */}
@@ -199,8 +215,8 @@ export default function StatusBar() {
           </button>
         )}
 
-        {/* Spaces / Tabs */}
-        {activeTab && (
+        {/* Spaces / Tabs — hidden on narrow status bars */}
+        {activeTab && !hideEditorChips && (
           <button className="statusbar-item" onClick={() => {
             if (editorIndentType === 'spaces' && editorIndentSize === 2) {
               setEditorIndentSize(4);
@@ -217,7 +233,7 @@ export default function StatusBar() {
         )}
 
         {/* Encoding */}
-        {activeTab && (
+        {activeTab && !hideEditorChips && (
           <button className="statusbar-item" onClick={() => {
             setEditorEncoding(editorEncoding === 'UTF-8' ? 'UTF-16LE' : 'UTF-8');
           }} title="Click to change encoding">
@@ -226,7 +242,7 @@ export default function StatusBar() {
         )}
 
         {/* EOL */}
-        {activeTab && (
+        {activeTab && !hideEditorChips && (
           <button className="statusbar-item" onClick={() => {
             setEditorEol(editorEol === 'LF' ? 'CRLF' : 'LF');
           }} title="Click to change line endings">
@@ -235,7 +251,7 @@ export default function StatusBar() {
         )}
 
         {/* Language */}
-        {activeTab && (
+        {activeTab && !hideEditorChips && (
           <button className="statusbar-item" onClick={openCommandPalette} title="Click to change language">
             <span>{_formatLanguage(activeTab.language)}</span>
           </button>

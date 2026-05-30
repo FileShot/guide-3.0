@@ -357,6 +357,10 @@ let autoUpdater = null;
 async function openProjectPath(projectPath) {
   console.log(`[electron-main] openProjectPath START: ${projectPath}`);
   const resolved = path.resolve(projectPath);
+  if (currentProjectPath && path.resolve(currentProjectPath) === resolved) {
+    console.log(`[electron-main] openProjectPath: already open — skipping duplicate init`);
+    return { path: resolved };
+  }
   if (!fs.existsSync(resolved)) {
     console.error(`[electron-main] openProjectPath: directory not found ${resolved}`);
     const error = new Error('Directory not found');

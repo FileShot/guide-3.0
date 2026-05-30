@@ -496,7 +496,8 @@ const useAppStore = create((set, get) => ({
 
   // ─── Chat ──────────────────────────────────────────────
 
-  chatMessages: [],       // [{id, role, content, timestamp, toolCalls?, thinking?}]
+  chatMessages: [],       // [{id, role, content, timestamp, insertionSeq?, toolCalls?, thinking?}]
+  nextInsertionSeq: 0,
 
   chatGenerationEpoch: 0,
 
@@ -547,13 +548,20 @@ const useAppStore = create((set, get) => ({
 
     console.log('[appStore] addChatMessage:', msg.role, msg.content?.substring(0, 50));
 
-    const { chatMessages } = get();
+    const { chatMessages, nextInsertionSeq } = get();
 
-    const updated = [...chatMessages, { ...msg, id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, timestamp: Date.now() }];
+    const updated = [...chatMessages, {
+      ...msg,
+      id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: Date.now(),
+      insertionSeq: nextInsertionSeq,
+    }];
 
-    set({ chatMessages: updated });
+    set({ chatMessages: updated, nextInsertionSeq: nextInsertionSeq + 1 });
 
     persistProjectChatMessages(get().projectPath, updated);
+
+    return updated.length - 1;
 
   },
 

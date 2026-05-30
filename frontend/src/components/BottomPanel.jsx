@@ -155,9 +155,27 @@ function XTermPanel() {
   const modeRef = useRef(null); // 'pty' | 'exec' | null
   const ptyCwdRef = useRef(null); // cwd the PTY was spawned with (avoid redundant visible cd)
   const [loaded, setLoaded] = useState(false);
+  const [loadTimedOut, setLoadTimedOut] = useState(false);
   const activeTerminalTab = useAppStore(s => s.activeTerminalTab);
+  const activePanelTab = useAppStore(s => s.activePanelTab);
 
   const projectPath = useAppStore(s => s.projectPath);
+
+  useEffect(() => {
+    const t = setTimeout(() => setLoadTimedOut(true), 12000);
+    return () => clearTimeout(t);
+  }, [activeTerminalTab]);
+
+  useEffect(() => {
+    if (!loaded || !xtermRef.current) return;
+    const t = setTimeout(() => {
+      try {
+        fitAddonRef.current?.fit();
+        xtermRef.current?.focus();
+      } catch (_) {}
+    }, 50);
+    return () => clearTimeout(t);
+  }, [loaded, activeTerminalTab, activePanelTab]);
 
   // Initialize xterm.js + IPC PTY (tab change only — cwd updates handled separately)
   useEffect(() => {
@@ -434,8 +452,8 @@ function XTermPanel() {
         className="h-full w-full xterm-container"
         style={{ padding: '4px 0 0 8px' }}
       />
-      {!loaded && (
-        <div className="absolute inset-0 flex items-center justify-center text-vsc-text-dim text-vsc-sm">
+      {!loaded && !loadTimedOut && (
+        <div className="absolute inset-0 flex items-center justify-center text-vsc-text-dim text-vsc-sm pointer-events-none">
           <div className="spinner mr-2" />
           Loading terminal...
         </div>
