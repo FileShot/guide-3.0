@@ -193,9 +193,9 @@ jobs:
         run: |
           mkdir -p build
           if command -v convert &> /dev/null; then
-            convert build/icon.ico[0] build/icon.png
+            convert frontend/public/zzz.png -resize 256x256 build/icon.png
           else
-            sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
+            sudo apt-get install -y imagemagick && convert frontend/public/zzz.png -resize 256x256 build/icon.png
           fi
 
       - name: Verify node-llama-cpp Linux CPU backends
@@ -252,9 +252,9 @@ jobs:
         run: |
           mkdir -p build
           if command -v convert &> /dev/null; then
-            convert build/icon.ico[0] build/icon.png
+            convert frontend/public/zzz.png -resize 256x256 build/icon.png
           else
-            sudo apt-get install -y imagemagick && convert build/icon.ico[0] build/icon.png
+            sudo apt-get install -y imagemagick && convert frontend/public/zzz.png -resize 256x256 build/icon.png
           fi
 
       - name: Verify node-llama-cpp Linux CUDA backends
