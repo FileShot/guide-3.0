@@ -10,7 +10,7 @@ import InlineChat from './InlineChat';
 import BrowserPanel from './BrowserPanel';
 import {
   isPreviewable, getPreviewType,
-  HtmlPreview, MarkdownPreview, JsonPreview, CsvPreview, SvgPreview, ImagePreview
+  HtmlPreview, MarkdownPreview, JsonPreview, CsvPreview, SvgPreview, ImagePreview, PdfPreview
 } from './EditorPreviews';
 import FileIcon from './FileIcon';
 import GuideLogo from './GuideLogo';
@@ -553,6 +553,7 @@ export default function EditorArea() {
               case 'csv': return <CsvPreview content={activeTab.content} filePath={activeTab.path} onToggleCode={toggle} />;
               case 'svg': return <SvgPreview content={activeTab.content} filePath={activeTab.path} onToggleCode={toggle} />;
               case 'image': return <ImagePreview filePath={activeTab.path} dataUrl={activeTab.dataUrl} onToggleCode={toggle} />;
+              case 'pdf': return <PdfPreview filePath={activeTab.path} dataUrl={activeTab.dataUrl} onToggleCode={toggle} />;
               default: return null;
             }
           })()

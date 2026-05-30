@@ -159,8 +159,7 @@ function XTermPanel() {
 
   const projectPath = useAppStore(s => s.projectPath);
 
-  // PTY is (re)created when projectPath or tab changes — cwd set at spawn, no visible cd injection.
-  // Initialize xterm.js + IPC PTY
+  // Initialize xterm.js + IPC PTY (tab change only — cwd updates handled separately)
   useEffect(() => {
     let term = null;
     let fitAddon = null;
@@ -344,7 +343,43 @@ function XTermPanel() {
         termIdRef.current = null;
       }
     };
-  }, [activeTerminalTab, projectPath]);
+  }, [activeTerminalTab]);
+
+  // Sync shell cwd when project opens/changes — keep xterm alive, refresh PowerShell prompt
+  useEffect(() => {
+    if (!projectPath || !termIdRef.current || modeRef.current !== 'pty') return;
+    const norm = (p) => (p || '').replace(/\\/g, '/').toLowerCase();
+    if (norm(ptyCwdRef.current) === norm(projectPath)) return;
+
+    const api = window.electronAPI;
+    if (!api?.terminal) return;
+
+    const termId = termIdRef.current;
+    const cols = xtermRef.current?.cols || 80;
+    const rows = xtermRef.current?.rows || 24;
+
+    (async () => {
+      try {
+        if (api.terminal.recreate) {
+          const result = await api.terminal.recreate({
+            terminalId: termId,
+            cwd: projectPath,
+            cols,
+            rows,
+          });
+          if (result?.success) {
+            ptyCwdRef.current = projectPath;
+            return;
+          }
+        }
+      } catch (_) {}
+
+      // Fallback: silent Set-Location (no visible cd line in scrollback)
+      const escaped = projectPath.replace(/'/g, "''");
+      api.terminal.write(termId, `Set-Location -LiteralPath '${escaped}'\r`);
+      ptyCwdRef.current = projectPath;
+    })();
+  }, [projectPath]);
 
   // Handle resize
   useEffect(() => {

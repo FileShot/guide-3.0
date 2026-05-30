@@ -4,9 +4,9 @@
  * Requires frame:false in BrowserWindow + preload.js windowControls IPC.
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import useAppStore from '../stores/appStore';
 import { Search, Menu, ChevronRight, X, PanelLeft, PanelBottom, PanelRight, LayoutTemplate } from 'lucide-react';
-import SlideDown from './SlideDown';
 import GuideLogo from './GuideLogo';
 
 const wc = () => window.electronAPI?.windowControls;
@@ -29,6 +29,9 @@ export default function TitleBar() {
   const [searchQuery, setSearchQuery] = useState('');
   const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
   const layoutMenuRef = useRef(null);
+  const hamburgerTriggerRef = useRef(null);
+  const [hamburgerMenuPos, setHamburgerMenuPos] = useState({ top: 30, left: 8 });
+  const [layoutMenuPos, setLayoutMenuPos] = useState({ top: 30, right: 8 });
   const searchInputRef = useRef(null);
 
   const projectName = projectPath ? projectPath.split(/[\\/]/).pop() : '';
@@ -52,6 +55,24 @@ export default function TitleBar() {
       try { unsubscribe?.(); } catch (_) {}
     };
   }, []);
+
+  // Position portaled menus when opened
+  useEffect(() => {
+    if (openMenu && hamburgerTriggerRef.current) {
+      const r = hamburgerTriggerRef.current.getBoundingClientRect();
+      setHamburgerMenuPos({ top: r.bottom + 2, left: r.left });
+    }
+  }, [openMenu]);
+
+  useEffect(() => {
+    if (layoutMenuOpen && layoutMenuRef.current) {
+      const btn = layoutMenuRef.current.querySelector('button');
+      if (btn) {
+        const r = btn.getBoundingClientRect();
+        setLayoutMenuPos({ top: r.bottom + 2, right: Math.max(8, window.innerWidth - r.right) });
+      }
+    }
+  }, [layoutMenuOpen]);
 
   // Close hamburger / search on Escape or click outside
   useEffect(() => {
@@ -140,12 +161,13 @@ export default function TitleBar() {
   };
 
   return (
-    <div className="h-titlebar bg-vsc-titlebar grid grid-cols-[1fr_auto_1fr] items-center min-w-0 overflow-hidden no-select text-vsc-sm border-b border-vsc-panel-border/25"
+    <div className="h-titlebar bg-vsc-titlebar grid grid-cols-[1fr_auto_1fr] items-center min-w-0 min-h-0 no-select text-vsc-sm border-b border-vsc-panel-border/25"
          style={{ WebkitAppRegion: 'drag' }}>
       {/* Brand + Hamburger */}
       <div className="relative flex items-center pl-2 pr-2 gap-1 justify-self-start min-w-0" style={{ WebkitAppRegion: 'no-drag' }}>
         {/* Hamburger button */}
         <button
+          ref={hamburgerTriggerRef}
           className={`hamburger-trigger p-1.5 rounded transition-colors duration-150
             ${openMenu ? 'bg-vsc-list-hover text-vsc-text' : 'text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/60'}`}
           onClick={() => { setOpenMenu(openMenu ? null : 'main'); setExpandedCat(null); }}
@@ -154,43 +176,49 @@ export default function TitleBar() {
         </button>
 
         <GuideLogo size={18} />
-
-      {/* Hamburger Panel — absolute so it does not affect grid column width */}
-      <SlideDown isOpen={openMenu}>
-        <div className="hamburger-panel absolute top-titlebar left-0 bg-vsc-dropdown/95 backdrop-blur-xl border border-vsc-dropdown-border rounded-lg shadow-2xl z-[9999] w-[280px] py-1.5 max-h-[80vh] overflow-y-auto">
-          {MENUS.map(menu => (
-            <div key={menu.label}>
-              <button
-                className="flex items-center w-full px-3 py-1.5 text-[12px] font-medium text-vsc-text hover:bg-vsc-list-hover transition-colors duration-100"
-                onClick={() => setExpandedCat(expandedCat === menu.label ? null : menu.label)}
-              >
-                <ChevronRight size={12} className={`mr-1.5 text-vsc-text-dim transition-transform duration-150 ${expandedCat === menu.label ? 'rotate-90' : ''}`} />
-                <span>{menu.label}</span>
-              </button>
-              <SlideDown isOpen={expandedCat === menu.label}>
-                <div className="pl-3 pb-1">
-                  {menu.items.map((item, i) => {
-                    if (item.type === 'separator') {
-                      return <div key={i} className="border-t border-vsc-panel-border/15 my-1 mx-2" />;
-                    }
-                    return (
-                      <button
-                        key={i}
-                        className="flex items-center w-full px-3 py-1 text-vsc-xs text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/60 transition-colors duration-100 rounded"
-                        onClick={() => { executeMenuAction(item.action); setOpenMenu(null); setExpandedCat(null); }}
-                      >
-                        <span className="flex-1 text-left">{item.label}</span>
-                        {item.shortcut && <span className="text-vsc-text-dim/60 ml-3 text-[10px]">{item.shortcut}</span>}
-                      </button>
-                    );
-                  })}
-                </div>
-              </SlideDown>
-            </div>
-          ))}
-        </div>
-      </SlideDown>
       </div>
+
+      {openMenu && createPortal(
+        <>
+          <div className="fixed inset-0 z-[9998]" onClick={() => { setOpenMenu(null); setExpandedCat(null); }} aria-hidden="true" />
+          <div
+            className="hamburger-panel fixed z-[9999] bg-vsc-dropdown border border-vsc-dropdown-border rounded-lg shadow-2xl w-[280px] py-1.5 max-h-[80vh] overflow-y-auto"
+            style={{ top: hamburgerMenuPos.top, left: hamburgerMenuPos.left }}
+          >
+            {MENUS.map(menu => (
+              <div key={menu.label}>
+                <button
+                  className="flex items-center w-full px-3 py-1.5 text-[12px] font-medium text-vsc-text hover:bg-vsc-list-hover transition-colors duration-100"
+                  onClick={() => setExpandedCat(expandedCat === menu.label ? null : menu.label)}
+                >
+                  <ChevronRight size={12} className={`mr-1.5 text-vsc-text-dim transition-transform duration-150 ${expandedCat === menu.label ? 'rotate-90' : ''}`} />
+                  <span>{menu.label}</span>
+                </button>
+                {expandedCat === menu.label && (
+                  <div className="pl-3 pb-1">
+                    {menu.items.map((item, i) => {
+                      if (item.type === 'separator') {
+                        return <div key={i} className="border-t border-vsc-panel-border/15 my-1 mx-2" />;
+                      }
+                      return (
+                        <button
+                          key={i}
+                          className="flex items-center w-full px-3 py-1 text-vsc-xs text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/60 transition-colors duration-100 rounded"
+                          onClick={() => { executeMenuAction(item.action); setOpenMenu(null); setExpandedCat(null); }}
+                        >
+                          <span className="flex-1 text-left">{item.label}</span>
+                          {item.shortcut && <span className="text-vsc-text-dim/60 ml-3 text-[10px]">{item.shortcut}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </>,
+        document.body
+      )}
 
       {/* Center — Search Bar (optical center between logo and sidebar toggle) */}
       <div className="flex justify-center min-w-0 px-2 justify-self-center w-full max-w-[380px]" style={{ WebkitAppRegion: 'no-drag' }}>
@@ -289,37 +317,44 @@ export default function TitleBar() {
           >
             <LayoutTemplate size={14} />
           </button>
-          <SlideDown isOpen={layoutMenuOpen}>
-            <div className="absolute top-full right-0 mt-1 bg-vsc-dropdown border border-vsc-dropdown-border rounded-lg shadow-2xl z-[9999] w-[180px] py-1 text-[12px]">
-              <button
-                className="flex items-center w-full px-3 py-1.5 text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/60 transition-colors"
-                onClick={() => {
-                  useAppStore.setState({ sidebarVisible: true, panelVisible: false, chatPanelVisible: true });
-                  setLayoutMenuOpen(false);
-                }}
+          {layoutMenuOpen && createPortal(
+            <>
+              <div className="fixed inset-0 z-[9998]" onClick={() => setLayoutMenuOpen(false)} aria-hidden="true" />
+              <div
+                className="fixed z-[9999] bg-vsc-dropdown border border-vsc-dropdown-border rounded-lg shadow-2xl w-[180px] py-1 text-[12px]"
+                style={{ top: layoutMenuPos.top, right: layoutMenuPos.right }}
               >
-                Default layout
-              </button>
-              <button
-                className="flex items-center w-full px-3 py-1.5 text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/60 transition-colors"
-                onClick={() => {
-                  useAppStore.setState({ sidebarVisible: false, panelVisible: false, chatPanelVisible: false });
-                  setLayoutMenuOpen(false);
-                }}
-              >
-                Focus Mode (editor only)
-              </button>
-              <button
-                className="flex items-center w-full px-3 py-1.5 text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/60 transition-colors"
-                onClick={() => {
-                  useAppStore.setState({ sidebarVisible: true, panelVisible: true, chatPanelVisible: true });
-                  setLayoutMenuOpen(false);
-                }}
-              >
-                Show all panels
-              </button>
-            </div>
-          </SlideDown>
+                <button
+                  className="flex items-center w-full px-3 py-1.5 text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/60 transition-colors"
+                  onClick={() => {
+                    useAppStore.setState({ sidebarVisible: true, panelVisible: false, chatPanelVisible: true });
+                    setLayoutMenuOpen(false);
+                  }}
+                >
+                  Default layout
+                </button>
+                <button
+                  className="flex items-center w-full px-3 py-1.5 text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/60 transition-colors"
+                  onClick={() => {
+                    useAppStore.setState({ sidebarVisible: false, panelVisible: false, chatPanelVisible: false });
+                    setLayoutMenuOpen(false);
+                  }}
+                >
+                  Focus Mode (editor only)
+                </button>
+                <button
+                  className="flex items-center w-full px-3 py-1.5 text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/60 transition-colors"
+                  onClick={() => {
+                    useAppStore.setState({ sidebarVisible: true, panelVisible: true, chatPanelVisible: true });
+                    setLayoutMenuOpen(false);
+                  }}
+                >
+                  Show all panels
+                </button>
+              </div>
+            </>,
+            document.body
+          )}
         </div>
 
         {/* Connection status dot */}

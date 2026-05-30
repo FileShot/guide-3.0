@@ -29,6 +29,18 @@ const ROOT_DIR = __dirname;
 const MODELS_DIR = path.join(ROOT_DIR, 'models');
 const FRONTEND_DIST = path.join(ROOT_DIR, 'frontend', 'dist');
 
+function _configureBundledPlaywrightBrowsers() {
+  try {
+    const bundled = path.join(process.resourcesPath, 'playwright-browsers');
+    if (app.isPackaged && fs.existsSync(bundled)) {
+      process.env.PLAYWRIGHT_BROWSERS_PATH = bundled;
+      console.log(`[Main] Playwright browsers path: ${bundled}`);
+    }
+  } catch (e) {
+    console.warn('[Main] Playwright browsers path not configured:', e.message);
+  }
+}
+
 // ─── Loading screen ──────────────────────────────────────────────────
 const LOADING_HTML = `<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
@@ -806,7 +818,7 @@ ipcMain.handle('inject-user-message', (_e, payload) => {
 });
 
 // ─── File read helpers (binary preview) ─────────────────────────────
-const BINARY_PREVIEW_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico']);
+const BINARY_PREVIEW_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'pdf']);
 
 function getMimeForExtension(ext) {
   const e = String(ext || '').toLowerCase().replace(/^\./, '');
@@ -818,6 +830,7 @@ function getMimeForExtension(ext) {
     webp: 'image/webp',
     bmp: 'image/bmp',
     ico: 'image/x-icon',
+    pdf: 'application/pdf',
   };
   return map[e] || 'application/octet-stream';
 }
@@ -1838,6 +1851,7 @@ debugService.on('debug-event', (data) => _send('debug-event', data));
 // ─── App lifecycle ───────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  _configureBundledPlaywrightBrowsers();
   createWindow();
   buildAppMenu(mainWindow);
 

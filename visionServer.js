@@ -527,64 +527,53 @@ class VisionServer {
     try {
       const modelDir = path.dirname(modelPath);
 
-      // Read the model's embedding dimension for mmproj compatibility validation
       const modelEmbdLen = knownEmbeddingLength || this._readGgufEmbdLength(modelPath);
       console.log(`[VisionServer] Model embedding_length: ${modelEmbdLen || 'unknown'} (from ${path.basename(modelPath)})`);
 
-      // Without a known embedding dimension we cannot validate mmproj compatibility —
-      // do not attach a random sibling mmproj (Bug 9).
       if (!modelEmbdLen) {
         console.log('[VisionServer] embedding_length unknown — vision unavailable until dimension is known');
         return null;
       }
 
-      // Priority order: exact mmproj name patterns
       const patterns = [
-        /^mmproj-/i,          // mmproj-modelname.gguf (Qwen convention)
-        /^mmproj\./i,         // mmproj.gguf
-        /-mmproj-/i,          // model-mmproj-Q4.gguf
-        /mmproj/i,            // anything containing mmproj
-        /vision/i,            // vision projector (some models use this naming)
+        /^mmproj-/i,
+        /^mmproj\./i,
+        /-mmproj-/i,
+        /mmproj/i,
+        /vision/i,
       ];
 
-      // Search directories in priority order: model dir, parent dir, sibling dirs
-      const searchDirs = [modelDir];
-      const parentDir = path.dirname(modelDir);
+      // mmproj lives in the same directory as the model GGUF
+      let entries;
       try {
-        const parentEntries = fs.readdirSync(parentDir, { withFileTypes: true });
-        for (const entry of parentEntries) {
-          if (entry.isDirectory() && path.join(parentDir, entry.name) !== modelDir) {
-            searchDirs.push(path.join(parentDir, entry.name));
-          }
-        }
-      } catch {}
-
-      for (const dir of searchDirs) {
-        try {
-          const entries = fs.readdirSync(dir);
-          for (const pattern of patterns) {
-            const match = entries.find(e =>
-              e.toLowerCase().endsWith('.gguf') && pattern.test(e)
-            );
-            if (match) {
-              const fullPath = path.join(dir, match);
-              const mmprojEmbdLen = this._readGgufEmbdLength(fullPath);
-              if (mmprojEmbdLen && mmprojEmbdLen !== modelEmbdLen) {
-                console.warn(`[VisionServer] mmproj ${path.basename(fullPath)} has n_embd=${mmprojEmbdLen} but model has n_embd=${modelEmbdLen} — SKIPPING (mismatch)`);
-                continue;
-              }
-              if (!mmprojEmbdLen) {
-                console.warn(`[VisionServer] mmproj ${path.basename(fullPath)} has unknown n_embd — SKIPPING`);
-                continue;
-              }
-              console.log(`[VisionServer] Found compatible mmproj: ${fullPath}`);
-              return fullPath;
-            }
-          }
-        } catch {}
+        entries = fs.readdirSync(modelDir);
+      } catch {
+        console.log(`[VisionServer] Cannot read model directory: ${modelDir}`);
+        return null;
       }
 
-      console.log(`[VisionServer] No compatible mmproj file found in ${modelDir} or sibling directories`);
+      for (const pattern of patterns) {
+        const match = entries.find(e =>
+          e.toLowerCase().endsWith('.gguf') && pattern.test(e) && e !== path.basename(modelPath)
+        );
+        if (!match) continue;
+
+        const fullPath = path.join(modelDir, match);
+        const mmprojEmbdLen = this._readGgufEmbdLength(fullPath);
+        if (mmprojEmbdLen && mmprojEmbdLen !== modelEmbdLen) {
+          console.warn(`[VisionServer] mmproj ${match} has n_embd=${mmprojEmbdLen} but model has n_embd=${modelEmbdLen} — SKIPPING (mismatch)`);
+          continue;
+        }
+        if (!mmprojEmbdLen) {
+          // Projector GGUF often lacks embedding_length in metadata; co-located mmproj is trusted.
+          console.log(`[VisionServer] Using co-located mmproj (n_embd not in metadata): ${fullPath}`);
+          return fullPath;
+        }
+        console.log(`[VisionServer] Found compatible mmproj: ${fullPath}`);
+        return fullPath;
+      }
+
+      console.log(`[VisionServer] No mmproj file found in ${modelDir}`);
       return null;
     } catch (err) {
       console.error(`[VisionServer] Error scanning for mmproj: ${err.message}`);

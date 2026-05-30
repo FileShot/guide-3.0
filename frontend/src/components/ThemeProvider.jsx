@@ -1418,7 +1418,7 @@ export default function ThemeProvider({ children }) {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved && themes[saved]) return saved;
     } catch (_) {}
-    return 'monolith-warm';
+    return 'monolith-gray';
   });
 
   const theme = themes[themeId] || themes.carbon;

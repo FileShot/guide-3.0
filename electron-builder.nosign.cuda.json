@@ -56,6 +56,13 @@
     "artifactName": "guIDE-${version}-cuda-x64-setup.${ext}"
   },
   "asar": false,
+  "extraResources": [
+    {
+      "from": "playwright-browsers",
+      "to": "playwright-browsers",
+      "filter": ["**/*"]
+    }
+  ],
   "mac": {
     "icon": "build/icon.icns",
     "target": [

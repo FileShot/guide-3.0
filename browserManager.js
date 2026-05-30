@@ -288,6 +288,11 @@ class BrowserManager extends EventEmitter {
       () => this._playwright.chromium.launch({ headless: false }),
       async () => {
         if (this._chromiumInstallTried) return null;
+        // Packaged app ships Chromium in extraResources — do not download at runtime
+        try {
+          const { app } = require('electron');
+          if (app?.isPackaged && process.env.PLAYWRIGHT_BROWSERS_PATH) return null;
+        } catch (_) {}
         this._chromiumInstallTried = true;
         const install = await this._installBundledChromium();
         if (!install.success) throw new Error(install.error || 'Chromium install failed');

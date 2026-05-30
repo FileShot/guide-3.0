@@ -1898,19 +1898,20 @@ export default function ChatPanel() {
   const handleForceSend = useCallback(async (msg) => {
     skipAutoQueueRef.current = true;
     removeQueuedMessage(msg.id);
-    addChatMessage({ role: 'user', content: msg.text });
-    try {
-      if (window.electronAPI?.forceSendQueued) {
-        await window.electronAPI.forceSendQueued();
-      } else {
-        await (await import('../api/websocket')).invoke('force-send-queued');
-      }
-    } catch (_) {}
-    // Wait for the aborted generation to fully finalize before starting a new send.
-    for (let i = 0; i < 80; i++) {
-      if (!useAppStore.getState().chatStreaming) break;
-      await new Promise((r) => setTimeout(r, 50));
+
+    if (useAppStore.getState().chatStreaming) {
+      addChatMessage({ role: 'user', content: msg.text });
+      try {
+        if (window.electronAPI?.injectUserMessage) {
+          await window.electronAPI.injectUserMessage(msg.text);
+        } else {
+          await (await import('../api/websocket')).invoke('inject-user-message', { text: msg.text });
+        }
+      } catch (_) {}
+      return;
     }
+
+    addChatMessage({ role: 'user', content: msg.text });
     doSend(msg.text, { skipAddMessage: true });
   }, [removeQueuedMessage, addChatMessage, doSend]);
 
@@ -3344,7 +3345,7 @@ export default function ChatPanel() {
 
                       onClick={() => handleForceSend(msg)}
 
-                      title="Force send now"
+                      title="Send now (inject into agent)"
 
                     >
 

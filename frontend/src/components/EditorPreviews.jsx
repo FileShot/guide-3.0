@@ -18,7 +18,7 @@ function getFileDir(filePath) {
 
 const PREVIEW_EXTENSIONS = new Set([
   'html', 'htm', 'md', 'markdown', 'json', 'csv', 'tsv',
-  'svg', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico',
+  'svg', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'pdf',
 ]);
 
 export function isPreviewable(filePath) {
@@ -40,6 +40,7 @@ export function getPreviewType(filePath) {
   if (ext === 'csv' || ext === 'tsv') return 'csv';
   if (ext === 'svg') return 'svg';
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico'].includes(ext)) return 'image';
+  if (ext === 'pdf') return 'pdf';
   return null;
 }
 
@@ -473,6 +474,20 @@ export function ImagePreview({ filePath, dataUrl, onToggleCode }) {
           <p className="text-[11px] text-vsc-text-dim mt-3">{getFileName(filePath)}</p>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── PDF Preview ─────────────────────────────────────────
+
+export function PdfPreview({ filePath, dataUrl, onToggleCode }) {
+  const isDirectUrl = filePath?.startsWith('blob:') || filePath?.startsWith('data:');
+  const src = dataUrl || (isDirectUrl ? filePath : `file:///${filePath?.replace(/\\/g, '/')}`);
+
+  return (
+    <div className="h-full flex flex-col">
+      <PreviewToolbar icon={Eye} iconColor="text-red-400" label="PDF Preview" fileName={getFileName(filePath)} onToggleCode={onToggleCode} />
+      <iframe src={src} className="flex-1 w-full border-0 min-h-0" title="PDF Preview" />
     </div>
   );
 }

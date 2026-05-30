@@ -88,9 +88,18 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
+      - name: Install ImageMagick
+        run: choco install imagemagick --yes
+
       - name: Generate multi-size app icon
         shell: pwsh
         run: ./scripts/generate-icon.ps1
+
+      - name: Install Playwright Chromium for bundling
+        shell: pwsh
+        run: npx playwright install chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/playwright-browsers
 
       - name: Build Windows CPU installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.json --publish never
@@ -143,9 +152,18 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
+      - name: Install ImageMagick
+        run: choco install imagemagick --yes
+
       - name: Generate multi-size app icon
         shell: pwsh
         run: ./scripts/generate-icon.ps1
+
+      - name: Install Playwright Chromium for bundling
+        shell: pwsh
+        run: npx playwright install chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/playwright-browsers
 
       - name: Build Windows CUDA installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.cuda.json --publish never
@@ -321,8 +339,7 @@ jobs:
       - name: Convert icon for macOS
         run: |
           mkdir -p build
-          sips -s format png build/icon.ico --out build/icon_src.png 2>/dev/null || cp build/icon.ico build/icon_src.png
-          sips -z 512 512 build/icon_src.png --out build/icon_512.png
+          sips -s format png frontend/public/zzz.png --out build/icon_512.png
           mkdir -p build/icon.iconset
           sips -z 16 16     build/icon_512.png --out build/icon.iconset/icon_16x16.png
           sips -z 32 32     build/icon_512.png --out build/icon.iconset/icon_16x16@2x.png
