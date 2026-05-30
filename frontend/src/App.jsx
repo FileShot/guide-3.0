@@ -178,6 +178,8 @@ export default function App() {
 
       case 'generation-error':
 
+        if (s.activeChatEpoch !== s.chatGenerationEpoch) break;
+
         s.addChatMessage({
 
           role: 'assistant',
@@ -207,6 +209,8 @@ export default function App() {
       // Tool events — backend sends arrays: [{tool, params}, ...]
 
       case 'tool-executing': {
+
+        if (s.activeChatEpoch !== s.chatGenerationEpoch) break;
 
         console.log('[App] tool-executing:', JSON.stringify(data).substring(0, 200));
 

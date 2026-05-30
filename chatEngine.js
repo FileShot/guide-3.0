@@ -681,6 +681,7 @@ class ChatEngine extends EventEmitter {
     this._chatHistory = [];
     this._lastEvaluation = null;
     this._abortController = null;
+    this._cancelRequested = false;
     this._pendingUserMessage = null; // injected by user interrupt during tool loop
     this._templateSupportsThinking = false;
     this._thinkingCapable = false;
@@ -1283,8 +1284,9 @@ class ChatEngine extends EventEmitter {
     }
     if (!this.isReady || !this._chat) throw new Error('Model not ready');
 
-    const { onToken, onComplete, onContextUsage, onToolCall, onStreamEvent, systemPrompt, functions, toolPrompt, compactToolPrompt, compactToolParts, executeToolFn, guideInstructionsPath } = options;
+    const { onToken, onComplete, onContextUsage, onToolCall, onStreamEvent, systemPrompt, functions, toolPrompt, compactToolPrompt, compactToolParts, executeToolFn, guideInstructionsPath, getCancelled } = options;
     this._enableContextSummarizer = options.enableContextSummarizer !== false;
+    const isCancelled = () => (typeof getCancelled === 'function' && getCancelled()) || this.isCancelled();
 
       // Inject attachment content into user message
       const attachments = Array.isArray(options.attachments) ? options.attachments : [];
@@ -1506,6 +1508,7 @@ class ChatEngine extends EventEmitter {
     console.log(`[ChatEngine] chat() generation START: userMsg=${effectiveUserMessage.length} chars, history=${this._chatHistory.length} msgs`);
 
     this._abortController = new AbortController();
+    this._cancelRequested = false;
     let fullResponse = '';
     let visibleResponse = '';
     let _proseLogBuf = '';
@@ -2860,6 +2863,11 @@ class ChatEngine extends EventEmitter {
 
         console.log(`[ChatEngine] Tool loop ENTER: ${parsedCalls.length} parsed call(s)`);
         while (parsedCalls.length > 0) {
+          if (isCancelled()) {
+            _userAbortedGeneration = true;
+            console.log('[ChatEngine] Tool loop aborted — user cancelled');
+            break;
+          }
           const sessionAtStart = this._sessionId;
           console.log(`[ChatEngine] Tool loop ITERATION: ${parsedCalls.length} call(s), sessionId=${sessionAtStart}`);
           // Notify UI so ToolCallCards appear for each tool call (spinner state)
@@ -2875,6 +2883,11 @@ class ChatEngine extends EventEmitter {
           const fileReadResults = []; // { filePath, content }
 
           for (const call of parsedCalls) {
+            if (isCancelled()) {
+              _userAbortedGeneration = true;
+              console.log('[ChatEngine] Tool loop aborted before tool execution — user cancelled');
+              break;
+            }
             console.log(`[ChatEngine] Tool loop processing: ${call.tool}`);
             // No iteration cap — context window naturally bounds the loop
             totalToolCalls++;
@@ -3052,6 +3065,12 @@ class ChatEngine extends EventEmitter {
               }
             }
             toolResultLines.push(`${call.tool}: ${injectResult}`);
+          }
+
+          if (isCancelled()) {
+            _userAbortedGeneration = true;
+            console.log('[ChatEngine] Tool loop exiting after tool batch — user cancelled');
+            break;
           }
 
 
@@ -3328,6 +3347,11 @@ class ChatEngine extends EventEmitter {
           _sfNativeThinkActive = false;
 
           // Generate continuation — model sees tool results and can issue more tool calls
+          if (isCancelled()) {
+            _userAbortedGeneration = true;
+            console.log('[ChatEngine] Tool loop aborted before continuation — user cancelled');
+            break;
+          }
           // Recalculate maxTokens for this round — tool results consumed context space
           const ctxUsedNow = this._sequence?.nextTokenIndex || 0;
           const ctxAvailNow = contextSize - ctxUsedNow;
@@ -3500,14 +3524,20 @@ class ChatEngine extends EventEmitter {
     } finally {
       console.log('[ChatEngine] chat() FINALLY: abortController cleared');
       this._abortController = null;
+      this._cancelRequested = false;
     }
   }
 
   cancelGeneration(reason) {
     console.log(`[ChatEngine] cancelGeneration called: reason=${reason || 'cancelled'}`);
+    this._cancelRequested = true;
     if (this._abortController) {
       this._abortController.abort(reason || 'cancelled');
     }
+  }
+
+  isCancelled() {
+    return !!(this._cancelRequested || this._abortController?.signal?.aborted);
   }
 
   /**

@@ -1446,15 +1446,26 @@ function SettingsPanel() {
           {themeList.map(t => (
             <button
               key={t.id}
-              className={`w-full text-left px-2 py-1.5 rounded-md text-vsc-xs transition-colors ${
+              className={`w-full text-left px-2 py-1.5 rounded-md text-vsc-xs transition-colors flex items-center gap-2 ${
                 themeId === t.id
                   ? 'bg-vsc-accent/15 text-vsc-accent font-medium'
                   : 'text-vsc-text hover:bg-vsc-list-hover'
               }`}
               onClick={() => setTheme(t.id)}
             >
-              <span>{t.name}</span>
-              <span className="ml-1 text-vsc-text-dim">({t.type})</span>
+              <span className="flex items-center gap-0.5 flex-shrink-0">
+                {(t.swatches || []).map((rgb, i) => (
+                  <span
+                    key={i}
+                    className="w-3 h-3 rounded-sm border border-vsc-panel-border/40"
+                    style={{ backgroundColor: `rgb(${rgb})` }}
+                  />
+                ))}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span>{t.name}</span>
+                <span className="ml-1 text-vsc-text-dim">({t.type})</span>
+              </span>
             </button>
           ))}
         </div>

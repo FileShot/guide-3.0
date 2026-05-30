@@ -28,6 +28,60 @@ function _uiLog(msg) {
   try { window.electronAPI?.uiLog?.(String(msg)); } catch (_) {}
 }
 
+/** Normalize project path for localStorage keys (lowercase, forward slashes, no trailing slash). */
+export function normalizeProjectKey(path) {
+  if (!path) return '';
+  return String(path).trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function projectSessionStorageKey(path) {
+  const key = normalizeProjectKey(path);
+  return key ? `guIDE-session-messages:${key}` : 'guIDE-session-messages:__none__';
+}
+
+function persistProjectChatMessages(projectPath, messages) {
+  try {
+    const toSave = messages.length > 200 ? messages.slice(-200) : messages;
+    localStorage.setItem(projectSessionStorageKey(projectPath), JSON.stringify(toSave));
+  } catch (_) {}
+}
+
+function loadProjectChatMessages(projectPath) {
+  try {
+    const raw = localStorage.getItem(projectSessionStorageKey(projectPath));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+    if (projectPath) {
+      const legacy = localStorage.getItem('guIDE-session-messages');
+      if (legacy) {
+        const parsed = JSON.parse(legacy);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          persistProjectChatMessages(projectPath, parsed);
+          localStorage.removeItem('guIDE-session-messages');
+          return parsed;
+        }
+      }
+    }
+    return [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function chatMessageTextForRevert(msg) {
+  if (!msg) return '';
+  if (msg.content) return String(msg.content);
+  if (msg.role === 'assistant' && Array.isArray(msg.segments)) {
+    return msg.segments
+      .filter((s) => s.type === 'text' && s.content)
+      .map((s) => s.content)
+      .join('\n');
+  }
+  return '';
+}
+
 
 
 function canonicalizeStreamingFilePath(filePath) {
@@ -146,10 +200,74 @@ const useAppStore = create((set, get) => ({
 
   setProjectPath: (p) => {
 
+    const prev = get().projectPath;
+
     set({ projectPath: p, showWelcomeScreen: false });
 
     if (p) get().addRecentFolder(p);
 
+    if (prev !== p) get().swapChatForProject(prev, p);
+
+  },
+
+  swapChatForProject: async (prevPath, newPath) => {
+
+    const state = get();
+
+    if (prevPath && state.chatMessages.length > 0) {
+      persistProjectChatMessages(prevPath, state.chatMessages);
+    }
+
+    get().bumpChatGenerationEpoch();
+
+    if (state.chatStreaming) {
+      try {
+        if (typeof window !== 'undefined' && window.electronAPI?.agentPause) {
+          await window.electronAPI.agentPause();
+        } else if (typeof fetch !== 'undefined') {
+          await fetch('/api/session/clear', { method: 'POST' }).catch(() => {});
+        }
+      } catch (_) {}
+    }
+
+    const loaded = loadProjectChatMessages(newPath);
+
+    if (state._fileTokenTimer) clearTimeout(state._fileTokenTimer);
+    if (state._textTokenTimer) clearTimeout(state._textTokenTimer);
+
+    set({
+      chatMessages: loaded,
+      chatStreaming: false,
+      chatStreamingText: '',
+      chatThinkingText: '',
+      chatGeneratingTool: null,
+      chatContextUsage: null,
+      chatIteration: null,
+      chatFilesChanged: [],
+      activeStreamingFileKey: null,
+      streamingFileBlocks: [],
+      streamingSegments: [],
+      streamingToolCalls: [],
+      messageQueue: [],
+      todos: [],
+      _fileTokenBuffer: null,
+      _fileTokenTimer: null,
+      _textTokenBuffer: null,
+      _textTokenTimer: null,
+    });
+
+    try {
+      await fetch('/api/session/clear', { method: 'POST' });
+      if (loaded.length > 0) {
+        const revertMsgs = loaded.map((m) => ({
+          role: m.role,
+          content: chatMessageTextForRevert(m),
+        }));
+        if (typeof window !== 'undefined' && window.electronAPI?.revertContext) {
+          await window.electronAPI.revertContext(revertMsgs);
+        }
+      }
+    } catch (_) {}
   },
 
   setFileTree: (tree) => set({ fileTree: tree, fileTreeLoading: false }),
@@ -368,25 +486,20 @@ const useAppStore = create((set, get) => ({
 
   // ─── Chat ──────────────────────────────────────────────
 
-  chatMessages: (() => {
+  chatMessages: [],       // [{id, role, content, timestamp, toolCalls?, thinking?}]
 
-    try {
+  chatGenerationEpoch: 0,
 
-      const saved = localStorage.getItem('guIDE-session-messages');
+  activeChatEpoch: null,
 
-      if (saved) {
+  bumpChatGenerationEpoch: () => set((s) => ({ chatGenerationEpoch: s.chatGenerationEpoch + 1 })),
 
-        const parsed = JSON.parse(saved);
+  setActiveChatEpoch: (epoch) => set({ activeChatEpoch: epoch }),
 
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-
-      }
-
-    } catch {}
-
-    return [];
-
-  })(),       // [{id, role, content, timestamp, toolCalls?, thinking?}]
+  isActiveChatEpoch: () => {
+    const s = get();
+    return s.activeChatEpoch === s.chatGenerationEpoch;
+  },
 
   chatStreaming: false,
 
@@ -430,15 +543,7 @@ const useAppStore = create((set, get) => ({
 
     set({ chatMessages: updated });
 
-    // Persist session — keep last 200 messages to avoid localStorage overflow
-
-    try {
-
-      const toSave = updated.length > 200 ? updated.slice(-200) : updated;
-
-      localStorage.setItem('guIDE-session-messages', JSON.stringify(toSave));
-
-    } catch {}
+    persistProjectChatMessages(get().projectPath, updated);
 
   },
 
@@ -458,13 +563,7 @@ const useAppStore = create((set, get) => ({
 
     set({ chatMessages: updated });
 
-    try {
-
-      const toSave = updated.length > 200 ? updated.slice(-200) : updated;
-
-      localStorage.setItem('guIDE-session-messages', JSON.stringify(toSave));
-
-    } catch {}
+    persistProjectChatMessages(get().projectPath, updated);
 
     return updated;
 
@@ -547,6 +646,8 @@ const useAppStore = create((set, get) => ({
 
     const store = get();
 
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
+
     if (originalLength > 0 && !replacement) {
       console.warn('[ChatPanel] replaceLastStreamingChunk: replacing', originalLength, 'chars with empty string');
     }
@@ -617,11 +718,7 @@ const useAppStore = create((set, get) => ({
 
     const store = get();
 
-    if (!store.chatStreaming) {
-
-      console.warn('[appStore] appendStreamToken called while chatStreaming=false, token=', token.substring(0, 30));
-
-    }
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
 
     if (!store._textTokenBuffer) {
 
@@ -682,6 +779,7 @@ const useAppStore = create((set, get) => ({
   appendThinkingToken: (token) => {
 
     const store = get();
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
     const segs = store.streamingSegments;
     let newSegs;
 
@@ -708,7 +806,11 @@ const useAppStore = create((set, get) => ({
 
 
 
-  setChatGeneratingTool: (tool) => set({ chatGeneratingTool: tool }),
+  setChatGeneratingTool: (tool) => {
+    const store = get();
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
+    set({ chatGeneratingTool: tool });
+  },
 
   setChatContextUsage: (usage) => set({ chatContextUsage: usage }),
 
@@ -725,6 +827,7 @@ const useAppStore = create((set, get) => ({
     // Flush pending text buffer before inserting tool segment (same pattern as startFileContentBlock)
 
     const store = get();
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
 
     if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
 
@@ -780,7 +883,10 @@ const useAppStore = create((set, get) => ({
 
     console.log('[appStore] updateStreamingToolCall:', name, updates?.status);
 
-    const { streamingToolCalls } = get();
+    const store = get();
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
+
+    const { streamingToolCalls } = store;
 
     // Prefer matching a pending or generating call with this name (handles duplicates)
 
@@ -813,6 +919,7 @@ const useAppStore = create((set, get) => ({
     // R34: Flush pending text buffer before starting file block (ensures correct segment ordering)
 
     const store = get();
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
 
     // Always canonicalize filePath for dedup — the fileKey from events may be raw
     // (e.g., regex-captured path with double backslashes from JSON text) which would
@@ -915,13 +1022,10 @@ const useAppStore = create((set, get) => ({
 
   appendFileContentToken: (chunk) => {
 
-    // R33-Phase2: Batch token appends to reduce re-renders.
-
-    // Instead of calling set() on every token (100+/sec → stuttering),
-
-    // accumulate in a pending buffer and flush every 100ms (~10 renders/sec).
-
     const store = get();
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
+
+    // R33-Phase2: Batch token appends to reduce re-renders.
 
     if (typeof chunk !== 'string') {
 
@@ -987,6 +1091,7 @@ const useAppStore = create((set, get) => ({
    */
   addCompleteFileContentBlock: ({ filePath, fileKey, language, fileName, content }) => {
     const store = get();
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
     // Always canonicalize filePath for dedup — the fileKey from events may be raw
     // (e.g., regex-captured path with double backslashes from JSON text) which would
     // mismatch the canonicalized key used by startFileContentBlock.
@@ -1059,9 +1164,10 @@ const useAppStore = create((set, get) => ({
 
     console.log('[appStore] endFileContentBlock:', payload?.fileKey || payload?.filePath);
 
-    // R33-Phase2: Flush any pending buffered tokens before marking complete
-
     const store = get();
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
+
+    // R33-Phase2: Flush any pending buffered tokens before marking complete
 
     const targetKey = payload?.fileKey || canonicalizeStreamingFilePath(payload?.filePath) || store.activeStreamingFileKey;
 
@@ -1185,7 +1291,7 @@ const useAppStore = create((set, get) => ({
 
     if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
 
-    try { localStorage.removeItem('guIDE-session-messages'); } catch {}
+    try { localStorage.removeItem(projectSessionStorageKey(store.projectPath)); } catch {}
 
     set({
 
@@ -1211,6 +1317,8 @@ const useAppStore = create((set, get) => ({
 
       streamingSegments: [],
 
+      streamingToolCalls: [],
+
       messageQueue: [],
 
       todos: [],
@@ -1221,6 +1329,27 @@ const useAppStore = create((set, get) => ({
 
     });
 
+  },
+
+  resetChatStreamingUI: () => {
+    const store = get();
+    if (store._fileTokenTimer) clearTimeout(store._fileTokenTimer);
+    if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
+    set({
+      chatStreaming: false,
+      chatStreamingText: '',
+      chatThinkingText: '',
+      chatGeneratingTool: null,
+      chatIteration: null,
+      activeStreamingFileKey: null,
+      streamingFileBlocks: [],
+      streamingSegments: [],
+      streamingToolCalls: [],
+      _fileTokenBuffer: null,
+      _fileTokenTimer: null,
+      _textTokenBuffer: null,
+      _textTokenTimer: null,
+    });
   },
 
 

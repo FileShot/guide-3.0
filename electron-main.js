@@ -571,6 +571,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       onContextUsage: (data) => _send('context-usage', data),
       onToolCall: (data) => _send('tool-call', data),
       onStreamEvent: (eventName, data) => _send(eventName, data),
+      getCancelled: () => agenticCancelled || llmEngine.isCancelled(),
       attachments: Array.isArray(chatContext?.attachments) ? chatContext.attachments : [],
       functions,
       toolPrompt,
@@ -771,6 +772,8 @@ ipcMain.handle('permission-response', (_e, reqId, approved) => {
 
 ipcMain.handle('cancel-generation', async () => {
   console.log('[electron-main] cancel-generation');
+  agenticCancelled = true;
+  ctx.agenticCancelled = true;
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
   return { success: true };
@@ -778,6 +781,8 @@ ipcMain.handle('cancel-generation', async () => {
 
 ipcMain.handle('agent-pause', async () => {
   console.log('[electron-main] agent-pause');
+  agenticCancelled = true;
+  ctx.agenticCancelled = true;
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
   return { success: true };
@@ -785,6 +790,8 @@ ipcMain.handle('agent-pause', async () => {
 
 ipcMain.handle('force-send-queued', async () => {
   console.log('[electron-main] force-send-queued');
+  agenticCancelled = true;
+  ctx.agenticCancelled = true;
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
   return { success: true };

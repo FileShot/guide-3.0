@@ -7,6 +7,7 @@
  */
 
 import { useState, useRef, useEffect, useCallback, useMemo, Component } from 'react';
+import { createPortal } from 'react-dom';
 
 import useAppStore from '../stores/appStore';
 
@@ -745,11 +746,15 @@ export default function ChatPanel() {
 
   const [historyOpen, setHistoryOpen] = useState(false);
 
+  const [historyPopoverPos, setHistoryPopoverPos] = useState({ top: 0, right: 0 });
+
   const [activeConversationId, setActiveConversationId] = useState('current');
 
   const sessionSaveTimerRef = useRef(null);
 
   const historyMenuRef = useRef(null);
+
+  const historyPopoverRef = useRef(null);
 
 
 
@@ -829,7 +834,13 @@ export default function ChatPanel() {
 
         const filtered = existing.filter(s => s.id !== sessionId);
 
-        const updated = [{ id: sessionId, title, messages: chatMessages, timestamp: Date.now(), projectPath: projectPath || null }, ...filtered].slice(0, 10);
+        const sameProject = filtered.filter(s => s.projectPath === (projectPath || null));
+
+        const otherProjects = filtered.filter(s => s.projectPath !== (projectPath || null));
+
+        const updatedSame = [{ id: sessionId, title, messages: chatMessages, timestamp: Date.now(), projectPath: projectPath || null }, ...sameProject].slice(0, 10);
+
+        const updated = [...updatedSame, ...otherProjects];
 
         localStorage.setItem('guide-chat-sessions', JSON.stringify(updated));
 
@@ -845,6 +856,20 @@ export default function ChatPanel() {
 
 
 
+  // Position history popover when opened
+
+  useEffect(() => {
+
+    if (!historyOpen || !historyMenuRef.current) return;
+
+    const rect = historyMenuRef.current.getBoundingClientRect();
+
+    setHistoryPopoverPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+
+  }, [historyOpen]);
+
+
+
   // Close history popover when clicking outside
 
   useEffect(() => {
@@ -853,11 +878,11 @@ export default function ChatPanel() {
 
     const onDown = (e) => {
 
-      if (historyMenuRef.current && !historyMenuRef.current.contains(e.target)) {
+      const inTrigger = historyMenuRef.current?.contains(e.target);
 
-        setHistoryOpen(false);
+      const inPopover = historyPopoverRef.current?.contains(e.target);
 
-      }
+      if (!inTrigger && !inPopover) setHistoryOpen(false);
 
     };
 
@@ -1198,6 +1223,10 @@ export default function ChatPanel() {
     if (attachmentsSnapshot.length > 0) clearChatAttachments();
 
     const store = useAppStore.getState();
+
+    const epochAtStart = store.chatGenerationEpoch;
+
+    store.setActiveChatEpoch(epochAtStart);
 
     store.setChatStreaming(true);
 
@@ -1755,7 +1784,13 @@ export default function ChatPanel() {
 
     } finally {
 
-      useAppStore.getState().setChatStreaming(false);
+      const s = useAppStore.getState();
+
+      if (s.activeChatEpoch === epochAtStart) {
+
+        s.setChatStreaming(false);
+
+      }
 
     }
 
@@ -1899,9 +1934,9 @@ export default function ChatPanel() {
 
     } catch (_) {}
 
-    // Re-enable after a short cooldown so the user can issue a second stop
+    useAppStore.getState().bumpChatGenerationEpoch();
 
-    // if the first one races with a still-streaming chunk.
+    useAppStore.getState().resetChatStreamingUI();
 
     setTimeout(() => setStopPending(false), 1000);
 
@@ -1910,6 +1945,26 @@ export default function ChatPanel() {
 
 
   const handleClear = useCallback(async () => {
+
+    try {
+
+      if (useAppStore.getState().chatStreaming) {
+
+        if (window.electronAPI?.agentPause) {
+
+          await window.electronAPI.agentPause();
+
+        } else {
+
+          await (await import('../api/websocket')).invoke('agent-pause');
+
+        }
+
+      }
+
+    } catch (_) {}
+
+    useAppStore.getState().bumpChatGenerationEpoch();
 
     clearChat();
 
@@ -2017,9 +2072,47 @@ export default function ChatPanel() {
 
 
 
-  const openSavedSession = useCallback((session) => {
+  const openSavedSession = useCallback(async (session) => {
+
+    const store = useAppStore.getState();
+
+    if (store.chatStreaming) {
+
+      try {
+
+        if (window.electronAPI?.agentPause) {
+
+          await window.electronAPI.agentPause();
+
+        } else {
+
+          await (await import('../api/websocket')).invoke('agent-pause');
+
+        }
+
+      } catch (_) {}
+
+    }
+
+    store.bumpChatGenerationEpoch();
+
+    store.resetChatStreamingUI();
 
     useAppStore.setState({ chatMessages: session.messages || [] });
+
+    const revertMsgs = (session.messages || []).map((m) => ({
+
+      role: m.role,
+
+      content: messageContentForRevert(m),
+
+    }));
+
+    try {
+
+      await window.electronAPI?.revertContext?.(revertMsgs);
+
+    } catch (_) {}
 
     setActiveConversationId(session.id);
 
@@ -2115,45 +2208,64 @@ export default function ChatPanel() {
 
 
 
-          {historyOpen && (
-            <div className="absolute right-0 top-full mt-1 z-[200] w-[320px] max-h-[320px] overflow-y-auto rounded-lg border border-vsc-dropdown-border bg-vsc-dropdown shadow-[0_10px_30px_rgba(0,0,0,0.55)] p-1.5">
-              <div className="text-[10px] font-medium text-vsc-text-dim px-1 py-1">History</div>
+          {historyOpen && createPortal(
 
-              {filteredSessions.length === 0 ? (
+            <>
 
-                <div className="text-[11px] text-vsc-text-dim px-2 py-2">No saved sessions for this workspace.</div>
+              <div className="fixed inset-0 z-[9998]" onClick={() => setHistoryOpen(false)} aria-hidden="true" />
 
-              ) : (
+              <div
 
-                filteredSessions.map((session) => (
+                ref={historyPopoverRef}
 
-                  <button
+                className="fixed z-[9999] w-[320px] max-h-[320px] overflow-y-auto rounded-lg border border-vsc-dropdown-border bg-vsc-dropdown shadow-2xl p-1.5"
 
-                    key={session.id}
+                style={{ top: historyPopoverPos.top, right: historyPopoverPos.right }}
 
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-vsc-list-hover/60 transition-colors group"
+              >
 
-                    onClick={() => openSavedSession(session)}
+                <div className="text-[10px] font-medium text-vsc-text-dim px-1 py-1">History</div>
 
-                  >
+                {filteredSessions.length === 0 ? (
 
-                    <Clock size={11} className="text-vsc-text-dim/60 flex-shrink-0" />
+                  <div className="text-[11px] text-vsc-text-dim px-2 py-2">No saved sessions for this workspace.</div>
 
-                    <span className="text-[11px] text-vsc-text truncate flex-1">{session.title}</span>
+                ) : (
 
-                    <span className="text-[9px] text-vsc-text-dim/50 flex-shrink-0">
+                  filteredSessions.map((session) => (
 
-                      {new Date(session.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                    <button
 
-                    </span>
+                      key={session.id}
 
-                  </button>
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-vsc-list-hover transition-colors group"
 
-                ))
+                      onClick={() => openSavedSession(session)}
 
-              )}
+                    >
 
-            </div>
+                      <Clock size={11} className="text-vsc-text-dim flex-shrink-0" />
+
+                      <span className="text-[11px] text-vsc-text truncate flex-1">{session.title}</span>
+
+                      <span className="text-[9px] text-vsc-text-dim flex-shrink-0">
+
+                        {new Date(session.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+
+                      </span>
+
+                    </button>
+
+                  ))
+
+                )}
+
+              </div>
+
+            </>,
+
+            document.body
+
           )}
 
         </div>
@@ -2171,17 +2283,7 @@ export default function ChatPanel() {
 
         {/* Session history shown when chat is empty — filtered to current project */}
 
-        {chatMessages.length === 0 && savedSessions.length > 0 && (() => {
-
-          const filtered = projectPath
-
-            ? savedSessions.filter(s => s.projectPath === projectPath)
-
-            : savedSessions;
-
-          if (filtered.length === 0) return null;
-
-          return (
+        {chatMessages.length === 0 && filteredSessions.length > 0 && (
 
           <div className="px-3 py-3">
 
@@ -2189,7 +2291,7 @@ export default function ChatPanel() {
 
             <div className="flex flex-col gap-0.5">
 
-              {filtered.map(session => (
+              {filteredSessions.map(session => (
 
                 <div
 
@@ -2197,7 +2299,7 @@ export default function ChatPanel() {
 
                   className="flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-vsc-list-hover/50 transition-colors group cursor-pointer"
 
-                  onClick={() => useAppStore.setState({ chatMessages: session.messages })}
+                  onClick={() => openSavedSession(session)}
 
                 >
 
@@ -2243,9 +2345,7 @@ export default function ChatPanel() {
 
           </div>
 
-          );
-
-        })()}
+        )}
 
         <Virtuoso
 
