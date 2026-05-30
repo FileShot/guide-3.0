@@ -19,9 +19,14 @@ function formatToolResultForInject(toolName, toolResult, { contextTokens = 8192 
   let injectResult = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
 
   const ctxChars = (contextTokens || 8192) * 4;
-  const baseCap = Math.max(8000, Math.floor(ctxChars * 0.25));
+  const TOOL_RESULT_SHARE = 0.25;
+  const MAX_TOOL_SHARE = 0.40;
+  const baseCap = Math.floor(ctxChars * TOOL_RESULT_SHARE);
   const multiplier = TOOL_INJECT_MULTIPLIERS[toolName] || 1.0;
-  const injectCap = Math.floor(baseCap * multiplier);
+  const injectCap = Math.min(
+    Math.floor(baseCap * multiplier),
+    Math.floor(ctxChars * MAX_TOOL_SHARE),
+  );
 
   if (injectResult.length <= injectCap) return injectResult;
 

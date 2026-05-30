@@ -1,4 +1,4 @@
-﻿/**
+/**
  * TitleBar — Custom title bar with guIDE branding (Audiowide font).
  * Shows hamburger menu, centered search bar, and window controls.
  * Requires frame:false in BrowserWindow + preload.js windowControls IPC.
@@ -328,7 +328,8 @@ export default function TitleBar() {
 
         <div className="w-px h-4 bg-vsc-panel-border/25 mx-1" />
 
-        {/* Window Controls */}
+        {/* Window Controls — full title-bar height hover targets */}
+        <div className="flex h-titlebar items-stretch flex-shrink-0 -mr-1">
         <WinBtn title="Minimize" onClick={() => wc()?.minimize()}>
           <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
         </WinBtn>
@@ -350,6 +351,7 @@ export default function TitleBar() {
             <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" strokeWidth="1.2"/>
           </svg>
         </WinBtn>
+        </div>
       </div>
     </div>
   );
@@ -566,8 +568,8 @@ function WinBtn({ children, onClick, title, isClose }) {
     <button
       title={title}
       onClick={onClick}
-      className={`flex items-center justify-center w-[46px] h-full text-vsc-text-dim transition-colors duration-75
-        ${isClose ? 'hover:bg-red-600 hover:text-white' : 'hover:bg-vsc-list-hover hover:text-vsc-text'}`}
+      className={`flex items-center justify-center w-[46px] h-titlebar rounded-none text-vsc-text-dim transition-colors duration-75
+        ${isClose ? 'hover:bg-[rgb(var(--guide-win-close-hover))] hover:text-white' : 'hover:bg-[rgb(var(--guide-win-btn-hover))] hover:text-vsc-text'}`}
     >
       {children}
     </button>

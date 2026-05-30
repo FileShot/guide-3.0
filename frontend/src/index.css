@@ -58,6 +58,8 @@
   --guide-terminal-cursor: 255 107 0;
   --guide-peek-bg: 14 14 14;
   --guide-peek-border: 255 107 0;
+  --guide-win-btn-hover: 45 45 55;
+  --guide-win-close-hover: 99 102 241;
 }
 
 @layer base {
@@ -70,7 +72,7 @@
     width: 100%;
     overflow: hidden;
     border-radius: 12px;
-    background: transparent;
+    background: rgb(var(--guide-bg));
   }
 
   html {

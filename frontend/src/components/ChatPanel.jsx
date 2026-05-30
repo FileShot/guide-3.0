@@ -31,7 +31,7 @@ import {
 
   CheckCircle2, Circle, Loader2, ListTodo, Bot, MessageSquare, AlertCircle,
 
-  PencilLine, Shield
+  Shield
 
 } from 'lucide-react';
 
@@ -73,6 +73,19 @@ function synthesizeFileBlocksFromToolCalls(toolCalls, messageSegments, messageFi
       content: String(content),
     });
   }
+}
+
+/** Text payload for backend revertContext from a stored chat row. */
+function messageContentForRevert(msg) {
+  if (!msg) return '';
+  if (msg.content) return String(msg.content);
+  if (msg.role === 'assistant' && Array.isArray(msg.segments)) {
+    return msg.segments
+      .filter((s) => s.type === 'text' && s.content)
+      .map((s) => s.content)
+      .join('\n');
+  }
+  return '';
 }
 
 // R43-Fix-B: Streaming-scoped error boundary.
@@ -1748,6 +1761,35 @@ export default function ChatPanel() {
 
   }, [chatStreaming, addChatMessage, chatMode, chatAttachments, clearChatAttachments, fileContextDismissed]);
 
+  const resendFromUserEdit = useCallback((msgId, newContent) => {
+    const trimmed = (newContent || '').trim();
+    if (!trimmed) return;
+    const msgs = useAppStore.getState().chatMessages;
+    const msgIdx = msgs.findIndex((m) => m.id === msgId);
+    if (msgIdx === -1 || msgs[msgIdx].role !== 'user') return;
+
+    const truncated = msgs.slice(0, msgIdx).map((m) => ({
+      role: m.role,
+      content: messageContentForRevert(m),
+    }));
+
+    window.electronAPI?.revertContext?.(truncated);
+
+    if (msgIdx > 0 && msgs[msgIdx - 1]?.role === 'assistant') {
+      const prevAssistant = msgs[msgIdx - 1];
+      const turnId = prevAssistant?.checkpoint?.turnId || prevAssistant?.turnId;
+      if (turnId && window.electronAPI?.restoreCheckpoint) {
+        window.electronAPI.restoreCheckpoint(turnId);
+      }
+    }
+
+    useAppStore.getState().setChatStreaming(false);
+    editChatMessage(msgId, trimmed);
+    setEditingMessageId(null);
+    setEditText('');
+    doSend(trimmed, { skipAddMessage: true });
+  }, [editChatMessage, doSend]);
+
 
 
   // handleSend: reads from input state
@@ -1995,7 +2037,7 @@ export default function ChatPanel() {
 
       <div className="h-[35px] flex items-center px-3 border-b border-vsc-panel-border/25 no-select flex-shrink-0 bg-vsc-sidebar/80 backdrop-blur-sm shadow-[0_1px_0_rgba(255,255,255,0.03)_inset] gap-1">
 
-        <div className="flex items-center flex-1 min-w-0 overflow-x-hidden pl-1">
+        <div className="flex items-center flex-1 min-w-0 overflow-x-auto scrollbar-thin pl-1">
 
           {conversationTabs.map((tab) => (
 
@@ -2073,8 +2115,8 @@ export default function ChatPanel() {
 
 
 
-          <SlideDown isOpen={historyOpen}>
-            <div className="absolute right-0 top-[32px] z-20 w-[320px] max-h-[320px] overflow-y-auto rounded-lg border border-vsc-panel-border bg-vsc-sidebar shadow-[0_10px_30px_rgba(0,0,0,0.45)] p-1.5">
+          {historyOpen && (
+            <div className="absolute right-0 top-full mt-1 z-[200] w-[320px] max-h-[320px] overflow-y-auto rounded-lg border border-vsc-dropdown-border bg-vsc-dropdown shadow-[0_10px_30px_rgba(0,0,0,0.55)] p-1.5">
               <div className="text-[10px] font-medium text-vsc-text-dim px-1 py-1">History</div>
 
               {filteredSessions.length === 0 ? (
@@ -2112,8 +2154,7 @@ export default function ChatPanel() {
               )}
 
             </div>
-
-          </SlideDown>
+          )}
 
         </div>
 
@@ -2531,131 +2572,85 @@ export default function ChatPanel() {
 
                       {editingMessageId === msg.id ? (
 
-                        <div className="flex flex-col gap-1.5">
+                        <textarea
 
-                          <textarea
+                          className="w-full whitespace-pre-wrap text-right bg-vsc-input/60 border border-vsc-accent/40 rounded-md px-2 py-1.5 text-vsc-text text-[13px] resize-none focus:outline-none focus:border-vsc-accent/70 transition-colors"
 
-                            className="w-full bg-vsc-input/80 border border-vsc-panel-border/30 rounded-md px-2 py-1.5 text-vsc-text text-[13px] resize-none focus:outline-none focus:border-vsc-accent/60 transition-colors"
+                          rows={Math.min(12, Math.max(2, editText.split('\n').length))}
 
-                            rows={Math.min(8, Math.max(2, editText.split('\n').length))}
+                          value={editText}
 
-                            value={editText}
+                          onChange={(e) => setEditText(e.target.value)}
 
-                            onChange={e => setEditText(e.target.value)}
+                          onKeyDown={(e) => {
 
-                            onKeyDown={e => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
 
-                              if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault();
 
-                                e.preventDefault();
+                              resendFromUserEdit(msg.id, editText);
 
-                                if (editText.trim()) {
+                            }
 
-                                  const kbMsgIdx = chatMessages.findIndex(m => m.id === msg.id);
+                            if (e.key === 'Escape') {
 
-                                  const kbPrior = kbMsgIdx > 0 ? chatMessages.slice(0, kbMsgIdx) : [];
+                              setEditingMessageId(null);
 
-                                  window.electronAPI?.revertContext?.(kbPrior.map(m => ({ role: m.role, content: m.content || '' })));
+                              setEditText('');
 
-                                  editChatMessage(msg.id, editText.trim());
+                            }
 
-                                  setEditingMessageId(null);
+                          }}
 
-                                  doSend(editText.trim(), { skipAddMessage: true });
+                          autoFocus
 
-                                }
-
-                              }
-
-                              if (e.key === 'Escape') {
-
-                                setEditingMessageId(null);
-
-                              }
-
-                            }}
-
-                            autoFocus
-
-                          />
-
-                          <div className="flex items-center gap-1.5">
-
-                            <button
-
-                              className="px-2 py-0.5 text-[10px] rounded-md bg-vsc-accent/20 text-vsc-accent hover:bg-vsc-accent/30 transition-colors"
-
-                              onClick={() => {
-
-                                if (editText.trim()) {
-
-                                  const msgIdx2 = chatMessages.findIndex(m => m.id === msg.id);
-
-                                  const priorMsgs2 = msgIdx2 > 0 ? chatMessages.slice(0, msgIdx2) : [];
-
-                                  window.electronAPI?.revertContext?.(priorMsgs2.map(m => ({ role: m.role, content: m.content || '' })));
-
-                                  editChatMessage(msg.id, editText.trim());
-
-                                  setEditingMessageId(null);
-
-                                  doSend(editText.trim(), { skipAddMessage: true });
-
-                                }
-
-                              }}
-
-                            >
-
-                              <ArrowUp size={10} className="inline mr-0.5" />Send
-
-                            </button>
-
-                            <button
-
-                              className="px-2 py-0.5 text-[10px] rounded-md bg-vsc-panel-border/30 text-vsc-text-dim hover:bg-vsc-panel-border/50 transition-colors"
-
-                              onClick={() => setEditingMessageId(null)}
-
-                            >
-
-                              Cancel
-
-                            </button>
-
-                          </div>
-
-                        </div>
+                        />
 
                       ) : (
 
-                        <div className="group relative">
+                        <div
 
-                          <div className="whitespace-pre-wrap pr-5 text-right">{msg.content}</div>
+                          role="button"
 
-                          {!chatStreaming && (
+                          tabIndex={chatStreaming ? -1 : 0}
 
-                            <button
+                          className={`rounded-md px-2 py-1 -mx-2 text-right transition-colors duration-150 ${
+                            chatStreaming
+                              ? 'cursor-default'
+                              : 'cursor-text hover:bg-vsc-list-hover/[0.07] focus-visible:outline focus-visible:outline-1 focus-visible:outline-vsc-accent/30'
+                          }`}
 
-                              className="absolute top-0 right-0 p-0.5 rounded text-vsc-text-dim/0 group-hover:text-vsc-text-dim/70 opacity-0 group-hover:opacity-100 transition-opacity"
+                          title={chatStreaming ? undefined : 'Click to edit and resend'}
 
-                              title="Edit and resend"
+                          onClick={() => {
 
-                              onClick={() => {
+                            if (chatStreaming) return;
 
-                                setEditingMessageId(msg.id);
+                            setEditingMessageId(msg.id);
 
-                                setEditText(msg.content);
+                            setEditText(msg.content || '');
 
-                              }}
+                          }}
 
-                            >
+                          onKeyDown={(e) => {
 
-                              <PencilLine size={11} />
+                            if (chatStreaming) return;
 
-                            </button>
+                            if (e.key === 'Enter' || e.key === ' ') {
 
-                          )}
+                              e.preventDefault();
+
+                              setEditingMessageId(msg.id);
+
+                              setEditText(msg.content || '');
+
+                            }
+
+                          }}
+
+                        >
+
+                          <div className="whitespace-pre-wrap">{msg.content}</div>
 
                         </div>
 

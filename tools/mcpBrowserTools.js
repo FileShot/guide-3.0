@@ -348,6 +348,19 @@ async function _browserScroll(direction, amount) {
   const pixels = (amount || 3) * 300;
   const dy = direction === 'up' ? -pixels : pixels;
   const result = await browser.evaluate(`window.scrollBy(0, ${dy})`);
+  if (browser.getSnapshot) {
+    const snapshot = await browser.getSnapshot();
+    if (snapshot?.success) {
+      console.log(`[mcpBrowserTools] _browserScroll DONE (eval+snapshot): textLen=${snapshot.text?.length || 0}`);
+      return {
+        success: true,
+        scrolled: true,
+        title: snapshot.title,
+        url: snapshot.url,
+        snapshot: snapshot.text,
+      };
+    }
+  }
   console.log(`[mcpBrowserTools] _browserScroll DONE (eval): success=${result?.success}`);
   return result;
 }

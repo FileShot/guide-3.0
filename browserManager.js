@@ -1313,7 +1313,17 @@ class BrowserManager extends EventEmitter {
       const pixels = (amount || 3) * 300;
       const dy = direction === 'up' ? -pixels : pixels;
       await this._page.evaluate(`window.scrollBy(0, ${dy})`);
-      return { success: true };
+      const snapshot = await this.getSnapshot();
+      if (!snapshot.success) {
+        return { success: true, scrolled: true, error: snapshot.error || 'Scroll ok but snapshot failed' };
+      }
+      return {
+        success: true,
+        scrolled: true,
+        title: snapshot.title,
+        url: snapshot.url,
+        snapshot: snapshot.text,
+      };
     } catch (e) {
       return { success: false, error: e.message };
     }

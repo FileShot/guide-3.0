@@ -2973,14 +2973,17 @@ class ChatEngine extends EventEmitter {
                 injectResult = '{"success":true,"note":"Screenshot captured. Use browser_snapshot for a detailed text description of the page."}';
               }
             }
-            // PL2: Compute inject cap proportional to model context size (Rule 9: no hardcoded context numbers).
-            // Approx 4 chars per token; cap at 25% of context as chars (leaves 75% for prompt + history).
-            // Minimum floor of 8000 chars so tiny contexts still get usable results.
+            // PL2: Context-proportional inject cap — 25% share per tool, 40% absolute max per call (no 8k floor).
             const ctxTokens = this._contextSize || this.modelInfo?.contextSize || 8192;
             const ctxChars = ctxTokens * 4;
-            const baseCap = Math.max(8000, Math.floor(ctxChars * 0.25));
+            const TOOL_RESULT_SHARE = 0.25;
+            const MAX_TOOL_SHARE = 0.40;
+            const baseCap = Math.floor(ctxChars * TOOL_RESULT_SHARE);
             const multiplier = TOOL_INJECT_MULTIPLIERS[call.tool] || 1.0;
-            const injectCap = Math.floor(baseCap * multiplier);
+            const injectCap = Math.min(
+              Math.floor(baseCap * multiplier),
+              Math.floor(ctxChars * MAX_TOOL_SHARE),
+            );
             if (injectResult.length > injectCap) {
               // PL1: Smart truncation for browser snapshots — preserve ALL interactive elements
               // (the model needs every ref to make correct decisions) and truncate only the page text.
