@@ -296,12 +296,18 @@ const useAppStore = create((set, get) => ({
       // This fixes the bug where clicking a file from the keep/undo area
       // fetches fresh content via API but openFile() ignored it because
       // the tab already existed (e.g. from a streaming file block with empty content).
-      if (fileInfo.content !== undefined && fileInfo.content !== existing.content) {
+      const dataUrlChanged = fileInfo.dataUrl != null && fileInfo.dataUrl !== existing.dataUrl;
+      const contentChanged = fileInfo.content !== undefined && fileInfo.content !== existing.content;
+      if (contentChanged || dataUrlChanged) {
         const updated = openTabs.map(t => t.path === fileInfo.path ? {
           ...t,
-          content: fileInfo.content,
-          originalContent: fileInfo.content,
-          modified: false,
+          ...(contentChanged ? {
+            content: fileInfo.content,
+            originalContent: fileInfo.content,
+            modified: false,
+          } : {}),
+          ...(fileInfo.dataUrl != null ? { dataUrl: fileInfo.dataUrl } : {}),
+          ...(fileInfo.isBinary != null ? { isBinary: fileInfo.isBinary } : {}),
         } : t);
         set({ openTabs: updated, activeTabId: existing.id });
       } else {
@@ -324,13 +330,17 @@ const useAppStore = create((set, get) => ({
 
       extension: fileInfo.extension || fileInfo.path.split('.').pop(),
 
-      content: fileInfo.content || '',
+      content: fileInfo.isBinary ? '' : (fileInfo.content || ''),
 
-      originalContent: fileInfo.content || '',
+      originalContent: fileInfo.isBinary ? '' : (fileInfo.content || ''),
 
       modified: false,
 
-      language: _detectLanguage(fileInfo.extension || fileInfo.path.split('.').pop()),
+      language: fileInfo.isBinary ? 'plaintext' : _detectLanguage(fileInfo.extension || fileInfo.path.split('.').pop()),
+
+      ...(fileInfo.dataUrl ? { dataUrl: fileInfo.dataUrl } : {}),
+
+      ...(fileInfo.isBinary ? { isBinary: true } : {}),
 
     };
 
@@ -2006,6 +2016,8 @@ const useAppStore = create((set, get) => ({
       enableGrammar: false,
 
       enableNativeFC: false,
+
+      debugStreamDiag: false,
 
       autoLintFix: true,       // Plan F: auto-inject lint correction after file writes
 

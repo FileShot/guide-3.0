@@ -552,10 +552,24 @@ export default function EditorArea() {
               case 'json': return <JsonPreview content={activeTab.content} filePath={activeTab.path} onToggleCode={toggle} />;
               case 'csv': return <CsvPreview content={activeTab.content} filePath={activeTab.path} onToggleCode={toggle} />;
               case 'svg': return <SvgPreview content={activeTab.content} filePath={activeTab.path} onToggleCode={toggle} />;
-              case 'image': return <ImagePreview filePath={activeTab.path} onToggleCode={toggle} />;
+              case 'image': return <ImagePreview filePath={activeTab.path} dataUrl={activeTab.dataUrl} onToggleCode={toggle} />;
               default: return null;
             }
           })()
+        ) : activeTab?.isBinary ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-vsc-text-dim">
+            <p className="text-sm mb-2">This file is binary and cannot be shown as text.</p>
+            <p className="text-[12px] mb-4">Use Preview to view the image or media content.</p>
+            {isPreviewable(activeTab.path) && (
+              <button
+                type="button"
+                className="px-3 py-1.5 text-[12px] rounded bg-vsc-accent/20 text-vsc-accent hover:bg-vsc-accent/30"
+                onClick={() => setPreviewMode(activeTab.id, true)}
+              >
+                Show preview
+              </button>
+            )}
+          </div>
         ) : activeTab ? (
           <Editor
             key={activeTab.id}

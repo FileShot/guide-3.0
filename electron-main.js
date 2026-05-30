@@ -605,6 +605,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       enableGrammar: settings.enableGrammar,
       enableNativeFC: settings.enableNativeFC !== false,
       enableContextSummarizer: settings.enableContextSummarizer !== false,
+      debugStreamDiag: !!settings.debugStreamDiag,
       maxIterations: settings.maxIterations || 0,
       generationTimeoutSec: settings.generationTimeoutSec || 0,
       reasoningEffort: settings.reasoningEffort || 'medium',
@@ -804,6 +805,27 @@ ipcMain.handle('inject-user-message', (_e, payload) => {
   return { success: true };
 });
 
+// ─── File read helpers (binary preview) ─────────────────────────────
+const BINARY_PREVIEW_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico']);
+
+function getMimeForExtension(ext) {
+  const e = String(ext || '').toLowerCase().replace(/^\./, '');
+  const map = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    bmp: 'image/bmp',
+    ico: 'image/x-icon',
+  };
+  return map[e] || 'application/octet-stream';
+}
+
+function isBinaryPreviewExtension(ext) {
+  return BINARY_PREVIEW_EXTENSIONS.has(String(ext || '').toLowerCase().replace(/^\./, ''));
+}
+
 // ─── Generic API-fetch IPC handler ──────────────────────────────────
 // The frontend's fetch('/api/...') calls are intercepted and routed here.
 // This replaces the entire Express REST API from server/main.js.
@@ -990,9 +1012,16 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (!filePath) return { _status: 400, error: 'path required' };
       const fullPath = path.isAbsolute(filePath) ? filePath : path.join(currentProjectPath || '', filePath);
       try {
-        const content = fs.readFileSync(fullPath, 'utf8');
         const ext = path.extname(fullPath).slice(1);
-        return { content, path: fullPath, extension: ext, name: path.basename(fullPath) };
+        const name = path.basename(fullPath);
+        if (isBinaryPreviewExtension(ext)) {
+          const buf = fs.readFileSync(fullPath);
+          const mimeType = getMimeForExtension(ext);
+          const dataUrl = `data:${mimeType};base64,${buf.toString('base64')}`;
+          return { path: fullPath, extension: ext, name, binary: true, mimeType, dataUrl };
+        }
+        const content = fs.readFileSync(fullPath, 'utf8');
+        return { content, path: fullPath, extension: ext, name };
       } catch (err) {
         if (err.code === 'ENOENT') {
           return { content: null, path: fullPath, missing: true, name: path.basename(fullPath) };

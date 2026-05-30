@@ -1287,6 +1287,8 @@ class ChatEngine extends EventEmitter {
     const { onToken, onComplete, onContextUsage, onToolCall, onStreamEvent, systemPrompt, functions, toolPrompt, compactToolPrompt, compactToolParts, executeToolFn, guideInstructionsPath, getCancelled } = options;
     this._enableContextSummarizer = options.enableContextSummarizer !== false;
     const isCancelled = () => (typeof getCancelled === 'function' && getCancelled()) || this.isCancelled();
+    const _streamDiag = !!options.debugStreamDiag;
+    const _logStreamDiag = (...args) => { if (_streamDiag) console.log(...args); };
 
       // Inject attachment content into user message
       const attachments = Array.isArray(options.attachments) ? options.attachments : [];
@@ -1603,7 +1605,7 @@ class ChatEngine extends EventEmitter {
         _sfVisibleChars += text.length;
         _sfRoundVisibleBuf += text;
         if (_sfVisibleChars <= 30 || _sfVisibleChars % 1000 < text.length) {
-          console.log(`[StreamDiag] FORWARD: chars=${_sfVisibleChars} tail=${JSON.stringify(text.slice(-10))}`);
+          _logStreamDiag(`[StreamDiag] FORWARD: chars=${_sfVisibleChars} tail=${JSON.stringify(text.slice(-10))}`);
         }
         if (onToken) onToken(text);
       };
@@ -2228,7 +2230,7 @@ class ChatEngine extends EventEmitter {
           if (!chunk) return;
           _proseLogBuf += chunk;
           if (_proseLogBuf.includes('\n')) {
-            console.log(`[StreamDiag] PROSE: ${JSON.stringify(_proseLogBuf)}`);
+            _logStreamDiag(`[StreamDiag] PROSE: ${JSON.stringify(_proseLogBuf)}`);
             _proseLogBuf = '';
           }
           fullResponse += chunk;
@@ -2252,7 +2254,7 @@ class ChatEngine extends EventEmitter {
           if (text && chunk.type === 'segment' && chunk.segmentType === 'thought') {
             _thinkLogBuf += text;
             if (_thinkLogBuf.includes('\n')) {
-              console.log(`[StreamDiag] THINK: ${JSON.stringify(_thinkLogBuf)}`);
+              _logStreamDiag(`[StreamDiag] THINK: ${JSON.stringify(_thinkLogBuf)}`);
               _thinkLogBuf = '';
             }
           }
@@ -2379,14 +2381,14 @@ class ChatEngine extends EventEmitter {
           // Never skips a token — chunkCount proves every chunk arrived
           s.logBuf += paramsChunk;
           if (s.chunkCount === 1) {
-            console.log(`[StreamDiag] FC ${functionName}[${callIndex}] START chunk#1: "${s.logBuf.slice(0, 120)}"`);
+            _logStreamDiag(`[StreamDiag] FC ${functionName}[${callIndex}] START chunk#1: "${s.logBuf.slice(0, 120)}"`);
           } else if (s.chunkCount % 100 === 0) {
-            console.log(`[StreamDiag] FC ${functionName}[${callIndex}] @chunk=${s.chunkCount} bytes=${s.logBuf.length} last100="${s.logBuf.slice(-100)}"`);
+            _logStreamDiag(`[StreamDiag] FC ${functionName}[${callIndex}] @chunk=${s.chunkCount} bytes=${s.logBuf.length} last100="${s.logBuf.slice(-100)}"`);
           }
           if (done) {
             const total = s.logBuf.length;
             const preview = total > 600 ? `${s.logBuf.slice(0, 300)} ... ${s.logBuf.slice(-300)}` : s.logBuf;
-            console.log(`[StreamDiag] FC ${functionName}[${callIndex}] DONE chunks=${s.chunkCount} bytes=${total}: "${preview}"`);
+            _logStreamDiag(`[StreamDiag] FC ${functionName}[${callIndex}] DONE chunks=${s.chunkCount} bytes=${total}: "${preview}"`);
           }
 
           // ── write_file content streaming → file-content-start/token/end ─────
@@ -2529,7 +2531,12 @@ class ChatEngine extends EventEmitter {
       if (nativeThinkFullText) {
         console.log(`[ChatEngine] ─── MODEL THINKING (native) ─── "${nativeThinkFullText.length > 500 ? nativeThinkFullText.slice(0, 500) + '...' : nativeThinkFullText}"`);
       }
-      console.log(`[ChatEngine] ─── MODEL RESPONSE ─── "${_rawResp}"`);
+      if (_streamDiag) {
+        console.log(`[ChatEngine] ─── MODEL RESPONSE ─── "${_rawResp}"`);
+      } else if (_rawResp.length > 0) {
+        const _respPreview = _rawResp.length > 200 ? _rawResp.slice(0, 200) + '...' : _rawResp;
+        console.log(`[ChatEngine] ─── MODEL RESPONSE ─── (${_rawResp.length} chars) "${_respPreview}"`);
+      }
 
       let _genStopReason = result.metadata?.stopReason;
       let _userAbortedGeneration = _genStopReason === 'abort' || _genStopReason === 'cancelled';
@@ -3443,8 +3450,8 @@ class ChatEngine extends EventEmitter {
         console.warn(`[ChatEngine] Thought-segment trap: ${_sfNativeThinkChars} chars in thought, 0 in visible chat — check Mode C + native FC interaction`);
       }
       console.log(`[ChatEngine] Generation complete. Tool calls: ${totalToolCalls}, stopReason=${stopReason}, responseLen=${fullResponse.length}, thoughtLen=${_sfNativeThinkChars}, visibleLen=${_sfVisibleChars}`);
-      if (_proseLogBuf) { console.log(`[StreamDiag] PROSE (final): ${JSON.stringify(_proseLogBuf)}`); _proseLogBuf = ''; }
-      if (_thinkLogBuf) { console.log(`[StreamDiag] THINK (final): ${JSON.stringify(_thinkLogBuf)}`); _thinkLogBuf = ''; }
+      if (_proseLogBuf) { _logStreamDiag(`[StreamDiag] PROSE (final): ${JSON.stringify(_proseLogBuf)}`); _proseLogBuf = ''; }
+      if (_thinkLogBuf) { _logStreamDiag(`[StreamDiag] THINK (final): ${JSON.stringify(_thinkLogBuf)}`); _thinkLogBuf = ''; }
       // Log visible response text to help diagnose model looping/drifting.
       // This is the text the user actually sees (tool JSON is stripped, thinking is separate).
       if (_sfVisibleChars > 0) {

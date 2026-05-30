@@ -439,11 +439,11 @@ export function SvgPreview({ content, filePath, onToggleCode }) {
 
 // ─── Image Preview ───────────────────────────────────────
 
-export function ImagePreview({ filePath, onToggleCode }) {
+export function ImagePreview({ filePath, dataUrl, onToggleCode }) {
   const [error, setError] = useState(false);
   // F7: blob: and data: URLs are already valid src attributes — don't prepend file:///
   const isDirectUrl = filePath?.startsWith('blob:') || filePath?.startsWith('data:');
-  const src = isDirectUrl ? filePath : `file:///${filePath?.replace(/\\/g, '/')}`;
+  const src = dataUrl || (isDirectUrl ? filePath : `file:///${filePath?.replace(/\\/g, '/')}`);
 
   if (error) {
     return (

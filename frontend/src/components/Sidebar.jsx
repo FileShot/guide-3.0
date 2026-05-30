@@ -20,6 +20,7 @@ import {
   Package, Star, Download, Upload,
   Pause, SkipForward, ArrowDownRight, ArrowUpRight, Square, Bug, AlertTriangle, Eye, Shield
 } from 'lucide-react';
+import { openFileFromReadResponse } from '../utils/openFileFromRead';
 
 export default function Sidebar() {
   const activeActivity = useAppStore(s => s.activeActivity);
@@ -224,7 +225,6 @@ function FileTreeItem({ item, depth }) {
   const [expanded, setExpanded] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
   const [dragOver, setDragOver] = useState(false);
-  const openFile = useAppStore(s => s.openFile);
   const activeTabId = useAppStore(s => s.activeTabId);
   const openTabs = useAppStore(s => s.openTabs);
   const addNotification = useAppStore(s => s.addNotification);
@@ -246,11 +246,7 @@ function FileTreeItem({ item, depth }) {
     } else {
       fetch(`/api/files/read?path=${encodeURIComponent(item.path)}`)
         .then(r => r.json())
-        .then(f => {
-          if (f.content !== undefined) {
-            openFile({ path: f.path, name: f.name, extension: f.extension, content: f.content });
-          }
-        })
+        .then(openFileFromReadResponse)
         .catch(() => {});
     }
   };
@@ -425,18 +421,7 @@ function FileTreeItem({ item, depth }) {
                 // Open file and show preview
                 fetch(`/api/files/read?path=${encodeURIComponent(item.path)}`)
                   .then(r => r.json())
-                  .then(f => {
-                    if (f.content !== undefined) {
-                      store.openFile({
-                        path: item.path,
-                        name: item.name,
-                        extension: item.extension,
-                        content: f.content,
-                      });
-                      const newTab = store.openTabs.find(t => t.path === item.path);
-                      if (newTab) store.setPreviewMode(newTab.id, true);
-                    }
-                  })
+                  .then(openFileFromReadResponse)
                   .catch(() => {});
               }
             }}
@@ -648,16 +633,12 @@ function SearchFileGroup({ file, matches, openFile, projectPath }) {
   const handleOpen = (match) => {
     fetch(`/api/files/read?path=${encodeURIComponent(file)}`)
       .then(r => r.json())
-      .then(d => {
-        if (d.content !== undefined) {
-          openFile({
-            path: file,
-            name: fileName,
-            extension: fileName.split('.').pop(),
-            content: d.content,
-          });
-        }
-      })
+      .then(d => openFileFromReadResponse({
+        ...d,
+        path: d.path || file,
+        name: d.name || fileName,
+        extension: d.extension || fileName.split('.').pop(),
+      }))
       .catch(() => {});
   };
 
@@ -1604,6 +1585,9 @@ function SettingsPanel() {
         <SettingToggle label="Grammar-Constrained Tool Calls" value={settings.enableGrammar}
           onChange={v => updateSetting('enableGrammar', v)}
           hint="Forces JSON schema grammar on raw output. Mutually exclusive with Native FC — enabling this disables native FC. May cause hangs on small models." />
+        <SettingToggle label="Debug stream diagnostics" value={!!settings.debugStreamDiag}
+          onChange={v => updateSetting('debugStreamDiag', v)}
+          hint="Logs verbose [StreamDiag] token traces to guide-main.log. Does not change model output." />
         <SettingToggle label="Context Summarizer" value={settings.enableContextSummarizer !== false}
           onChange={v => updateSetting('enableContextSummarizer', v)}
           hint="On context shift, generate a progress summary from dropped turns so the model can continue the task without losing track." />

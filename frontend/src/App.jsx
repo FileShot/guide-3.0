@@ -19,6 +19,7 @@ import NewProjectDialog from './components/NewProjectDialog';
 import WelcomeScreen from './components/WelcomeScreen';
 
 import WelcomeGuide from './components/WelcomeGuide';
+import { openFileFromReadResponse } from './utils/openFileFromRead';
 
 
 
@@ -425,15 +426,7 @@ export default function App() {
 
         if (typeof data === 'string') {
 
-          fetch(`/api/files/read?path=${encodeURIComponent(data)}`).then(r => r.json()).then(f => {
-
-            if (f.content !== undefined) {
-
-              s.openFile({ path: f.path, name: f.name, extension: f.extension, content: f.content });
-
-            }
-
-          }).catch(() => {});
+          fetch(`/api/files/read?path=${encodeURIComponent(data)}`).then(r => r.json()).then(openFileFromReadResponse).catch(() => {});
 
         }
 
