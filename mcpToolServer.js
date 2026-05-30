@@ -852,7 +852,7 @@ class MCPToolServer {
       },
       {
         name: 'save_rule',
-        description: 'Save a project rule or skill that persists across sessions. Rules are injected into the system prompt on every future chat. Use this when the user says "remember this", "always do X", "update your rules", or gives you a standing instruction.',
+        description: 'Save a project rule or skill that persists across sessions. Rules are injected into the system prompt on every future chat. Use this when the user says "remember this", "always do X", "update your rules", or gives you a standing instruction. For large rules (>~2KB), prefer write_file to .guide/rules/<name>.md instead of a huge save_rule JSON payload.',
         parameters: {
           name: { type: 'string', description: 'Short rule name (e.g. "coding-style", "project-conventions")', required: true },
           content: { type: 'string', description: 'Rule content in markdown. Be specific and actionable.', required: true },
@@ -4487,6 +4487,7 @@ class MCPToolServer {
 - **Edit existing file**: read_file → edit_file with exact oldText/newText from the file
 - **Browser**: browser_navigate → interact using refs from the snapshot (browser_click, browser_type, etc.)
 - **New file**: write_file with full content in params; append_to_file for additional sections
+- **Large rules**: write_file to \`.guide/rules/<name>.md\` instead of embedding multi-KB content in save_rule JSON
 
 ### Rules
 - Use tool results as ground truth; do not fabricate tool output

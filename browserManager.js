@@ -38,6 +38,8 @@ class BrowserManager extends EventEmitter {
     this._refFrameMap = new Map(); // ref number → owning Playwright Frame
     this._snapshotGen = 0;         // Incremented each getSnapshot() call
     this._refGenMap = new Map();   // ref number → snapshot generation it belongs to
+    this._chromiumInstallTried = false;
+    this._lastLaunchError = null;
     console.log('[BrowserManager] constructor DONE');
   }
 
@@ -116,16 +118,102 @@ class BrowserManager extends EventEmitter {
 
   /* ── Navigation (used by browser tool calls) ───────────── */
 
+  _showViewportBrowserTab() {
+    if (this.parentWindow?.webContents) {
+      this.parentWindow.webContents.send('show-viewport-browser');
+    }
+  }
+
+  _navigateViewportFallback(url, reason) {
+    this._showViewportBrowserTab();
+    if (this.parentWindow?.webContents) {
+      this.parentWindow.webContents.send('preview-navigate', { url });
+    }
+    const detail = reason ? ` (${reason})` : '';
+    console.log(`[BrowserManager] navigate: viewport-iframe fallback for ${url}`);
+    return {
+      success: true,
+      url,
+      method: 'viewport-iframe',
+      warning: `Playwright unavailable${detail}. Page shown in guIDE viewport only — no snapshot/click. Use fetch_webpage for text or allow browser automation setup.`,
+    };
+  }
+
+  _getPlaywrightPackageRoot() {
+    try {
+      return path.dirname(require.resolve('playwright/package.json'));
+    } catch {
+      return null;
+    }
+  }
+
+  _getExpectedChromiumRevision() {
+    const root = this._getPlaywrightPackageRoot();
+    if (!root) return null;
+    try {
+      const browsers = require(path.join(root, 'browsers.json'));
+      const ch = browsers.browsers?.find((b) => b.name === 'chromium');
+      return ch?.revision ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  _formatLaunchError(err) {
+    const msg = err?.message || String(err);
+    const rev = this._getExpectedChromiumRevision();
+    const revLabel = rev ? `chromium-${rev}` : 'bundled Chromium';
+    const root = this._getPlaywrightPackageRoot();
+    const installCmd = root
+      ? `node "${path.join(root, 'cli.js')}" install chromium`
+      : 'npm exec playwright install chromium (from app directory)';
+    if (/Executable doesn't exist/i.test(msg)) {
+      return {
+        success: false,
+        error: `Playwright Chromium not installed for this guIDE build (expected ${revLabel}). Run: ${installCmd}`,
+        playwrightRevision: rev,
+        installCommand: installCmd,
+      };
+    }
+    return { success: false, error: `Failed to launch browser: ${msg}` };
+  }
+
+  async _installBundledChromium() {
+    const root = this._getPlaywrightPackageRoot();
+    if (!root) {
+      return { success: false, error: 'Playwright package not found' };
+    }
+    const { execFile } = require('child_process');
+    const { promisify } = require('util');
+    const execFileAsync = promisify(execFile);
+    const cli = path.join(root, 'cli.js');
+    console.log(`[BrowserManager] Installing Chromium via ${cli}`);
+    try {
+      await execFileAsync(process.execPath, [cli, 'install', 'chromium'], {
+        cwd: root,
+        timeout: 600000,
+        windowsHide: true,
+      });
+      return { success: true };
+    } catch (e) {
+      console.error(`[BrowserManager] Chromium install failed: ${e.message}`);
+      return { success: false, error: e.message };
+    }
+  }
+
   /**
    * Navigate to a URL. Uses Playwright if available, otherwise opens in preview.
    */
   async navigate(url) {
     console.log(`[BrowserManager] navigate START: url=${url}`);
-    const ok = await this._ensurePage();
-    if (!ok) {
-      console.warn('[BrowserManager] navigate: could not launch browser');
-      return { success: false, error: 'Could not launch browser' };
+    this._showViewportBrowserTab();
+
+    const launchResult = await this.launchPlaywright();
+    if (!launchResult.success || !this._page) {
+      console.warn(`[BrowserManager] navigate: Playwright unavailable — ${launchResult.error || 'no page'}`);
+      return this._navigateViewportFallback(url, launchResult.error || 'Could not launch browser');
     }
+
     if (this._page) {
       try {
         // Use page.goto() return value to get the HTTP response object
@@ -172,12 +260,7 @@ class BrowserManager extends EventEmitter {
         return { success: false, error: e.message };
       }
     }
-    // No Playwright — send URL to frontend for iframe navigation
-    if (this.parentWindow?.webContents) {
-      this.parentWindow.webContents.send('preview-navigate', { url });
-    }
-    console.log('[BrowserManager] navigate: frontend-iframe fallback');
-    return { success: true, url, method: 'frontend-iframe' };
+    return this._navigateViewportFallback(url, 'Playwright page unavailable');
   }
 
   /* ── Playwright Integration (optional) ─────────────────── */
@@ -200,22 +283,44 @@ class BrowserManager extends EventEmitter {
       console.warn('[BrowserManager] launchPlaywright: Playwright not installed');
       return { success: false, error: 'Playwright not installed. Run: npm i playwright' };
     }
-    try {
-      this._browser = await this._playwright.chromium.launch({ headless: false });
-      this._page = await this._browser.newPage();
-      console.log('[BrowserManager] launchPlaywright: Chromium launched, new page created');
-      // Register disconnect handler so we know when browser dies
-      this._browser.on('disconnected', () => {
-        console.log('[BrowserManager] Browser disconnected — clearing references');
-        this._page = null;
-        this._browser = null;
-      });
-      console.log('[BrowserManager] launchPlaywright DONE');
-      return { success: true };
-    } catch (e) {
-      console.error(`[BrowserManager] launchPlaywright FAILED: ${e.message}`);
-      return { success: false, error: `Failed to launch browser: ${e.message}` };
+    let lastError = null;
+    const launchAttempts = [
+      () => this._playwright.chromium.launch({ headless: false }),
+      async () => {
+        if (this._chromiumInstallTried) return null;
+        this._chromiumInstallTried = true;
+        const install = await this._installBundledChromium();
+        if (!install.success) throw new Error(install.error || 'Chromium install failed');
+        return this._playwright.chromium.launch({ headless: false });
+      },
+      () => this._playwright.chromium.launch({ headless: false, channel: 'chrome' }),
+    ];
+
+    for (const attempt of launchAttempts) {
+      try {
+        const browser = await attempt();
+        if (!browser) continue;
+        this._browser = browser;
+        this._page = await this._browser.newPage();
+        console.log('[BrowserManager] launchPlaywright: Chromium launched, new page created');
+        this._browser.on('disconnected', () => {
+          console.log('[BrowserManager] Browser disconnected — clearing references');
+          this._page = null;
+          this._browser = null;
+        });
+        this._lastLaunchError = null;
+        console.log('[BrowserManager] launchPlaywright DONE');
+        return { success: true };
+      } catch (e) {
+        lastError = e;
+        console.warn(`[BrowserManager] launchPlaywright attempt failed: ${e.message}`);
+      }
     }
+
+    const formatted = this._formatLaunchError(lastError || new Error('Launch failed'));
+    this._lastLaunchError = formatted.error;
+    console.error(`[BrowserManager] launchPlaywright FAILED: ${formatted.error}`);
+    return formatted;
   }
 
   /**
@@ -255,7 +360,7 @@ class BrowserManager extends EventEmitter {
       this._browser = null;
     }
     const result = await this.launchPlaywright();
-    console.log(`[BrowserManager] _ensurePage DONE: success=${result.success}`);
+    console.log(`[BrowserManager] _ensurePage DONE: success=${result.success}${result.error ? ` error=${result.error}` : ''}`);
     return result.success;
   }
 
@@ -1187,7 +1292,12 @@ class BrowserManager extends EventEmitter {
    * Manage browser tabs: list, new, close, select.
    */
   async tabs(action, index) {
-    if (!(await this._ensurePage())) return { success: false, error: 'No browser open' };
+    if (!(await this._ensurePage())) {
+      return {
+        success: false,
+        error: this._lastLaunchError || 'No browser open. Playwright Chromium may not be installed — use browser_navigate to open the page in the viewport, or allow guIDE to install browser automation.',
+      };
+    }
     try {
       const pages = this._browser.contexts()[0]?.pages() || [];
       if (action === 'list') {

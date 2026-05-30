@@ -292,6 +292,28 @@ export default function App() {
 
       }
 
+      case 'tool-generating-progress': {
+
+        const toolName = data?.tool || 'tool';
+
+        s.updateStreamingToolCall(toolName, {
+
+          status: 'generating',
+
+          generatingProgress: {
+
+            elapsedMs: data?.elapsedMs ?? 0,
+
+            fenceChars: data?.fenceChars ?? 0,
+
+          },
+
+        });
+
+        break;
+
+      }
+
       case 'mcp-tool-results': {
 
         console.log('[App] mcp-tool-results:', JSON.stringify(data).substring(0, 200));
@@ -771,6 +793,20 @@ export default function App() {
       api.onToolExecuting?.((d) => handleEvent('tool-executing', d)),
 
       api.onToolGenerating?.((d) => handleEvent('tool-generating', d)),
+
+      api.onToolGeneratingProgress?.((d) => handleEvent('tool-generating-progress', d)),
+
+      api.onShowViewportBrowser?.(() => useAppStore.getState().openBrowserTab()),
+
+      api.onPreviewNavigate?.((data) => {
+
+        const url = data?.url;
+
+        if (url) useAppStore.getState().setViewportNavigateUrl(url);
+
+        useAppStore.getState().openBrowserTab();
+
+      }),
 
       api.onMcpToolResults?.((d) => handleEvent('mcp-tool-results', d)),
 

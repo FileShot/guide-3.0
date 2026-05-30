@@ -35,6 +35,10 @@ const TOOL_NAME_ALIASES = {
   ls: 'list_directory', dir: 'list_directory', list_dir: 'list_directory',
   mkdir: 'create_directory', make_dir: 'create_directory',
   find: 'find_files', glob: 'find_files', locate: 'find_files',
+  find_file: 'find_files', findfiles: 'find_files', find_files: 'find_files',
+  search_files: 'find_files', file_search: 'find_files', glob_search: 'find_files',
+  search_file: 'find_files', list_files: 'find_files', ls_files: 'list_directory',
+  ripgrep: 'grep_search',
   // Command
   run: 'run_command', exec: 'run_command', execute: 'run_command',
   shell: 'run_command', terminal: 'run_command', run_terminal_cmd: 'run_command',
@@ -80,6 +84,10 @@ const TOOL_NAME_ALIASES = {
   listmemories: 'list_memories', writetodos: 'write_todos', updatetodo: 'update_todo',
   writescratchpad: 'write_scratchpad', readscratchpad: 'read_scratchpad',
   save_rule: 'save_rule', list_rules: 'list_rules',
+  create_rule: 'save_rule', add_rule: 'save_rule', write_rule: 'save_rule',
+  list_rule: 'list_rules', get_rules: 'list_rules',
+  goto_url: 'browser_navigate',
+  powershell: 'run_command', bash: 'run_command',
   diff_files: 'diff_files', check_port: 'check_port',
   open_file_in_editor: 'open_file_in_editor', generate_image: 'generate_image',
   get_project_structure: 'get_project_structure', analyze_error: 'analyze_error',
@@ -451,13 +459,135 @@ function extractJsonObjects(text) {
   return objects;
 }
 
+// Malformed JSON: {"find_files","params":{...}} — tool name as bare string key (no "tool":)
+const BARE_NAME_JSON_RE = /\{\s*"([a-z][a-z0-9_]*)"\s*,\s*"params"\s*:/i;
+
+function _fenceLooksLikeToolCall(inner) {
+  if (!inner || typeof inner !== 'string') return false;
+  return /"tool"\s*:/.test(inner) || /"name"\s*:/.test(inner) || BARE_NAME_JSON_RE.test(inner);
+}
+
+function _applyRegexParamsToCall(call, fenceContent, toolIdx = 0) {
+  const _unescape = s => s.replace(/\\(.)/g, '$1');
+  const patternMatch = fenceContent.match(/"pattern"\s*:\s*"((?:[^"\\]|\\.)*)"/i);
+  if (patternMatch) call.params.pattern = _unescape(patternMatch[1]);
+  const nameMatch = fenceContent.match(/"name"\s*:\s*"((?:[^"\\]|\\.)*)"/i);
+  if (nameMatch && !call.params.name) call.params.name = _unescape(nameMatch[1]);
+  const pathMatches = [...fenceContent.matchAll(/"(?:filePath|file_path|path|filename)"\s*:\s*"([^"]+)"/gi)];
+  if (pathMatches.length > 0) {
+    let bestPath = pathMatches[0][1];
+    let bestDist = Math.abs(pathMatches[0].index - toolIdx);
+    for (const pm of pathMatches) {
+      const dist = Math.abs(pm.index - toolIdx);
+      if (dist < bestDist) { bestDist = dist; bestPath = pm[1]; }
+    }
+    if (bestDist < 500) call.params.filePath = bestPath;
+  }
+  const queryMatch = fenceContent.match(/"query"\s*:\s*"((?:[^"\\]|\\.)*)"/i);
+  if (queryMatch) call.params.query = _unescape(queryMatch[1]);
+  const cmdMatch = fenceContent.match(/"command"\s*:\s*"((?:[^"\\]|\\.)*)"/i);
+  if (cmdMatch) call.params.command = _unescape(cmdMatch[1]);
+  const urlMatch = fenceContent.match(/"url"\s*:\s*"((?:[^"\\]|\\.)*)"/i);
+  if (urlMatch) call.params.url = _unescape(urlMatch[1]);
+  const dirMatch = fenceContent.match(/"dirPath"\s*:\s*"((?:[^"\\]|\\.)*)"/i);
+  if (dirMatch) call.params.dirPath = _unescape(dirMatch[1]);
+  const actionMatch = fenceContent.match(/"action"\s*:\s*"((?:[^"\\]|\\.)*)"/i);
+  if (actionMatch) call.params.action = _unescape(actionMatch[1]);
+  return call;
+}
+
+function _recoverBareNameCallsFromText(text) {
+  const calls = [];
+  const seen = new Set();
+  const re = /\{\s*"([a-z][a-z0-9_]*)"\s*,\s*"params"\s*:/gi;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const rawName = m[1].toLowerCase().replace(/-/g, '_');
+    const toolName = TOOL_NAME_ALIASES[rawName] || rawName;
+    if (!VALID_TOOLS.has(toolName)) continue;
+    const call = _applyRegexParamsToCall(
+      { tool: toolName, params: {}, _regexRecovered: true },
+      text.slice(m.index),
+      0,
+    );
+    const sig = `${call.tool}:${JSON.stringify(call.params)}`;
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    calls.push(call);
+    console.log(`[ToolParser] Method 1.2: Recovered bare-name tool call: ${toolName}`);
+  }
+  return calls;
+}
+
+function looksLikeToolAttempt(text) {
+  if (!text || typeof text !== 'string') return false;
+  if (BARE_NAME_JSON_RE.test(text)) return true;
+  if (/```(?:tool_call|tool|json)/i.test(text) && _fenceLooksLikeToolCall(text)) return true;
+  return /"tool"\s*:\s*"[a-zA-Z0-9_]+"/.test(text) || /"name"\s*:\s*"[a-zA-Z0-9_]+"/.test(text);
+}
+
+function suggestClosestToolName(text) {
+  if (!text || typeof text !== 'string') return '';
+  let candidate = null;
+  const bare = text.match(BARE_NAME_JSON_RE);
+  if (bare) candidate = bare[1].toLowerCase().replace(/-/g, '_');
+  if (!candidate) {
+    const toolM = text.match(/"tool"\s*:\s*"([^"]+)"/i) || text.match(/"name"\s*:\s*"([^"]+)"/i);
+    if (toolM) candidate = toolM[1].toLowerCase().replace(/-/g, '_').replace(/\s+/g, '_');
+  }
+  if (!candidate || VALID_TOOLS.has(candidate) || TOOL_NAME_ALIASES[candidate]) return '';
+  let best = null;
+  let bestDist = Infinity;
+  for (const name of VALID_TOOLS) {
+    const d = _levenshtein(candidate, name);
+    if (d < bestDist) { bestDist = d; best = name; }
+  }
+  if (best && bestDist <= 4) return `Did you mean "${best}"?`;
+  return '';
+}
+
+function _levenshtein(a, b) {
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
 // ─── Tool Call Normalization ───
 function normalizeToolCall(parsed) {
   if (!parsed || typeof parsed !== 'object') return null;
   console.log(`[ToolParser] normalizeToolCall START: raw=${JSON.stringify(parsed).substring(0,200)}`);
 
+  const metaKeys = new Set(['tool', 'name', 'function', 'action', 'params', 'parameters', 'arguments', 'args']);
+
   // Extract tool name
   let toolName = parsed.tool || parsed.name || parsed.function || parsed.action;
+
+  // Coerce { "find_files": { "pattern": "x" } } — single top-level key is the tool name
+  if (!toolName) {
+    const dataKeys = Object.keys(parsed).filter(k => !metaKeys.has(k));
+    if (dataKeys.length === 1) {
+      const k = dataKeys[0].toLowerCase().replace(/-/g, '_').replace(/\s+/g, '_');
+      const resolved = TOOL_NAME_ALIASES[k] || k;
+      if (VALID_TOOLS.has(resolved)) {
+        toolName = resolved;
+        const inner = parsed[dataKeys[0]];
+        if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+          parsed = { tool: resolved, params: inner };
+        }
+      }
+    }
+  }
+
   if (!toolName) {
     console.log('[ToolParser] normalizeToolCall: no tool name found');
     return null;
@@ -487,7 +617,6 @@ function normalizeToolCall(parsed) {
   if (typeof params !== 'object' || Array.isArray(params)) params = {};
 
   // If top-level props look like params (not tool metadata), merge them
-  const metaKeys = new Set(['tool', 'name', 'function', 'action', 'params', 'parameters', 'arguments', 'args']);
   for (const [k, v] of Object.entries(parsed)) {
     if (!metaKeys.has(k) && !(k in params)) {
       params[k] = v;
@@ -551,6 +680,13 @@ function parseToolCalls(text) {
       const normalized = normalizeToolCall(obj);
       if (!normalized) console.log(`[ToolParser] Method 1: normalizeToolCall returned null for keys: ${Object.keys(obj).join(', ')}`);
       addCall(normalized);
+    }
+
+    // Method 1.2: bare tool name key — {"find_files","params":{...}}
+    if (objects.length === 0) {
+      for (const bareCall of _recoverBareNameCallsFromText(fenceContent)) {
+        addCall(normalizeToolCall({ tool: bareCall.tool, params: bareCall.params }));
+      }
     }
 
     // Method 1.1 (Fix D): Regex fallback when JSON.parse fails on large fenced content
@@ -649,6 +785,11 @@ function parseToolCalls(text) {
     if (unclosed) {
       const objects = extractJsonObjects(unclosed[1]);
       for (const obj of objects) addCall(normalizeToolCall(obj));
+      if (calls.length === 0) {
+        for (const bareCall of _recoverBareNameCallsFromText(unclosed[1])) {
+          addCall(normalizeToolCall({ tool: bareCall.tool, params: bareCall.params }));
+        }
+      }
     }
   }
 
@@ -660,7 +801,8 @@ function parseToolCalls(text) {
       const afterFence = text.slice(fenceStart);
       const hasClosingFence = /```(?:tool_call|tool|json)[^\n]*\n[\s\S]*?```/.test(afterFence);
       if (!hasClosingFence) {
-        const toolNameMatch = afterFence.match(/\{\s*["']?(?:tool|name)["']?\s*:\s*["']([^"']+)["']/i);
+        let toolNameMatch = afterFence.match(/\{\s*["']?(?:tool|name)["']?\s*:\s*["']([^"']+)["']/i);
+        if (!toolNameMatch) toolNameMatch = afterFence.match(BARE_NAME_JSON_RE);
         if (toolNameMatch) {
           const rawToolName = toolNameMatch[1].toLowerCase().replace(/-/g, '_');
           const toolName = TOOL_NAME_ALIASES[rawToolName] || rawToolName;
@@ -989,11 +1131,11 @@ function stripToolCallText(text) {
     ranges.push([m.index, m.index + m[0].length]);
   }
 
-  // Pattern 2: Fenced code blocks (```json / ```tool_call / ```tool / ```) containing "tool":
+  // Pattern 2: Fenced code blocks containing tool calls (standard or bare-name JSON)
   const fenceRe = /```(?:json|tool_call|tool)?\s*\n([\s\S]*?)```/g;
   while ((m = fenceRe.exec(text)) !== null) {
     const inner = m[1];
-    if (/"tool"\s*:/.test(inner) || /"name"\s*:/.test(inner)) {
+    if (_fenceLooksLikeToolCall(inner)) {
       ranges.push([m.index, m.index + m[0].length]);
     }
   }
@@ -1002,7 +1144,7 @@ function stripToolCallText(text) {
   const unclosedFenceRe = /```(?:json|tool_call|tool)\s*\n([\s\S]*)$/g;
   while ((m = unclosedFenceRe.exec(text)) !== null) {
     const inner = m[1];
-    if (/"tool"\s*:/.test(inner) || /"name"\s*:/.test(inner)) {
+    if (_fenceLooksLikeToolCall(inner)) {
       ranges.push([m.index, m.index + m[0].length]);
     }
   }
@@ -1030,14 +1172,19 @@ function stripToolCallText(text) {
     }
     if (jsonEnd > jsonStart) {
       const slice = text.slice(jsonStart, jsonEnd);
-      if (/"tool"\s*:/.test(slice) || /"name"\s*:/.test(slice)) {
+      if (_fenceLooksLikeToolCall(slice)) {
         try {
           const parsed = JSON.parse(slice);
           if (parsed && typeof parsed === 'object' && (parsed.tool || parsed.name)) {
             const rangeStart = (text[m.index] === '\n') ? m.index : jsonStart;
             ranges.push([rangeStart, jsonEnd]);
           }
-        } catch { /* not valid JSON — skip */ }
+        } catch {
+          if (BARE_NAME_JSON_RE.test(slice)) {
+            const rangeStart = (text[m.index] === '\n') ? m.index : jsonStart;
+            ranges.push([rangeStart, jsonEnd]);
+          }
+        }
       }
     }
   }
@@ -1095,6 +1242,8 @@ module.exports = {
   parseToolCalls,
   repairToolCalls,
   stripToolCallText,
+  looksLikeToolAttempt,
+  suggestClosestToolName,
   _recoverWriteFileContent,
   _inferFilePath,
 };

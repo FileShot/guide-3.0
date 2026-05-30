@@ -12,6 +12,8 @@ import {
 export default function BrowserPanel() {
   const projectPath = useAppStore(s => s.projectPath);
   const addNotification = useAppStore(s => s.addNotification);
+  const viewportNavigateUrl = useAppStore(s => s.viewportNavigateUrl);
+  const clearViewportNavigateUrl = useAppStore(s => s.clearViewportNavigateUrl);
 
   const [previewUrl, setPreviewUrl] = useState('');
   const [urlInput, setUrlInput] = useState('');
@@ -38,6 +40,14 @@ export default function BrowserPanel() {
       }
     });
   }, []);
+
+  useEffect(() => {
+    if (!viewportNavigateUrl) return;
+    setPreviewUrl(viewportNavigateUrl);
+    setUrlInput(viewportNavigateUrl);
+    setActive(true);
+    clearViewportNavigateUrl();
+  }, [viewportNavigateUrl, clearViewportNavigateUrl]);
 
   const startPreview = useCallback(async () => {
     if (!projectPath) {

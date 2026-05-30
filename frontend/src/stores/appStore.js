@@ -412,6 +412,12 @@ const useAppStore = create((set, get) => ({
 
   streamingToolCalls: [],    // [{functionName, params, status, startTime, result, duration}]
 
+  viewportNavigateUrl: null,
+
+  setViewportNavigateUrl: (url) => set({ viewportNavigateUrl: url }),
+
+  clearViewportNavigateUrl: () => set({ viewportNavigateUrl: null }),
+
 
 
   addChatMessage: (msg) => {

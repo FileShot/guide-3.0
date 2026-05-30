@@ -270,7 +270,7 @@ const TOOL_MAP = {
 export default function ToolCallCard({ toolCall, count }) {
   const [expanded, setExpanded] = useState(false);
 
-  const { functionName, params, result, status = 'pending', duration } = toolCall;
+  const { functionName, params, result, status = 'pending', duration, generatingProgress } = toolCall;
   const cfg = TOOL_MAP[functionName] || null;
   const Icon = cfg ? cfg.Icon : Wrench;
   const isPending = status === 'pending';
@@ -280,7 +280,20 @@ export default function ToolCallCard({ toolCall, count }) {
   const verb = cfg ? (isPending || isGenerating ? cfg.pending : cfg.done) : functionName;
   const detail = cfg?.detail ? cfg.detail(params || {}, result) : null;
   const countSuffix = count > 1 ? ` ×${count}` : '';
-  const lineText = isGenerating ? `Generating ${functionName}...` : (detail ? `${verb} • ${detail}${countSuffix}` : `${verb}${countSuffix}`);
+  const formatGeneratingProgress = () => {
+    const elapsedMs = generatingProgress?.elapsedMs ?? 0;
+    const sec = Math.floor(elapsedMs / 1000);
+    const min = Math.floor(sec / 60);
+    const rem = sec % 60;
+    const timeStr = min > 0 ? `${min}m ${rem}s` : `${sec}s`;
+    const kb = Math.max(1, Math.round((generatingProgress?.fenceChars ?? 0) / 1024));
+    return `Generating large tool payload… (${timeStr}, ${kb}KB)`;
+  };
+  const lineText = isGenerating
+    ? (generatingProgress && (generatingProgress.elapsedMs ?? 0) >= 30000
+      ? formatGeneratingProgress()
+      : `Generating ${functionName}...`)
+    : (detail ? `${verb} • ${detail}${countSuffix}` : `${verb}${countSuffix}`);
 
   const hasExpandable = !!(params || (result !== undefined && result !== null));
 

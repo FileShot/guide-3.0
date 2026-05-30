@@ -129,6 +129,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Tool events
   onToolExecuting:     (cb) => _on('tool-executing', cb),
   onToolGenerating:    (cb) => _on('tool-generating', cb),
+  onToolGeneratingProgress: (cb) => _on('tool-generating-progress', cb),
   onMcpToolResults:    (cb) => _on('mcp-tool-results', cb),
   onToolCheckpoint:    (cb) => _on('tool-checkpoint', cb),
 
@@ -170,4 +171,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Debug events
   onDebugEvent:        (cb) => _on('debug-event', cb),
+
+  // Browser viewport (live preview tab)
+  onPreviewEvent: (cb) => {
+    const unsubs = [
+      _on('preview-started', (data) => cb('preview-started', data)),
+      _on('preview-navigate', (data) => cb('preview-navigate', data)),
+      _on('preview-stopped', () => cb('preview-stopped', null)),
+    ];
+    return () => { for (const u of unsubs) u(); };
+  },
+  onShowViewportBrowser: (cb) => _on('show-viewport-browser', cb),
+  onPreviewNavigate: (cb) => _on('preview-navigate', cb),
 });

@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { pathToFileURL } = require('url');
-const { parseToolCalls, repairToolCalls, stripToolCallText } = require('./tools/toolParser');
+const { parseToolCalls, repairToolCalls, stripToolCallText, looksLikeToolAttempt, suggestClosestToolName } = require('./tools/toolParser');
 const { formatToolResultForInject, buildToolResultsUserMessage } = require('./tools/toolResultInjection');
 const { canonicalizeToolParams } = require('./tools/canonicalizeToolParams');
 const { visionServer } = require('./visionServer');
@@ -112,6 +112,20 @@ const RE_FENCE_HEADER = /^```\s*(\w*)\r?\n/;
 const RE_TOOL_KEY = /"tool"\s*:\s*"[a-zA-Z0-9_]+"/;          // {"tool":"write_file"} or {"tool":"vscode_askQuestions"} — requires string value
 const RE_NAME_KEY = /"name"\s*:\s*"[a-zA-Z0-9_]+(?:_[a-zA-Z0-9_]+)*"/; // {"name":"read_file"} or mixed-case
 const RE_PARAMS_KEY = /"(?:params|parameters|arguments)"\s*:\s*\{/; // {"params":{ — strong tool-call signal
+const RE_BARE_NAME_TOOL = /\{\s*"[a-z][a-z0-9_]+"\s*,\s*"params"\s*:/i; // {"find_files","params":{...}}
+
+function _sfIsToolLikeJson(buf) {
+  return RE_TOOL_KEY.test(buf)
+    || (RE_NAME_KEY.test(buf) && RE_PARAMS_KEY.test(buf))
+    || RE_BARE_NAME_TOOL.test(buf);
+}
+
+function _sfExtractGeneratingToolName(buf) {
+  const standard = buf.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
+  if (standard) return standard[1];
+  const bare = buf.match(RE_BARE_NAME_TOOL);
+  return bare ? bare[1] : 'unknown';
+}
 const RE_FILE_WRITE_TOOLS = /write_file|create_file|append_to_file/;
 const RE_CONTENT_START = /"content"\s*:\s*"$/;
 const RE_FILE_PATH = /"(?:filePath|path)"\s*:\s*"([^"]*)"/;
@@ -1538,6 +1552,8 @@ class ChatEngine extends EventEmitter {
       // content fields inside tool call JSON and streams them to the UI as they arrive
       let _sfFileWriteDetected = false;
       let _sfToolCallNotified = false;  // tracks whether tool-generating event was emitted for current fence
+      let _sfToolGeneratingStart = 0;
+      let _sfLastToolProgressAt = 0;
       let _sfContentStreamActive = false;
       let _sfContentDone = false;
       let _sfContentEsc = false;
@@ -1601,7 +1617,7 @@ class ChatEngine extends EventEmitter {
           // Flush-guard: if the buffer contains tool-call JSON, discard it.
           // The toolParser will extract the call from the full response text post-generation.
           // This prevents raw JSON from appearing as visible text in the chat.
-          const _isToolCall = RE_TOOL_KEY.test(_sfBuf) || (RE_NAME_KEY.test(_sfBuf) && RE_PARAMS_KEY.test(_sfBuf));
+          const _isToolCall = _sfIsToolLikeJson(_sfBuf);
           if (_isToolCall) {
             console.log(`[ChatEngine] _sfFlush: discarding tool-call JSON (${_sfBuf.length} chars)`);
             const _fpM = _sfBuf.match(RE_FILE_PATH);
@@ -1618,6 +1634,8 @@ class ChatEngine extends EventEmitter {
         _sfEscaped = false;
         _sfFileWriteDetected = false;
         _sfToolCallNotified = false;
+        _sfToolGeneratingStart = 0;
+        _sfLastToolProgressAt = 0;
         _sfContentDone = false;
         _sfContentEsc = false;
         _sfUnicodeCount = 0;
@@ -1640,7 +1658,7 @@ class ChatEngine extends EventEmitter {
           // Flush-guard: if the fence buffer contains tool-call JSON, discard it.
           // This happens when generation stops mid-fence (maxTokens hit) — the closing
           // ``` was never emitted, so the fence buffer still has the full tool JSON.
-          const _isToolCall = RE_TOOL_KEY.test(_sfFenceBuf) || (RE_NAME_KEY.test(_sfFenceBuf) && RE_PARAMS_KEY.test(_sfFenceBuf));
+          const _isToolCall = _sfIsToolLikeJson(_sfFenceBuf);
           if (_isToolCall) {
             console.log(`[ChatEngine] _sfFlushFence: discarding tool-call JSON (${_sfFenceBuf.length} chars)`);
             const _fpM = _sfFenceBuf.match(RE_FILE_PATH);
@@ -1839,7 +1857,7 @@ class ChatEngine extends EventEmitter {
                 // and non-tool content is forwarded with fence markers stripped.
                 // Never stream JSON fences as plain mid-generation — they contain raw
                 // tool-call JSON that must not leak to visible prose.
-                if (RE_TOOL_KEY.test(afterHeader.slice(0, 6000))) {
+                if (_sfIsToolLikeJson(afterHeader.slice(0, 6000))) {
                   /* keep buffering — tool JSON fence */
                 }
                 // Removed: else-if branch that streamed JSON fences as plain after 100 chars
@@ -1908,18 +1926,29 @@ class ChatEngine extends EventEmitter {
             }
             // Emit tool-generating for ANY tool call inside a fence (not just file-write)
             if (!_sfToolCallNotified && _sfFenceBuf.length > 30) {
-              if (RE_TOOL_KEY.test(_sfFenceBuf) || (RE_NAME_KEY.test(_sfFenceBuf) && RE_PARAMS_KEY.test(_sfFenceBuf))) {
+              if (_sfIsToolLikeJson(_sfFenceBuf)) {
                 _sfToolCallNotified = true;
+                _sfToolGeneratingStart = Date.now();
+                _sfLastToolProgressAt = _sfToolGeneratingStart;
                 if (onStreamEvent) {
-                  const toolNameMatch = _sfFenceBuf.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
-                  onStreamEvent('tool-generating', { tool: toolNameMatch ? toolNameMatch[1] : 'unknown' });
+                  onStreamEvent('tool-generating', { tool: _sfExtractGeneratingToolName(_sfFenceBuf) });
                 }
+              }
+            }
+            if (_sfToolCallNotified && onStreamEvent && _sfFenceBuf.length > 0) {
+              const _progressNow = Date.now();
+              if (_progressNow - _sfLastToolProgressAt >= 5000) {
+                _sfLastToolProgressAt = _progressNow;
+                onStreamEvent('tool-generating-progress', {
+                  tool: _sfExtractGeneratingToolName(_sfFenceBuf),
+                  elapsedMs: _progressNow - _sfToolGeneratingStart,
+                  fenceChars: _sfFenceBuf.length,
+                });
               }
             }
             // File-write detection is separate — only for content streaming
             if (!_sfFileWriteDetected && _sfFenceBuf.length > 30) {
-              if (RE_FILE_WRITE_TOOLS.test(_sfFenceBuf) &&
-                  (RE_TOOL_KEY.test(_sfFenceBuf) || RE_NAME_KEY.test(_sfFenceBuf))) {
+              if (RE_FILE_WRITE_TOOLS.test(_sfFenceBuf) && _sfIsToolLikeJson(_sfFenceBuf)) {
                 _sfFileWriteDetected = true;
               }
             }
@@ -1946,7 +1975,7 @@ class ChatEngine extends EventEmitter {
               // Fix 4: If this fence opened inside a thinking block, decide based on content.
               if (_sfFenceInThink) {
                 _sfFenceInThink = false;
-                const isToolFence = RE_TOOL_KEY.test(_sfFenceBuf) || (RE_NAME_KEY.test(_sfFenceBuf) && RE_PARAMS_KEY.test(_sfFenceBuf));
+                const isToolFence = _sfIsToolLikeJson(_sfFenceBuf);
                 if (isToolFence) {
                   // Case (a): tool call inside think — implicit close, route as tool call
                   console.log('[ChatEngine] fence-in-think: tool call detected — implicit think close');
@@ -1970,7 +1999,7 @@ class ChatEngine extends EventEmitter {
                 }
               } else {
                 // Normal fence close (not inside think)
-                if (RE_TOOL_KEY.test(_sfFenceBuf) || (RE_NAME_KEY.test(_sfFenceBuf) && RE_PARAMS_KEY.test(_sfFenceBuf))) {
+                if (_sfIsToolLikeJson(_sfFenceBuf)) {
                   _sfFenceBuf = '';
                 } else {
                   _sfFlushFence();
@@ -1979,6 +2008,8 @@ class ChatEngine extends EventEmitter {
               _sfInFence = false;
               _sfFileWriteDetected = false;
               _sfToolCallNotified = false;
+              _sfToolGeneratingStart = 0;
+              _sfLastToolProgressAt = 0;
               _sfContentDone = false;
               _sfContentEsc = false;
               _sfLastCharWasNewlineOrStart = true;
@@ -2107,12 +2138,12 @@ class ChatEngine extends EventEmitter {
           else if (ch === '}') _sfDepth--;
 
           if (!_sfConfirmed && _sfBuf.length <= 80) {
-            if (RE_TOOL_KEY.test(_sfBuf) || RE_NAME_KEY.test(_sfBuf)) {
+            if (_sfIsToolLikeJson(_sfBuf)) {
               _sfConfirmed = true;
-              // Notify UI that a tool call is being generated (so it's not blank)
+              _sfToolGeneratingStart = Date.now();
+              _sfLastToolProgressAt = _sfToolGeneratingStart;
               if (onStreamEvent) {
-                const toolNameMatch = _sfBuf.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
-                onStreamEvent('tool-generating', { tool: toolNameMatch ? toolNameMatch[1] : 'unknown' });
+                onStreamEvent('tool-generating', { tool: _sfExtractGeneratingToolName(_sfBuf) });
               }
             }
           }
@@ -2779,6 +2810,13 @@ class ChatEngine extends EventEmitter {
         // When 0 calls found, log response preview for diagnostics
         if (parsedCalls.length === 0 && fullResponse.length > 20) {
           console.warn(`[ChatEngine] ⚠ 0 tool calls parsed — model output preview: "${fullResponse.replace(/\n/g, '\\n')}"`);
+        }
+        if (parsedCalls.length === 0 && looksLikeToolAttempt(fullResponse)) {
+          const closestHint = suggestClosestToolName(fullResponse);
+          this._chatHistory.push({
+            type: 'user',
+            text: `[System: Tool call could not be parsed. Retry with valid JSON: {"tool":"<name>","params":{...}}.${closestHint ? ` ${closestHint}` : ''}]`,
+          });
         }
         if (parsedCalls.length > 0) {
           const { repaired, issues } = repairToolCalls(parsedCalls, fullResponse);
@@ -4437,7 +4475,7 @@ class ChatEngine extends EventEmitter {
     const toolLines = Object.entries(functions).map(([name, def]) => {
       return `- ${name}: ${def.description || 'No description'}`;
     });
-    const prompt = `\n\nYou have access to the following tools:\n${toolLines.join('\n')}\n\nTOOL USAGE RULES:\n- When the user asks you to create, write, edit, read, or delete files in their project, you MUST use the appropriate file tool (write_file, read_file, edit_file, append_to_file, delete_file). Do NOT output file contents inline.\n- When the user asks you to find, search, or look for something in their code, use grep_search or find_files.\n- When the user asks to list or explore project structure, use list_directory.\n- When the user asks to run a command, script, or install something, use run_command.\n- When the user asks to search the web or look something up online, use web_search then immediately fetch_webpage on the first and second ranked result URLs in the same continuation before answering (if only one hit, fetch that URL). Do not ask the user whether to fetch. Do not list the project directory in the same tool round as web_search/fetch_webpage unless the user asked about the project.\n- When the user asks a general question, wants an explanation, or asks you to review code you already have, respond with text directly.\n- You can chain tools: use read_file to see existing code, then edit_file to modify it, then run_command to test it.\n- Always prefer tools over inline code when the user wants changes to their actual project files.`;
+    const prompt = `\n\nYou have access to the following tools:\n${toolLines.join('\n')}\n\nTOOL USAGE RULES:\n- When the user asks you to create, write, edit, read, or delete files in their project, you MUST use the appropriate file tool (write_file, read_file, edit_file, append_to_file, delete_file). Do NOT output file contents inline.\n- When the user asks you to find, search, or look for something in their code, use grep_search or find_files.\n- When the user asks to list or explore project structure, use list_directory.\n- When the user asks to run a command, script, or install something, use run_command.\n- When the user asks to search the web or look something up online, use web_search then immediately fetch_webpage on the first and second ranked result URLs in the same continuation before answering (if only one hit, fetch that URL). Do not ask the user whether to fetch. Do not list the project directory in the same tool round as web_search/fetch_webpage unless the user asked about the project.\n- For large project rules (>~2KB), use write_file to .guide/rules/<name>.md instead of embedding the full document in save_rule JSON.\n- When the user asks a general question, wants an explanation, or asks you to review code you already have, respond with text directly.\n- You can chain tools: use read_file to see existing code, then edit_file to modify it, then run_command to test it.\n- Always prefer tools over inline code when the user wants changes to their actual project files.`;
     console.log(`[ChatEngine] _buildToolPrompt: built ${prompt.length} chars`);
     return prompt;
   }
