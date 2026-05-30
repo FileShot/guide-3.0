@@ -382,6 +382,7 @@ function _send(event, data) {
   }
   // Drop silently during shutdown — window destroyed is expected, not an error.
 }
+mcpToolServer._send = _send;
 
 const ctx = {
   llmEngine,
@@ -1761,6 +1762,38 @@ ipcMain.handle('terminal-destroy', (_event, termId) => {
     try { proc.kill(); } catch (_) {}
     ptyTerminals.delete(termId);
   }
+});
+
+ipcMain.handle('terminal-recreate', (_event, opts) => {
+  const termId = opts?.terminalId;
+  if (termId) {
+    const proc = ptyTerminals.get(termId);
+    if (proc) {
+      try { proc.kill(); } catch (_) {}
+      ptyTerminals.delete(termId);
+    }
+  }
+  const ptyModule = _loadPty();
+  if (!ptyModule) return { success: false, error: 'node-pty not available' };
+  const newId = termId || `pty-${Date.now()}`;
+  const shell = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/bash');
+  const cwd = opts?.cwd || currentProjectPath || os.homedir();
+  const ptyProcess = ptyModule.spawn(shell, [], {
+    name: 'xterm-256color',
+    cols: opts?.cols || 80,
+    rows: opts?.rows || 24,
+    cwd,
+    env: process.env,
+  });
+  ptyProcess.onData((data) => {
+    _send('terminal-data', { terminalId: newId, data });
+  });
+  ptyProcess.onExit(({ exitCode }) => {
+    _send('terminal-exit', { terminalId: newId, exitCode });
+    ptyTerminals.delete(newId);
+  });
+  ptyTerminals.set(newId, ptyProcess);
+  return { success: true, terminalId: newId, shell, cwd };
 });
 
 // ─── Debug event forwarding ─────────────────────────────────────────

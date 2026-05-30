@@ -88,6 +88,10 @@ jobs:
       - name: Build renderer
         run: npm run build:renderer
 
+      - name: Generate multi-size app icon
+        shell: pwsh
+        run: ./scripts/generate-icon.ps1
+
       - name: Build Windows CPU installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.json --publish never
         env:
@@ -138,6 +142,10 @@ jobs:
 
       - name: Build renderer
         run: npm run build:renderer
+
+      - name: Generate multi-size app icon
+        shell: pwsh
+        run: ./scripts/generate-icon.ps1
 
       - name: Build Windows CUDA installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.cuda.json --publish never

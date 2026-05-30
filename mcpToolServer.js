@@ -24,6 +24,15 @@ const {
 } = require('./tools/toolParser');
 const { canonicalizeToolParams } = require('./tools/canonicalizeToolParams');
 
+/** run_command / terminal_run timing (ms) */
+const COMMAND_SOFT_WARNING_MS = 180000;
+const COMMAND_DEFAULT_TIMEOUT_MS = 600000;
+const COMMAND_MAX_TIMEOUT_MS = 600000;
+const COMMAND_MIN_TIMEOUT_MS = 5000;
+
+const RUN_COMMAND_TIMEOUT_HINT =
+  'Do not launch chrome.exe or debug Playwright via run_command. Use browser_navigate, fetch_webpage, or allow browser automation setup. For long builds pass a higher timeout param or use terminal_run.';
+
 /** Format uptime seconds into human-readable string */
 function formatUptime(seconds) {
   const days = Math.floor(seconds / 86400);
@@ -92,6 +101,7 @@ class MCPToolServer {
     this._todos = [];
     this._todoNextId = 1;
     this.onTodoUpdate = null;
+    this._send = options.send || null;
 
     // Scratchpad
     this._scratchDir = this._projectPath ? path.join(this._projectPath, '.guide-scratch') : null;
@@ -337,12 +347,12 @@ class MCPToolServer {
       },
       {
         name: 'run_command',
-        description: 'Execute a shell command in the project directory and return the output. Default timeout 60 seconds, maximum 5 minutes. IMPORTANT: Each call spawns a fresh shell — cd, set VAR=, export VAR= do NOT persist between calls. Use absolute paths or chain commands with && to work around this. Default shell: Windows = PowerShell, Unix = /bin/sh. Set shell="cmd" on Windows to force cmd.exe (for cmd-specific syntax). WAIT/SLEEP: Windows cmd = "timeout /t 5 /nobreak >nul", PowerShell = "Start-Sleep -Seconds 5", Unix = "sleep 5". POLLING: Windows = "ping -n 6 127.0.0.1 >nul", Unix = "while ! command; do sleep 1; done". BACKGROUND: Windows = "start /b command", Unix = "command &".',
+        description: 'Execute a shell command in the project directory and return the output. Default max wait 10 minutes (pass timeout in ms for long npm/build jobs, up to 600000). A UI warning appears at 3 minutes; the command is killed only at max timeout. IMPORTANT: Each call spawns a fresh shell — cd, set VAR=, export VAR= do NOT persist between calls. Do NOT use run_command to launch chrome.exe or debug Playwright — use browser_navigate or fetch_webpage instead. Default shell: Windows = PowerShell, Unix = /bin/sh. Set shell="cmd" on Windows to force cmd.exe.',
         parameters: {
           command: { type: 'string', description: 'Command to execute', required: true },
           shell: { type: 'string', description: 'Shell to use on Windows: "powershell" (default) or "cmd". Ignored on Unix.', required: false },
           cwd: { type: 'string', description: 'Working directory', required: false },
-          timeout: { type: 'number', description: 'Timeout in ms (default 60000)', required: false },
+          timeout: { type: 'number', description: 'Max wait in ms before kill (default 600000, max 600000)', required: false },
           reason: { type: 'string', description: 'One sentence explaining why this command needs to be run', required: false },
         },
       },
@@ -2107,7 +2117,11 @@ class MCPToolServer {
         }
       }
     }
-    const timeoutMs = Math.min(Math.max(timeout || 60000, 5000), 300000);
+    const timeoutMs = Math.min(Math.max(timeout || COMMAND_DEFAULT_TIMEOUT_MS, COMMAND_MIN_TIMEOUT_MS), COMMAND_MAX_TIMEOUT_MS);
+    const softWarningMs = Math.min(COMMAND_SOFT_WARNING_MS, timeoutMs);
+    const startTime = Date.now();
+    let slowWarningSent = false;
+
     return new Promise((resolve) => {
       const isWindows = process.platform === 'win32';
       // Shell selection:
@@ -2156,26 +2170,34 @@ class MCPToolServer {
         else truncated = true;
       });
 
-      const timeoutHandle = setTimeout(() => {
+      let settled = false;
+      let forceSettleHandle = null;
+
+      const killChildTree = () => {
         try {
-          if (isWindows) {
+          if (isWindows && child.pid) {
             try { require('child_process').execSync(`taskkill /pid ${child.pid} /T /F`, { windowsHide: true, stdio: 'ignore' }); } catch (_) {}
           } else {
-            child.kill('SIGTERM');
+            try { child.kill('SIGTERM'); } catch (_) {}
             setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} }, 500).unref();
           }
         } catch (_) {}
-      }, timeoutMs);
+      };
 
-      const settle = (exitCode, signal) => {
-        clearTimeout(timeoutHandle);
+      const settle = (exitCode, signal, { timedOut = false } = {}) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(softWarningHandle);
+        clearTimeout(hardKillHandle);
+        if (forceSettleHandle) clearTimeout(forceSettleHandle);
         this._activeChildren.delete(childId);
-        const killed = signal === 'SIGTERM' || signal === 'SIGKILL' || exitCode === null;
+        const elapsedMs = Date.now() - startTime;
+        const killed = timedOut || signal === 'SIGTERM' || signal === 'SIGKILL' || exitCode === null;
         const success = !killed && exitCode === 0;
         const trimmedOut = stdoutBuf.trim();
         const trimmedErr = stderrBuf.trim();
         const output = trimmedOut || trimmedErr || (killed ? `Command terminated (signal=${signal || 'cancelled'})` : `Command exited with code ${exitCode}`);
-        resolve({
+        const result = {
           success,
           output: truncated ? output + '\n[... output truncated]' : output,
           message: success ? (trimmedOut || 'Command completed') : (trimmedErr || `exit ${exitCode}${signal ? ` (${signal})` : ''}`),
@@ -2184,10 +2206,46 @@ class MCPToolServer {
           exitCode: exitCode == null ? -1 : exitCode,
           signal: signal || undefined,
           truncated,
-        });
+          elapsedMs,
+        };
+        if (timedOut) {
+          result.timedOut = true;
+          result.error = `Command exceeded ${timeoutMs}ms and was terminated.`;
+          result.hint = RUN_COMMAND_TIMEOUT_HINT;
+          result.partialStdout = stdoutBuf.slice(0, 8000);
+          result.partialStderr = stderrBuf.slice(0, 8000);
+        } else if (slowWarningSent || elapsedMs >= COMMAND_SOFT_WARNING_MS) {
+          result.slowCommand = true;
+          result.hint = `Command took ${Math.round(elapsedMs / 1000)}s. If this was unintended, avoid launching GUI/headless Chrome via run_command — use browser_navigate or fetch_webpage.`;
+        }
+        resolve(result);
       };
 
-      child.on('error', (err) => settle(-1, null) || console.log(`[MCPToolServer] run_command spawn error: ${err.message}`));
+      const softWarningHandle = setTimeout(() => {
+        slowWarningSent = true;
+        console.log(`[MCPToolServer] run_command slow warning (${Math.round((Date.now() - startTime) / 1000)}s): ${cmdStr.substring(0, 80)}`);
+        if (this._send) {
+          this._send('command-slow-warning', {
+            tool: 'run_command',
+            elapsedMs: Date.now() - startTime,
+            command: cmdStr.slice(0, 120),
+          });
+        }
+      }, softWarningMs);
+
+      const hardKillHandle = setTimeout(() => {
+        console.warn(`[MCPToolServer] run_command hard kill after ${timeoutMs}ms: ${cmdStr.substring(0, 80)}`);
+        killChildTree();
+        forceSettleHandle = setTimeout(() => {
+          if (!settled) settle(-1, 'SIGTERM', { timedOut: true });
+        }, 2000);
+        forceSettleHandle.unref?.();
+      }, timeoutMs);
+
+      child.on('error', (err) => {
+        console.log(`[MCPToolServer] run_command spawn error: ${err.message}`);
+        settle(-1, null);
+      });
       child.on('close', (code, signal) => settle(code, signal));
     });
   }
@@ -2366,7 +2424,10 @@ class MCPToolServer {
       return await this._runCommand(cmdStr, null, timeout);
     }
 
-    const timeoutMs = Math.min(Math.max(timeout || 30000, 5000), 120000);
+    const timeoutMs = Math.min(Math.max(timeout || COMMAND_DEFAULT_TIMEOUT_MS, COMMAND_MIN_TIMEOUT_MS), COMMAND_MAX_TIMEOUT_MS);
+    const softWarningMs = Math.min(COMMAND_SOFT_WARNING_MS, timeoutMs);
+    const startTime = Date.now();
+    let slowWarningSent = false;
 
     // Write an end-of-output marker so we can detect when the command finishes.
     // The marker is a unique string that the shell will echo after the command.
@@ -2401,13 +2462,28 @@ class MCPToolServer {
 
       this._agentPty.onData(dataHandler);
 
+      const softWarningHandle = setTimeout(() => {
+        slowWarningSent = true;
+        if (this._send) {
+          this._send('command-slow-warning', {
+            tool: 'terminal_run',
+            elapsedMs: Date.now() - startTime,
+            command: cmdStr.slice(0, 120),
+          });
+        }
+      }, softWarningMs);
+
       const timeoutHandle = setTimeout(() => {
-        if (!markerFound) finish();
+        if (!markerFound) finish(true);
       }, timeoutMs);
 
-      const finish = () => {
+      const finish = (timedOut = false) => {
+        if (finish._done) return;
+        finish._done = true;
+        clearTimeout(softWarningHandle);
         clearTimeout(timeoutHandle);
         try { this._agentPty.removeListener('data', dataHandler); } catch (_) {}
+        const elapsedMs = Date.now() - startTime;
         // Strip ANSI escape sequences from captured output
         let cleanOutput = capturedOutput
           .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
@@ -2432,12 +2508,22 @@ class MCPToolServer {
         }
 
         const truncated = capturedOutput.length >= MAX_CAPTURE;
-        resolve({
-          success: markerFound,
+        const result = {
+          success: markerFound && !timedOut,
           output: truncated ? cleanOutput + '\n[... output truncated]' : cleanOutput || '(no output)',
           shell: this._agentPtyShell,
           persistent: true,
-        });
+          elapsedMs,
+        };
+        if (timedOut) {
+          result.timedOut = true;
+          result.error = `Command exceeded ${timeoutMs}ms and was terminated.`;
+          result.hint = RUN_COMMAND_TIMEOUT_HINT;
+        } else if (slowWarningSent || elapsedMs >= COMMAND_SOFT_WARNING_MS) {
+          result.slowCommand = true;
+          result.hint = `Command took ${Math.round(elapsedMs / 1000)}s. If unintended, use browser_navigate instead of shell-debugging Chrome.`;
+        }
+        resolve(result);
       };
 
       // Send command to PTY
@@ -4365,6 +4451,7 @@ class MCPToolServer {
     rules += '- For large files: write_file for first section, then append_to_file for remaining sections\n';
     rules += '- Web: after web_search, in the same continuation, call fetch_webpage on the first and second ranked result URLs before answering (or each returned URL if fewer than two). Do not ask the user to confirm fetching. Do not call list_directory in the same tool round as web_search/fetch_webpage unless the user asked about the project\n';
     rules += '- Browser workflow: browser_navigate (auto-returns snapshot) → interact using [ref=N] IDs with browser_click/browser_type (auto-return snapshot after action). Only call browser_snapshot explicitly if you need to refresh refs without navigating or clicking.\n';
+    rules += '- If browser_navigate fails, retry it or use fetch_webpage. Do NOT launch chrome.exe or debug Playwright via run_command.\n';
     parts.push(rules);
 
     return parts;
@@ -4485,7 +4572,7 @@ class MCPToolServer {
 - **Web lookup**: web_search → fetch_webpage for top result URL(s) → answer from fetched text in the same continuation
 - **Project files**: read_file (known path), grep_search or search_codebase (unknown location), list_directory (folder listing)
 - **Edit existing file**: read_file → edit_file with exact oldText/newText from the file
-- **Browser**: browser_navigate → interact using refs from the snapshot (browser_click, browser_type, etc.)
+- **Browser**: browser_navigate → interact using refs from the snapshot (browser_click, browser_type, etc.). If browser_navigate fails, retry it or use fetch_webpage — do NOT shell-debug Chrome/Playwright via run_command.
 - **New file**: write_file with full content in params; append_to_file for additional sections
 - **Large rules**: write_file to \`.guide/rules/<name>.md\` instead of embedding multi-KB content in save_rule JSON
 

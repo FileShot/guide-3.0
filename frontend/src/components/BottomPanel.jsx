@@ -159,19 +159,7 @@ function XTermPanel() {
 
   const projectPath = useAppStore(s => s.projectPath);
 
-  // When project changes after PTY exists, cd only if shell cwd differs from spawn cwd
-  useEffect(() => {
-    if (!projectPath || !xtermRef.current || !termIdRef.current || modeRef.current !== 'pty') return;
-    const norm = (p) => (p || '').replace(/\\/g, '/').toLowerCase();
-    if (norm(ptyCwdRef.current) === norm(projectPath)) return;
-    const api = window.electronAPI;
-    if (api?.terminal) {
-      const escaped = projectPath.replace(/"/g, '\\"');
-      api.terminal.write(termIdRef.current, `cd "${escaped}"\r`);
-      ptyCwdRef.current = projectPath;
-    }
-  }, [projectPath]);
-
+  // PTY is (re)created when projectPath or tab changes — cwd set at spawn, no visible cd injection.
   // Initialize xterm.js + IPC PTY
   useEffect(() => {
     let term = null;
@@ -356,7 +344,7 @@ function XTermPanel() {
         termIdRef.current = null;
       }
     };
-  }, [activeTerminalTab]);
+  }, [activeTerminalTab, projectPath]);
 
   // Handle resize
   useEffect(() => {

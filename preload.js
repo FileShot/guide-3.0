@@ -81,6 +81,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     write:   (termId, data) => ipcRenderer.invoke('terminal-write', termId, data),
     resize:  (termId, cols, rows) => ipcRenderer.invoke('terminal-resize', termId, cols, rows),
     destroy: (termId) => ipcRenderer.invoke('terminal-destroy', termId),
+    recreate: (opts) => ipcRenderer.invoke('terminal-recreate', opts),
     onData:  (callback) => _on('terminal-data', callback),
     onExit:  (callback) => _on('terminal-exit', callback),
   },
@@ -130,6 +131,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onToolExecuting:     (cb) => _on('tool-executing', cb),
   onToolGenerating:    (cb) => _on('tool-generating', cb),
   onToolGeneratingProgress: (cb) => _on('tool-generating-progress', cb),
+  onCommandSlowWarning: (cb) => _on('command-slow-warning', cb),
   onMcpToolResults:    (cb) => _on('mcp-tool-results', cb),
   onToolCheckpoint:    (cb) => _on('tool-checkpoint', cb),
 

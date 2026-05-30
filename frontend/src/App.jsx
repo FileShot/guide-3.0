@@ -314,6 +314,26 @@ export default function App() {
 
       }
 
+      case 'command-slow-warning': {
+
+        const toolName = data?.tool || 'run_command';
+
+        s.updateStreamingToolCall(toolName, {
+
+          commandSlowProgress: {
+
+            elapsedMs: data?.elapsedMs ?? 0,
+
+            command: data?.command,
+
+          },
+
+        });
+
+        break;
+
+      }
+
       case 'mcp-tool-results': {
 
         console.log('[App] mcp-tool-results:', JSON.stringify(data).substring(0, 200));
@@ -795,6 +815,8 @@ export default function App() {
       api.onToolGenerating?.((d) => handleEvent('tool-generating', d)),
 
       api.onToolGeneratingProgress?.((d) => handleEvent('tool-generating-progress', d)),
+
+      api.onCommandSlowWarning?.((d) => handleEvent('command-slow-warning', d)),
 
       api.onShowViewportBrowser?.(() => useAppStore.getState().openBrowserTab()),
 
