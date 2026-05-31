@@ -91,6 +91,7 @@ function findBinary(dir, names) {
     if (fs.existsSync(direct)) return direct;
   }
   const walk = (d) => {
+    if (!fs.existsSync(d)) return null;
     for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
       const p = path.join(d, ent.name);
       if (ent.isDirectory()) {
