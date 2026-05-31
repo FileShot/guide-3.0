@@ -131,6 +131,16 @@ class MCPToolServer {
     // cancelGeneration() so Stop actually stops.
     this._activeChildren = new Map();
     this._nextChildId = 1;
+
+    // Plan / agent phase context (set per ai-chat turn from electron-main)
+    this._agentContext = { planMode: false, agentPhase: 'planning' };
+  }
+
+  setAgentContext(ctx = {}) {
+    this._agentContext = {
+      planMode: !!(ctx.planMode),
+      agentPhase: ctx.agentPhase || 'planning',
+    };
   }
 
   // ─── Child Process Management ───────────────────────────────────────────
@@ -1055,6 +1065,13 @@ class MCPToolServer {
     const startTime = Date.now();
     let result;
 
+    const { checkPlanModeToolGate, isPlanFilePath, parsePlanFileContent, relativePlanPath } = require('./agentModeResolver');
+    const planGate = checkPlanModeToolGate(toolName, params, this._agentContext);
+    if (!planGate.allowed) {
+      console.log(`[MCPToolServer] Plan mode gate blocked: ${toolName}`);
+      return { success: false, error: planGate.error, planModeBlocked: true };
+    }
+
     // Reject disabled tools. We intentionally report this as "does not exist"
     // rather than "disabled in settings" so the model treats it as an unknown
     // tool and picks a different path, instead of retrying the same call
@@ -1476,6 +1493,22 @@ class MCPToolServer {
     this.toolHistory.push(entry);
     if (this.toolHistory.length > this.maxHistory) {
       this.toolHistory.shift();
+    }
+
+    if (toolName === 'write_file' && result?.success && isPlanFilePath(params.filePath || params.path)) {
+      const content = params.content != null ? String(params.content) : '';
+      const parsed = parsePlanFileContent(content);
+      const relPath = relativePlanPath(result.path || params.filePath, this.projectPath);
+      if (this._send) {
+        this._send('plan-ready', {
+          path: relPath,
+          fullPath: result.path,
+          content,
+          title: parsed.title,
+          overview: parsed.overview,
+          todos: parsed.todos,
+        });
+      }
     }
 
     return result;
@@ -4366,12 +4399,16 @@ class MCPToolServer {
     return this._toolPromptCache;
   }
 
+  getToolPromptForTools(toolDefs) {
+    return this._buildToolPrompt(Array.isArray(toolDefs) ? toolDefs : []);
+  }
+
   getCompactToolHint(taskType, options) {
     // Build a clean, compact tool schema from actual definitions
     // Returns an ARRAY of strings — each element is independently appendable
     // so the prompt assembler can include as many as the budget allows
     // instead of silently dropping ALL tools when the single string is too large.
-    const tools = this.getToolDefinitions();
+    const tools = (options && options.toolDefs) || this.getToolDefinitions();
     const toolMap = {};
     for (const tool of tools) toolMap[tool.name] = tool;
 

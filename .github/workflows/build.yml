@@ -88,6 +88,7 @@ jobs:
         run: node scripts/fetch-whisper-bin.js
         env:
           WHISPER_PLATFORM: win32
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)
@@ -160,6 +161,7 @@ jobs:
         run: node scripts/fetch-whisper-bin.js
         env:
           WHISPER_PLATFORM: win32
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)
@@ -219,11 +221,6 @@ jobs:
       - name: Verify bundled TypeScript LSP
         run: npx typescript-language-server --version
 
-      - name: Bundle whisper.cpp (Linux)
-        run: node scripts/fetch-whisper-bin.js
-        env:
-          WHISPER_PLATFORM: linux
-
       - name: Install frontend dependencies
         run: npm ci --force
         working-directory: frontend
@@ -279,11 +276,6 @@ jobs:
 
       - name: Verify bundled TypeScript LSP
         run: npx typescript-language-server --version
-
-      - name: Bundle whisper.cpp (Linux)
-        run: node scripts/fetch-whisper-bin.js
-        env:
-          WHISPER_PLATFORM: linux
 
       - name: Install frontend dependencies
         run: npm ci --force
@@ -348,6 +340,7 @@ jobs:
         run: node scripts/fetch-whisper-bin.js
         env:
           WHISPER_PLATFORM: darwin
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install frontend dependencies
         run: npm ci --force

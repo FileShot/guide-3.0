@@ -12,6 +12,7 @@ const { execSync } = require('child_process');
 const ROOT = path.join(__dirname, '..');
 const OUT = path.join(ROOT, 'resources', 'whisper');
 const SKIP_MODEL = process.argv.includes('--skip-model');
+const WHISPER_VERSION = process.env.WHISPER_VERSION || 'v1.8.5';
 
 const PLATFORM_DIRS = {
   win32: 'win32',
@@ -19,12 +20,20 @@ const PLATFORM_DIRS = {
   darwin: 'darwin',
 };
 
+function githubHeaders() {
+  const headers = { 'User-Agent': 'guIDE-whisper-fetch' };
+  if (process.env.GITHUB_TOKEN) {
+    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
+  return headers;
+}
+
 function download(url, dest) {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     const file = fs.createWriteStream(dest);
     const req = (u) => {
-      https.get(u, { headers: { 'User-Agent': 'guIDE-whisper-fetch' } }, (res) => {
+      https.get(u, { headers: githubHeaders() }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           file.close();
           fs.unlink(dest, () => {});
@@ -46,7 +55,7 @@ function download(url, dest) {
 function fetchJson(url) {
   return new Promise((resolve, reject) => {
     const req = (u) => {
-      https.get(u, { headers: { 'User-Agent': 'guIDE-whisper-fetch' } }, (res) => {
+      https.get(u, { headers: githubHeaders() }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           return req(res.headers.location);
         }
@@ -115,6 +124,38 @@ function findBinary(dir, names) {
   return walk(dir);
 }
 
+async function buildFromSource(platform) {
+  const platDir = path.join(OUT, PLATFORM_DIRS[platform] || platform);
+  const destName = platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
+  const destPath = path.join(platDir, destName);
+  if (fs.existsSync(destPath)) {
+    console.log(`[whisper-fetch] ${platform}: already have ${destPath}`);
+    return;
+  }
+
+  const srcDir = path.join(OUT, '_cache', `whisper-src-${platform}`);
+  fs.rmSync(srcDir, { recursive: true, force: true });
+  console.log(`[whisper-fetch] ${platform}: cloning whisper.cpp ${WHISPER_VERSION} for source build`);
+  execSync(
+    `git clone --depth 1 --branch ${WHISPER_VERSION} https://github.com/ggml-org/whisper.cpp "${srcDir}"`,
+    { stdio: 'inherit' },
+  );
+
+  const buildDir = path.join(srcDir, 'build');
+  execSync(`cmake -B "${buildDir}" -DCMAKE_BUILD_TYPE=Release`, { stdio: 'inherit', cwd: srcDir });
+  execSync(`cmake --build "${buildDir}" --target whisper-cli -j`, { stdio: 'inherit', cwd: srcDir });
+
+  const built = findBinary(buildDir, platform === 'win32'
+    ? ['whisper-cli.exe', 'whisper.exe', 'main.exe']
+    : ['whisper-cli', 'whisper', 'main']);
+  if (!built) throw new Error(`whisper-cli not found after source build for ${platform}`);
+
+  fs.mkdirSync(platDir, { recursive: true });
+  fs.copyFileSync(built, destPath);
+  if (platform !== 'win32') fs.chmodSync(destPath, 0o755);
+  console.log(`[whisper-fetch] ${platform}: installed ${destName} (source build)`);
+}
+
 async function fetchBinaryForPlatform(platform) {
   const platDir = path.join(OUT, PLATFORM_DIRS[platform] || platform);
   const binNames = platform === 'win32'
@@ -128,7 +169,14 @@ async function fetchBinaryForPlatform(platform) {
 
   const release = await fetchRelease();
   const asset = pickAsset(release, platform);
-  if (!asset) throw new Error(`No whisper.cpp asset for ${platform} in ${release.tag_name}`);
+  if (!asset) {
+    if (platform === 'darwin') {
+      console.log(`[whisper-fetch] ${platform}: no prebuilt CLI in ${release.tag_name}, building from source`);
+      await buildFromSource(platform);
+      return;
+    }
+    throw new Error(`No whisper.cpp asset for ${platform} in ${release.tag_name}`);
+  }
 
   const archive = path.join(OUT, '_cache', asset.name);
   console.log(`[whisper-fetch] ${platform}: downloading ${asset.name}`);

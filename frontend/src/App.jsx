@@ -694,6 +694,25 @@ export default function App() {
 
 
 
+      case 'plan-ready':
+
+        if (data) {
+          s.setPlanSession({
+            id: data.path || `plan-${Date.now()}`,
+            path: data.path,
+            fullPath: data.fullPath,
+            content: data.content,
+            title: data.title || 'Implementation Plan',
+            overview: data.overview || '',
+            todos: Array.isArray(data.todos) ? data.todos : [],
+            status: 'ready',
+          });
+        }
+
+        break;
+
+
+
       // Ask question from model
 
       case 'ask-question':
@@ -965,6 +984,8 @@ export default function App() {
       api.onProjectOpened?.((d) => handleEvent('project-opened', d)),
 
       api.onTodoUpdate?.((d) => handleEvent('todo-update', d)),
+
+      api.onPlanReady?.((d) => handleEvent('plan-ready', d)),
 
       api.onAskQuestion?.((d) => handleEvent('ask-question', d)),
 

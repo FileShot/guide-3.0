@@ -12,6 +12,7 @@ import { createPortal } from 'react-dom';
 import useAppStore from '../stores/appStore';
 
 import MarkdownRenderer from './chat/MarkdownRenderer';
+import PlanCard from './PlanCard';
 
 import ToolCallCard from './chat/ToolCallCard';
 import SlideDown from './SlideDown';
@@ -1404,9 +1405,31 @@ export default function ChatPanel() {
 
   // Core send logic — takes explicit text param so queue auto-send can use it
 
-  const doSend = useCallback(async (text, { skipAddMessage } = {}) => {
+  const doSend = useCallback(async (text, {
+    skipAddMessage,
+    agentPhase,
+    planContext,
+    overrideChatMode,
+    overridePlanMode,
+  } = {}) => {
 
     if (!text) return;
+
+    const effectiveChatMode = overrideChatMode || chatMode;
+    const effectivePlanMode = overridePlanMode !== undefined ? overridePlanMode : effectiveChatMode === 'plan';
+    const effectiveAgentPhase = agentPhase || (effectivePlanMode ? 'planning' : 'agent');
+
+    if (effectivePlanMode && effectiveAgentPhase === 'planning') {
+      useAppStore.getState().setPlanSession({
+        id: `plan-${Date.now()}`,
+        path: null,
+        content: null,
+        title: 'Planning…',
+        overview: '',
+        todos: [],
+        status: 'planning',
+      });
+    }
 
 
 
@@ -1582,11 +1605,15 @@ export default function ChatPanel() {
 
         params: {
 
-          chatMode,
+          chatMode: effectiveChatMode,
 
-          planMode: chatMode === 'plan',
+          planMode: effectivePlanMode,
 
-          askOnly: chatMode === 'ask',
+          askOnly: effectiveChatMode === 'ask',
+
+          agentPhase: effectiveAgentPhase,
+
+          planContext: planContext || undefined,
 
           temperature: s.temperature,
 
@@ -2133,6 +2160,21 @@ export default function ChatPanel() {
     }
 
   }, [chatStreaming, addChatMessage, chatMode, chatAttachments, clearChatAttachments, fileContextDismissed]);
+
+  const handleBuildPlan = useCallback((session) => {
+    if (!session?.path || useAppStore.getState().chatStreaming) return;
+    setChatMode('agent');
+    useAppStore.getState().setPlanSession({ ...session, status: 'building' });
+    doSend(
+      `Implement the approved plan at ${session.path}. Follow todos in order. Do not replan unless blocked.`,
+      {
+        agentPhase: 'building',
+        planContext: session.content,
+        overrideChatMode: 'agent',
+        overridePlanMode: false,
+      },
+    );
+  }, [doSend]);
 
   const resendFromUserEdit = useCallback((msgId, newContent) => {
     const trimmed = (newContent || '').trim();
@@ -3176,11 +3218,13 @@ export default function ChatPanel() {
 
             <span className="font-semibold text-vsc-text">Plan mode</span>
 
-            {' '}— explore with read/search/git tools; write only <code className="text-vsc-text/90">GUIDE_PLAN.md</code>. Switch to Agent and say &quot;proceed&quot; to implement.
+            {' '}— explore with read/search/git tools; write only <code className="text-vsc-text/90">.guide/plans/*.plan.md</code>. Review the plan, then click <strong>Build</strong>.
 
           </div>
 
         )}
+
+        <PlanCard onBuild={handleBuildPlan} chatStreaming={chatStreaming} />
 
         <div className="rounded-xl border border-vsc-panel-border/30 bg-vsc-sidebar/88 backdrop-blur-sm overflow-visible shadow-[0_8px_30px_rgba(0,0,0,0.28),0_1px_0_rgba(255,255,255,0.03)_inset]">
 

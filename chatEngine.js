@@ -11,6 +11,13 @@ const { canonicalizeToolParams } = require('./tools/canonicalizeToolParams');
 const { visionServer } = require('./visionServer');
 const { detectFamily, detectFamilyFromArch, detectParamSize } = require('./modelDetection');
 const { getModelProfile } = require('./modelProfiles');
+const {
+  PLAN_MODE_ALLOWED_TOOLS,
+  filterPlanModeToolCalls,
+  isPlanFilePath,
+  getAskModePromptAddition,
+  getPlanModePromptAddition,
+} = require('./agentModeResolver');
 
 /** Base max chars of each tool result injected into chat history.
  *  Actual cap is computed at runtime proportional to the model's context size
@@ -154,33 +161,6 @@ function trimListDirectoryInjectPayload(toolResult) {
     items: toolResult.items.slice(0, LIST_DIRECTORY_INJECT_MAX_ITEMS),
     listingNote: `NOT a complete listing — ${omitted} more entries omitted; use find_files or list a subdirectory.`,
   };
-}
-
-const PLAN_MODE_ALLOWED_TOOLS = new Set([
-  'read_file', 'list_directory', 'grep_search', 'find_files', 'get_file_info',
-  'search_in_file', 'search_codebase', 'git_status', 'git_diff', 'git_log',
-  'write_file', 'ask_question', 'write_todos', 'update_todo',
-]);
-
-function filterPlanModeToolCalls(calls) {
-  if (!calls?.length) return { calls: [], blocked: [] };
-  const kept = [];
-  const blocked = [];
-  for (const c of calls) {
-    if (!PLAN_MODE_ALLOWED_TOOLS.has(c.tool)) {
-      blocked.push(c);
-      continue;
-    }
-    if (c.tool === 'write_file') {
-      const fp = String(c.params?.filePath || c.params?.path || '');
-      if (!/GUIDE_PLAN\.md$/i.test(fp)) {
-        blocked.push(c);
-        continue;
-      }
-    }
-    kept.push(c);
-  }
-  return { calls: kept, blocked };
 }
 
 /** Web-facing tools — if these share a batch with workspace navigation tools, drop the latter (structural conflict rule). */
@@ -1520,12 +1500,12 @@ class ChatEngine extends EventEmitter {
       }
     }
     // Mode overrides: inject behavioral instructions before tool prompt
-    if (options.planMode) {
-      basePrompt += '\n\n## PLAN MODE ACTIVE\nBefore modifying or creating any files, you MUST:\n1. Use read_file, list_directory, grep_search, and git_status to fully understand scope.\n2. Write a complete, numbered implementation plan to a file called "GUIDE_PLAN.md" using write_file.\n3. STOP after writing the plan file. Do NOT modify source files in this turn.\n4. The user will review the plan and say "proceed" when ready for execution.\nIn Plan Mode: read-only tools and write_file (for GUIDE_PLAN.md only) are permitted. Do NOT run commands, modify source code, or install packages.';
-      console.log('[ChatEngine] Plan mode — model will write GUIDE_PLAN.md before executing');
+    if (options.planMode && options.agentPhase !== 'building') {
+      basePrompt += getPlanModePromptAddition();
+      console.log('[ChatEngine] Plan mode — model will write .guide/plans/*.plan.md before executing');
     }
     if (options.askOnly) {
-      basePrompt += '\n\n## ASK MODE ACTIVE\nYou are in Q&A mode. Answer the user\'s question directly in text. Do NOT call any tools or make any file or system changes.';
+      basePrompt += getAskModePromptAddition();
       console.log('[ChatEngine] Ask mode — tool prompt suppressed, model responds conversationally');
     }
 
@@ -2739,14 +2719,14 @@ class ChatEngine extends EventEmitter {
         if (_useNativeFunctions && result.metadata?.stopReason === 'functionCalls' && result.functionCalls?.length) {
           const _nativeSessionId = this._sessionId;
           let pendingCalls = result.functionCalls;
-          if (options.planMode && pendingCalls?.length) {
+          if (options.planMode && options.agentPhase !== 'building' && pendingCalls?.length) {
             const blockedNative = [];
             pendingCalls = pendingCalls.filter((fc) => {
               const name = fc.functionName;
               if (!PLAN_MODE_ALLOWED_TOOLS.has(name)) { blockedNative.push(name); return false; }
               if (name === 'write_file') {
                 const fp = String(fc.params?.filePath || fc.params?.path || '');
-                if (!/GUIDE_PLAN\.md$/i.test(fp)) { blockedNative.push(name); return false; }
+                if (!isPlanFilePath(fp)) { blockedNative.push(name); return false; }
               }
               return true;
             });
@@ -2754,7 +2734,7 @@ class ChatEngine extends EventEmitter {
               console.log(`[ChatEngine] Plan mode — blocked native tool(s): ${blockedNative.join(', ')}`);
               this._chatHistory.push({
                 type: 'user',
-                text: `[System: Plan mode — blocked tools: ${blockedNative.join(', ')}. Use read/search/git and write_file for GUIDE_PLAN.md only.]`,
+                text: `[System: Plan mode — blocked tools: ${blockedNative.join(', ')}. Use read/search/git and write_file for .guide/plans/*.plan.md only.]`,
               });
             }
           }
@@ -2977,13 +2957,13 @@ class ChatEngine extends EventEmitter {
           console.log(`[ChatEngine] Ask mode — discarding ${parsedCalls.length} tool call(s) from model output`);
           parsedCalls = [];
         }
-        if (options.planMode && parsedCalls.length > 0) {
+        if (options.planMode && options.agentPhase !== 'building' && parsedCalls.length > 0) {
           const { calls: planCalls, blocked } = filterPlanModeToolCalls(parsedCalls);
           if (blocked.length > 0) {
             console.log(`[ChatEngine] Plan mode — blocked ${blocked.length} tool call(s): [${blocked.map(c => c.tool).join(', ')}]`);
             this._chatHistory.push({
               type: 'user',
-              text: `[System: Plan mode — only read/search/git tools and write_file for GUIDE_PLAN.md are allowed. Blocked: ${blocked.map(c => c.tool).join(', ')}. Continue planning with permitted tools.]`,
+              text: `[System: Plan mode — only read/search/git tools and write_file for .guide/plans/*.plan.md are allowed. Blocked: ${blocked.map(c => c.tool).join(', ')}. Continue planning with permitted tools.]`,
             });
           }
           parsedCalls = planCalls;
@@ -3559,7 +3539,7 @@ class ChatEngine extends EventEmitter {
           if (parsedCalls.length > 0) {
             const { repaired } = repairToolCalls(parsedCalls, newText);
             parsedCalls = filterWebWorkspaceToolConflict(repaired);
-            if (options.planMode) {
+            if (options.planMode && options.agentPhase !== 'building') {
               const { calls: planCalls } = filterPlanModeToolCalls(parsedCalls);
               parsedCalls = planCalls;
             }

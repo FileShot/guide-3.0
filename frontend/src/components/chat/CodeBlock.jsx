@@ -142,7 +142,7 @@ export default function CodeBlock({ language, children, className }) {
   }, [getTextContent, langDisplay]);
 
   return (
-    <div className="code-block-container group relative my-2 rounded-md overflow-hidden border border-vsc-panel-border/20">
+    <div className="guide-code-block code-block-container group relative my-2 rounded-lg overflow-hidden">
       {/* Header bar */}
       <div className="code-block-header flex items-center justify-between px-3 py-1 bg-vsc-sidebar/80 border-b border-vsc-panel-border/15">
         <span className="text-[11px] text-vsc-text-dim font-medium tracking-wide">

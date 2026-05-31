@@ -523,6 +523,7 @@ const useAppStore = create((set, get) => ({
     chatGenerationEpoch: s.chatGenerationEpoch + 1,
     pendingQuestion: null,
     pendingPermission: null,
+    planSession: null,
   })),
 
   setActiveChatEpoch: (epoch) => set({ activeChatEpoch: epoch }),
@@ -1479,6 +1480,8 @@ const useAppStore = create((set, get) => ({
 
       pendingPermission: null,
 
+      planSession: null,
+
       _fileTokenBuffer: null, _fileTokenTimer: null,
 
       _textTokenBuffer: null, _textTokenTimer: null,
@@ -1941,6 +1944,11 @@ const useAppStore = create((set, get) => ({
   setPendingQuestion: (q) => set({ pendingQuestion: q }),
 
   clearPendingQuestion: () => set({ pendingQuestion: null }),
+
+  // ─── Plan session (Cursor-like Plan mode) ─────────────
+  planSession: null,
+  setPlanSession: (planSession) => set({ planSession }),
+  clearPlanSession: () => set({ planSession: null }),
 
   // ─── Pending Permission Request (from execution policy) ──
   pendingPermission: null, // { id, toolName, params, reason }

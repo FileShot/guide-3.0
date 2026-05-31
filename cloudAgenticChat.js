@@ -8,14 +8,18 @@ const {
   sanitizeCloudConversationHistory,
 } = require('./tools/toolResultInjection');
 const { createStripBasedStreamFilter } = require('./tools/streamingToolFilter');
+const {
+  resolveAgentMode,
+  filterToolDefinitions,
+  filterPlanModeToolCalls,
+} = require('./agentModeResolver');
 
 const CLOUD_CONTINUE_PROMPT = 'Continue from the tool results above. Call more tools if needed, or give a concise final answer.';
 
 const FILE_WRITE_OPS = new Set(['write_file', 'create_file', 'append_to_file']);
 
 /**
- * Agentic cloud chat: same tool catalog and system prompt as local (via buildCloudSystemPrompt),
- * prose JSON tool calls parsed like the local fallback path.
+ * Agentic cloud chat: same tool catalog and mode rules as local (via agentModeResolver).
  */
 async function runCloudAgenticChat({
   cloudLLM,
@@ -33,13 +37,26 @@ async function runCloudAgenticChat({
   onStreamEvent,
   getCancelled,
 }) {
-  const askOnly = !!(settings.askOnly);
-  const planMode = !!(settings.planMode);
-  const toolsEnabled = settings.toolsEnabled !== false;
   const enableSubAgents = !!(settings.enableSubAgents);
+  const toolsEnabled = settings.toolsEnabled !== false;
 
-  let toolPrompt = (askOnly || planMode || !toolsEnabled) ? '' : mcpToolServer.getToolPrompt();
-  const compactToolParts = (askOnly || planMode || !toolsEnabled) ? [] : mcpToolServer.getCompactToolHint('default');
+  const mode = resolveAgentMode({
+    askOnly: settings.askOnly,
+    planMode: settings.planMode,
+    chatMode: settings.chatMode,
+    agentPhase: settings.agentPhase || 'planning',
+    toolsEnabled,
+  });
+
+  mcpToolServer.setAgentContext({ planMode: mode.planMode, agentPhase: mode.agentPhase });
+
+  const allDefs = mcpToolServer.getToolDefinitions();
+  const filteredDefs = filterToolDefinitions(allDefs, mode.allowedTools);
+
+  let toolPrompt = mode.toolsActive ? mcpToolServer.getToolPromptForTools(filteredDefs) : '';
+  const compactToolParts = mode.toolsActive
+    ? mcpToolServer.getCompactToolHint('default', { toolDefs: filteredDefs })
+    : [];
   let compactToolPrompt = compactToolParts.join('');
 
   if (enableSubAgents && toolPrompt) {
@@ -48,11 +65,14 @@ async function runCloudAgenticChat({
     compactToolPrompt += '\n- spawn_subagent: not available in cloud mode\n';
   }
 
-  const systemPrompt = buildCloudSystemPrompt({
+  let systemPrompt = buildCloudSystemPrompt({
     userSystemPrompt: settings.systemPrompt,
     customInstructions: settings.customInstructions,
     toolPrompt,
   });
+  if (mode.systemPromptAdditions) {
+    systemPrompt += mode.systemPromptAdditions;
+  }
 
   const conversationHistory = sanitizeCloudConversationHistory(
     Array.isArray(initialHistory) ? initialHistory : [],
@@ -60,7 +80,7 @@ async function runCloudAgenticChat({
   ).map((m) => ({ role: m.role, content: String(m.content || '') }));
 
   console.log(
-    `[CloudAgentic] history: ${initialHistory?.length || 0} raw → ${conversationHistory.length} sanitized`
+    `[CloudAgentic] history: ${initialHistory?.length || 0} raw → ${conversationHistory.length} sanitized; mode=${mode.planning ? 'plan' : mode.askOnly ? 'ask' : 'agent'}`
   );
 
   const maxIter = settings.maxIterations > 0 ? settings.maxIterations : 25;
@@ -111,7 +131,7 @@ async function runCloudAgenticChat({
     const roundClean = streamFilter.getCleanText() || stripToolCallText(roundText);
     displayResponse += roundClean;
 
-    if (askOnly || planMode || !toolsEnabled || !executeToolFn) {
+    if (mode.askOnly || !mode.toolsActive || !executeToolFn) {
       break;
     }
 
@@ -120,6 +140,14 @@ async function runCloudAgenticChat({
 
     const { repaired } = repairToolCalls(parsedCalls, roundText);
     parsedCalls = repaired.filter((c) => c.tool !== 'spawn_subagent');
+
+    if (mode.planning && parsedCalls.length > 0) {
+      const { calls: planCalls, blocked } = filterPlanModeToolCalls(parsedCalls);
+      if (blocked.length) {
+        console.log(`[CloudAgentic] Plan mode blocked: ${blocked.map((c) => c.tool).join(', ')}`);
+      }
+      parsedCalls = planCalls;
+    }
 
     if (!parsedCalls.length) break;
 

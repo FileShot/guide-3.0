@@ -113,7 +113,7 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
   const preStyle = (isCollapsed && !complete) ? { paddingBottom: '80px' } : undefined;
 
   return (
-    <div className="code-block-container group relative my-2 rounded-md overflow-hidden border border-vsc-panel-border/20 flex flex-col">
+    <div className="guide-code-block code-block-container group relative my-2 rounded-lg overflow-hidden flex flex-col">
       {/* Header */}
       <div className="code-block-header flex items-center justify-between px-3 py-1 bg-vsc-sidebar/80 border-b border-vsc-panel-border/15">
         <div className="flex items-center gap-1.5">

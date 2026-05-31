@@ -248,6 +248,7 @@ const { RulesManager } = require('./rulesManager');
 const { SessionStore } = require('./sessionStore');
 const { CloudLLMService } = require('./cloudLLMService');
 const { runCloudAgenticChat } = require('./cloudAgenticChat');
+const { resolveAgentMode, filterToolDefinitions } = require('./agentModeResolver');
 const { runOAuthInWindow } = require('./oauthFlow');
 const { SettingsManager } = require('./settingsManager');
 const { GitManager } = require('./gitManager');
@@ -551,6 +552,32 @@ ipcMain.handle('rules-save', (_e, name, content) => rulesManager.saveRule(name, 
 ipcMain.handle('rules-delete', (_e, name) => rulesManager.deleteRule(name));
 
 // Register ai-chat handler for basic model chat
+function buildAgentModeTooling(mcpToolServer, settings, enableSubAgents) {
+  const mode = resolveAgentMode({
+    askOnly: settings.askOnly,
+    planMode: settings.planMode,
+    chatMode: settings.chatMode,
+    agentPhase: settings.agentPhase || 'planning',
+    toolsEnabled: settings.toolsEnabled !== false,
+  });
+  mcpToolServer.setAgentContext({ planMode: mode.planMode, agentPhase: mode.agentPhase });
+  const allDefs = mcpToolServer.getToolDefinitions();
+  const filteredDefs = filterToolDefinitions(allDefs, mode.allowedTools);
+  let toolPrompt = mode.toolsActive ? mcpToolServer.getToolPromptForTools(filteredDefs) : '';
+  const compactToolParts = mode.toolsActive
+    ? mcpToolServer.getCompactToolHint('default', { toolDefs: filteredDefs })
+    : [];
+  let compactToolPrompt = compactToolParts.join('');
+  if (enableSubAgents && toolPrompt) {
+    const subAgentTool = '\n- **spawn_subagent** — Delegate a focused sub-task to an isolated sub-agent that shares the same loaded model but runs in a fresh context. Use for long research tasks, code analysis, or any work that should not pollute the main context. Params: task (string, required) — description of what the sub-agent should do; contextSize (number, optional) — token budget for sub-agent.';
+    toolPrompt += subAgentTool;
+    compactToolPrompt += '\n- spawn_subagent(task): run focused sub-task in fresh context\n';
+    compactToolParts.push('\n- spawn_subagent(task): run focused sub-task in fresh context\n');
+  }
+  const functions = mode.askOnly ? {} : ChatEngine.convertToolDefs(filteredDefs);
+  return { mode, toolPrompt, compactToolParts, compactToolPrompt, functions };
+}
+
 ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
   console.log(`[electron-main] ai-chat START: userMessageLen=${String(userMessage).length}, cloudProvider=${chatContext?.cloudProvider || 'none'}`);
   cancelPendingQuestion('(user sent a new message)');
@@ -602,6 +629,9 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       const askOnly = !!(settings.askOnly);
       const planMode = !!(settings.planMode);
       const enableSubAgents = settings.enableSubAgents !== false;
+      if (settings.planContext && settings.agentPhase === 'building') {
+        effectiveMessage = `${effectiveMessage}\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
+      }
       const executeToolFn = async (toolName, params) => {
         if (toolName === 'spawn_subagent') {
           return { success: false, error: 'Sub-agents require a loaded local model. Switch to local or disable sub-agents.' };
@@ -616,7 +646,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         userMessage: effectiveMessage,
         cloudProvider,
         cloudModel,
-        settings: { ...settings, askOnly, planMode, enableSubAgents, toolsEnabled: settings.toolsEnabled !== false },
+        settings: { ...settings, askOnly, planMode, enableSubAgents, toolsEnabled: settings.toolsEnabled !== false, chatMode: settings.chatMode, agentPhase: settings.agentPhase || 'planning' },
         conversationHistory,
         images,
         executeToolFn,
@@ -670,20 +700,11 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     const enableSubAgents = settings.enableSubAgents !== false;
     const autoLintFix = settings.autoLintFix !== false; // default true
 
-    // Build tool functions from enabled tool definitions
-    const toolDefs = mcpToolServer.getToolDefinitions();
-    const functions = askOnly ? {} : ChatEngine.convertToolDefs(toolDefs);
-    let toolPrompt = askOnly ? '' : mcpToolServer.getToolPrompt();
-    const compactToolParts = askOnly ? [] : mcpToolServer.getCompactToolHint('default');
-    let compactToolPrompt = compactToolParts.join('');
-
-    // Sub-agents: append spawn_subagent tool definition when enabled
-    if (enableSubAgents && toolPrompt) {
-      const subAgentTool = '\n- **spawn_subagent** — Delegate a focused sub-task to an isolated sub-agent that shares the same loaded model but runs in a fresh context. Use for long research tasks, code analysis, or any work that should not pollute the main context. Params: task (string, required) — description of what the sub-agent should do; contextSize (number, optional) — token budget for sub-agent.';
-      toolPrompt += subAgentTool;
-      compactToolPrompt += '\n- spawn_subagent(task): run focused sub-task in fresh context';
-      compactToolParts.push('\n- spawn_subagent(task): run focused sub-task in fresh context\n');
-    }
+    const { mode, toolPrompt, compactToolParts, compactToolPrompt, functions } = buildAgentModeTooling(
+      mcpToolServer,
+      settings,
+      enableSubAgents,
+    );
 
     // Inject current file context into the user message so the model can see the active file
     // Truncate to avoid consuming all context — model can use read_file for the full content
@@ -705,7 +726,11 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     });
     effectiveMessage = mentionResolved.message;
 
-    console.log(`[electron-main] ai-chat: calling llmEngine.chat, effectiveMessageLen=${effectiveMessage.length}`);
+    if (settings.planContext && settings.agentPhase === 'building') {
+      effectiveMessage = `${effectiveMessage}\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
+    }
+
+    console.log(`[electron-main] ai-chat: calling llmEngine.chat, effectiveMessageLen=${effectiveMessage.length}, mode=${mode.planning ? 'plan' : mode.askOnly ? 'ask' : 'agent'}`);
     const result = await llmEngine.chat(effectiveMessage, {
       onToken: (token) => _send('llm-token', token),
       onContextUsage: (data) => _send('context-usage', data),
@@ -761,6 +786,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       reasoningEffort: settings.reasoningEffort || 'medium',
       askOnly,
       planMode,
+      agentPhase: settings.agentPhase || 'planning',
       autoLintFix,
     });
 
