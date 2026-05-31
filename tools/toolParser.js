@@ -828,6 +828,19 @@ function parseToolCalls(text) {
                 call.params.content = content;
               }
             }
+            if (toolName === 'edit_file') {
+              const oldMatch = afterFence.match(/"oldText"\s*:\s*"([\s\S]*?)(?:"(?:\s*,|\s*\}))/);
+              const newMatch = afterFence.match(/"newText"\s*:\s*"([\s\S]*?)(?:"(?:\s*,|\s*\}))/);
+              const oldPartial = afterFence.match(/"oldText"\s*:\s*"([\s\S]*)$/);
+              const newPartial = afterFence.match(/"newText"\s*:\s*"([\s\S]*)$/);
+              const unesc = (s) => s && s
+                .replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r')
+                .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+              if (oldMatch) call.params.oldText = unesc(oldMatch[1]);
+              else if (oldPartial) call.params.oldText = unesc(oldPartial[1]);
+              if (newMatch) call.params.newText = unesc(newMatch[1]);
+              else if (newPartial) call.params.newText = unesc(newPartial[1]);
+            }
             if (toolName === 'read_file') {
               const rangeMatch = afterFence.match(/"(?:lineRange|lines)"\s*:\s*\[(\d+)\s*,\s*(\d+)\]/i);
               if (rangeMatch) call.params.lineRange = [parseInt(rangeMatch[1]), parseInt(rangeMatch[2])];
@@ -955,17 +968,36 @@ function repairToolCalls(toolCalls, responseText) {
         issues.push(`Dropped write_file with empty content: ${params.filePath || 'unknown'}`);
         continue;
       }
-      // Empty filePath
-      if (!params.filePath) {
-        params.filePath = _inferFilePath(responseText, params.content);
-        issues.push(`Inferred filePath: ${params.filePath}`);
+      // Empty or wrong filePath
+      if (!params.filePath || !_looksLikeRealFilePath(params.filePath)) {
+        const inferred = _inferFilePath(responseText, params.content);
+        if (inferred) {
+          params.filePath = inferred;
+          issues.push(`Inferred filePath: ${params.filePath}`);
+        }
       }
     }
 
     if (tool === 'edit_file') {
+      const fp = params.filePath || params.path || _preferPlanFilePath(responseText);
+      if (fp && !params.filePath) params.filePath = fp;
       if (!params.oldText && !params.newText && !params.lineRange) {
-        issues.push('Dropped edit_file with empty oldText/newText');
-        continue;
+        const recovered = _recoverEditFileParams(responseText, params);
+        if (recovered) {
+          Object.assign(params, recovered.params);
+          if (recovered.convertedToWrite) {
+            repaired.push({ tool: 'write_file', params: recovered.params });
+            issues.push(`Recovered edit_file as write_file for ${params.filePath || 'plan file'}`);
+            continue;
+          }
+          issues.push(`Recovered edit_file params for ${params.filePath || 'unknown'}`);
+        } else if (params.filePath && fp) {
+          issues.push(`edit_file for ${params.filePath} has empty oldText/newText — retry needed`);
+          continue;
+        } else {
+          issues.push('Dropped edit_file with empty oldText/newText and no filePath');
+          continue;
+        }
       }
     }
 
@@ -1034,10 +1066,20 @@ function repairToolCalls(toolCalls, responseText) {
 
   // Last-resort recovery if all calls were dropped
   if (repaired.length === 0 && toolCalls.length > 0) {
-    const recovered = _recoverWriteFileContent(responseText);
-    if (recovered) {
-      repaired.push(recovered);
+    const recoveredWrite = _recoverWriteFileContent(responseText);
+    if (recoveredWrite) {
+      repaired.push(recoveredWrite);
       issues.push('Last-resort write_file recovery from response text');
+    } else {
+      const recoveredEdit = _recoverEditFileParams(responseText, {});
+      if (recoveredEdit) {
+        if (recoveredEdit.convertedToWrite) {
+          repaired.push({ tool: 'write_file', params: recoveredEdit.params });
+        } else {
+          repaired.push({ tool: 'edit_file', params: recoveredEdit.params });
+        }
+        issues.push('Last-resort edit_file recovery from response text');
+      }
     }
   }
 
@@ -1046,8 +1088,73 @@ function repairToolCalls(toolCalls, responseText) {
 }
 
 // ─── Content Recovery ───
+function _unescapeJsonString(s) {
+  if (!s) return s;
+  return String(s)
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\r/g, '\r')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
+}
+
+function _preferPlanFilePath(text) {
+  if (!text) return null;
+  const m = text.match(/["']((?:[^"\\]|\\.)*\.guide[/\\]plans[/\\][^"\\]+\.plan\.md)["']/i);
+  if (m) return _unescapeJsonString(m[1]).replace(/\\/g, '/');
+  const bare = text.match(/(\.guide[/\\]plans[/\\][\w.-]+\.plan\.md)/i);
+  return bare ? bare[1].replace(/\\/g, '/') : null;
+}
+
+function _looksLikeRealFilePath(fp) {
+  if (!fp || typeof fp !== 'string') return false;
+  const n = fp.replace(/\\/g, '/');
+  if (/\.guide[/\\]plans[/\\].+\.plan\.md$/i.test(n)) return true;
+  if (n.includes('/') || n.includes('\\')) return true;
+  // Reject bare filenames like Three.js that lack directory context
+  return false;
+}
+
+function _recoverEditFileParams(text, partial = {}) {
+  if (!text) return null;
+  const filePath = partial.filePath || partial.path || _preferPlanFilePath(text);
+  if (!filePath) return null;
+
+  const oldComplete = text.match(/"oldText"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  const newComplete = text.match(/"newText"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  const oldPartial = text.match(/"oldText"\s*:\s*"([\s\S]*)$/);
+  const newPartial = text.match(/"newText"\s*:\s*"([\s\S]*)$/);
+
+  let oldText = oldComplete ? _unescapeJsonString(oldComplete[1]) : (oldPartial ? _unescapeJsonString(oldPartial[1]) : '');
+  let newText = newComplete ? _unescapeJsonString(newComplete[1]) : (newPartial ? _unescapeJsonString(newPartial[1]) : '');
+
+  if (!oldText && !newText) {
+    // Truncated plan edit — try extracting markdown body after newText or as write_file overwrite
+    if (/\.guide[/\\]plans[/\\].+\.plan\.md/i.test(filePath)) {
+      const planBodyMatch = text.match(/---\r?\n[\s\S]*?---\r?\n([\s\S]+)/);
+      if (planBodyMatch && planBodyMatch[0].length > 80) {
+        return {
+          convertedToWrite: true,
+          params: { filePath, content: planBodyMatch[0] },
+        };
+      }
+    }
+    return null;
+  }
+
+  return {
+    convertedToWrite: false,
+    params: { filePath, oldText, newText },
+  };
+}
+
 function _recoverWriteFileContent(text, preferredFilePath) {
   if (!text) return null;
+  const planPath = _preferPlanFilePath(text);
+  const effectivePath = preferredFilePath && _looksLikeRealFilePath(preferredFilePath)
+    ? preferredFilePath
+    : planPath;
+
   const codeBlockRe = /```(?:\w+)?\n([\s\S]*?)```/g;
   let largest = '';
   let m;
@@ -1057,16 +1164,28 @@ function _recoverWriteFileContent(text, preferredFilePath) {
     if (/"(?:tool|name)"\s*:\s*"/.test(block)) continue;
     if (block.length > largest.length) largest = block;
   }
-  if (largest.length < 50) return null;
-  const filePath = preferredFilePath || _inferFilePath(text, largest);
+  if (largest.length < 50) {
+    // Try plan markdown from truncated tool JSON
+    const planBody = text.match(/(---\r?\n[\s\S]*?---\r?\n[\s\S]+)/);
+    if (planBody && planBody[1].length > 50 && (effectivePath || planPath)) {
+      return { tool: 'write_file', params: { filePath: effectivePath || planPath, content: planBody[1] } };
+    }
+    return null;
+  }
+  const filePath = effectivePath || _inferFilePath(text, largest);
   return { tool: 'write_file', params: { filePath, content: largest } };
 }
 
 function _inferFilePath(text, content, lang) {
-  // Try to find a file path mentioned in the response
-  const pathRe = /\b([\w.-]+\.(?:js|ts|jsx|tsx|py|html|css|json|md|yaml|yml|xml|toml|sh|bat|sql|rb|go|rs|c|cpp|h|hpp|java|swift|kt))\b/i;
+  const planPath = _preferPlanFilePath(text);
+  if (planPath) return planPath;
+  // Try to find a file path mentioned in the response (require path separator or .guide/)
+  const pathRe = /(?:^|[\s"'`(])([\w./\\-]+\.(?:js|ts|jsx|tsx|py|html|css|json|md|yaml|yml|xml|toml|sh|bat|sql|rb|go|rs|c|cpp|h|hpp|java|swift|kt|plan\.md))/i;
   const match = text.match(pathRe);
-  if (match) return match[1];
+  if (match) {
+    const candidate = match[1].replace(/\\/g, '/');
+    if (candidate.includes('/') || candidate.includes('.guide/')) return candidate;
+  }
   // Infer from content type
   if (content) {
     if (content.includes('<!DOCTYPE') || content.includes('<html')) return 'index.html';

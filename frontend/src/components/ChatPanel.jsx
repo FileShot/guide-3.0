@@ -1420,15 +1420,19 @@ export default function ChatPanel() {
     const effectiveAgentPhase = agentPhase || (effectivePlanMode ? 'planning' : 'agent');
 
     if (effectivePlanMode && effectiveAgentPhase === 'planning') {
-      useAppStore.getState().setPlanSession({
-        id: `plan-${Date.now()}`,
-        path: null,
-        content: null,
-        title: 'Planning…',
-        overview: '',
-        todos: [],
-        status: 'planning',
-      });
+      const existing = useAppStore.getState().planSession;
+      if (!existing) {
+        useAppStore.getState().setPlanSession({
+          id: `plan-${Date.now()}`,
+          path: null,
+          content: null,
+          title: 'Implementation Plan',
+          overview: '',
+          todos: [],
+          status: 'planning',
+        });
+      }
+      // Preserve ready session on revision — do not reset path/todos when user asks to edit plan.
     }
 
 
@@ -1612,6 +1616,10 @@ export default function ChatPanel() {
           askOnly: effectiveChatMode === 'ask',
 
           agentPhase: effectiveAgentPhase,
+
+          planReady: s.planSession?.status === 'ready',
+
+          planFileExists: !!s.planSession?.path,
 
           planContext: planContext || undefined,
 

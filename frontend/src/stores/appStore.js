@@ -1165,62 +1165,23 @@ const useAppStore = create((set, get) => ({
     const store = get();
     if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
 
-    // R33-Phase2: Batch token appends to reduce re-renders.
-
     if (typeof chunk !== 'string') {
-
       console.error('[appStore] appendFileContentToken: chunk is not string!', typeof chunk, chunk);
-
+      return;
     }
 
     const targetIdx = findActiveStreamingFileBlockIndex(store.streamingFileBlocks, store.activeStreamingFileKey);
-
     if (targetIdx === -1) return;
 
-    if (!store._fileTokenBuffer) {
-
-      store._fileTokenBuffer = chunk;
-
-      store._fileTokenTimer = setTimeout(() => {
-
-        const s = get();
-
-        if (!s._fileTokenBuffer) return;
-
-        const buf = s._fileTokenBuffer;
-
-        const flushIdx = findActiveStreamingFileBlockIndex(s.streamingFileBlocks, s.activeStreamingFileKey);
-
-        if (flushIdx === -1) {
-
-          set({ _fileTokenBuffer: null, _fileTokenTimer: null });
-
-          return;
-
-        }
-
-        const updated = [...s.streamingFileBlocks];
-
-        const last = { ...updated[flushIdx] };
-
-        last.content += buf;
-
-        updated[flushIdx] = last;
-
-        set({ streamingFileBlocks: updated, _fileTokenBuffer: null, _fileTokenTimer: null });
-
-      }, 16);
-
-      set({ _fileTokenBuffer: chunk, _fileTokenTimer: store._fileTokenTimer });
-
-    } else {
-
-      // Accumulate into existing buffer — no state update needed, just mutate
-
-      set({ _fileTokenBuffer: store._fileTokenBuffer + chunk });
-
+    // Per-token flush for smooth file-content streaming (plan/file write blocks only).
+    if (store._fileTokenTimer) {
+      clearTimeout(store._fileTokenTimer);
     }
-
+    const updated = [...store.streamingFileBlocks];
+    const last = { ...updated[targetIdx] };
+    last.content += chunk;
+    updated[targetIdx] = last;
+    set({ streamingFileBlocks: updated, _fileTokenBuffer: null, _fileTokenTimer: null });
   },
 
   /**

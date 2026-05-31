@@ -28,6 +28,11 @@ export default function PlanCard({ onBuild, chatStreaming }) {
     return null;
   }
 
+  // Hide until plan file path exists — avoids premature "Planning…" card on send.
+  if (!planSession.path) {
+    return null;
+  }
+
   const todos = planSession.todos || [];
   const isReady = planSession.status === 'ready';
 

@@ -15,6 +15,7 @@ const {
   PLAN_MODE_ALLOWED_TOOLS,
   filterPlanModeToolCalls,
   isPlanFilePath,
+  resolvePlanPhase,
   getAskModePromptAddition,
   getPlanModePromptAddition,
   getBuildingPhasePromptAddition,
@@ -126,6 +127,14 @@ function _sfIsToolLikeJson(buf) {
   return RE_TOOL_KEY.test(buf)
     || (RE_NAME_KEY.test(buf) && RE_PARAMS_KEY.test(buf))
     || RE_BARE_NAME_TOOL.test(buf);
+}
+
+function _sfFenceBufferLooksLikeToolJson(buf) {
+  if (!buf) return false;
+  if (_sfIsToolLikeJson(buf)) return true;
+  if (/^```(?:json|tool|tool_call)?/i.test(buf.trimStart())) return true;
+  if (/"tool"\s*:\s*"/.test(buf)) return true;
+  return false;
 }
 
 function _sfExtractGeneratingToolName(buf) {
@@ -1505,8 +1514,14 @@ class ChatEngine extends EventEmitter {
       basePrompt += getBuildingPhasePromptAddition();
       console.log('[ChatEngine] Build phase — implement in project root, not .guide/');
     } else if (options.planMode && options.agentPhase !== 'building') {
-      basePrompt += getPlanModePromptAddition();
-      console.log('[ChatEngine] Plan mode — model will write .guide/plans/*.plan.md before executing');
+      const planPhase = resolvePlanPhase({
+        planMode: true,
+        agentPhase: options.agentPhase,
+        planReady: !!options.planReady,
+        planFileExists: !!options.planFileExists,
+      });
+      basePrompt += getPlanModePromptAddition(planPhase || 'awaiting_plan');
+      console.log(`[ChatEngine] Plan mode — planPhase=${planPhase}`);
     }
     if (options.askOnly) {
       basePrompt += getAskModePromptAddition();
@@ -1737,7 +1752,7 @@ class ChatEngine extends EventEmitter {
           // Flush-guard: if the fence buffer contains tool-call JSON, discard it.
           // This happens when generation stops mid-fence (maxTokens hit) — the closing
           // ``` was never emitted, so the fence buffer still has the full tool JSON.
-          const _isToolCall = _sfIsToolLikeJson(_sfFenceBuf);
+          const _isToolCall = _sfFenceBufferLooksLikeToolJson(_sfFenceBuf);
           if (_isToolCall) {
             console.log(`[ChatEngine] _sfFlushFence: discarding tool-call JSON (${_sfFenceBuf.length} chars)`);
             const _fpM = _sfFenceBuf.match(RE_FILE_PATH);
@@ -1944,23 +1959,21 @@ class ChatEngine extends EventEmitter {
                 'html', 'htm', 'css', 'scss', 'sass', 'less', 'js', 'javascript', 'jsx', 'mjs', 'cjs',
                 'ts', 'tsx', 'vue', 'svelte', 'md', 'markdown', 'py', 'python', 'bash', 'sh', 'shell',
                 'yaml', 'yml', 'xml', 'svg', 'go', 'rust', 'rs', 'java', 'cpp', 'c', 'h', 'cs', 'php',
-                'rb', 'swift', 'kt', 'txt', 'plaintext', 'sql', 'jsonl',
+                'rb', 'swift', 'kt', 'sql', 'jsonl',
               ]);
-              if (PLAIN_LANGS.has(lang)) {
+              const looksLikeTool = _sfFenceBufferLooksLikeToolJson(afterHeader.slice(0, 8000))
+                || _sfIsToolLikeJson(afterHeader.slice(0, 6000));
+              if (PLAIN_LANGS.has(lang) && !looksLikeTool) {
                 _sfFenceStreamPlain = true;
                 _sfForward(_sfFenceBuf);
                 _sfFenceBuf = '';
                 continue;
               }
-              if (lang === 'json' || lang === '') {
-                // Always buffer JSON fences until close. At close, tool calls are discarded
-                // and non-tool content is forwarded with fence markers stripped.
-                // Never stream JSON fences as plain mid-generation — they contain raw
-                // tool-call JSON that must not leak to visible prose.
-                if (_sfIsToolLikeJson(afterHeader.slice(0, 6000))) {
+              if (lang === 'json' || lang === '' || lang === 'text' || lang === 'plaintext' || lang === 'tool' || lang === 'tool_call') {
+                // Always buffer JSON/tool fences until close — never stream tool JSON to prose.
+                if (looksLikeTool || lang === 'json' || lang === 'tool' || lang === 'tool_call') {
                   /* keep buffering — tool JSON fence */
                 }
-                // Removed: else-if branch that streamed JSON fences as plain after 100 chars
               }
             }
 
@@ -2005,7 +2018,7 @@ class ChatEngine extends EventEmitter {
               } else {
                 _sfContentBuf += ch;
               }
-              if (_sfContentStreamActive && _sfContentBuf.length >= 40) {
+              if (_sfContentStreamActive && _sfContentBuf.length >= 1) {
                 if (onStreamEvent) {
                   onStreamEvent('file-content-token', _sfContentBuf);
                   _sfContentBuf = '';
@@ -2204,7 +2217,7 @@ class ChatEngine extends EventEmitter {
             } else {
               _sfContentBuf += ch;
             }
-            if (_sfContentStreamActive && _sfContentBuf.length >= 40) {
+            if (_sfContentStreamActive && _sfContentBuf.length >= 1) {
               if (onStreamEvent) {
                 onStreamEvent('file-content-token', _sfContentBuf);
                 _sfContentBuf = '';
@@ -2929,6 +2942,8 @@ class ChatEngine extends EventEmitter {
 
         let roundStart = 0;
         let parsedCalls = []; // Hoisted to function scope for refusal correction access
+        let repairRetryPending = false;
+        let preRepairCallsForUi = [];
         parsedCalls = parseToolCalls(fullResponse);
 
         console.log(`[ChatEngine] Tool parse: found ${parsedCalls.length} tool call(s) in ${fullResponse.length} chars of model output`);
@@ -2944,6 +2959,7 @@ class ChatEngine extends EventEmitter {
           });
         }
         if (parsedCalls.length > 0) {
+          preRepairCallsForUi = parsedCalls;
           const { repaired, issues } = repairToolCalls(parsedCalls, fullResponse);
           if (repaired.length === 0 && issues.length > 0) {
             console.warn(`[ChatEngine] All ${parsedCalls.length} tool call(s) failed validation — feeding errors back to model`);
@@ -2951,17 +2967,21 @@ class ChatEngine extends EventEmitter {
               type: 'user',
               text: `[System: Tool Validation Failed]\n${issues.join('\n')}\n\nRetry with valid tool parameters.`,
             });
+            repairRetryPending = true;
+            if (onStreamEvent && preRepairCallsForUi.length) {
+              onStreamEvent('tool-executing', preRepairCallsForUi.map((c) => ({ tool: c.tool, params: c.params })));
+              onStreamEvent('mcp-tool-results', preRepairCallsForUi.map((c) => ({
+                tool: c.tool,
+                result: { success: false, error: issues.join('; ') },
+              })));
+            }
           }
           parsedCalls = filterWebWorkspaceToolConflict(repaired);
           console.log(`[ChatEngine] Tool calls after repair/filter: ${parsedCalls.length} — [${parsedCalls.map(c => c.tool).join(', ')}]`);
         }
 
-        // Safety net: if the streaming filter missed any tool JSON (e.g., fenced blocks),
-        // strip it from the UI now via llm-replace-last.
-        // CRITICAL: use _sfVisibleChars (chars actually sent to frontend) not fullResponse.length.
-        // fullResponse includes suppressed tool JSON that the frontend never received.
-        // Using fullResponse.length causes keepLen=0 in the frontend, destroying ALL previous prose.
-        if (parsedCalls.length > 0 && onStreamEvent && _sfRoundVisibleBuf) {
+        // Safety net: strip leaked tool JSON from visible prose when we have parsed/repair calls OR a repair retry.
+        if ((parsedCalls.length > 0 || repairRetryPending) && onStreamEvent && _sfRoundVisibleBuf) {
           const cleanRound = stripToolCallText(_sfRoundVisibleBuf);
           if (cleanRound !== _sfRoundVisibleBuf) {
             console.log(`[ChatEngine] llm-replace-last (primary): visibleRound=${_sfRoundVisibleBuf.length} cleanRound=${cleanRound.length}`);
@@ -2994,17 +3014,36 @@ class ChatEngine extends EventEmitter {
           parsedCalls = planCalls;
         }
 
-        console.log(`[ChatEngine] Tool loop ENTER: ${parsedCalls.length} parsed call(s)`);
-        while (parsedCalls.length > 0) {
+        console.log(`[ChatEngine] Tool loop ENTER: ${parsedCalls.length} parsed call(s), repairRetry=${repairRetryPending}`);
+        let planArtifactThisTurn = false;
+        let planAutoContinuePending = false;
+        do {
+          if (planAutoContinuePending) {
+            options._planAutoContinued = true;
+            console.log('[ChatEngine] Plan auto-continue — no plan artifacts in awaiting_plan');
+            this._chatHistory.push({
+              type: 'user',
+              text: '[System: Plan mode — continue planning. Use create_directory for .guide/plans if needed, write_file to .guide/plans/{slug}.plan.md, then call write_todos.]',
+            });
+            repairRetryPending = true;
+            parsedCalls = [];
+            planAutoContinuePending = false;
+          }
+        while (parsedCalls.length > 0 || repairRetryPending) {
+          const skipToolExecution = repairRetryPending;
+          if (repairRetryPending) {
+            repairRetryPending = false;
+            console.log('[ChatEngine] Tool loop: repair retry — continuing generation without executing invalid calls');
+          }
           if (isCancelled()) {
             _userAbortedGeneration = true;
             console.log('[ChatEngine] Tool loop aborted — user cancelled');
             break;
           }
           const sessionAtStart = this._sessionId;
-          console.log(`[ChatEngine] Tool loop ITERATION: ${parsedCalls.length} call(s), sessionId=${sessionAtStart}`);
+          console.log(`[ChatEngine] Tool loop ITERATION: ${parsedCalls.length} call(s), sessionId=${sessionAtStart}, skipExec=${skipToolExecution}`);
           // Notify UI so ToolCallCards appear for each tool call (spinner state)
-          if (onStreamEvent) {
+          if (!skipToolExecution && onStreamEvent) {
             onStreamEvent('tool-executing', parsedCalls.map(c => ({ tool: c.tool, params: c.params })));
           }
 
@@ -3015,6 +3054,7 @@ class ChatEngine extends EventEmitter {
           // a content channel, not a guard clause.
           const fileReadResults = []; // { filePath, content }
 
+          if (!skipToolExecution) {
           for (const call of parsedCalls) {
             if (isCancelled()) {
               _userAbortedGeneration = true;
@@ -3119,6 +3159,17 @@ class ChatEngine extends EventEmitter {
               onStreamEvent('mcp-tool-results', [{ tool: call.tool, result: toolResult }]);
             }
 
+            if (options.planMode && options.agentPhase !== 'building' && toolResult?.success !== false) {
+              const fp = call.params?.filePath || call.params?.path || '';
+              if (
+                (call.tool === 'write_file' && isPlanFilePath(fp))
+                || (call.tool === 'edit_file' && isPlanFilePath(fp))
+                || call.tool === 'write_todos'
+              ) {
+                planArtifactThisTurn = true;
+              }
+            }
+
             let injectResult = resultStr;
             // Lint auto-fix — if any file-modification tool returned diagnostic errors,
             // inject a human-readable correction instruction AND emit a frontend event for the UI pill.
@@ -3211,6 +3262,7 @@ class ChatEngine extends EventEmitter {
               }
             }
           }
+          } // end skipToolExecution guard
 
           if (isCancelled()) {
             _userAbortedGeneration = true;
@@ -3342,11 +3394,15 @@ class ChatEngine extends EventEmitter {
             break;
           }
 
+          if (!skipToolExecution) {
           this._chatHistory.push({
             type: 'user',
             text: `${userInterruptPrefix}${duplicateHint}[System: Tool Results]\nThe tools below have ALREADY been executed. Do not repeat these actions or re-narrate work that is already complete. Give a brief summary of outcomes, then either call the next tool if more work is needed or give a short final answer. Do NOT enumerate long lists of hypothetical future options or features.\n\n${toolResultLines.join('\n')}${relatedSection}`,
           });
           console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${!!this._pendingUserMessage}`);
+          } else {
+            console.log('[ChatEngine] Repair retry — skipping tool results push (validation error already in history)');
+          }
           // Log compact summaries — browser snapshots bloat logs with full DOM
           const compactSummaries = toolResultLines.map(line => {
             const colonIdx = line.indexOf(':');
@@ -3562,10 +3618,35 @@ class ChatEngine extends EventEmitter {
           const newText = fullResponse.substring(roundStart);
           parsedCalls = parseToolCalls(newText);
           if (parsedCalls.length > 0) {
-            const { repaired } = repairToolCalls(parsedCalls, newText);
-            parsedCalls = filterWebWorkspaceToolConflict(repaired);
-            if (options.planMode && options.agentPhase !== 'building') {
-              const { calls: planCalls } = filterPlanModeToolCalls(parsedCalls);
+            const preContRepair = parsedCalls;
+            const { repaired, issues } = repairToolCalls(parsedCalls, newText);
+            if (repaired.length === 0 && issues.length > 0) {
+              console.warn(`[ChatEngine] Continuation: all tool call(s) failed validation — feeding errors back`);
+              this._chatHistory.push({
+                type: 'user',
+                text: `[System: Tool Validation Failed]\n${issues.join('\n')}\n\nRetry with valid tool parameters.`,
+              });
+              repairRetryPending = true;
+              if (onStreamEvent && preContRepair.length) {
+                onStreamEvent('tool-executing', preContRepair.map((c) => ({ tool: c.tool, params: c.params })));
+                onStreamEvent('mcp-tool-results', preContRepair.map((c) => ({
+                  tool: c.tool,
+                  result: { success: false, error: issues.join('; ') },
+                })));
+              }
+              parsedCalls = [];
+            } else {
+              parsedCalls = filterWebWorkspaceToolConflict(repaired);
+            }
+            if (options.planMode && options.agentPhase !== 'building' && parsedCalls.length > 0) {
+              const { calls: planCalls, blocked } = filterPlanModeToolCalls(parsedCalls);
+              if (blocked.length > 0) {
+                console.log(`[ChatEngine] Plan mode (continuation) — blocked ${blocked.length} tool call(s): [${blocked.map(c => c.tool).join(', ')}]`);
+                this._chatHistory.push({
+                  type: 'user',
+                  text: `[System: Plan mode — only read/search/git tools, create_directory for .guide/plans, and write_file/edit_file for .guide/plans/*.plan.md are allowed. Blocked: ${blocked.map(c => c.tool).join(', ')}. Continue planning with permitted tools.]`,
+                });
+              }
               parsedCalls = planCalls;
             }
 
@@ -3584,6 +3665,20 @@ class ChatEngine extends EventEmitter {
           }
 
         }
+          planAutoContinuePending = (
+            !options._planAutoContinued
+            && options.planMode
+            && options.agentPhase !== 'building'
+            && resolvePlanPhase({
+              planMode: true,
+              agentPhase: options.agentPhase,
+              planReady: !!options.planReady,
+              planFileExists: !!options.planFileExists,
+            }) === 'awaiting_plan'
+            && !planArtifactThisTurn
+            && !isCancelled()
+          );
+        } while (planAutoContinuePending);
         } // end prose JSON fallback path
 
       } else if (executeToolFn && _userAbortedGeneration) {

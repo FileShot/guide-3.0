@@ -1380,6 +1380,8 @@ class MCPToolServer {
                 })),
               });
             }
+            // Promote to plan-ready when todos written and plan file exists on disk
+            this.emitExistingPlanIfFound().catch(() => {});
           }
           break;
         case 'update_todo':
@@ -1507,22 +1509,62 @@ class MCPToolServer {
     }
 
     if (toolName === 'write_file' && result?.success && isPlanFilePath(params.filePath || params.path)) {
-      const content = params.content != null ? String(params.content) : '';
-      const parsed = parsePlanFileContent(content);
-      const relPath = relativePlanPath(result.path || params.filePath, this.projectPath);
-      if (this._send) {
-        this._send('plan-ready', {
-          path: relPath,
-          fullPath: result.path,
-          content,
-          title: parsed.title,
-          overview: parsed.overview,
-          todos: parsed.todos,
-        });
-      }
+      this._emitPlanReady(params.filePath || params.path, params.content != null ? String(params.content) : '', result.path);
+    }
+
+    if (toolName === 'edit_file' && result?.success && isPlanFilePath(params.filePath || params.path)) {
+      try {
+        const fp = result.path || path.resolve(this.projectPath, params.filePath || params.path);
+        const content = await fs.readFile(fp, 'utf8');
+        this._emitPlanReady(params.filePath || params.path, content, fp);
+      } catch (_) { /* plan-ready optional */ }
     }
 
     return result;
+  }
+
+  _emitPlanReady(filePath, content, fullPathOverride) {
+    const { parsePlanFileContent, relativePlanPath, isPlanFilePath } = require('./agentModeResolver');
+    if (!isPlanFilePath(filePath)) return;
+    const parsed = parsePlanFileContent(content);
+    const relPath = relativePlanPath(fullPathOverride || filePath, this.projectPath);
+    if (this._send) {
+      this._send('plan-ready', {
+        path: relPath,
+        fullPath: fullPathOverride || filePath,
+        content,
+        title: parsed.title,
+        overview: parsed.overview,
+        todos: parsed.todos,
+      });
+    }
+  }
+
+  /** Scan disk for an existing plan file and emit plan-ready (plan mode startup / stuck planning). */
+  async emitExistingPlanIfFound() {
+    if (!this.projectPath) return null;
+    const plansDir = path.join(this.projectPath, '.guide', 'plans');
+    try {
+      const entries = await fs.readdir(plansDir, { withFileTypes: true });
+      const planFiles = entries.filter((e) => e.isFile() && e.name.endsWith('.plan.md'));
+      if (planFiles.length === 0) return null;
+      let latest = planFiles[0];
+      let latestMtime = 0;
+      for (const ent of planFiles) {
+        const fp = path.join(plansDir, ent.name);
+        const st = await fs.stat(fp);
+        if (st.mtimeMs >= latestMtime) {
+          latestMtime = st.mtimeMs;
+          latest = ent;
+        }
+      }
+      const fullPath = path.join(plansDir, latest.name);
+      const content = await fs.readFile(fullPath, 'utf8');
+      this._emitPlanReady(fullPath, content, fullPath);
+      return fullPath;
+    } catch (_) {
+      return null;
+    }
   }
 
   // ─── Backup & Undo System ────────────────────────────────────────────────

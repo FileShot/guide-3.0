@@ -5,10 +5,11 @@ const path = require('path');
 const PLAN_MODE_ALLOWED_TOOLS = new Set([
   'read_file', 'list_directory', 'grep_search', 'find_files', 'get_file_info',
   'search_in_file', 'search_codebase', 'git_status', 'git_diff', 'git_log',
-  'write_file', 'ask_question', 'write_todos', 'update_todo',
+  'write_file', 'edit_file', 'create_directory', 'ask_question', 'write_todos', 'update_todo',
 ]);
 
 const PLAN_FILE_PATH_RE = /\.guide[/\\]plans[/\\].+\.plan\.md$/i;
+const PLAN_PLANS_DIR_RE = /\.guide[/\\]plans\/?$/i;
 
 function normalizePathSlashes(filePath) {
   return String(filePath || '').replace(/\\/g, '/');
@@ -16,6 +17,24 @@ function normalizePathSlashes(filePath) {
 
 function isPlanFilePath(filePath) {
   return PLAN_FILE_PATH_RE.test(normalizePathSlashes(filePath));
+}
+
+function isPlansDirectoryPath(dirPath) {
+  return PLAN_PLANS_DIR_RE.test(normalizePathSlashes(dirPath).replace(/\/+$/, ''));
+}
+
+/** Plan workflow phase — artifact/state based, not user-message heuristics. */
+function resolvePlanPhase(options = {}) {
+  const {
+    planMode = false,
+    agentPhase = 'planning',
+    planReady = false,
+    planFileExists = false,
+  } = options;
+  if (!planMode) return null;
+  if (agentPhase === 'building') return 'building';
+  if (planReady || planFileExists) return 'plan_ready';
+  return 'awaiting_plan';
 }
 
 function filterPlanModeToolCalls(calls) {
@@ -30,6 +49,20 @@ function filterPlanModeToolCalls(calls) {
     if (c.tool === 'write_file') {
       const fp = String(c.params?.filePath || c.params?.path || '');
       if (!isPlanFilePath(fp)) {
+        blocked.push(c);
+        continue;
+      }
+    }
+    if (c.tool === 'edit_file') {
+      const fp = String(c.params?.filePath || c.params?.path || '');
+      if (!isPlanFilePath(fp)) {
+        blocked.push(c);
+        continue;
+      }
+    }
+    if (c.tool === 'create_directory') {
+      const dp = String(c.params?.path || c.params?.directory || c.params?.dir || '');
+      if (!isPlansDirectoryPath(dp)) {
         blocked.push(c);
         continue;
       }
@@ -49,14 +82,22 @@ function getAskModePromptAddition() {
   return '\n\n## ASK MODE ACTIVE\nYou are in Q&A mode. Answer the user\'s question directly in text. Do NOT call any tools or make any file or system changes.';
 }
 
-function getPlanModePromptAddition() {
-  return '\n\n## PLAN MODE ACTIVE\nYou are in Plan mode. Explore the codebase with read/search/git tools first.\n'
-    + 'Then write ONE complete implementation plan to `.guide/plans/{descriptive-slug}.plan.md` using write_file.\n'
-    + 'The plan file MUST include YAML frontmatter with `title` and optional `overview` only (no todos in the file).\n'
-    + 'After writing the plan file, call **write_todos** with the implementation checklist so the user sees live progress.\n'
-    + 'STOP after the plan file and write_todos. Do NOT modify source files, run commands, or install packages.\n'
-    + 'The user will review the plan and click **Build** to implement — do not implement until then.\n'
-    + 'In Plan mode: read-only tools, write_file (for `.guide/plans/*.plan.md` only), write_todos, and update_todo are permitted.';
+function getPlanModePromptAddition(planPhase = 'awaiting_plan') {
+  let prompt = '\n\n## PLAN MODE ACTIVE\nYou are in Plan mode. Explore the codebase with read/search/git tools first.\n';
+  if (planPhase === 'awaiting_plan') {
+    prompt += 'Then write ONE complete implementation plan to `.guide/plans/{descriptive-slug}.plan.md` using write_file.\n'
+      + 'Create `.guide/plans` with create_directory if needed.\n'
+      + 'The plan file MUST include YAML frontmatter with `title` and optional `overview` only (no todos in the file).\n'
+      + 'After writing the plan file, call **write_todos** with the implementation checklist so the user sees live progress.\n'
+      + 'STOP after the plan file and write_todos. Do NOT modify source files, run commands, or install packages.\n';
+  } else {
+    prompt += 'A plan already exists. Answer questions in prose. To revise the plan, use edit_file or write_file on `.guide/plans/*.plan.md` only.\n'
+      + 'To change todo text, use update_todo with the todo `id` and new `text` (e.g. id 2 for Phase 2). To replace the full checklist, use write_todos.\n'
+      + 'Do NOT modify source files, run commands, or install packages until the user clicks **Build**.\n';
+  }
+  prompt += 'The user will review the plan and click **Build** (or Ctrl+Enter) to implement — do not implement until then.\n'
+    + 'In Plan mode: read/search/git tools, create_directory (`.guide/plans` only), write_file and edit_file (`.guide/plans/*.plan.md` only), write_todos, and update_todo are permitted.';
+  return prompt;
 }
 
 function getBuildingPhasePromptAddition() {
@@ -95,7 +136,13 @@ function resolveAgentMode(options = {}) {
   } else if (building) {
     systemPromptAdditions += getBuildingPhasePromptAddition();
   } else if (planning) {
-    systemPromptAdditions += getPlanModePromptAddition();
+    const planPhase = resolvePlanPhase({
+      planMode: effectivePlanMode,
+      agentPhase,
+      planReady: !!options.planReady,
+      planFileExists: !!options.planFileExists,
+    });
+    systemPromptAdditions += getPlanModePromptAddition(planPhase || 'awaiting_plan');
   }
 
   const toolsActive = toolsEnabled && !effectiveAskOnly && (allowedTools === null || allowedTools.size > 0);
@@ -109,6 +156,14 @@ function resolveAgentMode(options = {}) {
     toolsActive,
     systemPromptAdditions,
     agentPhase,
+    planPhase: effectivePlanMode && !building
+      ? resolvePlanPhase({
+        planMode: effectivePlanMode,
+        agentPhase,
+        planReady: !!options.planReady,
+        planFileExists: !!options.planFileExists,
+      })
+      : (building ? 'building' : null),
   };
 }
 
@@ -129,6 +184,26 @@ function checkPlanModeToolGate(toolName, params, agentContext = {}) {
       return {
         allowed: false,
         error: `Plan mode: write_file blocked for "${fp}". Only .guide/plans/*.plan.md is allowed during planning. Click Build to implement.`,
+      };
+    }
+  }
+
+  if (toolName === 'edit_file') {
+    const fp = String(params?.filePath || params?.path || '');
+    if (!isPlanFilePath(fp)) {
+      return {
+        allowed: false,
+        error: `Plan mode: edit_file blocked for "${fp}". Only .guide/plans/*.plan.md is allowed during planning.`,
+      };
+    }
+  }
+
+  if (toolName === 'create_directory') {
+    const dp = String(params?.path || params?.directory || params?.dir || '');
+    if (!isPlansDirectoryPath(dp)) {
+      return {
+        allowed: false,
+        error: `Plan mode: create_directory blocked for "${dp}". Only .guide/plans is allowed during planning.`,
       };
     }
   }
@@ -196,6 +271,8 @@ function relativePlanPath(fullPath, projectPath) {
 module.exports = {
   PLAN_MODE_ALLOWED_TOOLS,
   isPlanFilePath,
+  isPlansDirectoryPath,
+  resolvePlanPhase,
   filterPlanModeToolCalls,
   filterToolDefinitions,
   resolveAgentMode,

@@ -559,6 +559,8 @@ function buildAgentModeTooling(mcpToolServer, settings, enableSubAgents) {
     chatMode: settings.chatMode,
     agentPhase: settings.agentPhase || 'planning',
     toolsEnabled: settings.toolsEnabled !== false,
+    planReady: !!settings.planReady,
+    planFileExists: !!settings.planFileExists,
   });
   mcpToolServer.setAgentContext({ planMode: mode.planMode, agentPhase: mode.agentPhase });
   const allDefs = mcpToolServer.getToolDefinitions();
@@ -631,6 +633,9 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       const enableSubAgents = settings.enableSubAgents !== false;
       if (settings.planContext && settings.agentPhase === 'building') {
         effectiveMessage = `[Build approved]\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
+      }
+      if (planMode && settings.agentPhase !== 'building') {
+        await mcpToolServer.emitExistingPlanIfFound();
       }
       const executeToolFn = async (toolName, params) => {
         if (toolName === 'spawn_subagent') {
@@ -730,6 +735,10 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       effectiveMessage = `[Build approved]\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
     }
 
+    if (planMode && settings.agentPhase !== 'building') {
+      await mcpToolServer.emitExistingPlanIfFound();
+    }
+
     console.log(`[electron-main] ai-chat: calling llmEngine.chat, effectiveMessageLen=${effectiveMessage.length}, mode=${mode.planning ? 'plan' : mode.askOnly ? 'ask' : 'agent'}`);
     const result = await llmEngine.chat(effectiveMessage, {
       onToken: (token) => _send('llm-token', token),
@@ -787,6 +796,9 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       askOnly,
       planMode,
       agentPhase: settings.agentPhase || 'planning',
+      planReady: !!settings.planReady,
+      planFileExists: !!settings.planFileExists,
+      planPhase: mode.planPhase,
       autoLintFix,
     });
 

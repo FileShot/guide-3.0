@@ -46,6 +46,8 @@ async function runCloudAgenticChat({
     chatMode: settings.chatMode,
     agentPhase: settings.agentPhase || 'planning',
     toolsEnabled,
+    planReady: !!settings.planReady,
+    planFileExists: !!settings.planFileExists,
   });
 
   mcpToolServer.setAgentContext({ planMode: mode.planMode, agentPhase: mode.agentPhase });
