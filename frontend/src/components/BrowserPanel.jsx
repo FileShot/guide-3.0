@@ -24,6 +24,7 @@ export default function BrowserPanel() {
   const addNotification = useAppStore(s => s.addNotification);
   const viewportNavigateUrl = useAppStore(s => s.viewportNavigateUrl);
   const clearViewportNavigateUrl = useAppStore(s => s.clearViewportNavigateUrl);
+  const browserReloadTick = useAppStore(s => s.browserReloadTick);
 
   const [previewUrl, setPreviewUrl] = useState('');
   const [urlInput, setUrlInput] = useState('');
@@ -130,6 +131,10 @@ export default function BrowserPanel() {
     }
     fetch('/api/preview/reload', { method: 'POST' }).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (browserReloadTick > 0) reload();
+  }, [browserReloadTick, reload]);
 
   const navigate = useCallback((url) => {
     if (!url) return;

@@ -258,14 +258,14 @@ const useAppStore = create((set, get) => ({
 
     try {
       await fetch('/api/session/clear', { method: 'POST' });
-      if (loaded.length > 0) {
-        const revertMsgs = loaded.map((m) => ({
-          role: m.role,
-          content: chatMessageTextForRevert(m),
-        }));
-        if (typeof window !== 'undefined' && window.electronAPI?.revertContext) {
-          await window.electronAPI.revertContext(revertMsgs);
-        }
+      const revertMsgs = loaded.length > 0
+        ? loaded.map((m) => ({
+            role: m.role,
+            content: chatMessageTextForRevert(m),
+          }))
+        : [];
+      if (typeof window !== 'undefined' && window.electronAPI?.revertContext) {
+        await window.electronAPI.revertContext(revertMsgs);
       }
     } catch (_) {}
   },
@@ -349,6 +349,10 @@ const useAppStore = create((set, get) => ({
   },
 
 
+
+  browserReloadTick: 0,
+
+  requestBrowserReload: () => set((s) => ({ browserReloadTick: s.browserReloadTick + 1 })),
 
   // R46-C: Open browser panel as an editor tab instead of sidebar
 
@@ -565,7 +569,108 @@ const useAppStore = create((set, get) => ({
 
   },
 
+  /**
+   * Freeze in-progress assistant streaming into a finalized chat row so injected
+   * user messages appear in chronological order (not under the Virtuoso footer).
+   */
+  materializePartialAssistant: () => {
+    const store = get();
+    if (!store.chatStreaming) return store.chatMessages.length;
 
+    if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
+    if (store._fileTokenTimer) clearTimeout(store._fileTokenTimer);
+
+    let currentText = store.chatStreamingText;
+    let segs = store.streamingSegments;
+    const fileBlocks = store.streamingFileBlocks;
+    const toolCalls = store.streamingToolCalls;
+
+    if (store._textTokenBuffer) {
+      const buf = store._textTokenBuffer;
+      currentText += buf;
+      if (segs.length > 0 && segs[segs.length - 1].type === 'text') {
+        segs = [...segs];
+        segs[segs.length - 1] = { ...segs[segs.length - 1], content: segs[segs.length - 1].content + buf };
+      } else {
+        segs = [...segs, { type: 'text', content: buf }];
+      }
+    }
+
+    let messageContent = '';
+    const messageSegments = [];
+    const messageFileBlocks = [];
+
+    for (const seg of segs) {
+      if (seg.type === 'text') {
+        messageContent += seg.content;
+        messageSegments.push({ type: 'text', content: seg.content });
+      } else if (seg.type === 'file') {
+        const block = fileBlocks[seg.index];
+        if (block) {
+          messageContent += `\n\`\`\`${block.language || 'text'}\n${block.content}\n\`\`\`\n`;
+          messageSegments.push({ type: 'file', index: messageFileBlocks.length });
+          messageFileBlocks.push({
+            filePath: block.filePath,
+            language: block.language,
+            fileName: block.fileName,
+            content: block.content,
+          });
+        }
+      } else if (seg.type === 'thinking') {
+        messageSegments.push({ type: 'thinking', content: seg.content });
+      } else if (seg.type === 'tool') {
+        messageSegments.push({ type: 'tool', toolIndex: seg.toolIndex });
+      }
+    }
+
+    if (!messageSegments.length && currentText.trim()) {
+      messageContent = currentText;
+      messageSegments.push({ type: 'text', content: currentText });
+    }
+
+    const hasToolCalls = toolCalls.length > 0;
+    const hasThinking = !!store.chatThinkingText?.trim();
+    const hasContent = messageContent.trim().length > 0 || messageSegments.length > 0;
+
+    if (!hasContent && !hasToolCalls && hasThinking) {
+      messageContent = '*The model reasoned but produced no text output.*';
+      if (!messageSegments.length) {
+        messageSegments.push({ type: 'text', content: messageContent });
+      }
+    }
+
+    if (!hasContent && !hasToolCalls && !hasThinking) {
+      return store.chatMessages.length;
+    }
+
+    const idx = get().addChatMessage({
+      role: 'assistant',
+      content: messageContent || '',
+      segments: messageSegments.length > 0 ? messageSegments : undefined,
+      fileBlocks: messageFileBlocks.length > 0 ? messageFileBlocks : undefined,
+      toolCalls: hasToolCalls ? [...toolCalls] : undefined,
+      thinking: hasThinking ? store.chatThinkingText : undefined,
+      model: store.modelInfo?.name,
+      partial: true,
+    });
+
+    set({
+      chatStreaming: true,
+      chatStreamingText: '',
+      chatThinkingText: '',
+      chatGeneratingTool: null,
+      streamingSegments: [],
+      streamingFileBlocks: [],
+      streamingToolCalls: [],
+      activeStreamingFileKey: null,
+      _textTokenBuffer: null,
+      _textTokenTimer: null,
+      _fileTokenBuffer: null,
+      _fileTokenTimer: null,
+    });
+
+    return idx;
+  },
 
   // Edit a user message in-place and truncate all messages after it
 
@@ -1134,16 +1239,29 @@ const useAppStore = create((set, get) => ({
       }
     }
 
-    const existingIdx = store.streamingFileBlocks.findIndex(
+    let existingIdx = store.streamingFileBlocks.findIndex(
       b => b.fileKey === normalizedKey,
     );
+    if (existingIdx === -1) {
+      existingIdx = findActiveStreamingFileBlockIndex(store.streamingFileBlocks, normalizedKey);
+    }
+    if (existingIdx === -1 && fileName) {
+      existingIdx = store.streamingFileBlocks.findIndex(
+        b => !b.complete && (b.fileName === fileName || (b.filePath && b.filePath.endsWith(fileName))),
+      );
+    }
     let newBlocks;
     let fileIndex;
+    let newSegs = currentSegs;
 
     if (existingIdx !== -1) {
       newBlocks = [...store.streamingFileBlocks];
       newBlocks[existingIdx] = {
         ...newBlocks[existingIdx],
+        filePath: filePath || newBlocks[existingIdx].filePath,
+        fileKey: normalizedKey || newBlocks[existingIdx].fileKey,
+        fileName: fileName || newBlocks[existingIdx].fileName,
+        language: language || newBlocks[existingIdx].language,
         content: String(content),
         complete: true,
       };
@@ -1161,14 +1279,14 @@ const useAppStore = create((set, get) => ({
         },
       ];
       fileIndex = newBlocks.length - 1;
-      currentSegs = [...currentSegs, { type: 'file', index: fileIndex }];
+      newSegs = [...currentSegs, { type: 'file', index: fileIndex }];
     }
 
     console.log('[appStore] addCompleteFileContentBlock:', normalizedKey, `(${String(content).length} chars)`);
 
     set({
       streamingFileBlocks: newBlocks,
-      streamingSegments: currentSegs,
+      streamingSegments: newSegs,
       chatStreamingText: currentText,
       activeStreamingFileKey: null,
       _textTokenBuffer: null,

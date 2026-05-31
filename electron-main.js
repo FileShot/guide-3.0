@@ -1777,11 +1777,14 @@ ipcMain.handle('terminal-create', (_event, opts) => {
   const termId = opts?.terminalId || `pty-${Date.now()}`;
   const shell = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/bash');
   const cwd = opts?.cwd || currentProjectPath || os.homedir();
+  const cols = Math.max(opts?.cols || 80, 10);
+  const rows = Math.max(opts?.rows || 24, 3);
+  console.log(`[Main] terminal-create id=${termId} cols=${cols} rows=${rows} cwd=${cwd}`);
 
   const ptyProcess = ptyModule.spawn(shell, [], {
     name: 'xterm-256color',
-    cols: opts?.cols || 80,
-    rows: opts?.rows || 24,
+    cols,
+    rows,
     cwd,
     env: process.env,
   });
@@ -1791,6 +1794,7 @@ ipcMain.handle('terminal-create', (_event, opts) => {
   });
 
   ptyProcess.onExit(({ exitCode }) => {
+    console.log(`[Main] terminal-exit id=${termId} code=${exitCode}`);
     _send('terminal-exit', { terminalId: termId, exitCode });
     ptyTerminals.delete(termId);
   });
@@ -1831,10 +1835,13 @@ ipcMain.handle('terminal-recreate', (_event, opts) => {
   const newId = termId || `pty-${Date.now()}`;
   const shell = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/bash');
   const cwd = opts?.cwd || currentProjectPath || os.homedir();
+  const cols = Math.max(opts?.cols || 80, 10);
+  const rows = Math.max(opts?.rows || 24, 3);
+  console.log(`[Main] terminal-recreate id=${newId} cols=${cols} rows=${rows} cwd=${cwd}`);
   const ptyProcess = ptyModule.spawn(shell, [], {
     name: 'xterm-256color',
-    cols: opts?.cols || 80,
-    rows: opts?.rows || 24,
+    cols,
+    rows,
     cwd,
     env: process.env,
   });

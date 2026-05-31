@@ -154,6 +154,8 @@ function XTermPanel() {
   const termIdRef = useRef(null);
   const modeRef = useRef(null); // 'pty' | 'exec' | null
   const ptyCwdRef = useRef(null); // cwd the PTY was spawned with (avoid redundant visible cd)
+  const ptySpawnAtRef = useRef(0);
+  const ptyStartupRetryRef = useRef(0);
   const [loaded, setLoaded] = useState(false);
   const [loadTimedOut, setLoadTimedOut] = useState(false);
   const activeTerminalTab = useAppStore(s => s.activeTerminalTab);
@@ -241,12 +243,39 @@ function XTermPanel() {
         if (!termRef.current || disposed) return;
 
         term.open(termRef.current);
+
+        const waitForTerminalSize = async (el, maxMs = 2500) => {
+          const start = Date.now();
+          while (Date.now() - start < maxMs) {
+            if (disposed || !el) return;
+            const { width, height } = el.getBoundingClientRect();
+            if (width >= 40 && height >= 40) return;
+            await new Promise((r) => requestAnimationFrame(r));
+          }
+        };
+
+        await waitForTerminalSize(termRef.current);
+        if (disposed) return;
+
         fitAddon.fit();
         xtermRef.current = term;
         fitAddonRef.current = fitAddon;
         setLoaded(true);
 
         const api = window.electronAPI;
+
+        const spawnPty = async () => {
+          const cols = Math.max(term.cols || 0, 10);
+          const rows = Math.max(term.rows || 0, 3);
+          const projectPath = useAppStore.getState().projectPath;
+          ptySpawnAtRef.current = Date.now();
+          return api.terminal.create({
+            terminalId: termIdRef.current,
+            cols,
+            rows,
+            cwd: projectPath || undefined,
+          });
+        };
 
         // Try IPC PTY first (Electron mode)
         if (api?.terminal) {
@@ -260,24 +289,32 @@ function XTermPanel() {
             }
           });
 
-          cleanupExit = api.terminal.onExit((msg) => {
-            if (msg.terminalId === termId) {
-              term.writeln(`\r\n\x1b[90m[Process exited with code ${msg.exitCode}]\x1b[0m`);
+          cleanupExit = api.terminal.onExit(async (msg) => {
+            if (msg.terminalId !== termId) return;
+            const elapsed = Date.now() - ptySpawnAtRef.current;
+            const spuriousStartupExit = elapsed < 4000
+              && ptyStartupRetryRef.current < 1
+              && (msg.exitCode === -1073741510 || msg.exitCode === 0);
+            if (spuriousStartupExit && !disposed) {
+              ptyStartupRetryRef.current += 1;
+              term.writeln('\r\n\x1b[90m[Terminal restarting…]\x1b[0m');
+              try {
+                fitAddon?.fit();
+                const retry = await spawnPty();
+                if (retry?.success) {
+                  modeRef.current = 'pty';
+                  return;
+                }
+              } catch (_) {}
             }
+            term.writeln(`\r\n\x1b[90m[Process exited with code ${msg.exitCode}]\x1b[0m`);
           });
 
-          // Create the PTY process
-          const projectPath = useAppStore.getState().projectPath;
-          const result = await api.terminal.create({
-            terminalId: termId,
-            cols: term.cols,
-            rows: term.rows,
-            cwd: projectPath || undefined,
-          });
+          const result = await spawnPty();
 
           if (result?.success) {
             modeRef.current = 'pty';
-            ptyCwdRef.current = projectPath || null;
+            ptyCwdRef.current = useAppStore.getState().projectPath || null;
             // Forward input to PTY via IPC
             term.onData((data) => {
               if (modeRef.current === 'pty') {

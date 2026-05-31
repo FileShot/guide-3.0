@@ -489,9 +489,21 @@ export default function App() {
         s.setLlmStatus(data);
 
         if (data?.state === 'ready') {
-
           s.setModelState({ modelLoaded: true, modelLoading: false, modelInfo: data.modelInfo });
-
+          const samp = data.modelInfo?.sampling;
+          if (samp && typeof samp === 'object') {
+            const cur = useAppStore.getState().settings;
+            const next = {
+              ...cur,
+              ...(typeof samp.temperature === 'number' ? { temperature: samp.temperature, _defaultTemperature: samp.temperature } : {}),
+              ...(typeof samp.topP === 'number' ? { topP: samp.topP } : {}),
+              ...(typeof samp.topK === 'number' ? { topK: samp.topK } : {}),
+              ...(typeof samp.repeatPenalty === 'number' ? { repeatPenalty: samp.repeatPenalty, _defaultRepeatPenalty: samp.repeatPenalty } : {}),
+            };
+            try { localStorage.setItem('guIDE-settings', JSON.stringify(next)); } catch (_) {}
+            useAppStore.setState({ settings: next, settingsSkipDebounceUntil: Date.now() + 2000 });
+            lastSyncedSettingsJsonRef.current = JSON.stringify(next);
+          }
         } else if (data?.state === 'loading') {
 
           s.setModelState({ modelLoading: true, modelLoadProgress: data.progress || 0 });
@@ -521,6 +533,24 @@ export default function App() {
             });
             lastSyncedSettingsJsonRef.current = JSON.stringify(next);
           }
+        }
+
+        if (data?.sampling && typeof data.sampling === 'object') {
+          const cur = useAppStore.getState().settings;
+          const samp = data.sampling;
+          const next = {
+            ...cur,
+            ...(typeof samp.temperature === 'number' ? { temperature: samp.temperature, _defaultTemperature: samp.temperature } : {}),
+            ...(typeof samp.topP === 'number' ? { topP: samp.topP } : {}),
+            ...(typeof samp.topK === 'number' ? { topK: samp.topK } : {}),
+            ...(typeof samp.repeatPenalty === 'number' ? { repeatPenalty: samp.repeatPenalty, _defaultRepeatPenalty: samp.repeatPenalty } : {}),
+          };
+          try { localStorage.setItem('guIDE-settings', JSON.stringify(next)); } catch (_) {}
+          useAppStore.setState({
+            settings: next,
+            settingsSkipDebounceUntil: Date.now() + 2000,
+          });
+          lastSyncedSettingsJsonRef.current = JSON.stringify(next);
         }
 
         const layerStr = typeof data?.gpuLayers === 'number' && data?.totalLayers

@@ -131,7 +131,6 @@ const RE_CONTENT_START = /"content"\s*:\s*"$/;
 const RE_FILE_PATH = /"(?:filePath|path)"\s*:\s*"([^"]*)"/;
 const RE_TOOL_OR_SYSTEM_INJECT = /^\[(?:Tool Results|System)\]/i;
 const RE_CONTEXT_ROTATED = /\[System: (?:Context rotated|Session memory condensed)\]/i;
-const DUPLICATE_HINT_TOOLS = new Set(['list_directory', 'read_file', 'grep_search', 'find_files']);
 const LIST_DIRECTORY_INJECT_MAX_ITEMS = 50;
 const DUPLICATE_TOOL_HINT_MESSAGE = '[System: You already ran this exact tool call three times in a row. Try a different path or answer the user.]';
 
@@ -718,7 +717,7 @@ Pattern — user wants to create or write a file:
 Call write_file with the target path and the full file content. Do not output the content as a markdown code block.
 
 Pattern — user asks to edit or modify an existing file:
-Call read_file to get the current content, then call edit_file or write_file with the updated version.
+Use edit_file or replace_in_file on that file path. Call read_file first if you need the current content. Do NOT use write_file to create a new file or a renamed copy (e.g. file-v2.html) unless the user explicitly asked for a new file or a full rewrite from scratch.
 
 Pattern — user asks to run a command, script, or terminal operation:
 Call run_terminal_command with the command string. Do not describe what the command would do — run it.
@@ -727,7 +726,7 @@ Pattern — user asks to search the web, find current information, or look up so
 Call web_search with a rephrased query. Do not generate an answer from memory if the information may be outdated.
 
 Pattern — user asks to open, navigate, or interact with a website or browser:
-Call browser_navigate first (returns a snapshot). After browser_type or any action that changes the page, call browser_snapshot before browser_click so [ref=N] numbers match the current DOM. Prefer elements marked [SUBMIT] for login/forms over numeric refs alone.
+Call browser_navigate first (returns a snapshot). After browser_type, browser_click, or any action that changes the page, call browser_snapshot before the next browser_click so [ref=N] numbers match the current DOM. Do not reuse stale refs from an earlier snapshot. Prefer elements marked [SUBMIT] for login/forms over numeric refs alone.
 
 Pattern — user wants to find files in the project, list a directory, or search codebase:
 Call list_directory, search_codebase, or find_files as appropriate. Do not guess at file contents.
@@ -1285,6 +1284,7 @@ class ChatEngine extends EventEmitter {
       this.modelInfo.family = _detectedFamily;
       this.modelInfo.sizeB = _detectedSizeB;
       this.modelInfo.tier = this._modelProfile._meta.tier;
+      this.modelInfo.sampling = this._modelProfile.sampling;
       console.log(`[ChatEngine] P3: Model profile resolved — family=${_detectedFamily} (arch=${ggufArchString || 'n/a'} → ${_archFamily || 'fallback'}, file=${_fileFamily}), sizeB=${_detectedSizeB.toFixed(2)}, tier=${this._modelProfile._meta.tier}, sampling=${JSON.stringify(this._modelProfile.sampling)}`);
 
       this.currentModelPath = modelPath;
@@ -2497,7 +2497,7 @@ class ChatEngine extends EventEmitter {
             }
 
             const contentMatch = s.buf.match(/"content"\s*:\s*"([\s\S]*)/);
-            if (contentMatch) {
+            if (contentMatch && s.filePath) {
               s.phase = 1;
               s.buf = '';
               if (onStreamEvent) {
@@ -3197,7 +3197,7 @@ class ChatEngine extends EventEmitter {
             }
             toolResultLines.push(`${call.tool}: ${injectResult}`);
 
-            if (DUPLICATE_HINT_TOOLS.has(call.tool)) {
+            {
               const fp = stableToolFingerprint(call.tool, call.params);
               if (!this._toolExecFingerprints) this._toolExecFingerprints = [];
               this._toolExecFingerprints.push(fp);
@@ -4727,7 +4727,7 @@ class ChatEngine extends EventEmitter {
     const toolLines = Object.entries(functions).map(([name, def]) => {
       return `- ${name}: ${def.description || 'No description'}`;
     });
-    const prompt = `\n\nYou have access to the following tools:\n${toolLines.join('\n')}\n\nTOOL USAGE RULES:\n- When the user asks you to create, write, edit, read, or delete files in their project, you MUST use the appropriate file tool (write_file, read_file, edit_file, append_to_file, delete_file). Do NOT output file contents inline.\n- When the user asks you to find, search, or look for something in their code, use grep_search or find_files.\n- When the user asks to list or explore project structure, use list_directory.\n- When the user asks to run a command, script, or install something, use run_command.\n- When the user asks to search the web or look something up online, use web_search then immediately fetch_webpage on the first and second ranked result URLs in the same continuation before answering (if only one hit, fetch that URL). Do not ask the user whether to fetch. Do not list the project directory in the same tool round as web_search/fetch_webpage unless the user asked about the project.\n- For large project rules (>~2KB), use write_file to .guide/rules/<name>.md instead of embedding the full document in save_rule JSON.\n- When the user asks a general question, wants an explanation, or asks you to review code you already have, respond with text directly.\n- You can chain tools: use read_file to see existing code, then edit_file to modify it, then run_command to test it.\n- Always prefer tools over inline code when the user wants changes to their actual project files.`;
+    const prompt = `\n\nYou have access to the following tools:\n${toolLines.join('\n')}\n\nTOOL USAGE RULES:\n- When the user asks you to create, write, edit, read, or delete files in their project, you MUST use the appropriate file tool (write_file, read_file, edit_file, append_to_file, delete_file). Do NOT output file contents inline.\n- When the user asks to change, update, fix, or tweak an existing file (already created or read this session), use edit_file or replace_in_file on that path — not write_file to a new path unless they asked for a new file or full rewrite.\n- When the user asks you to find, search, or look for something in their code, use grep_search or find_files.\n- When the user asks to list or explore project structure, use list_directory.\n- When the user asks to run a command, script, or install something, use run_command.\n- When the user asks to search the web or look something up online, use web_search then immediately fetch_webpage on the first and second ranked result URLs in the same continuation before answering (if only one hit, fetch that URL). Do not ask the user whether to fetch. Do not list the project directory in the same tool round as web_search/fetch_webpage unless the user asked about the project.\n- For large project rules (>~2KB), use write_file to .guide/rules/<name>.md instead of embedding the full document in save_rule JSON.\n- When the user asks a general question, wants an explanation, or asks you to review code you already have, respond with text directly.\n- You can chain tools: use read_file to see existing code, then edit_file to modify it, then run_command to test it.\n- Always prefer tools over inline code when the user wants changes to their actual project files.`;
     console.log(`[ChatEngine] _buildToolPrompt: built ${prompt.length} chars`);
     return prompt;
   }

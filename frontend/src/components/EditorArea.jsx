@@ -16,7 +16,7 @@ import FileIcon from './FileIcon';
 import GuideLogo from './GuideLogo';
 import {
   X, Circle, FolderOpen, MessageSquare, Settings,
-  FileText, Copy,
+  FileText, Copy, RefreshCw,
   Eye, Code2, Play, ExternalLink, Globe, Wand2,
   ChevronUp, ChevronDown, Check, Undo2, Columns
 } from 'lucide-react';
@@ -309,6 +309,13 @@ export default function EditorArea() {
     setTabContextMenu(null);
   }, [openTabs, addNotification]);
 
+  const requestBrowserReload = useAppStore(s => s.requestBrowserReload);
+
+  const handleReloadBrowserTab = useCallback(() => {
+    requestBrowserReload();
+    setTabContextMenu(null);
+  }, [requestBrowserReload]);
+
   if (openTabs.length === 0) {
     return <WelcomeScreen />;
   }
@@ -361,11 +368,13 @@ export default function EditorArea() {
           x={tabContextMenu.x}
           y={tabContextMenu.y}
           tabId={tabContextMenu.tabId}
+          isBrowserTab={openTabs.find(t => t.id === tabContextMenu.tabId)?.type === 'browser'}
           onClose={() => setTabContextMenu(null)}
           onCloseTab={handleCloseTab}
           onCloseOthers={handleCloseOtherTabs}
           onCloseAll={handleCloseAllTabs}
           onCopyPath={handleCopyPath}
+          onReload={handleReloadBrowserTab}
         />
       )}
 
@@ -816,7 +825,7 @@ function WelcomeScreen() {
 
 
 
-function TabContextMenu({ x, y, tabId, onClose, onCloseTab, onCloseOthers, onCloseAll, onCopyPath }) {
+function TabContextMenu({ x, y, tabId, isBrowserTab, onClose, onCloseTab, onCloseOthers, onCloseAll, onCopyPath, onReload }) {
   const menuRef = useRef(null);
 
   useEffect(() => {
@@ -841,6 +850,12 @@ function TabContextMenu({ x, y, tabId, onClose, onCloseTab, onCloseOthers, onClo
 
   return (
     <div ref={menuRef} className="context-menu" style={style}>
+      {isBrowserTab && onReload && (
+        <button className="context-menu-item" onClick={() => onReload()}>
+          <RefreshCw size={14} className="mr-2 text-vsc-text-dim" /> Reload
+        </button>
+      )}
+      {isBrowserTab && onReload && <div className="context-menu-separator" />}
       <button className="context-menu-item" onClick={() => { onCloseTab(tabId); onClose(); }}>
         <X size={14} className="mr-2 text-vsc-text-dim" /> Close
       </button>

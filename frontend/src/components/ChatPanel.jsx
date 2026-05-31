@@ -724,6 +724,8 @@ export default function ChatPanel() {
 
   const [policyDropdownOpen, setPolicyDropdownOpen] = useState(false);
 
+  const [imageLightboxUrl, setImageLightboxUrl] = useState(null);
+
   const modeDropdownRef = useRef(null);
 
   const inputRef = useRef(null);
@@ -1118,7 +1120,7 @@ export default function ChatPanel() {
 
       } catch (_) {}
 
-      // Add the message to the UI as a user message
+      useAppStore.getState().materializePartialAssistant();
 
       const injectIdx = addChatMessage({ role: 'user', content: text, injected: true });
 
@@ -1922,6 +1924,7 @@ export default function ChatPanel() {
     removeQueuedMessage(msg.id);
 
     if (useAppStore.getState().chatStreaming) {
+      useAppStore.getState().materializePartialAssistant();
       addChatMessage({ role: 'user', content: msg.text });
       try {
         if (window.electronAPI?.injectUserMessage) {
@@ -1996,6 +1999,8 @@ export default function ChatPanel() {
     try {
 
       await fetch('/api/session/clear', { method: 'POST' });
+
+      await window.electronAPI?.revertContext?.([]);
 
     } catch (_) {}
 
@@ -2661,19 +2666,17 @@ export default function ChatPanel() {
 
                           {msg.imageAttachments.map((img, idx) => (
 
-                            <a
+                            <button
 
                               key={img.id || `${img.name || 'image'}-${idx}`}
 
-                              href={img.url}
-
-                              target="_blank"
-
-                              rel="noreferrer"
+                              type="button"
 
                               className="block"
 
                               title={img.name || 'Attached image'}
+
+                              onClick={() => setImageLightboxUrl(img.url)}
 
                             >
 
@@ -2687,7 +2690,7 @@ export default function ChatPanel() {
 
                               />
 
-                            </a>
+                            </button>
 
                           ))}
 
@@ -3712,6 +3715,23 @@ export default function ChatPanel() {
         </div>
 
       </div>
+
+      {imageLightboxUrl && (
+        <div
+          className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 p-6"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setImageLightboxUrl(null)}
+          onKeyDown={(e) => { if (e.key === 'Escape') setImageLightboxUrl(null); }}
+        >
+          <img
+            src={imageLightboxUrl}
+            alt="Attached image preview"
+            className="max-h-full max-w-full rounded-md object-contain shadow-lg"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
 
     </div>
 

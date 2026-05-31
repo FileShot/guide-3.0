@@ -3307,16 +3307,19 @@ class MCPToolServer {
   // ─── Memory Tools ────────────────────────────────────────────────────────
 
   async _saveMemory(key, value) {
-    if (!key || !value) return { success: false, error: 'Both key and value are required' };
+    if (!key || value == null || value === '') return { success: false, error: 'Both key and value are required' };
     try {
       const memDir = path.join(this.projectPath || require('os').homedir(), '.guide-memory');
       await fs.mkdir(memDir, { recursive: true });
       const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const textValue = typeof value === 'object'
+        ? JSON.stringify(value, null, 2)
+        : String(value);
       const metadata = { key, savedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
       const payload = JSON.stringify({ metadata, content: value });
       await fs.writeFile(path.join(memDir, `${safeKey}.json`), payload, 'utf8');
       // Also write plain text for backward compat
-      await fs.writeFile(path.join(memDir, `${safeKey}.txt`), value, 'utf8');
+      await fs.writeFile(path.join(memDir, `${safeKey}.txt`), textValue, 'utf8');
       return { success: true, message: `Memory saved: "${key}"` };
     } catch (error) {
       return { success: false, error: error.message };
