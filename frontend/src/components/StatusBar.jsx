@@ -49,18 +49,33 @@ export default function StatusBar() {
   const prevTextLenRef = useRef(0);
   const lastTickRef = useRef(Date.now());
   const statusBarRef = useRef(null);
-  const [hideEditorChips, setHideEditorChips] = useState(false);
+  // Higher tier = more hidden. Left/editor first, GPU/model/context last.
+  const [barTier, setBarTier] = useState(0);
 
   useEffect(() => {
     const el = statusBarRef.current;
     if (!el) return;
     const ro = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect?.width ?? 1200;
-      setHideEditorChips(w < 720);
+      if (w >= 1100) setBarTier(0);
+      else if (w >= 900) setBarTier(1);
+      else if (w >= 750) setBarTier(2);
+      else if (w >= 600) setBarTier(3);
+      else if (w >= 480) setBarTier(4);
+      else setBarTier(5);
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  const hideEditorChips = barTier >= 1;
+  const hideLeftGit = barTier >= 2;
+  const hideTokStats = barTier >= 3;
+  const hideRam = barTier >= 3;
+  const hideGpuDetails = barTier >= 4;
+  const hideGoLive = barTier >= 4;
+  const hideContextPct = barTier >= 5;
+  const hideModelName = barTier >= 5;
 
   useEffect(() => {
     if (!chatStreaming) {
@@ -184,27 +199,29 @@ export default function StatusBar() {
       modelLoading ? 'bg-vsc-statusbar-debug' : 'bg-vsc-statusbar'
     } text-vsc-text-bright`}
     >
-      {/* Left section */}
-      <div className="flex items-center flex-1 min-w-0">
-        {/* Branch */}
-        {projectPath && (
-          <button className="statusbar-item" onClick={() => setActiveActivity('git')}>
+      {/* Left section — git/errors hidden before right-side GPU/context */}
+      <div className="flex items-center flex-1 min-w-0 overflow-hidden">
+        {projectPath && !hideLeftGit && (
+          <button className="statusbar-item shrink-0" onClick={() => setActiveActivity('git')}>
             <GitBranch size={12} className="mr-1" />
-            <span>{gitBranch}</span>
+            <span className="truncate max-w-[140px]">{gitBranch}</span>
           </button>
         )}
 
-        {/* Errors / Warnings */}
-        <button className="statusbar-item" onClick={togglePanel}>
+        <button className="statusbar-item shrink-0" onClick={togglePanel} title={`${diagnostics.errors} errors, ${diagnostics.warnings} warnings`}>
           <AlertCircle size={12} className={`mr-1 ${diagnostics.errors > 0 ? 'text-vsc-error' : ''}`} />
-          <span className={diagnostics.errors > 0 ? 'text-vsc-error' : ''}>{diagnostics.errors}</span>
-          <AlertTriangle size={12} className={`ml-2 mr-1 ${diagnostics.warnings > 0 ? 'text-vsc-warning' : ''}`} />
-          <span className={diagnostics.warnings > 0 ? 'text-vsc-warning' : ''}>{diagnostics.warnings}</span>
+          {!hideLeftGit && (
+            <span className={diagnostics.errors > 0 ? 'text-vsc-error' : ''}>{diagnostics.errors}</span>
+          )}
+          <AlertTriangle size={12} className={`${hideLeftGit ? '' : 'ml-2'} mr-1 ${diagnostics.warnings > 0 ? 'text-vsc-warning' : ''}`} />
+          {!hideLeftGit && (
+            <span className={diagnostics.warnings > 0 ? 'text-vsc-warning' : ''}>{diagnostics.warnings}</span>
+          )}
         </button>
       </div>
 
-      {/* Right section */}
-      <div className="flex items-center">
+      {/* Right section — editor chips hide first; system stats hide last */}
+      <div className="flex items-center min-w-0 overflow-hidden shrink">
         {/* Line / Column + Selection */}
         {activeTab && (
           <button className="statusbar-item" title="Go to Line">
@@ -258,16 +275,16 @@ export default function StatusBar() {
         )}
 
         {/* Tokens per second (during generation) */}
-        {tokensPerSec > 0 && (
-          <div className="statusbar-item" title="Generation speed">
+        {tokensPerSec > 0 && !hideTokStats && (
+          <div className="statusbar-item shrink-0" title="Generation speed">
             <Zap size={12} className="mr-1 text-yellow-300" />
             <span>{tokensPerSec} tok/s</span>
           </div>
         )}
 
         {/* Token stats */}
-        {tokenStats && tokenStats.sessionTokens > 0 && (
-          <div className="statusbar-item" title={`Session: ${tokenStats.sessionTokens.toLocaleString()} tokens, ${tokenStats.requestCount} requests`}>
+        {tokenStats && tokenStats.sessionTokens > 0 && !hideTokStats && (
+          <div className="statusbar-item shrink-0" title={`Session: ${tokenStats.sessionTokens.toLocaleString()} tokens, ${tokenStats.requestCount} requests`}>
             <Zap size={12} className="mr-1 text-yellow-300" />
             <span>{_formatTokens(tokenStats.sessionTokens)}</span>
           </div>
@@ -289,13 +306,13 @@ export default function StatusBar() {
             {vramWarning && <AlertTriangle size={12} className="mr-1 text-yellow-400" />}
             {!vramWarning && <HardDrive size={12} className="mr-1" />}
             <span>{gpuMemory.memoryUsed}MB</span>
-            {gpuLayerOffload !== undefined && (
+            {gpuLayerOffload !== undefined && !hideGpuDetails && (
               <span className="ml-1 text-vsc-text-dim/70">
                 {gpuLayerOffload}{gpuTotalLayers != null ? `/${gpuTotalLayers}` : ''} layers
                 {modelInfo?.vramFreeAfterLoadGB != null ? ` · ${modelInfo.vramFreeAfterLoadGB}GB free` : ''}
               </span>
             )}
-            {gpuMemory.temperature > 0 && (
+            {gpuMemory.temperature > 0 && !hideGpuDetails && (
               <span className={`ml-1 ${
                 gpuMemory.temperature > 85 ? 'text-red-400' :
                 gpuMemory.temperature > 75 ? 'text-yellow-400' :
@@ -308,8 +325,8 @@ export default function StatusBar() {
         )}
 
         {/* CPU/RAM */}
-        {gpuMemory && gpuMemory.ramUsedGB !== undefined && (
-          <div className="statusbar-item" title={`RAM: ${gpuMemory.ramUsedGB}GB / ${gpuMemory.ramTotalGB}GB | CPU: ${gpuMemory.cpuUsage}%`}>
+        {gpuMemory && gpuMemory.ramUsedGB !== undefined && !hideRam && (
+          <div className="statusbar-item shrink-0" title={`RAM: ${gpuMemory.ramUsedGB}GB / ${gpuMemory.ramTotalGB}GB | CPU: ${gpuMemory.cpuUsage}%`}>
             <Cpu size={12} className="mr-1" />
             <span>{gpuMemory.ramUsedGB}GB</span>
           </div>
@@ -323,21 +340,24 @@ export default function StatusBar() {
             title={`Context: ${chatContextUsage.used}/${chatContextUsage.total} tokens (${contextPct}%)`}
           >
             <ContextRing percent={contextPct} size={14} />
-            <span className={contextPct > 85 ? 'text-yellow-200' : ''}>
-              {contextPct}%
-            </span>
+            {!hideContextPct && (
+              <span className={contextPct > 85 ? 'text-yellow-200' : ''}>
+                {contextPct}%
+              </span>
+            )}
           </button>
         )}
 
-        {/* Go Live button */}
+        {!hideGoLive && (
         <button
-          className={`statusbar-item ${liveServerRunning ? 'text-green-400' : ''}`}
+          className={`statusbar-item shrink-0 ${liveServerRunning ? 'text-green-400' : ''}`}
           onClick={toggleLiveServer}
           title={liveServerRunning ? `Live Server running on ${liveServerUrl} - Click to stop` : 'Click to start Live Server'}
         >
           <Radio size={12} className={`mr-1 ${liveServerRunning ? 'animate-pulse' : ''}`} />
           <span>{liveServerRunning ? 'Go Live' : 'Go Live'}</span>
         </button>
+        )}
 
         {/* Model info / Loading progress */}
         {modelLoading ? (
@@ -360,15 +380,16 @@ export default function StatusBar() {
           <button className="statusbar-item" onClick={() => setActiveActivity('settings')} title={modelInfo ? `${modelInfo.name} (${modelInfo.contextSize?.toLocaleString?.() ?? modelInfo.contextSize} ctx${modelInfo.contextSizeRequested === 'auto' && modelInfo.contextTrainMax ? `, train max ${modelInfo.contextTrainMax.toLocaleString()}` : ''})` : 'No model'}>
             <Cpu size={12} className="mr-1" />
             {modelLoaded && modelInfo ? (
-              <span className="truncate max-w-[120px]">{modelInfo.name || modelInfo.family}</span>
+              !hideModelName && (
+                <span className="truncate max-w-[120px]">{modelInfo.name || modelInfo.family}</span>
+              )
             ) : (
               <span className="opacity-70">No Model</span>
             )}
           </button>
         )}
 
-        {/* Version badge */}
-        <span className="statusbar-item text-vsc-text-dim/50 text-[10px] select-none" title={`guIDE ${appVersion}`}>v{appVersion}</span>
+        <span className="statusbar-item shrink-0 text-vsc-text-dim/50 text-[10px] select-none" title={`guIDE ${appVersion}`}>v{appVersion}</span>
       </div>
     </div>
   );

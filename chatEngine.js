@@ -131,9 +131,31 @@ const RE_CONTENT_START = /"content"\s*:\s*"$/;
 const RE_FILE_PATH = /"(?:filePath|path)"\s*:\s*"([^"]*)"/;
 const RE_TOOL_OR_SYSTEM_INJECT = /^\[(?:Tool Results|System)\]/i;
 const RE_CONTEXT_ROTATED = /\[System: (?:Context rotated|Session memory condensed)\]/i;
-const RE_ACTIVE_AGENTIC_SIGNAL = /\[System: (?:Tool Results|Session memory condensed|Earlier Tool Results)\]/i;
-const AGENT_ZERO_TOOL_RETRY_MAX = 2;
-const AGENT_ZERO_TOOL_RETRY_MESSAGE = `[System: Tools are enabled and listed in the system prompt above. Continue the active task by issuing the next tool call as JSON, e.g. {"tool":"browser_snapshot","params":{}}. Do not tell the user that tools are unavailable.]`;
+const DUPLICATE_HINT_TOOLS = new Set(['list_directory', 'read_file', 'grep_search', 'find_files']);
+const LIST_DIRECTORY_INJECT_MAX_ITEMS = 50;
+const DUPLICATE_TOOL_HINT_MESSAGE = '[System: You already ran this exact tool call three times in a row. Try a different path or answer the user.]';
+
+function stableToolFingerprint(tool, params) {
+  try {
+    const keys = Object.keys(params ?? {}).sort();
+    const sorted = {};
+    for (const k of keys) sorted[k] = params[k];
+    return `${tool}:${JSON.stringify(sorted)}`;
+  } catch {
+    return `${tool}:${String(params)}`;
+  }
+}
+
+function trimListDirectoryInjectPayload(toolResult) {
+  if (!toolResult?.success || !Array.isArray(toolResult.items)) return toolResult;
+  if (toolResult.items.length <= LIST_DIRECTORY_INJECT_MAX_ITEMS) return toolResult;
+  const omitted = toolResult.items.length - LIST_DIRECTORY_INJECT_MAX_ITEMS;
+  return {
+    ...toolResult,
+    items: toolResult.items.slice(0, LIST_DIRECTORY_INJECT_MAX_ITEMS),
+    listingNote: `NOT a complete listing — ${omitted} more entries omitted; use find_files or list a subdirectory.`,
+  };
+}
 
 const PLAN_MODE_ALLOWED_TOOLS = new Set([
   'read_file', 'list_directory', 'grep_search', 'find_files', 'get_file_info',
@@ -160,23 +182,6 @@ function filterPlanModeToolCalls(calls) {
     kept.push(c);
   }
   return { calls: kept, blocked };
-}
-
-function historyHasActiveAgenticSignals(chatHistory) {
-  if (!Array.isArray(chatHistory)) return false;
-  for (let i = chatHistory.length - 1; i >= Math.max(0, chatHistory.length - 24); i--) {
-    const text = String(chatHistory[i]?.text || '');
-    if (RE_ACTIVE_AGENTIC_SIGNAL.test(text) || RE_CONTEXT_ROTATED.test(text)) return true;
-  }
-  return false;
-}
-
-function isActiveAgenticWork({ totalToolCalls, toolRoundCount, chatHistory, options, forceContinue }) {
-  if (options?.askOnly || options?.planMode) return false;
-  if (options?.toolsEnabled === false) return false;
-  if (forceContinue) return true;
-  if (totalToolCalls > 0 || toolRoundCount > 0) return true;
-  return historyHasActiveAgenticSignals(chatHistory);
 }
 
 /** Web-facing tools — if these share a batch with workspace navigation tools, drop the latter (structural conflict rule). */
@@ -1595,7 +1600,7 @@ class ChatEngine extends EventEmitter {
 
     this._abortController = new AbortController();
     this._cancelRequested = false;
-    this._pendingPostRotationContinue = false;
+    this._toolExecFingerprints = [];
     let fullResponse = '';
     let visibleResponse = '';
     let _proseLogBuf = '';
@@ -2921,57 +2926,6 @@ class ChatEngine extends EventEmitter {
         let parsedCalls = []; // Hoisted to function scope for refusal correction access
         parsedCalls = parseToolCalls(fullResponse);
 
-        // Scoped 0-tool retry: mid-task agentic work only (not casual "hello" chat)
-        let _zeroToolRetryCount = 0;
-        while (
-          parsedCalls.length === 0
-          && _zeroToolRetryCount < AGENT_ZERO_TOOL_RETRY_MAX
-          && isActiveAgenticWork({
-            totalToolCalls,
-            toolRoundCount: this._toolRoundCount,
-            chatHistory: this._chatHistory,
-            options,
-            forceContinue: this._pendingPostRotationContinue,
-          })
-        ) {
-          _zeroToolRetryCount++;
-          console.log(`[ChatEngine] Agentic 0-tool retry #${_zeroToolRetryCount} — injecting continuation nudge`);
-          this._chatHistory.push({ type: 'user', text: AGENT_ZERO_TOOL_RETRY_MESSAGE });
-          _sfBuf = ''; _sfDepth = 0; _sfActive = false; _sfConfirmed = false;
-          _sfInStr = false; _sfEscaped = false; _sfLastCharWasNewlineOrStart = true;
-          _sfInFence = false; _sfFenceBuf = ''; _sfFenceTickCount = 0;
-          _sfRoundVisibleBuf = '';
-          const ctxAvailRetry = contextSize - (this._sequence?.nextTokenIndex || 0);
-          if (userMaxTokens !== Infinity) {
-            genOptions.maxTokens = Math.min(userMaxTokens, Math.max(1, ctxAvailRetry));
-          }
-          result = await this._generateResponseSafe(genOptions, {
-            contextSize,
-            onStreamEvent,
-            functions: _useNativeFunctions ? functions : undefined,
-            documentFunctionParams: _useNativeFunctions ? true : undefined,
-            userMaxTokensCap: userMaxTokens,
-          });
-          this._lastEvaluation = result.lastEvaluation;
-          if (result.lastEvaluation?.cleanHistory) {
-            this._chatHistory = result.lastEvaluation.cleanHistory;
-          }
-          if (onContextUsage && this._sequence) {
-            onContextUsage({ used: this._sequence.nextTokenIndex, total: this._context.contextSize });
-          }
-          const retryText = result.response || '';
-          fullResponse += retryText;
-          roundStart = fullResponse.length;
-          parsedCalls = parseToolCalls(fullResponse);
-          if (parsedCalls.length > 0) {
-            console.log(`[ChatEngine] Agentic 0-tool retry succeeded: ${parsedCalls.length} call(s)`);
-            break;
-          }
-        }
-        if (_zeroToolRetryCount > 0 && parsedCalls.length === 0) {
-          console.warn(`[ChatEngine] Agentic 0-tool retry exhausted (${_zeroToolRetryCount} rounds) — returning prose-only`);
-        }
-
         console.log(`[ChatEngine] Tool parse: found ${parsedCalls.length} tool call(s) in ${fullResponse.length} chars of model output`);
         // When 0 calls found, log response preview for diagnostics
         if (parsedCalls.length === 0 && fullResponse.length > 20) {
@@ -3148,7 +3102,10 @@ class ChatEngine extends EventEmitter {
               }
             }
 
-            const resultStr = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
+            const injectPayload = call.tool === 'list_directory'
+              ? trimListDirectoryInjectPayload(toolResult)
+              : toolResult;
+            const resultStr = typeof injectPayload === 'string' ? injectPayload : JSON.stringify(injectPayload);
             console.log(`[ChatEngine] Tool result for ${call.tool}: ${resultStr}`);
             if (onToolCall) onToolCall({ name: call.tool, params: call.params, result: toolResult });
 
@@ -3239,6 +3196,15 @@ class ChatEngine extends EventEmitter {
               }
             }
             toolResultLines.push(`${call.tool}: ${injectResult}`);
+
+            if (DUPLICATE_HINT_TOOLS.has(call.tool)) {
+              const fp = stableToolFingerprint(call.tool, call.params);
+              if (!this._toolExecFingerprints) this._toolExecFingerprints = [];
+              this._toolExecFingerprints.push(fp);
+              if (this._toolExecFingerprints.length > 3) {
+                this._toolExecFingerprints = this._toolExecFingerprints.slice(-3);
+              }
+            }
           }
 
           if (isCancelled()) {
@@ -3356,9 +3322,15 @@ class ChatEngine extends EventEmitter {
           if (this._pendingUserMessage) {
             userInterruptPrefix = `[USER INTERRUPT — OBEY THIS IMMEDIATELY]: ${this._pendingUserMessage}\n\n`;
             this._toolRoundCount = 0; // reset round count when user redirects mid-loop
+            this._toolExecFingerprints = [];
             this._pendingUserMessage = null;
           }
           this._toolRoundCount++;
+
+          const fps = this._toolExecFingerprints || [];
+          const duplicateHint = fps.length >= 3 && fps.every((f) => f === fps[0])
+            ? `${DUPLICATE_TOOL_HINT_MESSAGE}\n\n`
+            : '';
 
           if (this._sessionId !== sessionAtStart) {
             console.warn(`[ChatEngine] Session changed during tool execution (was ${sessionAtStart}, now ${this._sessionId}) — dropping stale tool results`);
@@ -3367,7 +3339,7 @@ class ChatEngine extends EventEmitter {
 
           this._chatHistory.push({
             type: 'user',
-            text: `${userInterruptPrefix}[System: Tool Results]\nThe tools below have ALREADY been executed. Do not repeat these actions or re-narrate work that is already complete. Give a brief summary of outcomes, then either call the next tool if more work is needed or give a short final answer. Do NOT enumerate long lists of hypothetical future options or features.\n\n${toolResultLines.join('\n')}${relatedSection}`,
+            text: `${userInterruptPrefix}${duplicateHint}[System: Tool Results]\nThe tools below have ALREADY been executed. Do not repeat these actions or re-narrate work that is already complete. Give a brief summary of outcomes, then either call the next tool if more work is needed or give a short final answer. Do NOT enumerate long lists of hypothetical future options or features.\n\n${toolResultLines.join('\n')}${relatedSection}`,
           });
           console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${!!this._pendingUserMessage}`);
           // Log compact summaries — browser snapshots bloat logs with full DOM
@@ -3706,7 +3678,7 @@ class ChatEngine extends EventEmitter {
       console.log('[ChatEngine] chat() FINALLY: abortController cleared');
       this._abortController = null;
       this._cancelRequested = false;
-      this._pendingPostRotationContinue = false;
+      this._toolExecFingerprints = [];
     }
   }
 
@@ -4025,7 +3997,7 @@ class ChatEngine extends EventEmitter {
       ? `Progress summary:\n${progressSummary}`
       : 'Progress summary: (generating...)';
 
-    const text = `[System: Session memory condensed — continue task silently] ${droppedCount} earlier turn(s) summarized.\n${taskLine}\n${progressLine}\nContinue immediately with the next tool call. Do not mention context limits or rotation to the user.\n`;
+    const text = `[System: Session memory condensed — continue task silently] ${droppedCount} earlier turn(s) summarized.\n${taskLine}\n${progressLine}\nContinue the active task. Use a tool only if needed; otherwise answer the user. Do not mention context limits or rotation to the user.\n`;
 
     copy.splice(Math.max(1, copy.length - 1), 0, { type: 'user', text });
     return copy;
@@ -4320,8 +4292,8 @@ class ChatEngine extends EventEmitter {
     if (stateLines.length) sections.push(`STATE:\n${stateLines.join('\n').slice(0, 600)}`);
     if (userSnippets.length > 1) sections.push(`RECENT USER:\n${userSnippets.slice(-2).join('\n---\n')}`);
     const nextStep = lastUrl
-      ? 'NEXT: browser_snapshot then continue on the current page.'
-      : (done.size ? 'NEXT: continue with the next tool call for the active task.' : 'NEXT: read_file or list_directory to resume work.');
+      ? 'NEXT: continue on the current page (browser_snapshot if you need fresh refs).'
+      : (done.size ? 'NEXT: continue the active task; use a tool only if more work is needed.' : 'NEXT: resume work on the user task.');
     sections.push(nextStep);
 
     const summary = sections.join('\n\n');
@@ -4404,13 +4376,11 @@ class ChatEngine extends EventEmitter {
         if (noticeIdx >= 0) {
           const notice = this._chatHistory[noticeIdx];
           notice.text = notice.text.replace(
-            /Progress summary:[\s\S]*?(?=\nContinue immediately|\n$)/,
+            /Progress summary:[\s\S]*?(?=\nContinue the active task|\n$)/,
             `Progress summary:\n${syncFallback}\n`
           );
         }
       }
-      this._pendingPostRotationContinue = historyHasActiveAgenticSignals(this._chatHistory);
-
       if (onStreamEvent) {
         onStreamEvent('generation-warning', {
           message: 'Condensing context — continuing task',
@@ -4429,7 +4399,7 @@ class ChatEngine extends EventEmitter {
           if (noticeIdx >= 0) {
             const notice = this._chatHistory[noticeIdx];
             notice.text = notice.text.replace(
-              /Progress summary:[\s\S]*?(?=\nContinue immediately|\n$)/,
+              /Progress summary:[\s\S]*?(?=\nContinue the active task|\n$)/,
               `Progress summary:\n${summary}\n`
             );
           }

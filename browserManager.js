@@ -230,7 +230,6 @@ class BrowserManager extends EventEmitter {
    */
   async navigate(url) {
     console.log(`[BrowserManager] navigate START: url=${url}`);
-    this._showViewportBrowserTab();
 
     const launchResult = await this.launchPlaywright();
     if (!launchResult.success || !this._page) {

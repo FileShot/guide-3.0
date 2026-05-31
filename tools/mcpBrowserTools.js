@@ -46,9 +46,6 @@ async function _browserNavigate(url) {
   // Use browserManager (has Playwright integration with auto-launch)
   if (this.browserManager) {
     console.log('[mcpBrowserTools] _browserNavigate: using browserManager');
-    if (this.browserManager.parentWindow) {
-      this.browserManager.parentWindow.webContents.send('show-viewport-browser');
-    }
     // Auto-launch Playwright on first use so browser_snapshot and DOM tools work
     if (!this.browserManager._page) {
       console.log('[mcpBrowserTools] _browserNavigate: auto-launching Playwright');
