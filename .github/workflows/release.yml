@@ -19,11 +19,22 @@ jobs:
           node-version: 20
           cache: 'npm'
 
-      - name: Install dependencies
+      - name: Install root dependencies
         run: npm ci --ignore-scripts
+
+      - name: Install frontend dependencies
+        run: npm ci --force || (sleep 5 && npm ci --force)
+        working-directory: frontend
 
       - name: Build frontend
         run: npm run build:renderer
+
+      - name: Install ImageMagick
+        run: choco install imagemagick --yes
+
+      - name: Generate multi-size app icon
+        shell: pwsh
+        run: ./scripts/generate-icon.ps1
 
       - name: Build CPU installer
         run: node scripts/build-installers.js --cpu

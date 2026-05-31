@@ -208,17 +208,7 @@ jobs:
         run: npm run build:renderer
 
       - name: Convert icon to PNG
-        run: |
-          mkdir -p build
-          if command -v magick &> /dev/null; then
-            magick frontend/public/zzz.png -resize 256x256! build/icon.png
-          elif command -v convert &> /dev/null; then
-            convert frontend/public/zzz.png -resize 256x256! build/icon.png
-          else
-            sudo apt-get install -y imagemagick
-            magick frontend/public/zzz.png -resize 256x256! build/icon.png
-          fi
-          magick identify -format '%wx%h' build/icon.png | grep -E '^256x256$' || (echo "icon.png must be exactly 256x256" && exit 1)
+        run: bash scripts/convert-icon-linux.sh
 
       - name: Verify node-llama-cpp Linux CPU backends
         run: |
@@ -271,17 +261,7 @@ jobs:
         run: npm run build:renderer
 
       - name: Convert icon to PNG
-        run: |
-          mkdir -p build
-          if command -v magick &> /dev/null; then
-            magick frontend/public/zzz.png -resize 256x256! build/icon.png
-          elif command -v convert &> /dev/null; then
-            convert frontend/public/zzz.png -resize 256x256! build/icon.png
-          else
-            sudo apt-get install -y imagemagick
-            magick frontend/public/zzz.png -resize 256x256! build/icon.png
-          fi
-          magick identify -format '%wx%h' build/icon.png | grep -E '^256x256$' || (echo "icon.png must be exactly 256x256" && exit 1)
+        run: bash scripts/convert-icon-linux.sh
 
       - name: Verify node-llama-cpp Linux CUDA backends
         run: |
