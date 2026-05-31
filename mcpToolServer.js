@@ -1370,6 +1370,17 @@ class MCPToolServer {
         // TODO tools
         case 'write_todos':
           result = this._writeTodos(params);
+          if (result?.success && this._agentContext.planMode && this._agentContext.agentPhase !== 'building') {
+            if (this._send) {
+              this._send('plan-todos-updated', {
+                todos: this._todos.map((t) => ({
+                  id: String(t.id),
+                  content: t.text,
+                  status: t.status,
+                })),
+              });
+            }
+          }
           break;
         case 'update_todo':
           result = this._updateTodo(params);
@@ -3445,7 +3456,7 @@ class MCPToolServer {
   // ─── TODO Tools ──────────────────────────────────────────────────────────
 
   _writeTodos(params) {
-    const { items } = params;
+    const { items, skipAutoInProgress } = params;
     if (!Array.isArray(items) || items.length === 0) {
       return { success: false, error: 'items must be a non-empty array of strings or {text, status} objects. Example: ["Step 1: do thing", "Step 2: do other thing"]. Retry with a valid items array.' };
     }
@@ -3474,13 +3485,25 @@ class MCPToolServer {
     // entirely — this ensures the plan shows activity immediately rather than sitting at 0/N.
     // If the model also calls update_todo({status:'in-progress'}) for the first item, it's
     // idempotent. If the item was explicitly created with status 'done', don't downgrade it.
-    if (created.length > 0 && created[0].status === 'pending') {
+    if (created.length > 0 && created[0].status === 'pending' && !skipAutoInProgress) {
       created[0].status = 'in-progress';
       const stored = this._todos.find(t => t.id === created[0].id);
       if (stored) stored.status = 'in-progress';
     }
     if (this.onTodoUpdate) this.onTodoUpdate([...this._todos]);
     return { success: true, created, allTodos: [...this._todos] };
+  }
+
+  /** Seed live todo list from plan frontmatter / PlanCard before Build. */
+  seedTodosFromPlan(planTodos) {
+    if (!Array.isArray(planTodos) || planTodos.length === 0) {
+      return { success: true, created: [], allTodos: [...this._todos] };
+    }
+    const items = planTodos.map((t) => ({
+      text: (t.content || t.text || String(t)).trim(),
+      status: ['pending', 'in-progress', 'done'].includes(t.status) ? t.status : 'pending',
+    })).filter((t) => t.text);
+    return this._writeTodos({ items, skipAutoInProgress: true });
   }
 
   _updateTodo(params) {

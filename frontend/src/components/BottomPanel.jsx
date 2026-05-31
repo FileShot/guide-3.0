@@ -548,6 +548,7 @@ function XTermPanel() {
 
           cleanupExit = api.terminal.onExit(async (msg) => {
             if (msg.terminalId !== termId) return;
+            if (disposed) return;
             const elapsed = Date.now() - ptySpawnAtRef.current;
             const spuriousStartupExit = elapsed < 4000
               && ptyStartupRetryRef.current < 1
@@ -560,6 +561,18 @@ function XTermPanel() {
                 const retry = await spawnPty();
                 if (retry?.success) {
                   modeRef.current = 'pty';
+                  return;
+                }
+              } catch (_) {}
+            }
+            if (modeRef.current === 'pty' && !disposed) {
+              term.writeln('\r\n\x1b[90m[Terminal restarting…]\x1b[0m');
+              try {
+                fitAddon?.fit();
+                const retry = await spawnPty();
+                if (retry?.success) {
+                  modeRef.current = 'pty';
+                  ptyCwdRef.current = useAppStore.getState().projectPath || null;
                   return;
                 }
               } catch (_) {}

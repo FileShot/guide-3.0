@@ -2161,13 +2161,20 @@ export default function ChatPanel() {
 
   }, [chatStreaming, addChatMessage, chatMode, chatAttachments, clearChatAttachments, fileContextDismissed]);
 
-  const handleBuildPlan = useCallback((session) => {
+  const handleBuildPlan = useCallback(async (session) => {
     if (!session?.path || useAppStore.getState().chatStreaming) return;
     setChatMode('agent');
     useAppStore.getState().setPlanSession({ ...session, status: 'building' });
+    const todos = session.todos || [];
+    if (todos.length > 0) {
+      try {
+        await window.electronAPI?.seedTodos?.(todos);
+      } catch (_) {}
+    }
     doSend(
-      `Implement the approved plan at ${session.path}. Follow todos in order. Do not replan unless blocked.`,
+      '[Build approved]',
       {
+        skipAddMessage: true,
         agentPhase: 'building',
         planContext: session.content,
         overrideChatMode: 'agent',
@@ -3211,18 +3218,6 @@ export default function ChatPanel() {
       {/* ─── Unified Input Container ──────────────────────── */}
 
       <div className="flex-shrink-0 p-2 relative">
-
-        {chatMode === 'plan' && (
-
-          <div className="mb-1.5 px-3 py-1.5 rounded-lg border border-vsc-accent/25 bg-vsc-accent/8 text-[11px] text-vsc-text-dim leading-snug">
-
-            <span className="font-semibold text-vsc-text">Plan mode</span>
-
-            {' '}— explore with read/search/git tools; write only <code className="text-vsc-text/90">.guide/plans/*.plan.md</code>. Review the plan, then click <strong>Build</strong>.
-
-          </div>
-
-        )}
 
         <PlanCard onBuild={handleBuildPlan} chatStreaming={chatStreaming} />
 

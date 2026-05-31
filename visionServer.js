@@ -1,6 +1,6 @@
 'use strict';
 
-const { spawn, execFile } = require('child_process');
+const { spawn, execFile, execSync } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 const http = require('http');

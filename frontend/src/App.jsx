@@ -713,6 +713,23 @@ export default function App() {
 
 
 
+      case 'plan-todos-updated':
+
+        if (data?.todos) {
+          const current = s.planSession;
+          if (current) {
+            s.setPlanSession({
+              ...current,
+              todos: data.todos,
+              status: current.status === 'planning' ? 'ready' : current.status,
+            });
+          }
+        }
+
+        break;
+
+
+
       // Ask question from model
 
       case 'ask-question':
@@ -986,6 +1003,8 @@ export default function App() {
       api.onTodoUpdate?.((d) => handleEvent('todo-update', d)),
 
       api.onPlanReady?.((d) => handleEvent('plan-ready', d)),
+
+      api.onPlanTodosUpdated?.((d) => handleEvent('plan-todos-updated', d)),
 
       api.onAskQuestion?.((d) => handleEvent('ask-question', d)),
 

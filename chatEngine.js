@@ -17,6 +17,7 @@ const {
   isPlanFilePath,
   getAskModePromptAddition,
   getPlanModePromptAddition,
+  getBuildingPhasePromptAddition,
 } = require('./agentModeResolver');
 
 /** Base max chars of each tool result injected into chat history.
@@ -1500,7 +1501,10 @@ class ChatEngine extends EventEmitter {
       }
     }
     // Mode overrides: inject behavioral instructions before tool prompt
-    if (options.planMode && options.agentPhase !== 'building') {
+    if (options.agentPhase === 'building') {
+      basePrompt += getBuildingPhasePromptAddition();
+      console.log('[ChatEngine] Build phase — implement in project root, not .guide/');
+    } else if (options.planMode && options.agentPhase !== 'building') {
       basePrompt += getPlanModePromptAddition();
       console.log('[ChatEngine] Plan mode — model will write .guide/plans/*.plan.md before executing');
     }
@@ -1769,6 +1773,22 @@ class ChatEngine extends EventEmitter {
           // so it appears in thinking blocks instead of as regular prose.
           if (_sfRawThinkTagsEnabled && _sfInThink) {
             _sfThinkBuf += ch;
+            // Tool payloads mis-routed into thinking (e.g. write_file HTML/JSON) — bail out to normal stream.
+            if (_sfThinkBuf.length > 48) {
+              const sample = _sfThinkBuf.slice(0, 4096);
+              const looksLikeToolPayload = /"filePath"|"content"\s*:|className=|<\/\w+>|"tool"\s*:/.test(sample);
+              if (looksLikeToolPayload) {
+                console.log('[ChatEngine] thinking-mode force-exit — content looks like tool/file payload');
+                const orphanThink = _sfThinkBuf;
+                _sfInThink = false;
+                _sfThinkBuf = '';
+                if (onStreamEvent && !_thinkingFilterEnabled) {
+                  onStreamEvent('llm-thinking-end', { position: _sfVisibleChars, length: 0, content: '' });
+                }
+                if (orphanThink) _sfProcessChunk(orphanThink);
+                continue;
+              }
+            }
             // Plan A: thinking chars route ONLY to llm-thinking-token events.
             // The previous design dual-emitted to onToken (visible stream), which leaked the
             // </think> bytes as visible text byte-by-byte before the close-tag check fired.
@@ -1849,6 +1869,11 @@ class ChatEngine extends EventEmitter {
               // and must not flip routing to the thinking channel mid-file.
               if (_sfContentStreamActive) {
                 console.log('[ChatEngine] thinking-tag in content stream - suppressed (opaque file content)');
+                continue;
+              }
+              if (_sfInFence || _sfFileWriteDetected || _sfToolCallNotified) {
+                console.log('[ChatEngine] thinking-tag suppressed (tool generation active)');
+                _sfThinkTagMatch = '';
                 continue;
               }
               // Full open match — enter thinking mode, discard the tag

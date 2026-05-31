@@ -159,6 +159,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Todo events
   onTodoUpdate:        (cb) => _on('todo-update', cb),
   onPlanReady:         (cb) => _on('plan-ready', cb),
+  onPlanTodosUpdated:  (cb) => _on('plan-todos-updated', cb),
+  seedTodos:           (planTodos) => ipcRenderer.invoke('seed-todos', planTodos),
 
   // Ask question events
   onAskQuestion:       (cb) => _on('ask-question', cb),

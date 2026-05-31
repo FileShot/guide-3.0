@@ -47,6 +47,10 @@ const markdownComponents = {
         const text = Array.isArray(safeChildren) ? safeChildren.join('') : String(safeChildren || '');
         return <MermaidBlock>{text}</MermaidBlock>;
       }
+      const codeText = Array.isArray(safeChildren) ? safeChildren.join('') : String(safeChildren || '');
+      if (isProseTextFence(lang, codeText)) {
+        return <p className="my-1.5 leading-relaxed">{codeText.trim()}</p>;
+      }
       return (
         <CodeBlock language={lang} className={className}>
           {safeChildren}
@@ -114,6 +118,15 @@ const rehypePlugins = [
   [rehypeHighlight, { detect: false, ignoreMissing: true }],
   rehypeKatex,
 ];
+
+function isProseTextFence(lang, text) {
+  const l = (lang || '').toLowerCase();
+  if (l !== 'text' && l !== 'plaintext' && l !== 'txt') return false;
+  const body = String(text || '').trim();
+  if (!body || body.length > 120) return false;
+  if (/[{[\]`$=<>]|function |import |const |class |<\/?\w+/.test(body)) return false;
+  return true;
+}
 
 /** Split streaming markdown into stable prose + live code tail when fence is open. */
 function splitStreamingMarkdown(content, streaming) {
@@ -192,9 +205,13 @@ function MarkdownRendererImpl({ content, streaming }) {
         </ReactMarkdown>
       ) : null}
       {openCode && (
-        <CodeBlock language={openCode.lang || 'text'} streaming>
-          {openCode.text}
-        </CodeBlock>
+        isProseTextFence(openCode.lang, openCode.text) ? (
+          <p className="my-1.5 leading-relaxed">{openCode.text.trim()}</p>
+        ) : (
+          <CodeBlock language={openCode.lang || 'text'} streaming>
+            {openCode.text}
+          </CodeBlock>
+        )
       )}
     </div>
   );

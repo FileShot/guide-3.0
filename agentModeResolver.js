@@ -52,10 +52,17 @@ function getAskModePromptAddition() {
 function getPlanModePromptAddition() {
   return '\n\n## PLAN MODE ACTIVE\nYou are in Plan mode. Explore the codebase with read/search/git tools first.\n'
     + 'Then write ONE complete implementation plan to `.guide/plans/{descriptive-slug}.plan.md` using write_file.\n'
-    + 'The plan file MUST include YAML frontmatter with `title` and `todos` (array of { id, content, status: pending }).\n'
-    + 'STOP after writing the plan file. Do NOT modify source files, run commands, or install packages.\n'
+    + 'The plan file MUST include YAML frontmatter with `title` and optional `overview` only (no todos in the file).\n'
+    + 'After writing the plan file, call **write_todos** with the implementation checklist so the user sees live progress.\n'
+    + 'STOP after the plan file and write_todos. Do NOT modify source files, run commands, or install packages.\n'
     + 'The user will review the plan and click **Build** to implement — do not implement until then.\n'
-    + 'In Plan mode: read-only tools and write_file (for `.guide/plans/*.plan.md` only) are permitted.';
+    + 'In Plan mode: read-only tools, write_file (for `.guide/plans/*.plan.md` only), write_todos, and update_todo are permitted.';
+}
+
+function getBuildingPhasePromptAddition() {
+  return '\n\n## BUILD PHASE\nImplement the approved plan in the PROJECT ROOT (the opened workspace folder).\n'
+    + 'NEVER create application source under `.guide/` — that directory is guIDE metadata only (`.guide/plans/`, checkpoints).\n'
+    + 'If no todos exist yet, call write_todos first; then call update_todo as you start and finish each step.';
 }
 
 /**
@@ -73,7 +80,7 @@ function resolveAgentMode(options = {}) {
   const effectiveAskOnly = askOnly || chatMode === 'ask';
   const effectivePlanMode = planMode || chatMode === 'plan';
   const planning = effectivePlanMode && agentPhase !== 'building';
-  const building = effectivePlanMode && agentPhase === 'building';
+  const building = agentPhase === 'building';
 
   let allowedTools = null;
   if (!toolsEnabled || effectiveAskOnly) {
@@ -85,6 +92,8 @@ function resolveAgentMode(options = {}) {
   let systemPromptAdditions = '';
   if (effectiveAskOnly) {
     systemPromptAdditions += getAskModePromptAddition();
+  } else if (building) {
+    systemPromptAdditions += getBuildingPhasePromptAddition();
   } else if (planning) {
     systemPromptAdditions += getPlanModePromptAddition();
   }
@@ -193,6 +202,7 @@ module.exports = {
   checkPlanModeToolGate,
   getAskModePromptAddition,
   getPlanModePromptAddition,
+  getBuildingPhasePromptAddition,
   parsePlanFileContent,
   relativePlanPath,
 };

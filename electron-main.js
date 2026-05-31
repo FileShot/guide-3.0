@@ -630,7 +630,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       const planMode = !!(settings.planMode);
       const enableSubAgents = settings.enableSubAgents !== false;
       if (settings.planContext && settings.agentPhase === 'building') {
-        effectiveMessage = `${effectiveMessage}\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
+        effectiveMessage = `[Build approved]\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
       }
       const executeToolFn = async (toolName, params) => {
         if (toolName === 'spawn_subagent') {
@@ -727,7 +727,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     effectiveMessage = mentionResolved.message;
 
     if (settings.planContext && settings.agentPhase === 'building') {
-      effectiveMessage = `${effectiveMessage}\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
+      effectiveMessage = `[Build approved]\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
     }
 
     console.log(`[electron-main] ai-chat: calling llmEngine.chat, effectiveMessageLen=${effectiveMessage.length}, mode=${mode.planning ? 'plan' : mode.askOnly ? 'ask' : 'agent'}`);
@@ -2419,6 +2419,39 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
 let pty = undefined;
 const ptyTerminals = new Map();
 
+function _registerPtyTerminal(termId, ptyProcess) {
+  ptyProcess.onData((data) => {
+    _send('terminal-data', { terminalId: termId, data });
+  });
+  ptyProcess.onExit(({ exitCode }) => {
+    console.log(`[Main] terminal-exit id=${termId} code=${exitCode}`);
+    // Ignore stale exits from killed shells (e.g. terminal-recreate race).
+    if (ptyTerminals.get(termId) !== ptyProcess) {
+      console.log(`[Main] terminal-exit id=${termId} ignored (stale process)`);
+      return;
+    }
+    ptyTerminals.delete(termId);
+    _send('terminal-exit', { terminalId: termId, exitCode });
+  });
+  ptyTerminals.set(termId, ptyProcess);
+}
+
+function _spawnPtyTerminal(ptyModule, termId, opts = {}) {
+  const shell = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/bash');
+  const cwd = opts.cwd || currentProjectPath || os.homedir();
+  const cols = Math.max(opts.cols || 80, 10);
+  const rows = Math.max(opts.rows || 24, 3);
+  const ptyProcess = ptyModule.spawn(shell, [], {
+    name: 'xterm-256color',
+    cols,
+    rows,
+    cwd,
+    env: process.env,
+  });
+  _registerPtyTerminal(termId, ptyProcess);
+  return { success: true, terminalId: termId, shell, cwd };
+}
+
 function _loadPty() {
   if (pty !== undefined) return pty;
   try {
@@ -2436,32 +2469,12 @@ ipcMain.handle('terminal-create', (_event, opts) => {
   if (!ptyModule) return { success: false, error: 'node-pty not available' };
 
   const termId = opts?.terminalId || `pty-${Date.now()}`;
-  const shell = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/bash');
-  const cwd = opts?.cwd || currentProjectPath || os.homedir();
   const cols = Math.max(opts?.cols || 80, 10);
   const rows = Math.max(opts?.rows || 24, 3);
+  const cwd = opts?.cwd || currentProjectPath || os.homedir();
   console.log(`[Main] terminal-create id=${termId} cols=${cols} rows=${rows} cwd=${cwd}`);
 
-  const ptyProcess = ptyModule.spawn(shell, [], {
-    name: 'xterm-256color',
-    cols,
-    rows,
-    cwd,
-    env: process.env,
-  });
-
-  ptyProcess.onData((data) => {
-    _send('terminal-data', { terminalId: termId, data });
-  });
-
-  ptyProcess.onExit(({ exitCode }) => {
-    console.log(`[Main] terminal-exit id=${termId} code=${exitCode}`);
-    _send('terminal-exit', { terminalId: termId, exitCode });
-    ptyTerminals.delete(termId);
-  });
-
-  ptyTerminals.set(termId, ptyProcess);
-  return { success: true, terminalId: termId, shell };
+  return _spawnPtyTerminal(ptyModule, termId, { cwd, cols, rows });
 });
 
 ipcMain.handle('terminal-write', (_event, termId, data) => {
@@ -2483,38 +2496,26 @@ ipcMain.handle('terminal-destroy', (_event, termId) => {
 });
 
 ipcMain.handle('terminal-recreate', (_event, opts) => {
-  const termId = opts?.terminalId;
-  if (termId) {
-    const proc = ptyTerminals.get(termId);
-    if (proc) {
-      try { proc.kill(); } catch (_) {}
-      ptyTerminals.delete(termId);
-    }
+  const termId = opts?.terminalId || `pty-${Date.now()}`;
+  const existing = ptyTerminals.get(termId);
+  if (existing) {
+    try { existing.kill(); } catch (_) {}
   }
   const ptyModule = _loadPty();
   if (!ptyModule) return { success: false, error: 'node-pty not available' };
-  const newId = termId || `pty-${Date.now()}`;
-  const shell = process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/bash');
-  const cwd = opts?.cwd || currentProjectPath || os.homedir();
   const cols = Math.max(opts?.cols || 80, 10);
   const rows = Math.max(opts?.rows || 24, 3);
-  console.log(`[Main] terminal-recreate id=${newId} cols=${cols} rows=${rows} cwd=${cwd}`);
-  const ptyProcess = ptyModule.spawn(shell, [], {
-    name: 'xterm-256color',
-    cols,
-    rows,
-    cwd,
-    env: process.env,
-  });
-  ptyProcess.onData((data) => {
-    _send('terminal-data', { terminalId: newId, data });
-  });
-  ptyProcess.onExit(({ exitCode }) => {
-    _send('terminal-exit', { terminalId: newId, exitCode });
-    ptyTerminals.delete(newId);
-  });
-  ptyTerminals.set(newId, ptyProcess);
-  return { success: true, terminalId: newId, shell, cwd };
+  const cwd = opts?.cwd || currentProjectPath || os.homedir();
+  console.log(`[Main] terminal-recreate id=${termId} cols=${cols} rows=${rows} cwd=${cwd}`);
+  return _spawnPtyTerminal(ptyModule, termId, { cwd, cols, rows });
+});
+
+ipcMain.handle('seed-todos', (_event, planTodos) => {
+  try {
+    return mcpToolServer.seedTodosFromPlan(planTodos);
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
 // ─── Debug event forwarding ─────────────────────────────────────────
