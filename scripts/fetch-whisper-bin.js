@@ -45,13 +45,22 @@ function download(url, dest) {
 
 function fetchJson(url) {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'guIDE-whisper-fetch' } }, (res) => {
-      let data = '';
-      res.on('data', (c) => { data += c; });
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
-      });
-    }).on('error', reject);
+    const req = (u) => {
+      https.get(u, { headers: { 'User-Agent': 'guIDE-whisper-fetch' } }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          return req(res.headers.location);
+        }
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => {
+          if (res.statusCode !== 200) {
+            return reject(new Error(`HTTP ${res.statusCode} for ${u}`));
+          }
+          try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
+        });
+      }).on('error', reject);
+    };
+    req(url);
   });
 }
 
