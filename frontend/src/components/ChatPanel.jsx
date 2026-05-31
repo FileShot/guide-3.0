@@ -18,6 +18,7 @@ import SlideDown from './SlideDown';
 
 import FileContentBlock from './chat/FileContentBlock';
 import MentionPicker from './MentionPicker';
+import { blobToWav } from '../utils/audioToWav';
 
 import { Virtuoso } from 'react-virtuoso';
 
@@ -1169,10 +1170,12 @@ export default function ChatPanel() {
       setInput((prev) => (prev ? `${prev.trimEnd()} ${transcript.trim()}` : transcript.trim()));
     };
 
+    const notify = (type, message) => useAppStore.getState().addNotification({ type, message });
+
     const startWebSpeech = () => {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SpeechRecognition) {
-        useAppStore.getState().addNotification({ type: 'warning', message: 'Speech recognition is not supported in this browser.' });
+        notify('warning', 'Speech recognition is not supported in this environment.');
         return;
       }
       const recognition = new SpeechRecognition();
@@ -1186,14 +1189,85 @@ export default function ChatPanel() {
         }
         appendTranscript(transcript);
       };
-      recognition.onerror = () => setVoiceListening(false);
+      recognition.onerror = (ev) => {
+        setVoiceListening(false);
+        notify('warning', `Speech recognition error: ${ev.error || 'unknown'}`);
+      };
       recognition.onend = () => {
         setVoiceListening(false);
         speechRecognitionRef.current = null;
       };
       speechRecognitionRef.current = recognition;
       setVoiceListening(true);
-      recognition.start();
+      try { recognition.start(); } catch (e) {
+        setVoiceListening(false);
+        notify('warning', e.message || 'Could not start speech recognition');
+      }
+    };
+
+    const startMediaRecorder = () => {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        startWebSpeech();
+        return;
+      }
+      navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+        let recorder;
+        try {
+          recorder = new MediaRecorder(stream);
+        } catch (e) {
+          stream.getTracks().forEach((t) => t.stop());
+          notify('warning', e.message || 'MediaRecorder not supported');
+          startWebSpeech();
+          return;
+        }
+        const chunks = [];
+        recorder.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
+        recorder.onstop = async () => {
+          stream.getTracks().forEach((t) => t.stop());
+          voiceRecorderRef.current = null;
+          setVoiceListening(false);
+          if (!chunks.length) return;
+          try {
+            const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+            const wavBuffer = await blobToWav(blob);
+            let r;
+            if (window.electronAPI?.voiceTranscribe) {
+              r = await window.electronAPI.voiceTranscribe(wavBuffer, { format: 'wav' });
+            } else {
+              const bytes = Array.from(new Uint8Array(wavBuffer));
+              r = await fetch('/api/voice/transcribe', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ _audioBuffer: bytes, format: 'wav' }),
+              }).then((res) => res.json());
+            }
+            if (r?.success && r.text) {
+              appendTranscript(r.text);
+              if (r.source === 'cloud') notify('info', 'Transcribed via cloud STT', 2000);
+            } else if (r?.useWebSpeech) {
+              startWebSpeech();
+            } else {
+              notify('warning', r?.error || 'Transcription failed');
+            }
+          } catch (e) {
+            notify('warning', e.message || 'Voice input failed');
+            if (!window.electronAPI?.voiceTranscribe) startWebSpeech();
+          }
+        };
+        recorder.onerror = () => {
+          stream.getTracks().forEach((t) => t.stop());
+          voiceRecorderRef.current = null;
+          setVoiceListening(false);
+          notify('warning', 'Recording failed');
+        };
+        voiceRecorderRef.current = { recorder, stream };
+        setVoiceListening(true);
+        recorder.start();
+        notify('info', 'Recording… click mic again when finished.', 2500);
+      }).catch((e) => {
+        notify('warning', e.message || 'Microphone access denied');
+        startWebSpeech();
+      });
     };
 
     if (voiceListening) {
@@ -1208,49 +1282,10 @@ export default function ChatPanel() {
       return;
     }
 
-    if (voiceWhisperAvailableRef.current && navigator.mediaDevices?.getUserMedia) {
-      navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
-        const recorder = new MediaRecorder(stream);
-        const chunks = [];
-        recorder.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
-        recorder.onstop = async () => {
-          stream.getTracks().forEach((t) => t.stop());
-          voiceRecorderRef.current = null;
-          setVoiceListening(false);
-          if (!chunks.length) return;
-          try {
-            const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-            const buf = await blob.arrayBuffer();
-            const bytes = Array.from(new Uint8Array(buf));
-            const api = window.electronAPI?.apiFetch
-              ? (url, opts) => window.electronAPI.apiFetch(url, opts)
-              : (url, opts) => fetch(url, opts).then((r) => r.json());
-            const r = await api('/api/voice/transcribe', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ _audioBuffer: bytes, format: 'webm' }),
-            });
-            if (r?.success && r.text) appendTranscript(r.text);
-            else if (r?.useWebSpeech) startWebSpeech();
-            else useAppStore.getState().addNotification({ type: 'warning', message: r?.error || 'Transcription failed' });
-          } catch (e) {
-            useAppStore.getState().addNotification({ type: 'warning', message: e.message || 'Voice input failed' });
-            startWebSpeech();
-          }
-        };
-        recorder.onerror = () => {
-          stream.getTracks().forEach((t) => t.stop());
-          voiceRecorderRef.current = null;
-          setVoiceListening(false);
-          startWebSpeech();
-        };
-        voiceRecorderRef.current = { recorder, stream };
-        setVoiceListening(true);
-        recorder.start();
-      }).catch(() => startWebSpeech());
+    if (window.electronAPI?.voiceTranscribe) {
+      startMediaRecorder();
       return;
     }
-
     startWebSpeech();
   }, [voiceListening]);
 
@@ -1259,7 +1294,9 @@ export default function ChatPanel() {
       ? (url, opts) => window.electronAPI.apiFetch(url, opts)
       : (url, opts) => fetch(url, opts).then((r) => r.json());
     api('/api/voice/status', { method: 'GET' })
-      .then((d) => { voiceWhisperAvailableRef.current = !!d?.localWhisper; })
+      .then((d) => {
+        voiceWhisperAvailableRef.current = !!(d?.localWhisper || d?.modelReady || d?.cloudAvailable);
+      })
       .catch(() => {});
   }, []);
 
@@ -1490,6 +1527,10 @@ export default function ChatPanel() {
 
 
     setInput('');
+
+    useAppStore.getState().clearPendingQuestion();
+    useAppStore.getState().clearPendingPermission();
+    window.electronAPI?.cancelPendingQuestion?.();
 
     if (!skipAddMessage) {
 
@@ -2275,6 +2316,8 @@ export default function ChatPanel() {
 
     useAppStore.getState().bumpChatGenerationEpoch();
 
+    window.electronAPI?.cancelPendingQuestion?.();
+
     clearChat();
 
     setActiveConversationId('current');
@@ -2408,6 +2451,10 @@ export default function ChatPanel() {
     store.bumpChatGenerationEpoch();
 
     store.resetChatStreamingUI();
+    store.clearPendingQuestion();
+    store.clearPendingPermission();
+    store.setTodos([]);
+    window.electronAPI?.cancelPendingQuestion?.();
 
     useAppStore.setState({ chatMessages: session.messages || [] });
 

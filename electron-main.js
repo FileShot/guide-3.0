@@ -335,7 +335,7 @@ const languageServerManager = new LanguageServerManager();
 const lspBundleManager = new LspBundleManager(userDataPath);
 languageServerManager.setBundleManager(lspBundleManager);
 const fimCompletionService = new FimCompletionService(llmEngine);
-const voiceService = new VoiceService(userDataPath);
+const voiceService = new VoiceService(userDataPath, settingsManager);
 const extensionHost = new ExtensionHost(extensionManager);
 const debugService = new DebugService();
 const multiRootWorkspace = new MultiRootWorkspace(userDataPath);
@@ -361,6 +361,14 @@ mcpToolServer.onAskQuestion = (questionData) => {
     mcpToolServer._pendingQuestionResolve = resolve;
   });
 };
+
+function cancelPendingQuestion(reason = '(skipped by user)') {
+  if (mcpToolServer._pendingQuestionResolve) {
+    const resolve = mcpToolServer._pendingQuestionResolve;
+    mcpToolServer._pendingQuestionResolve = null;
+    resolve({ success: true, answer: reason });
+  }
+}
 mcpToolServer.onPermissionRequest = (toolName, params, reason) => {
   return new Promise((resolve) => {
     const reqId = `perm-${Date.now()}`;
@@ -545,6 +553,7 @@ ipcMain.handle('rules-delete', (_e, name) => rulesManager.deleteRule(name));
 // Register ai-chat handler for basic model chat
 ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
   console.log(`[electron-main] ai-chat START: userMessageLen=${String(userMessage).length}, cloudProvider=${chatContext?.cloudProvider || 'none'}`);
+  cancelPendingQuestion('(user sent a new message)');
   const cloudProvider = chatContext?.cloudProvider;
   const cloudModel = chatContext?.cloudModel;
 
@@ -899,6 +908,39 @@ ipcMain.handle('answer-question', (_e, answer) => {
     resolve({ success: true, answer });
   }
   return { received: true };
+});
+
+ipcMain.handle('cancel-pending-question', () => {
+  cancelPendingQuestion('(skipped by user)');
+  return { success: true };
+});
+
+ipcMain.handle('voice-transcribe', async (_e, audioBuffer, opts = {}) => {
+  try {
+    const buf = Buffer.from(audioBuffer);
+    return await voiceService.transcribe(buf, opts || {});
+  } catch (e) {
+    return { success: false, error: e.message, useWebSpeech: true };
+  }
+});
+
+ipcMain.handle('extension-install-file', async (_e, { buffer, fileName } = {}) => {
+  if (!buffer || !fileName) return { success: false, error: 'buffer and fileName required' };
+  try {
+    const data = Buffer.from(buffer);
+    let result;
+    if (fileName.toLowerCase().endsWith('.vsix')) {
+      result = await loadVsix(data, extensionManager);
+    } else {
+      result = await extensionManager.installFromZip(data, fileName);
+    }
+    if (result.success && result.id) {
+      extensionHost.activate(result.id, extensionManager.getExtension(result.id));
+    }
+    return result;
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
 });
 
 // Handle permission response from frontend (approve/deny command execution)
@@ -1920,20 +1962,26 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       }
       return { _status: 400, error: 'File upload or downloadUrl required' };
     }
-    if (p === '/api/extensions/uninstall' && method === 'POST') {
-      const { id } = body;
-      if (!id) return { _status: 400, error: 'Extension ID required' };
-      return { success: true, ...(await extensionManager.uninstall(id)) };
-    }
     if (p === '/api/extensions/enable' && method === 'POST') {
       const { id } = body;
       if (!id) return { _status: 400, error: 'Extension ID required' };
-      return { success: true, ...(await extensionManager.enable(id)) };
+      const result = await extensionManager.enable(id);
+      const ext = extensionManager.getExtension(id);
+      if (ext) extensionHost.activate(id, ext);
+      return { success: true, ...result };
     }
     if (p === '/api/extensions/disable' && method === 'POST') {
       const { id } = body;
       if (!id) return { _status: 400, error: 'Extension ID required' };
-      return { success: true, ...(await extensionManager.disable(id)) };
+      extensionHost.deactivate(id);
+      const result = await extensionManager.disable(id);
+      return { success: true, ...result };
+    }
+    if (p === '/api/extensions/uninstall' && method === 'POST') {
+      const { id } = body;
+      if (!id) return { _status: 400, error: 'Extension ID required' };
+      extensionHost.deactivate(id);
+      return { success: true, ...(await extensionManager.uninstall(id)) };
     }
 
     // ── Debug ───────────────────────────────────────────
@@ -2450,6 +2498,17 @@ debugService.on('debug-event', (data) => _send('debug-event', data));
 
 app.whenReady().then(async () => {
   _configureBundledPlaywrightBrowsers();
+
+  const { session } = require('electron');
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    if (permission === 'media') return callback(true);
+    callback(false);
+  });
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => {
+    if (permission === 'media') return true;
+    return false;
+  });
+
   createWindow();
   buildAppMenu(mainWindow);
 

@@ -30,6 +30,11 @@ const SERVER_DEFS = {
     command: 'gopls',
     args: ['serve'],
   },
+  yaml: {
+    languages: ['yaml', 'yml'],
+    command: process.platform === 'win32' ? 'yaml-language-server.cmd' : 'yaml-language-server',
+    args: ['--stdio'],
+  },
 };
 
 /** Detect which LSP languages to start based on project marker files */
@@ -42,6 +47,10 @@ function detectProjectLanguages(projectPath) {
     if (has('pyproject.toml') || has('requirements.txt') || has('setup.py') || has('Pipfile')) langs.add('python');
     if (has('Cargo.toml')) langs.add('rust');
     if (has('go.mod')) langs.add('go');
+    const listDir = (d) => {
+      try { return fs.readdirSync(path.join(projectPath, d)); } catch { return []; }
+    };
+    if (listDir('.').some((f) => /\.(ya?ml)$/i.test(f))) langs.add('yaml');
   } catch (_) {}
   return [...langs];
 }
@@ -151,6 +160,7 @@ class LanguageServerManager extends EventEmitter {
     }
     if (['ts', 'tsx', 'js', 'jsx'].includes(lang)) return 'typescript';
     if (lang === 'py') return 'python';
+    if (lang === 'yaml' || lang === 'yml') return 'yaml';
     return null;
   }
 

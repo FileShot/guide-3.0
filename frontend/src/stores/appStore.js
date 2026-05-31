@@ -519,7 +519,11 @@ const useAppStore = create((set, get) => ({
 
   activeChatEpoch: null,
 
-  bumpChatGenerationEpoch: () => set((s) => ({ chatGenerationEpoch: s.chatGenerationEpoch + 1 })),
+  bumpChatGenerationEpoch: () => set((s) => ({
+    chatGenerationEpoch: s.chatGenerationEpoch + 1,
+    pendingQuestion: null,
+    pendingPermission: null,
+  })),
 
   setActiveChatEpoch: (epoch) => set({ activeChatEpoch: epoch }),
 
@@ -1470,6 +1474,10 @@ const useAppStore = create((set, get) => ({
       messageQueue: [],
 
       todos: [],
+
+      pendingQuestion: null,
+
+      pendingPermission: null,
 
       _fileTokenBuffer: null, _fileTokenTimer: null,
 

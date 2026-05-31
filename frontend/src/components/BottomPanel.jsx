@@ -5,7 +5,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import useAppStore from '../stores/appStore';
 import { openFileFromReadResponse } from '../utils/openFileFromRead';
-import { Terminal as TerminalIcon, FileOutput, AlertTriangle, X, Plus, Trash2, Globe, Bug, ChevronDown, MoreHorizontal, CheckSquare, RefreshCw } from 'lucide-react';
+import { Terminal as TerminalIcon, FileOutput, AlertTriangle, X, Plus, Trash2, Globe, Bug, ChevronDown, MoreHorizontal, CheckSquare, RefreshCw, Send } from 'lucide-react';
+import RestClientPanel from './RestClientPanel';
 
 const mainTabs = [
   { id: 'problems', label: 'Problems', icon: AlertTriangle },
@@ -17,6 +18,7 @@ const mainTabs = [
 const moreTabs = [
   { id: 'debug', label: 'Debug Console', icon: Bug },
   { id: 'ports', label: 'Ports', icon: Globe },
+  { id: 'rest', label: 'REST', icon: Send },
 ];
 
 export default function BottomPanel() {
@@ -136,6 +138,7 @@ export default function BottomPanel() {
         {activePanelTab === 'todo' && <TodoPanel />}
         {activePanelTab === 'debug' && <DebugConsolePanel />}
         {activePanelTab === 'ports' && <PortsPanel />}
+        {activePanelTab === 'rest' && <RestClientPanel />}
       </div>
     </div>
   );

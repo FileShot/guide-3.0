@@ -18,7 +18,7 @@ import {
   Save, RotateCcw, Zap, Scale, Brain, Cpu, Monitor, Type,
   FolderOpen, ExternalLink, Play,
   Package, Star, Download, Upload,
-  Pause, SkipForward, ArrowDownRight, ArrowUpRight, Square, Bug, AlertTriangle, Eye, Shield
+  Pause, SkipForward, ArrowDownRight, ArrowUpRight, Square, Bug, AlertTriangle, Eye, Shield, Mic
 } from 'lucide-react';
 import { openFileFromReadResponse } from '../utils/openFileFromRead';
 
@@ -1962,6 +1962,7 @@ function SettingsPanel() {
 
       {/* Editor */}
       <LspLanguagesSettings addNotification={addNotification} />
+      <VoiceSettings addNotification={addNotification} />
 
       <SettingsSection title="Editor" icon={<FileCode size={13} />}>
         <SettingSlider label="Font Size" value={settings.fontSize} min={8} max={32} step={1}
@@ -2125,6 +2126,7 @@ function LspLanguagesSettings({ addNotification }) {
     { id: 'python', label: 'Python (Pyright)', bundled: false },
     { id: 'rust', label: 'Rust (rust-analyzer)', bundled: false },
     { id: 'go', label: 'Go (gopls)', bundled: false },
+    { id: 'yaml', label: 'YAML', bundled: false },
   ];
   return (
     <SettingsSection title="Languages (LSP)" icon={<FileCode size={13} />}>
@@ -2144,6 +2146,40 @@ function LspLanguagesSettings({ addNotification }) {
         );
       })}
       <button className="text-[10px] text-vsc-text-dim hover:text-vsc-text mt-1" onClick={load}>Refresh status</button>
+    </SettingsSection>
+  );
+}
+
+function VoiceSettings({ addNotification }) {
+  const settings = useAppStore((s) => s.settings);
+  const updateSetting = useAppStore((s) => s.updateSetting);
+  const [voiceStatus, setVoiceStatus] = useState(null);
+
+  useEffect(() => {
+    fetch('/api/voice/status').then((r) => r.json()).then(setVoiceStatus).catch(() => {});
+  }, []);
+
+  return (
+    <SettingsSection title="Voice input" icon={<Mic size={13} />}>
+      <p className="text-[10px] text-vsc-text-dim mb-2">
+        Offline-first: bundled Whisper. Cloud fallback uses OpenAI when online and API key is set.
+      </p>
+      <div className="py-0.5">
+        <label className="text-[11px] text-vsc-text-dim block mb-1">Voice provider</label>
+        <select
+          value={settings.voiceProvider || 'auto'}
+          onChange={(e) => updateSetting('voiceProvider', e.target.value)}
+          className="w-full bg-vsc-input border border-vsc-panel-border/30 rounded px-2 py-1 text-[11px] text-vsc-text"
+        >
+          <option value="auto">Auto (cloud when online, else local)</option>
+          <option value="local">Local Whisper only</option>
+          <option value="cloud">Cloud (OpenAI) only</option>
+        </select>
+      </div>
+      <div className="text-[10px] text-vsc-text-dim mt-1 space-y-0.5">
+        <div>Local Whisper: {voiceStatus?.localWhisper ? 'Ready' : 'Will download model on first use'}</div>
+        <div>Cloud STT: {voiceStatus?.cloudAvailable ? 'OpenAI key configured' : 'Add OpenAI key in Cloud AI settings'}</div>
+      </div>
     </SettingsSection>
   );
 }
@@ -3031,17 +3067,29 @@ function ExtensionsPanel() {
     setActionLoading('installing');
     try {
       for (const file of files) {
-        const formData = new FormData();
-        formData.append('extension', file);
-        const res = await fetch('/api/extensions/install', { method: 'POST', body: formData });
-        const data = await res.json();
+        let data;
+        if (window.electronAPI?.installExtensionFile) {
+          const buf = await file.arrayBuffer();
+          data = await window.electronAPI.installExtensionFile(buf, file.name);
+        } else {
+          const buf = await file.arrayBuffer();
+          const bytes = Array.from(new Uint8Array(buf));
+          const res = await fetch('/api/extensions/install', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ _fileBuffer: bytes, _fileName: file.name }),
+          });
+          data = await res.json();
+        }
         if (!data.success) {
-          console.error('Install failed:', data.error);
+          addNotification({ type: 'error', message: data.error || `Install failed: ${file.name}` });
+        } else {
+          addNotification({ type: 'info', message: `Installed ${file.name}` });
         }
       }
       await loadExtensions();
     } catch (err) {
-      console.error('Install error:', err);
+      addNotification({ type: 'error', message: err.message || 'Install error' });
     }
     setActionLoading(null);
     if (fileInputRef.current) fileInputRef.current.value = '';

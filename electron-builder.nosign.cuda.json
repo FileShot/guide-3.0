@@ -61,6 +61,11 @@
       "from": "playwright-browsers",
       "to": "playwright-browsers",
       "filter": ["**/*"]
+    },
+    {
+      "from": "resources/whisper",
+      "to": "whisper",
+      "filter": ["**/*"]
     }
   ],
   "mac": {

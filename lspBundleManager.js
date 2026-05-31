@@ -29,6 +29,11 @@ const DOWNLOAD_DEFS = {
     goPackage: 'golang.org/x/tools/gopls@latest',
     binName: process.platform === 'win32' ? 'gopls.exe' : 'gopls',
   },
+  yaml: {
+    npmPackage: 'yaml-language-server',
+    binName: process.platform === 'win32' ? 'yaml-language-server.cmd' : 'yaml-language-server',
+    npmBin: process.platform === 'win32' ? 'yaml-language-server.cmd' : 'yaml-language-server',
+  },
 };
 
 class LspBundleManager {
@@ -213,6 +218,25 @@ class LspBundleManager {
     try { return await p; } finally { this._downloading.delete('go'); }
   }
 
+  async _ensureYaml() {
+    const dir = this._langDir('yaml');
+    const bin = path.join(dir, 'node_modules', '.bin', DOWNLOAD_DEFS.yaml.npmBin);
+    if (fs.existsSync(bin)) {
+      this._status.yaml = { installed: true, path: bin };
+      return { command: bin, args: ['--stdio'], bundled: true };
+    }
+    if (this._downloading.has('yaml')) return this._downloading.get('yaml');
+    const p = (async () => {
+      fs.mkdirSync(dir, { recursive: true });
+      this._npmInstallPrefix(dir, 'yaml-language-server');
+      if (!fs.existsSync(bin)) throw new Error('yaml-language-server not found after install');
+      this._status.yaml = { installed: true, path: bin };
+      return { command: bin, args: ['--stdio'], bundled: true };
+    })();
+    this._downloading.set('yaml', p);
+    try { return await p; } finally { this._downloading.delete('yaml'); }
+  }
+
   /** Sync resolve for typescript; async for downloadable langs */
   getCommand(key) {
     if (key === 'typescript') return this.getTypescriptCommand();
@@ -221,7 +245,7 @@ class LspBundleManager {
     const def = DOWNLOAD_DEFS[key];
     if (!def) return null;
     const fallback = def.binName;
-    return { command: fallback, args: key === 'go' ? ['serve'] : key === 'python' ? ['--stdio'] : [], bundled: false };
+    return { command: fallback, args: key === 'go' ? ['serve'] : (key === 'python' || key === 'yaml') ? ['--stdio'] : [], bundled: false };
   }
 
   _resolveLocal(key) {
@@ -237,6 +261,10 @@ class LspBundleManager {
       const bin = path.join(this._langDir('go'), 'bin', DOWNLOAD_DEFS.go.binName);
       if (fs.existsSync(bin)) return { command: bin, args: ['serve'] };
     }
+    if (key === 'yaml') {
+      const bin = path.join(this._langDir('yaml'), 'node_modules', '.bin', DOWNLOAD_DEFS.yaml.npmBin);
+      if (fs.existsSync(bin)) return { command: bin, args: ['--stdio'] };
+    }
     return null;
   }
 
@@ -245,12 +273,13 @@ class LspBundleManager {
     if (key === 'python') return this._ensurePython();
     if (key === 'rust') return this._ensureRust();
     if (key === 'go') return this._ensureGo();
+    if (key === 'yaml') return this._ensureYaml();
     return null;
   }
 
   getStatus() {
     const status = { ...this._status };
-    for (const key of ['typescript', 'python', 'rust', 'go']) {
+    for (const key of ['typescript', 'python', 'rust', 'go', 'yaml']) {
       if (!status[key]) {
         const local = this._resolveLocal(key);
         if (local) status[key] = { installed: true, path: local.command };

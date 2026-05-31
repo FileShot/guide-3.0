@@ -8,6 +8,17 @@ const http = require('http');
 
 const STATIC_CATALOG = [
   {
+    id: 'guide-essentials-pack',
+    name: 'guIDE Essentials Pack',
+    version: '1.0.0',
+    description: 'Prettier, ESLint, Error Lens, Git blame, YAML LSP, REST client — built into guIDE',
+    author: 'guIDE',
+    category: 'builtin',
+    rating: 5,
+    downloadUrl: null,
+    builtin: true,
+  },
+  {
     id: 'guide-theme-dark-plus',
     name: 'Dark+ Theme',
     version: '1.0.0',

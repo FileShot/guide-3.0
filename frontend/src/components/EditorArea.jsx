@@ -123,6 +123,7 @@ export default function EditorArea() {
   const dirtyDecorationsRef = useRef(null);
   const todoDecorationsRef = useRef(null);
   const breakpointDecorationsRef = useRef(null);
+  const errorLensRef = useRef(null);
   const lspDisposablesRef = useRef([]);
   const lspVersionRef = useRef(new Map());
   const documentSymbolsRef = useRef([]);
@@ -945,6 +946,7 @@ export default function EditorArea() {
             }}
             onMount={(editor, monaco) => {
               editorRef.current = editor;
+              errorLensRef.current = editor.createDecorationsCollection([]);
               initLspBridge(monaco);
               refreshLspDiagnosticsMode(monaco);
 
@@ -1063,6 +1065,32 @@ export default function EditorArea() {
                 }
                 setEditorDiagnostics({ errors, warnings });
                 setWorkspaceProblems(problems);
+
+                // Error Lens — inline diagnostic hints on active file
+                const activeModel = editor.getModel();
+                if (activeModel && errorLensRef.current) {
+                  const fileMarkers = monaco.editor.getModelMarkers({ resource: activeModel.uri });
+                  const decos = fileMarkers
+                    .filter((m) => m.severity === monaco.MarkerSeverity.Error || m.severity === monaco.MarkerSeverity.Warning)
+                    .slice(0, 40)
+                    .map((m) => ({
+                      range: new monaco.Range(
+                        m.startLineNumber,
+                        activeModel.getLineMaxColumn(m.startLineNumber),
+                        m.startLineNumber,
+                        activeModel.getLineMaxColumn(m.startLineNumber),
+                      ),
+                      options: {
+                        after: {
+                          content: `  ${(m.message || '').slice(0, 100)}`,
+                          inlineClassName: m.severity === monaco.MarkerSeverity.Error
+                            ? 'guide-error-lens-error'
+                            : 'guide-error-lens-warn',
+                        },
+                      },
+                    }));
+                  errorLensRef.current.set(decos);
+                }
               };
 
               // TypeScript/JavaScript IntelliSense defaults (Monaco built-in TS worker)
@@ -1158,6 +1186,36 @@ export default function EditorArea() {
                 },
               );
 
+              // GitLens-lite — blame on hover
+              let blameCache = null;
+              let blameCachePath = null;
+              const gitBlameHoverDisposable = monaco.languages.registerHoverProvider('*', {
+                provideHover: async (model, position) => {
+                  const fp = model.uri?.fsPath;
+                  if (!fp || !projectPath) return null;
+                  const rel = fp.startsWith(projectPath)
+                    ? fp.slice(projectPath.length).replace(/^[/\\]+/, '').replace(/\\/g, '/')
+                    : fp.split(/[/\\]/).pop();
+                  if (blameCachePath !== fp) {
+                    try {
+                      const r = await fetch(`/api/git/blame?file=${encodeURIComponent(rel)}&path=${encodeURIComponent(projectPath)}`);
+                      const d = await r.json();
+                      blameCache = d.lines || [];
+                      blameCachePath = fp;
+                    } catch {
+                      return null;
+                    }
+                  }
+                  const line = blameCache?.[position.lineNumber - 1];
+                  if (!line) return null;
+                  return {
+                    contents: [{
+                      value: `**${line.author}** · ${line.date} \`${line.hash}\`${line.summary ? `\n\n${line.summary}` : ''}`,
+                    }],
+                  };
+                },
+              });
+
               // LSP go-to-definition provider (F12 / Ctrl+click via Monaco)
               const lspDefinitionDisposable = monaco.languages.registerDefinitionProvider(
                 langId,
@@ -1222,10 +1280,10 @@ export default function EditorArea() {
                     return { items: [] };
                   }
                 },
-                freeInlineCompletions: () => {},
+                disposeInlineCompletions: () => {},
               });
 
-              const disposables = [completionDisposable, lspCompletionDisposable, lspHoverDisposable, lspDefinitionDisposable];
+              const disposables = [completionDisposable, lspCompletionDisposable, lspHoverDisposable, lspDefinitionDisposable, gitBlameHoverDisposable];
               lspDisposablesRef.current = disposables;
               editor.onDidDispose(() => disposables.forEach((d) => d.dispose()));
 

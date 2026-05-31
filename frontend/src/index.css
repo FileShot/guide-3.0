@@ -175,6 +175,20 @@
     text-underline-offset: 2px;
   }
 
+  /* Error Lens inline diagnostics (Essentials Pack) */
+  .guide-error-lens-error {
+    color: rgb(var(--guide-error));
+    opacity: 0.85;
+    font-style: italic;
+    font-size: 0.85em;
+  }
+  .guide-error-lens-warn {
+    color: rgb(220, 180, 80);
+    opacity: 0.85;
+    font-style: italic;
+    font-size: 0.85em;
+  }
+
   /* ─── Breakpoint glyph margin ─────────────────────── */
   .editor-breakpoint-glyph {
     background: #e51400;
