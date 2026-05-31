@@ -48,6 +48,10 @@ export default function Sidebar() {
 function FileExplorer() {
   const projectPath = useAppStore(s => s.projectPath);
   const fileTree = useAppStore(s => s.fileTree);
+  const workspaceRoots = useAppStore(s => s.workspaceRoots);
+  const workspaceRootTrees = useAppStore(s => s.workspaceRootTrees);
+  const setWorkspaceRoots = useAppStore(s => s.setWorkspaceRoots);
+  const setWorkspaceRootTree = useAppStore(s => s.setWorkspaceRootTree);
   const setProjectPath = useAppStore(s => s.setProjectPath);
   const setFileTree = useAppStore(s => s.setFileTree);
   const setFileTreeLoading = useAppStore(s => s.setFileTreeLoading);
@@ -88,9 +92,28 @@ function FileExplorer() {
     fetch(`/api/files/tree?path=${encodeURIComponent(projectPath)}`)
       .then(r => r.json())
       .then(d => setFileTree(d.items || []))
-      .catch(e => addNotification({ type: 'error', message: `Tree refresh failed: ${e.message}` }));
+      .catch(e => addNotification({ type: 'error', message: `Tree refresh failed: ${e.message}` }))
+      .finally(() => setFileTreeLoading(false));
+    fetch('/api/workspace/roots')
+      .then(r => r.json())
+      .then(d => {
+        const roots = d.roots || [];
+        setWorkspaceRoots(roots);
+        for (const root of roots) {
+          if (root === projectPath) continue;
+          fetch(`/api/files/tree?path=${encodeURIComponent(root)}`)
+            .then(r => r.json())
+            .then(t => setWorkspaceRootTree(root, t.items || []))
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
     fetchGitStatus();
-  }, [projectPath, setFileTree, setFileTreeLoading, addNotification, fetchGitStatus]);
+  }, [projectPath, setFileTree, setFileTreeLoading, addNotification, fetchGitStatus, setWorkspaceRoots, setWorkspaceRootTree]);
+
+  useEffect(() => {
+    if (projectPath) refreshTree();
+  }, [projectPath, refreshTree]);
 
   const openFolder = useCallback(async () => {
     // Use native Electron folder picker if available, fallback to prompt for browser dev
@@ -98,7 +121,7 @@ function FileExplorer() {
     if (window.electronAPI?.openFolderDialog) {
       path = await window.electronAPI.openFolderDialog();
     } else {
-      path = prompt('Enter folder path to open:');
+      addNotification({ type: 'warning', message: 'Open Folder requires the desktop app.' });
     }
     if (!path) return;
     fetch('/api/project/open', {
@@ -118,15 +141,69 @@ function FileExplorer() {
     }).catch(e => addNotification({ type: 'error', message: e.message }));
   }, [setProjectPath, setFileTree, addNotification]);
 
+  const handleNewFile = useCallback(async () => {
+    if (!projectPath) {
+      addNotification({ type: 'error', message: 'Open a folder first' });
+      return;
+    }
+    let filePath = null;
+    if (window.electronAPI?.dialogNewFile) {
+      filePath = await window.electronAPI.dialogNewFile({ defaultDir: projectPath, defaultName: 'untitled.txt' });
+    } else {
+      addNotification({ type: 'warning', message: 'New File requires the desktop app.' });
+    }
+    if (!filePath) return;
+    fetch('/api/files/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: filePath, content: '' }),
+    }).then(r => r.json()).then(d => {
+      if (d.success) {
+        const name = filePath.split(/[/\\]/).pop();
+        addNotification({ type: 'info', message: `Created ${name}` });
+        refreshTree();
+      } else {
+        addNotification({ type: 'error', message: d.error || 'Failed' });
+      }
+    }).catch(e => addNotification({ type: 'error', message: e.message }));
+  }, [projectPath, addNotification, refreshTree]);
+
+  const handleNewFolder = useCallback(async () => {
+    if (!projectPath) {
+      addNotification({ type: 'error', message: 'Open a folder first' });
+      return;
+    }
+    let folderPath = null;
+    if (window.electronAPI?.dialogNewFolder) {
+      folderPath = await window.electronAPI.dialogNewFolder({ defaultDir: projectPath });
+    } else {
+      addNotification({ type: 'warning', message: 'New Folder requires the desktop app.' });
+    }
+    if (!folderPath) return;
+    fetch('/api/files/mkdir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: folderPath }),
+    }).then(r => r.json()).then(d => {
+      if (d.success) {
+        const name = folderPath.split(/[/\\]/).pop();
+        addNotification({ type: 'info', message: `Created ${name}/` });
+        refreshTree();
+      } else {
+        addNotification({ type: 'error', message: d.error || 'Failed' });
+      }
+    }).catch(e => addNotification({ type: 'error', message: e.message }));
+  }, [projectPath, addNotification, refreshTree]);
+
   return (
     <div className="flex flex-col h-full min-h-0 bg-vsc-sidebar/85 backdrop-blur-sm">
       <div className="sidebar-header justify-between">
         <span>Explorer</span>
         <div className="flex items-center gap-1">
-          <button className="p-1 hover:bg-vsc-list-hover rounded" title="New File" onClick={() => {}}>
+          <button className="p-1 hover:bg-vsc-list-hover rounded" title="New File" onClick={handleNewFile}>
             <Plus size={14} />
           </button>
-          <button className="p-1 hover:bg-vsc-list-hover rounded" title="New Folder" onClick={() => {}}>
+          <button className="p-1 hover:bg-vsc-list-hover rounded" title="New Folder" onClick={handleNewFolder}>
             <FolderPlus size={14} />
           </button>
           <button className="p-1 hover:bg-vsc-list-hover rounded" title="Refresh" onClick={refreshTree}>
@@ -153,6 +230,17 @@ function FileExplorer() {
           </div>
           {fileTree.map((item, idx) => (
             <FileTreeItem key={item.path || idx} item={item} depth={0} />
+          ))}
+          {workspaceRoots.filter(r => r !== projectPath).map((root) => (
+            <div key={root} className="mt-1">
+              <div className="sidebar-section-header shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]">
+                <ChevronDown size={12} className="mr-1 flex-shrink-0" />
+                <span className="truncate">{root.split(/[\\/]/).pop()}</span>
+              </div>
+              {(workspaceRootTrees[root] || []).map((item, idx) => (
+                <FileTreeItem key={`${root}-${item.path || idx}`} item={item} depth={0} />
+              ))}
+            </div>
           ))}
           {taskScripts.length > 0 && (
             <div className="mt-1">
@@ -259,46 +347,69 @@ function FileTreeItem({ item, depth }) {
 
   const closeContextMenu = () => setContextMenu(null);
 
-  const handleNewFile = () => {
-    const name = prompt('New file name:');
-    if (!name) return;
+  const handleNewFile = async () => {
     const dir = item.type === 'directory' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '');
+    let filePath = null;
+    if (window.electronAPI?.dialogNewFile) {
+      filePath = await window.electronAPI.dialogNewFile({ defaultDir: dir, defaultName: 'untitled.txt' });
+    } else {
+      addNotification({ type: 'warning', message: 'New File requires the desktop app.' });
+      closeContextMenu();
+      return;
+    }
+    if (!filePath) { closeContextMenu(); return; }
     fetch('/api/files/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: `${dir}/${name}`, content: '' }),
+      body: JSON.stringify({ path: filePath, content: '' }),
     }).then(r => r.json()).then(d => {
+      const name = filePath.split(/[/\\]/).pop();
       if (d.success) addNotification({ type: 'info', message: `Created ${name}` });
       else addNotification({ type: 'error', message: d.error || 'Failed' });
     }).catch(e => addNotification({ type: 'error', message: e.message }));
     closeContextMenu();
   };
 
-  const handleNewFolder = () => {
-    const name = prompt('New folder name:');
-    if (!name) return;
+  const handleNewFolder = async () => {
     const dir = item.type === 'directory' ? item.path : item.path.replace(/[\\/][^\\/]+$/, '');
+    let folderPath = null;
+    if (window.electronAPI?.dialogNewFolder) {
+      folderPath = await window.electronAPI.dialogNewFolder({ defaultDir: dir });
+    } else {
+      addNotification({ type: 'warning', message: 'New Folder requires the desktop app.' });
+      closeContextMenu();
+      return;
+    }
+    if (!folderPath) { closeContextMenu(); return; }
     fetch('/api/files/mkdir', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: `${dir}/${name}` }),
+      body: JSON.stringify({ path: folderPath }),
     }).then(r => r.json()).then(d => {
+      const name = folderPath.split(/[/\\]/).pop();
       if (d.success) addNotification({ type: 'info', message: `Created ${name}/` });
       else addNotification({ type: 'error', message: d.error || 'Failed' });
     }).catch(e => addNotification({ type: 'error', message: e.message }));
     closeContextMenu();
   };
 
-  const handleRename = () => {
+  const handleRename = async () => {
     const oldName = item.name;
-    const newName = prompt('Rename to:', oldName);
-    if (!newName || newName === oldName) return;
-    const newPath = item.path.replace(/[\\/][^\\/]+$/, `/${newName}`);
+    let newPath = null;
+    if (window.electronAPI?.dialogRename) {
+      newPath = await window.electronAPI.dialogRename({ currentPath: item.path });
+    } else {
+      addNotification({ type: 'warning', message: 'Rename requires the desktop app.' });
+      closeContextMenu();
+      return;
+    }
+    if (!newPath || newPath === item.path) { closeContextMenu(); return; }
     fetch('/api/files/rename', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ oldPath: item.path, newPath }),
     }).then(r => r.json()).then(d => {
+      const newName = newPath.split(/[/\\]/).pop();
       if (d.success) addNotification({ type: 'info', message: `Renamed to ${newName}` });
       else addNotification({ type: 'error', message: d.error || 'Failed' });
     }).catch(e => addNotification({ type: 'error', message: e.message }));
@@ -540,8 +651,10 @@ function SearchPanel() {
   const [replace, setReplace] = useState('');
   const [showReplace, setShowReplace] = useState(false);
   const [semantic, setSemantic] = useState(true);
+  const [replacing, setReplacing] = useState(false);
   const projectPath = useAppStore(s => s.projectPath);
   const openFile = useAppStore(s => s.openFile);
+  const addNotification = useAppStore(s => s.addNotification);
   const timerRef = useRef(null);
 
   const doSearch = useCallback((q) => {
@@ -564,6 +677,21 @@ function SearchPanel() {
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') { clearTimeout(timerRef.current); doSearch(query); }
+  };
+
+  const doReplaceAll = () => {
+    if (!query || !projectPath) return;
+    setReplacing(true);
+    fetch('/api/files/replace', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectPath, query, replace }),
+    }).then(r => r.json()).then(d => {
+      if (d.error) addNotification({ type: 'error', message: d.error });
+      else addNotification({ type: 'info', message: `Replaced in ${d.count ?? 0} file(s)` });
+      doSearch(query);
+    }).catch(e => addNotification({ type: 'error', message: e.message }))
+      .finally(() => setReplacing(false));
   };
 
   // Group results by file
@@ -604,13 +732,22 @@ function SearchPanel() {
           </button>
         </div>
         {showReplace && (
-          <input
-            type="text"
-            className="w-full h-[26px] px-2 bg-vsc-input border border-vsc-input-border rounded-sm text-vsc-sm"
-            placeholder="Replace..."
-            value={replace}
-            onChange={(e) => setReplace(e.target.value)}
-          />
+          <>
+            <input
+              type="text"
+              className="w-full h-[26px] px-2 bg-vsc-input border border-vsc-input-border rounded-sm text-vsc-sm"
+              placeholder="Replace..."
+              value={replace}
+              onChange={(e) => setReplace(e.target.value)}
+            />
+            <button
+              className="w-full btn btn-primary text-vsc-xs py-1 disabled:opacity-50"
+              onClick={doReplaceAll}
+              disabled={!query || replacing}
+            >
+              {replacing ? 'Replacing...' : 'Replace All'}
+            </button>
+          </>
         )}
       </div>
       <div className="flex-1 overflow-y-auto scrollbar-thin text-vsc-sm">
@@ -681,6 +818,8 @@ function GitPanel() {
   const [newBranch, setNewBranch] = useState('');
   const [logEntries, setLogEntries] = useState([]);
   const [showLog, setShowLog] = useState(false);
+  const [pushing, setPushing] = useState(false);
+  const [pulling, setPulling] = useState(false);
 
   const refresh = useCallback(() => {
     if (!projectPath) return;
@@ -741,6 +880,32 @@ function GitPanel() {
       refresh();
     }).catch(e => addNotification({ type: 'error', message: e.message }))
       .finally(() => setCommitting(false));
+  };
+
+  const push = () => {
+    setPushing(true);
+    fetch('/api/git/push', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectPath }),
+    }).then(r => r.json()).then(d => {
+      if (d.error) addNotification({ type: 'error', message: d.error });
+      else addNotification({ type: 'info', message: d.output?.trim() || 'Pushed successfully' });
+      refresh();
+    }).catch(e => addNotification({ type: 'error', message: e.message }))
+      .finally(() => setPushing(false));
+  };
+
+  const pull = () => {
+    setPulling(true);
+    fetch('/api/git/pull', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectPath }),
+    }).then(r => r.json()).then(d => {
+      if (d.error) addNotification({ type: 'error', message: d.error });
+      else addNotification({ type: 'info', message: d.output?.trim() || 'Pulled successfully' });
+      refresh();
+    }).catch(e => addNotification({ type: 'error', message: e.message }))
+      .finally(() => setPulling(false));
   };
 
   const showDiff = (file, staged) => {
@@ -889,6 +1054,26 @@ function GitPanel() {
               <Plus size={12} />
             </button>
           )}
+        </div>
+        <div className="flex gap-1 mt-1">
+          <button
+            className="btn flex-1 flex items-center justify-center gap-1 disabled:opacity-50"
+            onClick={pull}
+            disabled={pulling}
+            title="Pull from remote"
+          >
+            <Download size={12} />
+            {pulling ? 'Pulling...' : 'Pull'}
+          </button>
+          <button
+            className="btn flex-1 flex items-center justify-center gap-1 disabled:opacity-50"
+            onClick={push}
+            disabled={pushing}
+            title="Push to remote"
+          >
+            <Upload size={12} />
+            {pushing ? 'Pushing...' : 'Push'}
+          </button>
         </div>
       </div>
 
@@ -1594,7 +1779,7 @@ function SettingsPanel() {
         <SettingToggle label="Auto Lint Fix" value={settings.autoLintFix !== false}
           onChange={v => updateSetting('autoLintFix', v)}
           hint="Auto-inject lint correction into model context after file writes detect errors." />
-        <SettingToggle label="Sub-Agents (Experimental)" value={!!settings.enableSubAgents}
+        <SettingToggle label="Sub-Agents" value={!!settings.enableSubAgents}
           onChange={v => updateSetting('enableSubAgents', v)}
           hint="Allow model to spawn focused sub-agents using a fresh context window. Off by default — uses extra VRAM." />
       </SettingsSection>
@@ -1776,6 +1961,8 @@ function SettingsPanel() {
       </SettingsSection>
 
       {/* Editor */}
+      <LspLanguagesSettings addNotification={addNotification} />
+
       <SettingsSection title="Editor" icon={<FileCode size={13} />}>
         <SettingSlider label="Font Size" value={settings.fontSize} min={8} max={32} step={1}
           onChange={v => updateSetting('fontSize', v)} format={v => String(Math.round(v))} />
@@ -1805,7 +1992,7 @@ function SettingsPanel() {
             <option value="relative">Relative</option>
           </select>
         </div>
-        <SettingToggle label="Minimap" value={settings.minimap} onChange={v => updateSetting('minimap', v)} />
+        <SettingToggle label="Minimap" value={settings.minimapEnabled} onChange={v => updateSetting('minimapEnabled', v)} />
         <SettingToggle label="Bracket Pair Colorization" value={settings.bracketPairColorization}
           onChange={v => updateSetting('bracketPairColorization', v)} />
         <SettingToggle label="Format on Paste" value={settings.formatOnPaste}
@@ -1912,6 +2099,52 @@ function SettingsSection({ title, icon, defaultOpen = false, children }) {
         <div className="px-3 pb-3 space-y-3">{children}</div>
       </SlideDown>
     </div>
+  );
+}
+
+function LspLanguagesSettings({ addNotification }) {
+  const [status, setStatus] = useState(null);
+  const load = useCallback(() => {
+    fetch('/api/lsp/status').then(r => r.json()).then(d => {
+      if (d.success) setStatus(d);
+    }).catch(() => {});
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  const install = (lang) => {
+    fetch('/api/lsp/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language: lang }),
+    }).then(r => r.json()).then(d => {
+      load();
+      addNotification({ type: d.success ? 'info' : 'error', message: d.success ? `${lang} language server ready` : (d.error || 'Install failed') });
+    }).catch(e => addNotification({ type: 'error', message: e.message }));
+  };
+  const langs = [
+    { id: 'typescript', label: 'TypeScript / JavaScript', bundled: true },
+    { id: 'python', label: 'Python (Pyright)', bundled: false },
+    { id: 'rust', label: 'Rust (rust-analyzer)', bundled: false },
+    { id: 'go', label: 'Go (gopls)', bundled: false },
+  ];
+  return (
+    <SettingsSection title="Languages (LSP)" icon={<FileCode size={13} />}>
+      <p className="text-[10px] text-vsc-text-dim mb-2">TS/JS ships with guIDE. Other servers download on demand.</p>
+      {langs.map(({ id, label, bundled }) => {
+        const st = status?.status?.[id];
+        const installed = st?.installed || (status?.running || []).some(s => s.key === id);
+        return (
+          <div key={id} className="flex items-center justify-between gap-2 py-1">
+            <span className="text-[11px] text-vsc-text truncate">{label}</span>
+            {installed ? (
+              <span className="text-[10px] text-vsc-success shrink-0">{bundled ? 'Bundled' : 'Installed'}</span>
+            ) : (
+              <button className="text-[10px] text-vsc-accent hover:underline shrink-0" onClick={() => install(id)}>Install</button>
+            )}
+          </div>
+        );
+      })}
+      <button className="text-[10px] text-vsc-text-dim hover:text-vsc-text mt-1" onClick={load}>Refresh status</button>
+    </SettingsSection>
   );
 }
 
@@ -2720,11 +2953,15 @@ function ExtensionsPanel() {
   const setExtensions = useAppStore(s => s.setExtensions);
   const setExtensionCategories = useAppStore(s => s.setExtensionCategories);
   const setExtensionsLoading = useAppStore(s => s.setExtensionsLoading);
+  const addNotification = useAppStore(s => s.addNotification);
 
   const [tab, setTab] = useState('installed');
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('all');
   const [actionLoading, setActionLoading] = useState(null);
+  const [catalog, setCatalog] = useState([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogSource, setCatalogSource] = useState('');
   const fileInputRef = useRef(null);
 
   const loadExtensions = useCallback(async () => {
@@ -2743,6 +2980,49 @@ function ExtensionsPanel() {
   useEffect(() => {
     loadExtensions();
   }, [loadExtensions]);
+
+  const loadCatalog = useCallback(async () => {
+    setCatalogLoading(true);
+    try {
+      const res = await fetch('/api/extensions/catalog');
+      const data = await res.json();
+      setCatalog(data.extensions || []);
+      setCatalogSource(data.source || '');
+    } catch (err) {
+      console.error('Failed to load marketplace catalog:', err);
+      addNotification({ type: 'error', message: 'Failed to load marketplace catalog' });
+    }
+    setCatalogLoading(false);
+  }, [addNotification]);
+
+  useEffect(() => {
+    if (tab === 'marketplace') loadCatalog();
+  }, [tab, loadCatalog]);
+
+  const handleMarketplaceInstall = async (ext) => {
+    if (!ext.downloadUrl) {
+      addNotification({ type: 'info', message: `${ext.name} is not available for one-click install yet` });
+      return;
+    }
+    setActionLoading(ext.id);
+    try {
+      const res = await fetch('/api/extensions/install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ downloadUrl: ext.downloadUrl, id: ext.id }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        addNotification({ type: 'info', message: `Installed ${ext.name}` });
+        await loadExtensions();
+      } else {
+        addNotification({ type: 'error', message: data.error || 'Install failed' });
+      }
+    } catch (err) {
+      addNotification({ type: 'error', message: err.message });
+    }
+    setActionLoading(null);
+  };
 
   const handleInstallFile = async (e) => {
     const files = e.target.files;
@@ -2945,36 +3225,73 @@ function ExtensionsPanel() {
         )}
 
         {tab === 'marketplace' && (
-          <div className="text-center py-8">
-            <Package size={32} className="mx-auto mb-2 opacity-30 text-vsc-text-dim" />
-            <p className="text-vsc-text-dim text-[12px] font-medium">Community Marketplace</p>
-            <p className="text-[10px] text-vsc-text-dim mt-1 mb-3">
-              Browse and install community-built extensions.<br />
-              Coming soon at graysoft.dev/extensions
-            </p>
-            <a
-              href="https://graysoft.dev/extensions"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded text-[11px] font-medium bg-vsc-accent text-white hover:opacity-90"
-            >
-              <ExternalLink size={12} />
-              Visit Marketplace
-            </a>
-            <div className="mt-4 pt-4 border-t border-vsc-border">
-              <p className="text-[10px] text-vsc-text-dim">
-                Want to create an extension?
+          catalogLoading ? (
+            <div className="text-center py-8 text-vsc-text-dim">Loading marketplace...</div>
+          ) : catalog.length === 0 ? (
+            <div className="text-center py-8">
+              <Package size={32} className="mx-auto mb-2 opacity-30 text-vsc-text-dim" />
+              <p className="text-vsc-text-dim text-[12px] font-medium">Community Marketplace</p>
+              <p className="text-[10px] text-vsc-text-dim mt-1 mb-3">
+                No extensions available from catalog.
               </p>
-              <a
-                href="https://graysoft.dev/extensions/submit"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[10px] text-vsc-accent hover:underline"
+              <button
+                onClick={loadCatalog}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded text-[11px] font-medium bg-vsc-accent text-white hover:opacity-90"
               >
-                Submit your extension
-              </a>
+                <RefreshCw size={12} />
+                Retry
+              </button>
             </div>
-          </div>
+          ) : (
+            catalog
+              .filter(ext => {
+                if (category !== 'all' && ext.category !== category) return false;
+                if (search && !ext.name.toLowerCase().includes(search.toLowerCase()) &&
+                    !(ext.description || '').toLowerCase().includes(search.toLowerCase())) return false;
+                return true;
+              })
+              .map(ext => {
+                const installed = extensions.some(e => e.id === ext.id);
+                return (
+                  <div key={ext.id} className="p-2.5 rounded bg-vsc-sidebar-bg border border-vsc-border">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <Package size={14} style={{ color: categoryColors[ext.category] || categoryColors.other }} />
+                          <span className="font-medium text-[12px] text-vsc-text">{ext.name}</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full capitalize bg-vsc-selection text-vsc-text-dim">
+                            {ext.category || 'other'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] mt-0.5 leading-tight text-vsc-text-dim">{ext.description}</p>
+                        <div className="flex items-center gap-3 mt-1">
+                          {ext.rating && renderStars(ext.rating)}
+                          <span className="text-[10px] text-vsc-text-dim">v{ext.version}</span>
+                          {ext.author && <span className="text-[10px] text-vsc-text-dim">{ext.author}</span>}
+                        </div>
+                      </div>
+                      <div className="ml-2 flex-shrink-0">
+                        {installed ? (
+                          <span className="text-[10px] text-green-400">Installed</span>
+                        ) : (
+                          <button
+                            onClick={() => handleMarketplaceInstall(ext)}
+                            disabled={actionLoading === ext.id}
+                            className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium bg-vsc-accent text-white hover:opacity-90 disabled:opacity-50"
+                          >
+                            <Download size={12} />
+                            {actionLoading === ext.id ? 'Installing...' : 'Install'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+          )
+        )}
+        {tab === 'marketplace' && catalogSource && (
+          <p className="text-[10px] text-vsc-text-dim text-center pt-2">Catalog source: {catalogSource}</p>
         )}
       </div>
     </div>

@@ -169,6 +169,22 @@
     background: rgba(var(--guide-error), 0.12) !important;
   }
 
+  /* ─── TODO/FIXME inline squiggles (t5-todo-editor-highlight) ── */
+  .t5-todo-editor-highlight {
+    text-decoration: underline wavy #cca700;
+    text-underline-offset: 2px;
+  }
+
+  /* ─── Breakpoint glyph margin ─────────────────────── */
+  .editor-breakpoint-glyph {
+    background: #e51400;
+    border-radius: 50%;
+    width: 10px !important;
+    height: 10px !important;
+    margin-left: 5px;
+    margin-top: 5px;
+  }
+
   /* ─── Glass Card ────────────────────────────────────── */
   .glass-card {
     background: rgba(255, 255, 255, 0.025);

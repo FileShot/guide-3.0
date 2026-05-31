@@ -853,8 +853,10 @@ class BrowserManager extends EventEmitter {
     // We can't use document.querySelector in Node.js, so check for known-invalid patterns.
     // Valid CSS selectors: .class, #id, tag, [attr=val], :pseudo, tag.class, tag > child, etc.
     // Invalid: //xpath, >>> combinator, bare [N] (handled above), unbalanced brackets, etc.
-    if (trimmed.startsWith('//') || trimmed.startsWith('..')) {
-      // XPath — not supported by Playwright's CSS selector engine
+    if (trimmed.startsWith('//') || trimmed.startsWith('(') && trimmed.includes('//') || trimmed.startsWith('xpath=')) {
+      return { type: 'xpath', selector: trimmed.startsWith('xpath=') ? trimmed.slice(6) : trimmed };
+    }
+    if (trimmed.startsWith('..')) {
       return null;
     }
     if (trimmed.includes('>>>')) {
@@ -876,7 +878,14 @@ class BrowserManager extends EventEmitter {
     // Looks like a valid CSS selector — pass through.
     // Playwright's try/catch in the calling method will handle any remaining edge cases
     // and the error message will be caught and returned to the model.
-    return ref;
+    return { type: 'css', selector: ref };
+  }
+
+  _locatorForResolved(resolved) {
+    if (!resolved) return null;
+    if (typeof resolved === 'string') return this._page.locator(resolved).first();
+    if (resolved.type === 'xpath') return this._page.locator(`xpath=${resolved.selector}`).first();
+    return this._page.locator(resolved.selector).first();
   }
 
   /**
@@ -978,24 +987,27 @@ class BrowserManager extends EventEmitter {
     if (!resolved) {
       return { success: false, error: `Invalid element ref "${selector}". Use the [ref=N] number from the snapshot, e.g. browser_click({"ref":"5"}). Call browser_snapshot first if you need fresh refs.` };
     }
+    const locator = this._locatorForResolved(resolved);
+    if (!locator) {
+      return { success: false, error: `Could not resolve selector "${selector}"` };
+    }
     try {
       const urlBefore = this._page.url();
       // Get the element text before clicking — include title/alt for image-only links
       let clickedText = '';
       try {
-        const loc = this._page.locator(resolved).first();
-        clickedText = await loc.textContent({ timeout: 2000 }).then(t => t?.trim()?.substring(0, 60) || '');
+        clickedText = await locator.textContent({ timeout: 2000 }).then(t => t?.trim()?.substring(0, 60) || '');
         if (!clickedText) {
           // Image-only link — get title attribute or child img alt
-          clickedText = await loc.getAttribute('title', { timeout: 1000 }).then(t => t || '') ||
-            await loc.locator('img').first().getAttribute('alt', { timeout: 1000 }).then(t => t || '') || '';
+          clickedText = await locator.getAttribute('title', { timeout: 1000 }).then(t => t || '') ||
+            await locator.locator('img').first().getAttribute('alt', { timeout: 1000 }).then(t => t || '') || '';
         }
       } catch {}
 
       // Listen for new tab/popup BEFORE clicking — target=_blank links open new tabs
       // which don't change the current page URL, causing the model to think the click failed
       const popupPromise = this._page.waitForEvent('popup', { timeout: 5000 }).catch(() => null);
-      await this._page.click(resolved, { timeout: 5000 });
+      await locator.click({ timeout: 5000 });
       const newPage = await popupPromise;
 
       if (newPage) {
@@ -1200,8 +1212,11 @@ class BrowserManager extends EventEmitter {
     if (!resolved) {
       return { success: false, error: `Invalid element ref "${ref}". Use the [ref=N] number from the snapshot, e.g. browser_type({"ref":"3","text":"hello"}). Call browser_snapshot first if you need fresh refs.` };
     }
+    const locator = this._locatorForResolved(resolved);
+    if (!locator) {
+      return { success: false, error: `Could not resolve selector "${ref}"` };
+    }
     try {
-      const locator = this._page.locator(resolved).first();
       await locator.fill(text, { timeout: 5000 });
       if (options.submit) {
         await this._page.keyboard.press('Enter');
@@ -1262,8 +1277,10 @@ class BrowserManager extends EventEmitter {
     if (staleErr) return { success: false, error: staleErr };
     const resolved = this._resolveRef(ref);
     if (!resolved) return { success: false, error: `Invalid element ref "${ref}". Use the [ref=N] number from the snapshot.` };
+    const locator = this._locatorForResolved(resolved);
+    if (!locator) return { success: false, error: `Could not resolve selector "${ref}"` };
     try {
-      await this._page.selectOption(resolved, values, { timeout: 5000 });
+      await locator.selectOption(values, { timeout: 5000 });
       return { success: true };
     } catch (e) {
       return { success: false, error: e.message };
@@ -1323,8 +1340,10 @@ class BrowserManager extends EventEmitter {
     if (staleErr) return { success: false, error: staleErr };
     const resolved = this._resolveRef(ref);
     if (!resolved) return { success: false, error: `Invalid element ref "${ref}". Use the [ref=N] number from the snapshot.` };
+    const locator = this._locatorForResolved(resolved);
+    if (!locator) return { success: false, error: `Could not resolve selector "${ref}"` };
     try {
-      await this._page.hover(resolved, { timeout: 5000 });
+      await locator.hover({ timeout: 5000 });
       return { success: true };
     } catch (e) {
       return { success: false, error: e.message };
@@ -1337,7 +1356,13 @@ class BrowserManager extends EventEmitter {
   async waitForSelector(selector, options = {}) {
     if (!(await this._ensurePage())) return { success: false, error: 'No browser page open' };
     try {
-      await this._page.waitForSelector(selector, { timeout: options.timeout || 10000 });
+      const resolved = this._resolveRef(selector);
+      if (resolved && typeof resolved === 'object' && resolved.type === 'xpath') {
+        await this._page.locator(`xpath=${resolved.selector}`).first().waitFor({ timeout: options.timeout || 10000 });
+      } else {
+        const sel = typeof resolved === 'string' ? resolved : (resolved?.selector || selector);
+        await this._page.waitForSelector(sel, { timeout: options.timeout || 10000 });
+      }
       return { success: true };
     } catch (e) {
       return { success: false, error: e.message };
@@ -1362,8 +1387,12 @@ class BrowserManager extends EventEmitter {
           failed.push(`ref "${refVal}" could not be resolved — call browser_snapshot first`);
           continue;
         }
+        const locator = this._locatorForResolved(resolved);
+        if (!locator) {
+          failed.push(`ref "${refVal}" could not be resolved — call browser_snapshot first`);
+          continue;
+        }
         try {
-          const locator = this._page.locator(resolved).first();
           const type = field.type || 'textbox';
           if (type === 'checkbox') {
             const checked = field.value === 'true' || field.value === true;

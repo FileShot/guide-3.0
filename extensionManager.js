@@ -143,6 +143,30 @@ class ExtensionManager extends EventEmitter {
   }
 
   /**
+   * Install extension from a remote URL (marketplace one-click install).
+   */
+  async installFromUrl(downloadUrl) {
+    const https = require('https');
+    const http = require('http');
+
+    const fetchBuffer = (url) => new Promise((resolve, reject) => {
+      const lib = url.startsWith('https') ? https : http;
+      lib.get(url, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          fetchBuffer(res.headers.location).then(resolve).catch(reject);
+          return;
+        }
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+      }).on('error', reject);
+    });
+
+    const buffer = await fetchBuffer(downloadUrl);
+    return this.installFromZip(buffer, path.basename(downloadUrl));
+  }
+
+  /**
    * Install extension from an uploaded zip buffer.
    * Extracts to a temp dir, validates manifest, then moves to extensions dir.
    */
@@ -235,6 +259,10 @@ class ExtensionManager extends EventEmitter {
   /* ── Getters ───────────────────────────────────────────────────── */
 
   getInstalled() {
+    return this.extensions;
+  }
+
+  listExtensions() {
     return this.extensions;
   }
 

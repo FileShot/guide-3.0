@@ -5,6 +5,7 @@
  */
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Copy, Check, FileDown, WrapText, Download, Hash, ChevronDown, ChevronRight, Play, Code } from 'lucide-react';
+import useAppStore from '../../stores/appStore';
 
 const COLLAPSE_LINE_THRESHOLD = 10;
 const RENDERABLE_LANGUAGES = new Set(['html', 'css', 'javascript', 'js', 'jsx', 'svg', 'xml']);
@@ -47,9 +48,31 @@ export default function CodeBlock({ language, children, className }) {
     }
   }, [getTextContent]);
 
-  const handleApply = useCallback(() => {
-    // Stub — will integrate with editor tab system later
-  }, []);
+  const handleApply = useCallback(async () => {
+    const text = getTextContent();
+    const store = useAppStore.getState();
+    const activeTab = store.openTabs.find(t => t.id === store.activeTabId);
+    const defaultPath = activeTab?.path || '';
+    const filePath = window.prompt('Apply code to file path:', defaultPath);
+    if (!filePath) return;
+    try {
+      const r = await fetch('/api/files/write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath, content: text }),
+      });
+      const d = await r.json();
+      if (d.success) {
+        const name = filePath.split(/[/\\]/).pop();
+        store.openFile({ path: d.path || filePath, name, content: text, modified: false });
+        store.addNotification({ type: 'info', message: `Applied code to ${name}` });
+      } else {
+        store.addNotification({ type: 'error', message: d.error || 'Apply failed' });
+      }
+    } catch (e) {
+      store.addNotification({ type: 'error', message: e.message });
+    }
+  }, [getTextContent]);
 
   const handleDownload = useCallback(() => {
     const text = getTextContent();

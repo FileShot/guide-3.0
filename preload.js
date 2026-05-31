@@ -39,6 +39,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ── Dialogs ───────────────────────────────────────────
   openFolderDialog: () => ipcRenderer.invoke('dialog-open-folder'),
+  dialogNewFile: (opts) => ipcRenderer.invoke('dialog-new-file', opts || {}),
+  dialogNewFolder: (opts) => ipcRenderer.invoke('dialog-new-folder', opts || {}),
+  dialogRename: (opts) => ipcRenderer.invoke('dialog-rename', opts || {}),
   showItemInFolder: (fullPath) => ipcRenderer.invoke('shell-show-item', fullPath),
   modelsAdd: () => ipcRenderer.invoke('dialog-models-add'),
   openExternal: (url) => ipcRenderer.invoke('shell-open-external', url),
@@ -173,6 +176,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Debug events
   onDebugEvent:        (cb) => _on('debug-event', cb),
+  onOutputLog:         (cb) => _on('output-log', cb),
+  onDebugConsole:      (cb) => _on('debug-console', cb),
+  onLspMessage:        (cb) => _on('lsp-message', cb),
+  onLspDiagnostics:    (cb) => _on('lsp-diagnostics', cb),
+
+  onBackgroundAgentComplete: (cb) => _on('background-agent-complete', cb),
+  onSubAgentSpawned:         (cb) => _on('sub-agent-spawned', cb),
+  onSubAgentCompleted:       (cb) => _on('sub-agent-completed', cb),
 
   // Browser viewport (live preview tab)
   onPreviewEvent: (cb) => {

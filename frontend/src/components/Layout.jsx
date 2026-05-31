@@ -24,6 +24,7 @@ import Sidebar from './Sidebar';
 import EditorArea from './EditorArea';
 import StatusBar from './StatusBar';
 import Notifications from './Notifications';
+import ComposerPanel from './ComposerPanel';
 import { lazy, Suspense } from 'react';
 
 // Lazy-load heavy components that aren't needed on initial render
@@ -83,11 +84,12 @@ export default function Layout() {
         )}
 
         {/* Editor + Bottom Panel */}
-        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0 relative">
           {/* Editor Area */}
           <div className="flex-1 overflow-hidden min-h-0">
             <EditorArea />
           </div>
+          <ComposerPanel />
 
           {/* Bottom Panel (Terminal, Output, Problems) */}
           {panelVisible && (

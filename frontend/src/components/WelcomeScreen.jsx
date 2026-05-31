@@ -52,6 +52,7 @@ export default function WelcomeScreen() {
   const [showDownloadPanel, setShowDownloadPanel] = useState(false);
   const [downloadingRec, setDownloadingRec] = useState(null);
   const [mounted, setMounted] = useState(false);
+  const [showAllRecent, setShowAllRecent] = useState(false);
 
   // Trigger entrance animations
   useEffect(() => {
@@ -74,14 +75,12 @@ export default function WelcomeScreen() {
     );
   }
 
-  const openFolder = () => {
-    if (window.electronAPI?.showOpenDialog) {
-      window.electronAPI.showOpenDialog().then(result => {
-        if (result) openProjectPath(result);
-      });
+  const openFolder = async () => {
+    if (window.electronAPI?.openFolderDialog) {
+      const result = await window.electronAPI.openFolderDialog();
+      if (result) openProjectPath(result);
     } else {
-      const path = prompt('Enter folder path to open:');
-      if (path) openProjectPath(path);
+      useAppStore.getState().addNotification({ type: 'warning', message: 'Open Folder requires the desktop app.' });
     }
   };
 
@@ -249,7 +248,7 @@ export default function WelcomeScreen() {
                 Recent Projects
               </div>
               <div className="flex flex-col gap-0.5">
-                {recentFolders.slice(0, 4).map(path => {
+                {recentFolders.slice(0, showAllRecent ? recentFolders.length : 4).map(path => {
                   const { name, parent } = formatPath(path);
                   return (
                     <button
@@ -268,9 +267,9 @@ export default function WelcomeScreen() {
                     </button>
                   );
                 })}
-                {recentFolders.length > 4 && (
+                {recentFolders.length > 4 && !showAllRecent && (
                   <button
-                    onClick={() => {}}
+                    onClick={() => setShowAllRecent(true)}
                     className="text-[11px] text-vsc-accent hover:text-vsc-accent-hover px-3 py-1.5 transition-colors"
                   >
                     Show all ({recentFolders.length})

@@ -7,15 +7,32 @@ import useAppStore from '../stores/appStore';
 import {
   Files, Search, GitBranch, MessageSquare, Settings, Terminal,
   FolderOpen, Trash2, Layout, PanelBottom, Cpu, RefreshCw,
-  Save, X, Palette, Plus, FileCode,
+  Save, X, Palette, Plus, FileCode, AlertCircle, Package,
 } from 'lucide-react';
 
 // Theme commands are generated dynamically from themeList
 import { themeList } from './ThemeProvider';
 
+async function pickFolderPath() {
+  if (window.electronAPI?.openFolderDialog) {
+    return await window.electronAPI.openFolderDialog();
+  }
+  useAppStore.getState().addNotification({ type: 'warning', message: 'Open Folder requires the desktop app.' });
+  return null;
+}
+
+async function pickNewFileName() {
+  const store = useAppStore.getState();
+  if (window.electronAPI?.dialogNewFile && store.projectPath) {
+    return await window.electronAPI.dialogNewFile({ defaultDir: store.projectPath, defaultName: 'untitled.txt' });
+  }
+  store.addNotification({ type: 'warning', message: 'New File requires the desktop app with an open folder.' });
+  return null;
+}
+
 const staticCommands = [
-  { id: 'file.open', label: 'Open Folder...', category: 'File', icon: FolderOpen, action: (s) => {
-    const path = prompt('Enter folder path:');
+  { id: 'file.open', label: 'Open Folder...', category: 'File', icon: FolderOpen, action: async (s) => {
+    const path = await pickFolderPath();
     if (path) {
       fetch('/api/project/open', {
         method: 'POST',
@@ -44,17 +61,20 @@ const staticCommands = [
       }).catch(() => {});
     }
   }},
-  { id: 'file.newFile', label: 'New File', category: 'File', icon: FileCode, action: () => {
-    const name = prompt('New file name:');
-    if (name) {
+  { id: 'file.newFile', label: 'New File', category: 'File', icon: FileCode, action: async () => {
+    const filePath = await pickNewFileName();
+    if (filePath) {
       const store = useAppStore.getState();
-      const dir = store.projectPath || '.';
       fetch('/api/files/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: `${dir}/${name}`, content: '' }),
+        body: JSON.stringify({ path: filePath, content: '' }),
       }).then(r => r.json()).then(d => {
-        if (d.success) store.addNotification({ type: 'info', message: `Created ${name}` });
+        if (d.success) {
+          const name = filePath.split(/[/\\]/).pop();
+          store.addNotification({ type: 'info', message: `Created ${name}` });
+          store.openFile({ path: d.path || filePath, name, content: '', modified: false });
+        }
       }).catch(() => {});
     }
   }},
@@ -88,6 +108,42 @@ const staticCommands = [
   { id: 'editor.closeAll', label: 'Close All Tabs', category: 'Editor', icon: X, action: (s) => {
     s.openTabs.forEach(t => s.closeTab(t.id));
   }},
+  { id: 'view.problems', label: 'Show Problems', category: 'View', icon: AlertCircle, action: (s) => {
+    s.setActivePanelTab('problems');
+    if (!useAppStore.getState().panelVisible) s.togglePanel();
+  }},
+  { id: 'view.output', label: 'Show Output', category: 'View', icon: Terminal, action: (s) => {
+    s.setActivePanelTab('output');
+    if (!useAppStore.getState().panelVisible) s.togglePanel();
+  }},
+  { id: 'view.debugConsole', label: 'Show Debug Console', category: 'View', icon: Terminal, action: (s) => {
+    s.setActivePanelTab('debug');
+    if (!useAppStore.getState().panelVisible) s.togglePanel();
+  }},
+  { id: 'git.push', label: 'Git: Push', category: 'Git', icon: GitBranch, action: () => {
+    const store = useAppStore.getState();
+    if (!store.projectPath) return;
+    fetch('/api/git/push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: store.projectPath }),
+    }).then(r => r.json()).then(d => {
+      store.addNotification({ type: d.success ? 'info' : 'error', message: d.success ? 'Pushed to remote' : (d.error || 'Push failed') });
+    }).catch(() => {});
+  }},
+  { id: 'git.pull', label: 'Git: Pull', category: 'Git', icon: GitBranch, action: () => {
+    const store = useAppStore.getState();
+    if (!store.projectPath) return;
+    fetch('/api/git/pull', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: store.projectPath }),
+    }).then(r => r.json()).then(d => {
+      store.addNotification({ type: d.success ? 'info' : 'error', message: d.success ? 'Pulled from remote' : (d.error || 'Pull failed') });
+    }).catch(() => {});
+  }},
+  { id: 'output.clear', label: 'Clear Output', category: 'View', icon: Trash2, action: (s) => s.clearOutputLog() },
+  { id: 'problems.clear', label: 'Clear Problems', category: 'View', icon: Trash2, action: (s) => s.setWorkspaceProblems([]) },
 ];
 
 // Generate theme commands dynamically
@@ -104,25 +160,59 @@ const themeCommands = themeList.map(t => ({
 
 const commands = [...staticCommands, ...themeCommands];
 
+function useExtensionCommands() {
+  const [extCommands, setExtCommands] = useState([]);
+
+  useEffect(() => {
+    fetch('/api/extensions/commands')
+      .then(r => r.json())
+      .then(d => {
+        const list = (d.commands || []).map(cmd => ({
+          id: cmd.id || cmd,
+          label: typeof cmd === 'string' ? cmd : (cmd.label || cmd.id),
+          category: 'Extensions',
+          icon: Package,
+          action: () => {
+            fetch('/api/extensions/runCommand', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ commandId: cmd.id || cmd }),
+            }).then(r => r.json()).then(res => {
+              if (!res.success) {
+                useAppStore.getState().addNotification({ type: 'error', message: res.error || 'Command failed' });
+              }
+            }).catch(() => {});
+          },
+        }));
+        setExtCommands(list);
+      })
+      .catch(() => {});
+  }, []);
+
+  return extCommands;
+}
+
 export default function CommandPalette() {
   const [query, setQuery] = useState('');
   const [selectedIdx, setSelectedIdx] = useState(0);
   const inputRef = useRef(null);
   const closeCommandPalette = useAppStore(s => s.closeCommandPalette);
+  const extensionCommands = useExtensionCommands();
+  const allCommands = useMemo(() => [...commands, ...extensionCommands], [extensionCommands]);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
   const filtered = useMemo(() => {
-    if (!query) return commands;
+    if (!query) return allCommands;
     const lower = query.toLowerCase();
-    return commands.filter(cmd =>
+    return allCommands.filter(cmd =>
       cmd.label.toLowerCase().includes(lower) ||
       cmd.category.toLowerCase().includes(lower) ||
       cmd.id.toLowerCase().includes(lower)
     );
-  }, [query]);
+  }, [query, allCommands]);
 
   useEffect(() => {
     setSelectedIdx(0);

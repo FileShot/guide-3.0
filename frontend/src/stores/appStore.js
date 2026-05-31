@@ -198,6 +198,16 @@ const useAppStore = create((set, get) => ({
 
   fileTreeLoading: false,
 
+  workspaceRoots: [],
+
+  workspaceRootTrees: {},
+
+  setWorkspaceRoots: (roots) => set({ workspaceRoots: roots || [] }),
+
+  setWorkspaceRootTree: (root, items) => set((state) => ({
+    workspaceRootTrees: { ...state.workspaceRootTrees, [root]: items || [] },
+  })),
+
   setProjectPath: (p) => {
 
     const prev = get().projectPath;
@@ -337,6 +347,8 @@ const useAppStore = create((set, get) => ({
       modified: false,
 
       language: fileInfo.isBinary ? 'plaintext' : _detectLanguage(fileInfo.extension || fileInfo.path.split('.').pop()),
+
+      editorGroup: get().activeEditorGroup || 1,
 
       ...(fileInfo.dataUrl ? { dataUrl: fileInfo.dataUrl } : {}),
 
@@ -1522,6 +1534,142 @@ const useAppStore = create((set, get) => ({
 
   }),
 
+  // ─── Composer (multi-file edit session) ───────────────
+
+  composerOpen: false,
+  composerFiles: [], // [{ path, name, original, modified, selected }]
+
+  toggleComposer: () => set((s) => ({ composerOpen: !s.composerOpen })),
+  setComposerOpen: (val) => set({ composerOpen: !!val }),
+
+  syncComposerFiles: () => set((s) => {
+    const files = s.chatFilesChanged.map((f) => {
+      const tab = s.openTabs.find((t) => t.path === f.path);
+      return {
+        path: f.path,
+        name: f.name || tab?.name || f.path.split(/[\\/]/).pop(),
+        original: tab?.originalContent ?? tab?.content ?? '',
+        modified: tab?.content ?? '',
+        selected: true,
+      };
+    });
+    return { composerFiles: files };
+  }),
+
+  toggleComposerFileSelected: (filePath) => set((s) => ({
+    composerFiles: s.composerFiles.map((f) =>
+      f.path === filePath ? { ...f, selected: !f.selected } : f
+    ),
+  })),
+
+  applyComposerFiles: async (paths) => {
+    const s = get();
+    const targets = paths?.length
+      ? s.composerFiles.filter((f) => paths.includes(f.path))
+      : s.composerFiles.filter((f) => f.selected);
+    const api = window.electronAPI;
+    for (const file of targets) {
+      const tab = s.openTabs.find((t) => t.path === file.path);
+      if (tab) get().markTabSaved(tab.id);
+      if (api?.apiFetch) {
+        await api.apiFetch('/api/files/write', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: file.path, content: file.modified }),
+        }).catch(() => {});
+      }
+    }
+    const appliedPaths = new Set(targets.map((f) => f.path));
+    set((st) => ({
+      chatFilesChanged: st.chatFilesChanged.filter((f) => !appliedPaths.has(f.path)),
+      composerFiles: st.composerFiles.filter((f) => !appliedPaths.has(f.path)),
+      composerOpen: st.composerFiles.filter((f) => !appliedPaths.has(f.path)).length > 0 ? st.composerOpen : false,
+    }));
+  },
+
+  rejectComposerFiles: async (paths) => {
+    const s = get();
+    const targets = paths?.length
+      ? s.composerFiles.filter((f) => paths.includes(f.path))
+      : s.composerFiles.filter((f) => f.selected);
+    const api = window.electronAPI;
+    for (const file of targets) {
+      const tab = s.openTabs.find((t) => t.path === file.path);
+      if (tab) {
+        get().updateTabContent(tab.id, file.original);
+        if (api?.apiFetch) {
+          await api.apiFetch('/api/files/write', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: file.path, content: file.original }),
+          }).catch(() => {});
+        }
+        get().markTabSaved(tab.id);
+      }
+    }
+    const rejectedPaths = new Set(targets.map((f) => f.path));
+    set((st) => ({
+      chatFilesChanged: st.chatFilesChanged.filter((f) => !rejectedPaths.has(f.path)),
+      composerFiles: st.composerFiles.filter((f) => !rejectedPaths.has(f.path)),
+      composerOpen: st.composerFiles.filter((f) => !rejectedPaths.has(f.path)).length > 0 ? st.composerOpen : false,
+    }));
+  },
+
+  pendingComposerMessage: null,
+  setPendingComposerMessage: (msg) => set({ pendingComposerMessage: msg || null }),
+
+  startComposerAgent: () => {
+    const s = get();
+    s.syncComposerFiles();
+    const files = get().composerFiles.filter((f) => f.selected);
+    if (!files.length) {
+      s.addNotification({ type: 'error', message: 'Select files in Composer first' });
+      return;
+    }
+    const fileList = files.map((f) => `@file/${f.path.replace(/^.*[/\\]/, '')}`).join(' ');
+    const prompt = `Composer: apply a cohesive multi-file edit across:\n${files.map((f) => `- ${f.path}`).join('\n')}\n\nReview diffs in Composer and update all selected files consistently. ${fileList}`;
+    set({ pendingComposerMessage: prompt, composerOpen: true });
+    if (!get().chatPanelVisible) get().toggleChatPanel();
+    get().addNotification({ type: 'info', message: 'Composer task queued in chat' });
+  },
+
+  // ─── Editor split groups ─────────────────────────────
+
+  editorSplit: false,
+  activeEditorGroup: 1,
+
+  toggleEditorSplit: () => set((s) => ({ editorSplit: !s.editorSplit, activeEditorGroup: 1 })),
+  setActiveEditorGroup: (group) => set({ activeEditorGroup: group === 2 ? 2 : 1 }),
+
+  moveTabToEditorGroup: (tabId, group) => set((s) => ({
+    openTabs: s.openTabs.map((t) => (t.id === tabId ? { ...t, editorGroup: group === 2 ? 2 : 1 } : t)),
+    activeEditorGroup: group === 2 ? 2 : 1,
+    activeTabId: tabId,
+  })),
+
+  // ─── Background agent jobs ─────────────────────────────
+
+  backgroundAgentJobs: [],
+  setBackgroundAgentJobs: (jobs) => set({ backgroundAgentJobs: jobs || [] }),
+  upsertBackgroundAgentJob: (job) => set((s) => {
+    const idx = s.backgroundAgentJobs.findIndex((j) => j.id === job.id);
+    if (idx === -1) return { backgroundAgentJobs: [...s.backgroundAgentJobs, job] };
+    const next = [...s.backgroundAgentJobs];
+    next[idx] = { ...next[idx], ...job };
+    return { backgroundAgentJobs: next };
+  }),
+
+  // ─── Sub-agent badges ────────────────────────────────
+
+  subAgentBadges: [], // [{ id, task, status: 'running'|'done'|'error' }]
+  addSubAgentBadge: (badge) => set((s) => ({
+    subAgentBadges: [...s.subAgentBadges.filter((b) => b.id !== badge.id), badge],
+  })),
+  updateSubAgentBadge: (id, updates) => set((s) => ({
+    subAgentBadges: s.subAgentBadges.map((b) => (b.id === id ? { ...b, ...updates } : b)),
+  })),
+  clearSubAgentBadges: () => set({ subAgentBadges: [] }),
+
 
 
   // ─── Chat Attachments ─────────────────────────────────
@@ -1901,11 +2049,17 @@ const useAppStore = create((set, get) => ({
 
     switch (data.event) {
 
-      case 'initialized':
+      case 'initialized': {
 
-        s.addDebugOutput('--- Debug session initialized ---\n');
+        const msg = '--- Debug session initialized ---\n';
+
+        s.addDebugOutput(msg);
+
+        s.appendDebugConsole(msg);
 
         break;
+
+      }
 
       case 'stopped':
 
@@ -1933,17 +2087,29 @@ const useAppStore = create((set, get) => ({
 
         break;
 
-      case 'terminated':
+      case 'terminated': {
 
-        s.addDebugOutput(`\n--- Debug session ended (exit code: ${data.exitCode ?? 0}) ---\n`);
+        const msg = `\n--- Debug session ended (exit code: ${data.exitCode ?? 0}) ---\n`;
+
+        s.addDebugOutput(msg);
+
+        s.appendDebugConsole(msg);
 
         set({ debugSessionId: null, debugSessionState: 'stopped' });
 
         break;
 
+      }
+
       case 'output':
 
-        if (data.output) s.addDebugOutput(data.output);
+        if (data.output) {
+
+          s.addDebugOutput(data.output);
+
+          s.appendDebugConsole(data.output);
+
+        }
 
         break;
 
@@ -2147,7 +2313,7 @@ const useAppStore = create((set, get) => ({
 
       autoLintFix: true,       // Plan F: auto-inject lint correction after file writes
 
-      enableSubAgents: false,  // Plan G: allow model to spawn isolated sub-agents
+      enableSubAgents: true,  // Plan G: allow model to spawn isolated sub-agents
 
       // System Prompt
 
@@ -2181,7 +2347,7 @@ const useAppStore = create((set, get) => ({
 
       wordWrap: 'on',
 
-      minimap: true,
+      minimapEnabled: true,
 
       lineNumbers: 'on',
 
@@ -2196,6 +2362,10 @@ const useAppStore = create((set, get) => ({
     try {
 
       const stored = JSON.parse(localStorage.getItem('guIDE-settings') || '{}');
+
+      if (stored.minimap !== undefined && stored.minimapEnabled === undefined) {
+        stored.minimapEnabled = stored.minimap;
+      }
 
       return { ...DEFAULTS, ...stored };
 
@@ -2281,7 +2451,7 @@ const useAppStore = create((set, get) => ({
 
       enableNativeFC: false,
 
-      autoLintFix: true, enableSubAgents: false,
+      autoLintFix: true, enableSubAgents: true,
 
       commandShell: 'powershell',
 
@@ -2293,7 +2463,7 @@ const useAppStore = create((set, get) => ({
 
       fontSize: 14, fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
 
-      tabSize: 2, wordWrap: 'on', minimap: true, lineNumbers: 'on',
+      tabSize: 2, wordWrap: 'on', minimapEnabled: true, lineNumbers: 'on',
 
       bracketPairColorization: true, formatOnPaste: false, formatOnType: false,
 
@@ -2586,6 +2756,39 @@ const useAppStore = create((set, get) => ({
   },
 
   setActiveTerminalTab: (id) => set({ activeTerminalTab: id }),
+
+  terminalClearTick: 0,
+  clearActiveTerminal: () => set(s => ({ terminalClearTick: s.terminalClearTick + 1 })),
+
+
+
+  // ─── Bottom Panel: Problems, Output, Debug Console ───
+
+  problemsCount: 0,
+  workspaceProblems: [], // { file, line, column, message, severity, source }
+  setWorkspaceProblems: (problems) => set({
+    workspaceProblems: problems || [],
+    problemsCount: Array.isArray(problems) ? problems.length : 0,
+  }),
+
+  outputLogLines: [], // { time, channel, text }
+  appendOutputLog: (text, channel = 'guIDE') => set(s => {
+    const line = { time: Date.now(), channel, text: String(text ?? '') };
+    const next = [...s.outputLogLines, line];
+    return { outputLogLines: next.length > 2000 ? next.slice(-2000) : next };
+  }),
+  clearOutputLog: () => set({ outputLogLines: [] }),
+
+  debugConsoleLines: [],
+  appendDebugConsole: (text) => set(s => {
+    const line = { time: Date.now(), text: String(text ?? '') };
+    const next = [...s.debugConsoleLines, line];
+    return { debugConsoleLines: next.length > 2000 ? next.slice(-2000) : next };
+  }),
+  clearDebugConsole: () => set({ debugConsoleLines: [] }),
+
+  portsList: [], // { port, label?, url? }
+  setPortsList: (ports) => set({ portsList: ports || [] }),
 
 
 

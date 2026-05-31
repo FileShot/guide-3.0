@@ -140,6 +140,60 @@ class RAGEngine {
   }
 
   /**
+   * embedSearch — TF-IDF semantic search (local, no neural model).
+   * Alias: semanticSearch — not neural embeddings; honest naming for @codebase.
+   */
+  embedSearch(query, maxResults = 10) {
+    if (!this._indexed || this._chunks.length === 0) return [];
+    const queryVec = this._tfidfVector(tokenize(query));
+    if (Object.keys(queryVec).length === 0) return [];
+
+    const scored = this._chunks.map(chunk => ({
+      relativePath: chunk.relativePath,
+      startLine: chunk.startLine,
+      endLine: chunk.endLine,
+      content: chunk.content,
+      score: this._cosineSimilarity(queryVec, this._tfidfVector(chunk.tokens)),
+    }));
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, maxResults).filter(r => r.score > 0.01);
+  }
+
+  /** Alias for embedSearch — TF-IDF semantic search (not neural embeddings). */
+  semanticSearch(query, maxResults = 10) {
+    return this.embedSearch(query, maxResults);
+  }
+
+  _tfidfVector(tokens) {
+    const tf = {};
+    for (const t of tokens) tf[t] = (tf[t] || 0) + 1;
+    const vec = {};
+    const len = tokens.length || 1;
+    for (const [term, count] of Object.entries(tf)) {
+      const idf = this._idfMap[term] || 0;
+      vec[term] = (count / len) * idf;
+    }
+    return vec;
+  }
+
+  _cosineSimilarity(a, b) {
+    let dot = 0;
+    let normA = 0;
+    let normB = 0;
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    for (const k of keys) {
+      const va = a[k] || 0;
+      const vb = b[k] || 0;
+      dot += va * vb;
+      normA += va * va;
+      normB += vb * vb;
+    }
+    if (normA === 0 || normB === 0) return 0;
+    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  }
+
+  /**
    * Search for files by name/path pattern.
    * @param {string} pattern — glob-like pattern (simple substring or wildcard)
    * @param {number} maxResults

@@ -22,6 +22,10 @@ export default function StatusBar() {
   const cursorPos = useAppStore(s => s.editorCursorPosition);
   const diagnostics = useAppStore(s => s.editorDiagnostics);
   const gitBranch = useAppStore(s => s.gitBranch);
+  const setGitBranch = useAppStore(s => s.setGitBranch);
+  const [branchMenuOpen, setBranchMenuOpen] = useState(false);
+  const [branchList, setBranchList] = useState([]);
+  const branchMenuRef = useRef(null);
   const editorEol = useAppStore(s => s.editorEol);
   const setEditorEol = useAppStore(s => s.setEditorEol);
   const editorEncoding = useAppStore(s => s.editorEncoding);
@@ -67,6 +71,55 @@ export default function StatusBar() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (!branchMenuOpen) return;
+    const onDocClick = (e) => {
+      if (branchMenuRef.current && !branchMenuRef.current.contains(e.target)) {
+        setBranchMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [branchMenuOpen]);
+
+  const toggleBranchMenu = async () => {
+    if (!projectPath) {
+      setActiveActivity('git');
+      return;
+    }
+    if (branchMenuOpen) {
+      setBranchMenuOpen(false);
+      return;
+    }
+    try {
+      const r = await fetch(`/api/git/branches?path=${encodeURIComponent(projectPath)}`);
+      const d = await r.json();
+      if (d.success && d.branches) setBranchList(d.branches);
+    } catch (_) {}
+    setBranchMenuOpen(true);
+  };
+
+  const checkoutBranch = async (name) => {
+    if (!projectPath || !name) return;
+    try {
+      const r = await fetch('/api/git/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: projectPath, branch: name }),
+      });
+      const d = await r.json();
+      if (d.success) {
+        setGitBranch(name);
+        setBranchMenuOpen(false);
+        addNotification({ type: 'info', message: `Switched to branch ${name}` });
+      } else {
+        addNotification({ type: 'error', message: d.error || 'Checkout failed' });
+      }
+    } catch (e) {
+      addNotification({ type: 'error', message: e.message });
+    }
+  };
 
   const hideEditorChips = barTier >= 1;
   const hideLeftGit = barTier >= 2;
@@ -202,10 +255,25 @@ export default function StatusBar() {
       {/* Left section — git/errors hidden before right-side GPU/context */}
       <div className="flex items-center flex-1 min-w-0 overflow-hidden">
         {projectPath && !hideLeftGit && (
-          <button className="statusbar-item shrink-0" onClick={() => setActiveActivity('git')}>
-            <GitBranch size={12} className="mr-1" />
-            <span className="truncate max-w-[140px]">{gitBranch}</span>
-          </button>
+          <div className="relative shrink-0" ref={branchMenuRef}>
+            <button className="statusbar-item" onClick={toggleBranchMenu} title="Switch branch">
+              <GitBranch size={12} className="mr-1" />
+              <span className="truncate max-w-[140px]">{gitBranch}</span>
+            </button>
+            {branchMenuOpen && branchList.length > 0 && (
+              <div className="absolute bottom-full left-0 mb-1 min-w-[180px] max-h-[240px] overflow-y-auto bg-vsc-sidebar border border-vsc-panel-border rounded shadow-lg z-50 py-1">
+                {branchList.map(b => (
+                  <button
+                    key={b.name}
+                    className={`w-full text-left px-3 py-1.5 text-[11px] hover:bg-vsc-list-hover ${b.current ? 'text-vsc-accent font-medium' : 'text-vsc-text'}`}
+                    onClick={() => checkoutBranch(b.name)}
+                  >
+                    {b.current ? '● ' : '  '}{b.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
         <button className="statusbar-item shrink-0" onClick={togglePanel} title={`${diagnostics.errors} errors, ${diagnostics.warnings} warnings`}>

@@ -17,6 +17,7 @@ import ToolCallCard from './chat/ToolCallCard';
 import SlideDown from './SlideDown';
 
 import FileContentBlock from './chat/FileContentBlock';
+import MentionPicker from './MentionPicker';
 
 import { Virtuoso } from 'react-virtuoso';
 
@@ -32,7 +33,7 @@ import {
 
   CheckCircle2, Circle, Loader2, ListTodo, Bot, MessageSquare, AlertCircle,
 
-  Shield
+  Shield, Layers
 
 } from 'lucide-react';
 
@@ -219,6 +220,98 @@ function FinalizedThinkingBlock({ text }) {
         >
 
           {text}
+
+        </div>
+
+      </div>
+
+    </div>
+
+  );
+
+}
+
+
+
+// Streaming thinking block — collapsible during live generation
+
+function StreamingThinkingBlock({ content, isLive, thinkContentRef }) {
+
+  const [expanded, setExpanded] = useState(true);
+
+  const lines = content.split('\n').filter(l => l.trim());
+
+  useEffect(() => {
+
+    if (!isLive) {
+
+      const timer = setTimeout(() => setExpanded(false), 2000);
+
+      return () => clearTimeout(timer);
+
+    }
+
+    setExpanded(true);
+
+  }, [isLive]);
+
+
+
+  return (
+
+    <div className="mb-1 overflow-hidden">
+
+      <button
+
+        className="w-full flex items-center gap-1 py-0.5 text-[10px] transition-colors leading-tight min-h-0"
+
+        style={{ color: 'var(--vsc-text-dim, #858585)' }}
+
+        onClick={() => setExpanded(e => !e)}
+
+      >
+
+        <span className={`text-[8px] transition-transform duration-200 flex-shrink-0 ${expanded ? 'rotate-90' : ''}`}>
+
+          &#9654;
+
+        </span>
+
+        <span className="font-medium whitespace-nowrap flex-shrink-0 text-vsc-text-dim">
+
+          <em>{isLive ? 'Reasoning...' : `Thought for ${lines.length} line${lines.length !== 1 ? 's' : ''}`}</em>
+
+        </span>
+
+        {isLive
+
+          ? <Loader2 size={8} className="animate-spin ml-auto flex-shrink-0 text-vsc-text" />
+
+          : <Check size={9} className="ml-auto flex-shrink-0" style={{ color: '#4ec9b0' }} />
+
+        }
+
+      </button>
+
+      <div
+
+        className="transition-all duration-300 ease-in-out overflow-hidden"
+
+        style={{ maxHeight: expanded ? '200px' : '0px', opacity: expanded ? 1 : 0 }}
+
+      >
+
+        <div
+
+          ref={thinkContentRef}
+
+          className="px-2 pb-1.5 text-[10px] whitespace-pre-wrap leading-relaxed max-h-[180px] overflow-y-auto text-vsc-text-dim"
+
+          style={{ borderTop: '1px solid var(--vsc-panel-border, #2d2d2d)' }}
+
+        >
+
+          {content}
 
         </div>
 
@@ -493,40 +586,15 @@ function StreamingFooter() {
         }
 
         if (seg.type === 'thinking' && seg.content && seg.content.trim()) {
-          const thinkLines = seg.content.split('\n').filter(l => l.trim());
           const isLastSeg = i === streamingSegments.length - 1;
           const isLive = isThinking && isLastSeg;
           return (
-            <div key={`seg-think-${i}`} className="mb-1 overflow-hidden">
-              <button
-                className="w-full flex items-center gap-1 py-0.5 text-[10px] transition-colors leading-tight min-h-0"
-                style={{ color: 'var(--vsc-text-dim, #858585)' }}
-                onClick={() => {}}
-              >
-                <span className="text-[8px] transition-transform duration-200 flex-shrink-0 rotate-90">
-                  &#9654;
-                </span>
-                <span className="font-medium whitespace-nowrap flex-shrink-0 text-vsc-text-dim">
-                  <em>{isLive ? 'Reasoning...' : `Thought for ${thinkLines.length} line${thinkLines.length !== 1 ? 's' : ''}`}</em>
-                </span>
-                {isLive
-                  ? <Loader2 size={8} className="animate-spin ml-auto flex-shrink-0 text-vsc-text" />
-                  : <Check size={9} className="ml-auto flex-shrink-0" style={{ color: '#4ec9b0' }} />
-                }
-              </button>
-              <div
-                className="transition-all duration-300 ease-in-out overflow-hidden"
-                style={{ maxHeight: '200px', opacity: 1 }}
-              >
-                <div
-                  ref={isLastSeg ? thinkContentRef : null}
-                  className="px-2 pb-1.5 text-[10px] whitespace-pre-wrap leading-relaxed max-h-[180px] overflow-y-auto text-vsc-text-dim"
-                  style={{ borderTop: '1px solid var(--vsc-panel-border, #2d2d2d)' }}
-                >
-                  {seg.content}
-                </div>
-              </div>
-            </div>
+            <StreamingThinkingBlock
+              key={`seg-think-${i}`}
+              content={seg.content}
+              isLive={isLive}
+              thinkContentRef={isLastSeg ? thinkContentRef : null}
+            />
           );
         }
 
@@ -707,10 +775,23 @@ export default function ChatPanel() {
 
   const settings = useAppStore(s => s.settings);
   const updateSetting = useAppStore(s => s.updateSetting);
+  const fileTree = useAppStore(s => s.fileTree);
+  const toggleComposer = useAppStore(s => s.toggleComposer);
+  const composerOpen = useAppStore(s => s.composerOpen);
+  const composerFiles = useAppStore(s => s.composerFiles);
+  const syncComposerFiles = useAppStore(s => s.syncComposerFiles);
+  const subAgentBadges = useAppStore(s => s.subAgentBadges);
 
 
 
   const [input, setInput] = useState('');
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [mentionType, setMentionType] = useState('file');
+  const [voiceListening, setVoiceListening] = useState(false);
+  const speechRecognitionRef = useRef(null);
+  const voiceRecorderRef = useRef(null);
+  const voiceWhisperAvailableRef = useRef(false);
 
   const [editingMessageId, setEditingMessageId] = useState(null);
 
@@ -1001,6 +1082,198 @@ export default function ChatPanel() {
     }
 
   }, [input]);
+
+  const handleInputChange = useCallback((e) => {
+    const val = e.target.value;
+    setInput(val);
+    const caret = e.target.selectionStart ?? val.length;
+    const before = val.slice(0, caret);
+    const atMatch = before.match(/@([\w./\\-]*)$/);
+    if (atMatch) {
+      const q = atMatch[1];
+      if (/^docs(?:\/|$)/i.test(q) || q.toLowerCase() === 'doc') {
+        setMentionType('docs');
+        setMentionQuery(q.replace(/^docs\/?/i, ''));
+      } else if (/^(codebase|selection|web)/i.test(q)) {
+        setMentionType('special');
+        setMentionQuery(q);
+      } else if (q === '') {
+        setMentionType('special');
+        setMentionQuery('');
+      } else {
+        setMentionType('file');
+        setMentionQuery(q);
+      }
+      setMentionOpen(true);
+    } else {
+      setMentionOpen(false);
+      setMentionQuery('');
+      setMentionType('file');
+    }
+  }, []);
+
+  const insertMention = useCallback((entry) => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const val = input;
+    const caret = ta.selectionStart ?? val.length;
+    const before = val.slice(0, caret);
+    const after = val.slice(caret);
+    const atIdx = before.lastIndexOf('@');
+    if (atIdx === -1) return;
+    let mention;
+    if (entry.special === 'codebase') mention = '@codebase ';
+    else if (entry.special === 'selection') mention = '@selection ';
+    else if (entry.special === 'web') mention = '@web/';
+    else {
+      const prefix = entry.isDir ? 'folder' : 'file';
+      mention = `@${prefix}/${entry.path} `;
+    }
+    const next = before.slice(0, atIdx) + mention + after;
+    setInput(next);
+    setMentionOpen(false);
+    setMentionQuery('');
+    setMentionType('file');
+    requestAnimationFrame(() => {
+      ta.focus();
+      const pos = atIdx + mention.length;
+      ta.setSelectionRange(pos, pos);
+    });
+  }, [input]);
+
+  const insertDocMention = useCallback((entry) => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const val = input;
+    const caret = ta.selectionStart ?? val.length;
+    const before = val.slice(0, caret);
+    const after = val.slice(caret);
+    const atIdx = before.lastIndexOf('@');
+    if (atIdx === -1) return;
+    const mention = `@docs/${entry.path} `;
+    const next = before.slice(0, atIdx) + mention + after;
+    setInput(next);
+    setMentionOpen(false);
+    setMentionQuery('');
+    setMentionType('file');
+    requestAnimationFrame(() => {
+      ta.focus();
+      const pos = atIdx + mention.length;
+      ta.setSelectionRange(pos, pos);
+    });
+  }, [input]);
+
+  const toggleVoiceInput = useCallback(() => {
+    const appendTranscript = (transcript) => {
+      if (!transcript?.trim()) return;
+      setInput((prev) => (prev ? `${prev.trimEnd()} ${transcript.trim()}` : transcript.trim()));
+    };
+
+    const startWebSpeech = () => {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        useAppStore.getState().addNotification({ type: 'warning', message: 'Speech recognition is not supported in this browser.' });
+        return;
+      }
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = navigator.language || 'en-US';
+      recognition.onresult = (event) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        appendTranscript(transcript);
+      };
+      recognition.onerror = () => setVoiceListening(false);
+      recognition.onend = () => {
+        setVoiceListening(false);
+        speechRecognitionRef.current = null;
+      };
+      speechRecognitionRef.current = recognition;
+      setVoiceListening(true);
+      recognition.start();
+    };
+
+    if (voiceListening) {
+      if (voiceRecorderRef.current?.recorder?.state === 'recording') {
+        voiceRecorderRef.current.recorder.stop();
+        return;
+      }
+      if (speechRecognitionRef.current) {
+        speechRecognitionRef.current.stop();
+        setVoiceListening(false);
+      }
+      return;
+    }
+
+    if (voiceWhisperAvailableRef.current && navigator.mediaDevices?.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+        const recorder = new MediaRecorder(stream);
+        const chunks = [];
+        recorder.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
+        recorder.onstop = async () => {
+          stream.getTracks().forEach((t) => t.stop());
+          voiceRecorderRef.current = null;
+          setVoiceListening(false);
+          if (!chunks.length) return;
+          try {
+            const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+            const buf = await blob.arrayBuffer();
+            const bytes = Array.from(new Uint8Array(buf));
+            const api = window.electronAPI?.apiFetch
+              ? (url, opts) => window.electronAPI.apiFetch(url, opts)
+              : (url, opts) => fetch(url, opts).then((r) => r.json());
+            const r = await api('/api/voice/transcribe', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ _audioBuffer: bytes, format: 'webm' }),
+            });
+            if (r?.success && r.text) appendTranscript(r.text);
+            else if (r?.useWebSpeech) startWebSpeech();
+            else useAppStore.getState().addNotification({ type: 'warning', message: r?.error || 'Transcription failed' });
+          } catch (e) {
+            useAppStore.getState().addNotification({ type: 'warning', message: e.message || 'Voice input failed' });
+            startWebSpeech();
+          }
+        };
+        recorder.onerror = () => {
+          stream.getTracks().forEach((t) => t.stop());
+          voiceRecorderRef.current = null;
+          setVoiceListening(false);
+          startWebSpeech();
+        };
+        voiceRecorderRef.current = { recorder, stream };
+        setVoiceListening(true);
+        recorder.start();
+      }).catch(() => startWebSpeech());
+      return;
+    }
+
+    startWebSpeech();
+  }, [voiceListening]);
+
+  useEffect(() => {
+    const api = window.electronAPI?.apiFetch
+      ? (url, opts) => window.electronAPI.apiFetch(url, opts)
+      : (url, opts) => fetch(url, opts).then((r) => r.json());
+    api('/api/voice/status', { method: 'GET' })
+      .then((d) => { voiceWhisperAvailableRef.current = !!d?.localWhisper; })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => () => {
+    if (voiceRecorderRef.current?.recorder?.state === 'recording') {
+      try { voiceRecorderRef.current.recorder.stop(); } catch (_) {}
+    }
+    if (voiceRecorderRef.current?.stream) {
+      voiceRecorderRef.current.stream.getTracks().forEach((t) => t.stop());
+    }
+    if (speechRecognitionRef.current) {
+      try { speechRecognitionRef.current.stop(); } catch (_) {}
+    }
+  }, []);
 
 
 
@@ -1913,6 +2186,16 @@ export default function ChatPanel() {
 
   }, [chatStreaming, handleSendQueued]);
 
+  const pendingComposerMessage = useAppStore(s => s.pendingComposerMessage);
+  const setPendingComposerMessage = useAppStore(s => s.setPendingComposerMessage);
+
+  useEffect(() => {
+    if (!pendingComposerMessage || chatStreaming) return;
+    const msg = pendingComposerMessage;
+    setPendingComposerMessage(null);
+    handleSendQueued(msg);
+  }, [pendingComposerMessage, chatStreaming, setPendingComposerMessage, handleSendQueued]);
+
 
 
   const [stopPending, setStopPending] = useState(false);
@@ -2208,6 +2491,27 @@ export default function ChatPanel() {
 
         <div className="flex items-center gap-1 flex-shrink-0 relative" ref={historyMenuRef}>
 
+          {subAgentBadges.length > 0 && (
+            <div className="flex items-center gap-1 flex-shrink-0">
+              {subAgentBadges.slice(-3).map((badge) => (
+                <span
+                  key={badge.id}
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium max-w-[120px] truncate ${
+                    badge.status === 'running'
+                      ? 'bg-vsc-accent/15 text-vsc-accent'
+                      : badge.status === 'error'
+                        ? 'bg-vsc-error/15 text-vsc-error'
+                        : 'bg-vsc-success/15 text-vsc-success'
+                  }`}
+                  title={badge.task}
+                >
+                  <Bot size={10} className="flex-shrink-0" />
+                  <span className="truncate">{badge.task.slice(0, 24)}{badge.task.length > 24 ? '…' : ''}</span>
+                </span>
+              ))}
+            </div>
+          )}
+
           {chatStreaming && <Loader size={12} className="animate-spin text-vsc-accent flex-shrink-0" />}
 
           <button className="p-1 hover:bg-vsc-list-hover rounded" title="New Chat" onClick={handleClear}>
@@ -2220,6 +2524,19 @@ export default function ChatPanel() {
 
             <Clock size={14} className={`${historyOpen ? 'text-vsc-accent' : 'text-vsc-text-dim'}`} />
 
+          </button>
+
+          <button
+            className="p-1 hover:bg-vsc-list-hover rounded relative"
+            title="Composer — multi-file edits"
+            onClick={() => { syncComposerFiles(); toggleComposer(); }}
+          >
+            <Layers size={14} className={`${composerOpen ? 'text-vsc-accent' : 'text-vsc-text-dim'}`} />
+            {composerFiles.length > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-vsc-accent text-[9px] text-white flex items-center justify-center leading-none">
+                {composerFiles.length}
+              </span>
+            )}
           </button>
 
           <button className="p-1 hover:bg-vsc-list-hover rounded" title="Settings" onClick={() => setActiveActivity('settings')}>
@@ -3420,7 +3737,7 @@ export default function ChatPanel() {
 
           <div
 
-            className={`px-3 pt-2 pb-1 ${dragOver ? 'bg-vsc-accent/5 ring-1 ring-vsc-accent/30 ring-inset' : ''}`}
+            className={`relative px-3 pt-2 pb-1 ${dragOver ? 'bg-vsc-accent/5 ring-1 ring-vsc-accent/30 ring-inset' : ''}`}
 
             onDragOver={handleDragOver}
 
@@ -3430,17 +3747,28 @@ export default function ChatPanel() {
 
           >
 
+            {mentionOpen && (mentionType === 'docs' || mentionType === 'special' || fileTree.length > 0) && (
+              <MentionPicker
+                fileTree={fileTree}
+                query={mentionQuery}
+                mentionType={mentionType}
+                onSelect={insertMention}
+                onSelectDoc={insertDocMention}
+                onClose={() => setMentionOpen(false)}
+              />
+            )}
+
             <textarea
 
               ref={textareaRef}
 
               className="w-full bg-transparent border-none outline-none text-vsc-base text-vsc-text resize-none placeholder:text-vsc-text-dim"
 
-              placeholder={chatStreaming ? 'Type to queue a message...' : (modelLoaded ? 'Ask anything...' : 'Load a model to start...')}
+              placeholder={chatStreaming ? 'Type to queue a message...' : (modelLoaded ? 'Ask anything... (@ files, @docs for docs)' : 'Load a model to start...')}
 
               value={input}
 
-              onChange={(e) => setInput(e.target.value)}
+              onChange={handleInputChange}
 
               onKeyDown={handleKeyDown}
 
@@ -3496,20 +3824,17 @@ export default function ChatPanel() {
 
 
 
-            {/* Mic */}
-
+            {/* Mic — Web Speech API */}
             <button
-
-              className="p-1.5 rounded-md text-vsc-text-dim/40 opacity-40 cursor-not-allowed"
-
-              title="Voice input (coming soon)"
-
-              disabled
-
+              className={`p-1.5 rounded-md transition-colors ${
+                voiceListening
+                  ? 'bg-vsc-error/20 text-vsc-error animate-pulse'
+                  : 'hover:bg-vsc-list-hover text-vsc-text-dim hover:text-vsc-text'
+              }`}
+              title={voiceListening ? 'Stop voice input' : 'Voice input (local Whisper or Web Speech)'}
+              onClick={toggleVoiceInput}
             >
-
               <Mic size={14} />
-
             </button>
 
 

@@ -3865,6 +3865,46 @@ class ChatEngine extends EventEmitter {
     return status;
   }
 
+  /**
+   * One-shot text completion for inline/Tab completion — does not mutate chat history.
+   * @param {string} prompt
+   * @param {{ maxTokens?: number, temperature?: number }} [options]
+   * @returns {Promise<{ text: string }>}
+   */
+  async completeOnce(prompt, options = {}) {
+    if (!this.isReady || !this._model || !prompt) return { text: '' };
+    const maxTokens = options.maxTokens ?? 64;
+    const temperature = options.temperature ?? 0.2;
+    let subContext = null;
+    try {
+      const llamaCppPath = this._getNodeLlamaCppPath();
+      const { LlamaChat } = await import(pathToFileURL(llamaCppPath).href);
+      const subCtxSize = Math.min(2048, Math.max(512, Math.ceil(prompt.length / 3) + maxTokens + 128));
+      subContext = await this._model.createContext({
+        contextSize: { min: 256, max: subCtxSize },
+        failedCreationRemedy: { retries: 2, autoContextSizeShrink: 0.5 },
+        gpuLayers: 0,
+      });
+      const subSequence = subContext.getSequence();
+      const subChat = new LlamaChat({
+        contextSequence: subSequence,
+        chatWrapper: this._chatWrapper || 'auto',
+      });
+      let text = '';
+      const result = await subChat.generateResponse([{ type: 'user', text: prompt }], {
+        temperature,
+        maxTokens,
+        onTextChunk: (chunk) => { text += chunk; },
+      });
+      return { text: (result?.response || text).trim() };
+    } catch (err) {
+      console.warn('[ChatEngine] completeOnce failed:', err.message);
+      return { text: '' };
+    } finally {
+      try { subContext?.dispose(); } catch (_) {}
+    }
+  }
+
   async getGPUInfo() {
     // Plan 8 instrumentation — log inter-call delta so the next session reveals
     // any caller that runs more often than the documented StatusBar 60s cadence.

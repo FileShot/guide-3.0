@@ -19,7 +19,10 @@ import NewProjectDialog from './components/NewProjectDialog';
 import WelcomeScreen from './components/WelcomeScreen';
 
 import WelcomeGuide from './components/WelcomeGuide';
+
+import FirstRunWizard from './components/FirstRunWizard';
 import { openFileFromReadResponse } from './utils/openFileFromRead';
+import { handleLspDiagnostics } from './lib/lspBridge';
 
 
 
@@ -476,6 +479,72 @@ export default function App() {
 
           });
 
+          s.syncComposerFiles();
+
+        }
+
+        break;
+
+
+
+      case 'background-agent-complete':
+
+        s.upsertBackgroundAgentJob({
+
+          id: data?.jobId,
+
+          task: data?.task,
+
+          status: data?.status,
+
+          result: data?.result,
+
+          error: data?.error,
+
+          completedAt: Date.now(),
+
+        });
+
+        s.addNotification({
+
+          type: data?.status === 'completed' ? 'info' : 'error',
+
+          message: data?.status === 'completed'
+
+            ? `Background agent finished: ${(data?.task || '').slice(0, 60)}`
+
+            : `Background agent failed: ${data?.error || 'Unknown error'}`,
+
+          duration: 6000,
+
+        });
+
+        break;
+
+
+
+      case 'sub-agent-spawned':
+
+        if (data?.id) {
+
+          s.addSubAgentBadge({ id: data.id, task: data.task || 'Sub-agent', status: 'running' });
+
+        }
+
+        break;
+
+
+
+      case 'sub-agent-completed':
+
+        if (data?.id) {
+
+          s.updateSubAgentBadge(data.id, {
+
+            status: data.success ? 'done' : 'error',
+
+          });
+
         }
 
         break;
@@ -715,6 +784,22 @@ export default function App() {
 
         break;
 
+      case 'output-log':
+
+        if (typeof data === 'string') s.appendOutputLog(data);
+
+        else s.appendOutputLog(data?.message ?? data?.text ?? '', data?.channel || data?.level || 'Main');
+
+        break;
+
+      case 'debug-console':
+
+        if (typeof data === 'string') s.appendDebugConsole(data);
+
+        else s.appendDebugConsole(data?.text ?? data?.output ?? '');
+
+        break;
+
 
 
       default:
@@ -898,6 +983,18 @@ export default function App() {
       api.onDownloadCancelled?.((d) => handleEvent('download-cancelled', d)),
 
       api.onDebugEvent?.((d) => handleEvent('debug-event', d)),
+
+      api.onOutputLog?.((d) => handleEvent('output-log', d)),
+
+      api.onDebugConsole?.((d) => handleEvent('debug-console', d)),
+
+      api.onLspDiagnostics?.((d) => handleLspDiagnostics(d)),
+
+      api.onBackgroundAgentComplete?.((d) => handleEvent('background-agent-complete', d)),
+
+      api.onSubAgentSpawned?.((d) => handleEvent('sub-agent-spawned', d)),
+
+      api.onSubAgentCompleted?.((d) => handleEvent('sub-agent-completed', d)),
 
     ].filter(Boolean);
 
@@ -1398,6 +1495,8 @@ export default function App() {
         <Layout />
 
         <WelcomeScreen />
+
+        <FirstRunWizard />
 
         <WelcomeGuide />
 

@@ -154,6 +154,35 @@ ipcMain.handle('dialog-open-folder', async () => {
   return result.filePaths[0];
 });
 
+ipcMain.handle('dialog-new-file', async (_e, { defaultDir, defaultName } = {}) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'New File',
+    defaultPath: defaultDir && defaultName ? path.join(defaultDir, defaultName) : defaultDir || undefined,
+  });
+  if (result.canceled || !result.filePath) return null;
+  return result.filePath;
+});
+
+ipcMain.handle('dialog-new-folder', async (_e, { defaultDir } = {}) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Create New Folder',
+    defaultPath: defaultDir || undefined,
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  return result.filePaths[0];
+});
+
+ipcMain.handle('dialog-rename', async (_e, { currentPath } = {}) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Rename',
+    defaultPath: currentPath || undefined,
+    buttonLabel: 'Rename',
+  });
+  if (result.canceled || !result.filePath) return null;
+  return result.filePath;
+});
+
 ipcMain.handle('dialog-models-add', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openFile', 'multiSelections'],
@@ -225,10 +254,27 @@ const { GitManager } = require('./gitManager');
 const { BrowserManager } = require('./browserManager');
 const { FirstRunSetup } = require('./firstRunSetup');
 const { RAGEngine } = require('./ragEngine');
+const { BackgroundAgentQueue } = require('./backgroundAgentQueue');
+const { DocsIndexService } = require('./docsIndexService');
+const { resolveMentions } = require('./mentionContext');
 const { AccountManager } = require('./accountManager');
 const { LicenseManager } = require('./licenseManager');
 const { ExtensionManager } = require('./extensionManager');
+const { LanguageServerManager } = require('./languageServerManager');
+const { LspBundleManager } = require('./lspBundleManager');
+const { FimCompletionService } = require('./fimCompletionService');
+const { VoiceService } = require('./voiceService');
+const { ExtensionHost } = require('./extensionHost');
 const { DebugService } = require('./debugService');
+const { formatOnSave } = require('./formatOnSave');
+const { fetchCatalog } = require('./extensionMarketplace');
+const { MultiRootWorkspace } = require('./multiRootWorkspace');
+const { exportSettings, importSettings } = require('./settingsSync');
+const { RemoteManager } = require('./remoteManager');
+const { DevContainerManager } = require('./devContainerManager');
+const { loadVsix } = require('./vsixLoader');
+const { exportTeamBundle, importTeamBundle } = require('./teamSharing');
+const prIntegration = require('./prIntegration');
 const { ModelDownloader } = require('./server/modelDownloader');
 const liveServer = require('./server/liveServer');
 const WebSearch = require('./webSearch');
@@ -239,6 +285,14 @@ const settingsManager = new SettingsManager(userDataPath);
 const llmEngine = new ChatEngine();
 const webSearch = new WebSearch();
 const ragEngine = new RAGEngine();
+const docsIndexService = new DocsIndexService();
+const backgroundAgentQueue = new BackgroundAgentQueue({
+  llmEngine,
+  settingsManager,
+  sendEvent: (event, data) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(event, data);
+  },
+});
 const mcpToolServer = new MCPToolServer({
   projectPath: null, webSearch, ragEngine,
   executionPolicy: settingsManager.get('executionPolicy'),
@@ -277,7 +331,16 @@ const firstRunSetup = new FirstRunSetup(settingsManager);
 const accountManager = new AccountManager(settingsManager);
 const licenseManager = new LicenseManager(settingsManager, accountManager);
 const extensionManager = new ExtensionManager(userDataPath);
+const languageServerManager = new LanguageServerManager();
+const lspBundleManager = new LspBundleManager(userDataPath);
+languageServerManager.setBundleManager(lspBundleManager);
+const fimCompletionService = new FimCompletionService(llmEngine);
+const voiceService = new VoiceService(userDataPath);
+const extensionHost = new ExtensionHost(extensionManager);
 const debugService = new DebugService();
+const multiRootWorkspace = new MultiRootWorkspace(userDataPath);
+const remoteManager = new RemoteManager();
+const devContainerManager = new DevContainerManager();
 
 // BrowserManager needs mainWindow reference for event forwarding
 const browserManager = new BrowserManager({
@@ -347,7 +410,19 @@ for (const [provider, key] of Object.entries(savedKeys)) {
 // License state already restored in LicenseManager constructor
 
 // Initialize extensions (async, non-blocking)
-extensionManager.initialize().catch(err => console.error('[Main] Extension init error:', err.message));
+extensionManager.initialize().then(() => {
+  extensionHost.activateAll();
+}).catch(err => console.error('[Main] Extension init error:', err.message));
+
+languageServerManager.on('message', ({ serverId, msg }) => {
+  _send('lsp-message', { serverId, msg });
+});
+languageServerManager.on('diagnostics', (data) => {
+  _send('lsp-diagnostics', data);
+});
+languageServerManager.on('log', ({ serverId, stderr }) => {
+  if (stderr) _send('output-log', { level: 'warn', message: `[LSP ${serverId}] ${stderr}`, timestamp: Date.now() });
+});
 
 let currentSettings = settingsManager.getAll();
 let currentProjectPath = null;
@@ -370,6 +445,7 @@ async function openProjectPath(projectPath) {
 
   currentProjectPath = resolved;
   ctx.currentProjectPath = resolved;
+  multiRootWorkspace.syncWithProject(resolved);
   mcpToolServer.projectPath = resolved;
   mcpClient.projectPath = resolved;
   gitManager.setProjectPath(resolved);
@@ -386,6 +462,20 @@ async function openProjectPath(projectPath) {
     }
   } catch (e) { console.warn(`[MCP] Config load failed: ${e.message}`); }
   ragEngine.indexProject(resolved).catch(e => console.warn('[Main] RAG indexing failed:', e.message));
+  docsIndexService.index(resolved).catch(e => console.warn('[Main] Docs indexing failed:', e.message));
+  // Auto-start LSP servers based on project marker files (typescript, python, rust, go)
+  try {
+    const results = await languageServerManager.autoStartForProject(resolved);
+    for (const r of results) {
+      if (r.success && !r.alreadyRunning) {
+        console.log(`[Main] LSP started: ${r.language} (${r.serverId})`);
+      } else if (!r.success) {
+        console.warn(`[Main] LSP start skipped (${r.language}):`, r.error);
+      }
+    }
+  } catch (e) {
+    console.warn('[Main] LSP auto-start skipped:', e.message);
+  }
   _send('project-opened', { path: resolved });
   console.log(`[electron-main] openProjectPath DONE: ${resolved}`);
   return { path: resolved };
@@ -399,6 +489,23 @@ function _send(event, data) {
   // Drop silently during shutdown — window destroyed is expected, not an error.
 }
 mcpToolServer._send = _send;
+
+// Forward main-process console output to renderer Output panel (IPC event pattern)
+const _origConsoleLog = console.log.bind(console);
+const _origConsoleWarn = console.warn.bind(console);
+const _origConsoleError = console.error.bind(console);
+function _formatLogArgs(args) {
+  return args.map(a => {
+    if (typeof a === 'string') return a;
+    try { return JSON.stringify(a); } catch (_) { return String(a); }
+  }).join(' ');
+}
+function _forwardOutputLog(level, args) {
+  _send('output-log', { level, message: _formatLogArgs(args), timestamp: Date.now() });
+}
+console.log = (...args) => { _origConsoleLog(...args); _forwardOutputLog('log', args); };
+console.warn = (...args) => { _origConsoleWarn(...args); _forwardOutputLog('warn', args); };
+console.error = (...args) => { _origConsoleError(...args); _forwardOutputLog('error', args); };
 
 const ctx = {
   llmEngine,
@@ -485,7 +592,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
 
       const askOnly = !!(settings.askOnly);
       const planMode = !!(settings.planMode);
-      const enableSubAgents = !!(settings.enableSubAgents);
+      const enableSubAgents = settings.enableSubAgents !== false;
       const executeToolFn = async (toolName, params) => {
         if (toolName === 'spawn_subagent') {
           return { success: false, error: 'Sub-agents require a loaded local model. Switch to local or disable sub-agents.' };
@@ -551,7 +658,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
 
     const askOnly = !!(settings.askOnly);
     const planMode = !!(settings.planMode);
-    const enableSubAgents = !!(settings.enableSubAgents);
+    const enableSubAgents = settings.enableSubAgents !== false;
     const autoLintFix = settings.autoLintFix !== false; // default true
 
     // Build tool functions from enabled tool definitions
@@ -581,6 +688,14 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       effectiveMessage = userMessage + `\n\n[Current file: ${currentFile.path}]\n${truncated}`;
     }
 
+    const mentionResolved = await resolveMentions(effectiveMessage, {
+      projectPath: currentProjectPath,
+      ragEngine,
+      docsIndexService,
+      selection: chatContext?.selection?.text || chatContext?.editorSelection,
+    });
+    effectiveMessage = mentionResolved.message;
+
     console.log(`[electron-main] ai-chat: calling llmEngine.chat, effectiveMessageLen=${effectiveMessage.length}`);
     const result = await llmEngine.chat(effectiveMessage, {
       onToken: (token) => _send('llm-token', token),
@@ -596,10 +711,20 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       executeToolFn: async (toolName, params) => {
         if (toolName === 'spawn_subagent') {
           if (!enableSubAgents) return { success: false, error: 'Sub-agents are disabled. Enable in Settings > Agentic Behavior.' };
-          return await llmEngine.spawnSubAgent(String(params?.task || ''), {
-            contextSize: params?.contextSize,
-            temperature: settings.temperature,
-          });
+          const subTask = String(params?.task || '');
+          const subId = `sub-${Date.now()}`;
+          _send('sub-agent-spawned', { id: subId, task: subTask });
+          try {
+            const subResult = await llmEngine.spawnSubAgent(subTask, {
+              contextSize: params?.contextSize,
+              temperature: settings.temperature,
+            });
+            _send('sub-agent-completed', { id: subId, task: subTask, success: subResult.success, error: subResult.error });
+            return subResult;
+          } catch (subErr) {
+            _send('sub-agent-completed', { id: subId, task: subTask, success: false, error: subErr.message });
+            throw subErr;
+          }
         }
         return await mcpToolServer.executeTool(toolName, params);
       },
@@ -824,6 +949,42 @@ ipcMain.handle('inject-user-message', (_e, payload) => {
 // ─── File read helpers (binary preview) ─────────────────────────────
 const BINARY_PREVIEW_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'pdf']);
 
+function listListeningPorts() {
+  const { execSync } = require('child_process');
+  const portSet = new Set();
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync('netstat -ano', { encoding: 'utf8', timeout: 8000 });
+      for (const line of out.split('\n')) {
+        const m = line.match(/TCP\s+[\d.:]+:(\d+)\s+[\d.:]+:0\s+LISTENING/i);
+        if (m) {
+          const port = parseInt(m[1], 10);
+          if (port > 0 && port < 65536) portSet.add(port);
+        }
+      }
+    } else {
+      let out = '';
+      try { out = execSync('ss -tln', { encoding: 'utf8', timeout: 8000 }); } catch (_) {
+        out = execSync('netstat -tln', { encoding: 'utf8', timeout: 8000 });
+      }
+      for (const line of out.split('\n')) {
+        const m = line.match(/:(\d+)\s/);
+        if (m) {
+          const port = parseInt(m[1], 10);
+          if (port > 0 && port < 65536) portSet.add(port);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Main] listListeningPorts failed:', err.message);
+  }
+  return Array.from(portSet).sort((a, b) => a - b).map((port) => ({
+    port,
+    label: `localhost:${port}`,
+    url: `http://localhost:${port}`,
+  }));
+}
+
 function getMimeForExtension(ext) {
   const e = String(ext || '').toLowerCase().replace(/^\./, '');
   const map = {
@@ -1047,12 +1208,27 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       }
     }
     if (p === '/api/files/write' && method === 'POST') {
-      const { filePath, content } = body;
+      const { filePath, content, formatOnSave: doFormat } = body;
       if (!filePath) return { _status: 400, error: 'filePath required' };
       const fullPath = path.isAbsolute(filePath) ? filePath : path.join(currentProjectPath || '', filePath);
+      let finalContent = content || '';
+      let formatResult = null;
+      if (doFormat !== false && settingsManager.get('formatOnSave') !== false) {
+        formatResult = await formatOnSave({
+          content: finalContent,
+          filePath: fullPath,
+          projectPath: currentProjectPath,
+          formatEnabled: true,
+          lintEnabled: settingsManager.get('lintOnSave') !== false,
+        });
+        finalContent = formatResult.content;
+        if (formatResult.problems?.length) {
+          _send('format-problems', { filePath: fullPath, problems: formatResult.problems });
+        }
+      }
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-      fs.writeFileSync(fullPath, content || '', 'utf8');
-      return { success: true, path: fullPath };
+      fs.writeFileSync(fullPath, finalContent, 'utf8');
+      return { success: true, path: fullPath, content: finalContent, formatted: formatResult?.formatted || false, problems: formatResult?.problems || [] };
     }
     if (p === '/api/files/create' && method === 'POST') {
       const { path: fp, content } = body;
@@ -1061,6 +1237,15 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
       if (fs.existsSync(fullPath)) return { _status: 409, error: 'File already exists' };
       fs.writeFileSync(fullPath, content || '', 'utf8');
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('files-changed');
+      return { success: true, path: fullPath };
+    }
+    if (p === '/api/files/mkdir' && method === 'POST') {
+      const { path: fp } = body;
+      if (!fp) return { _status: 400, error: 'path required' };
+      const fullPath = path.isAbsolute(fp) ? fp : path.join(currentProjectPath || '', fp);
+      if (fs.existsSync(fullPath)) return { _status: 409, error: 'Already exists' };
+      fs.mkdirSync(fullPath, { recursive: true });
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('files-changed');
       return { success: true, path: fullPath };
     }
@@ -1158,6 +1343,66 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         results.sort((a, b) => (b.score || 0) - (a.score || 0));
       }
       return { results: results.slice(0, maxResults) };
+    }
+    if (p === '/api/files/replace' && method === 'POST') {
+      const basePath = body.path || currentProjectPath;
+      const query = body.query;
+      const replace = body.replace ?? '';
+      const replaceAll = !!body.replaceAll;
+      if (!basePath || query == null || query === '') return { _status: 400, error: 'path and query required' };
+      let filesChanged = 0;
+      let replacements = 0;
+      const replaceDir = (dir, depth = 0) => {
+        if (depth > 6) return;
+        let entries;
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+        for (const entry of entries) {
+          if (entry.name.startsWith('.') && entry.name !== '.env') continue;
+          if (['node_modules', '__pycache__', '.git', 'dist', 'build', '.next', 'target'].includes(entry.name)) continue;
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            replaceDir(fullPath, depth + 1);
+          } else if (entry.isFile()) {
+            try {
+              const stat = fs.statSync(fullPath);
+              if (stat.size > 1024 * 1024) continue;
+              const content = fs.readFileSync(fullPath, 'utf8');
+              let newContent = content;
+              let fileReplacements = 0;
+              if (replaceAll) {
+                let idx = 0;
+                while ((idx = newContent.indexOf(query, idx)) !== -1) {
+                  fileReplacements++;
+                  newContent = newContent.slice(0, idx) + replace + newContent.slice(idx + query.length);
+                  idx += replace.length;
+                }
+              } else {
+                const lines = content.split('\n');
+                let changed = false;
+                for (let i = 0; i < lines.length; i++) {
+                  const idx = lines[i].indexOf(query);
+                  if (idx !== -1) {
+                    lines[i] = lines[i].slice(0, idx) + replace + lines[i].slice(idx + query.length);
+                    fileReplacements++;
+                    changed = true;
+                  }
+                }
+                if (changed) newContent = lines.join('\n');
+              }
+              if (fileReplacements > 0) {
+                fs.writeFileSync(fullPath, newContent, 'utf8');
+                filesChanged++;
+                replacements += fileReplacements;
+              }
+            } catch (_) {}
+          }
+        }
+      };
+      replaceDir(basePath);
+      if (filesChanged > 0 && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('files-changed');
+      }
+      return { success: true, filesChanged, replacements };
     }
 
     // ── Settings ────────────────────────────────────────
@@ -1332,6 +1577,26 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         return { success: false, error: e.message };
       }
     }
+    if (p === '/api/git/push' && method === 'POST') {
+      const basePath = body.path || currentProjectPath;
+      if (!basePath) return { _status: 400, error: 'No project path' };
+      const remote = body.remote || 'origin';
+      try {
+        return gitManager.push(remote, body.branch, basePath);
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    }
+    if (p === '/api/git/pull' && method === 'POST') {
+      const basePath = body.path || currentProjectPath;
+      if (!basePath) return { _status: 400, error: 'No project path' };
+      const remote = body.remote || 'origin';
+      try {
+        return gitManager.pull(remote, body.branch, basePath);
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    }
 
     // ── License ─────────────────────────────────────────
     if (p === '/api/license/status' && method === 'GET') {
@@ -1464,17 +1729,196 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       return { success: true };
     }
 
+    // ── LSP ─────────────────────────────────────────────
+    if (p === '/api/lsp/start' && method === 'POST') {
+      const { language, cwd } = body;
+      const basePath = cwd || currentProjectPath;
+      if (!basePath) return { _status: 400, error: 'No project path' };
+      return await languageServerManager.start(language || 'typescript', basePath);
+    }
+    if (p === '/api/lsp/status' && method === 'GET') {
+      return { success: true, status: lspBundleManager.getStatus(), running: languageServerManager.listRunning() };
+    }
+    if (p === '/api/lsp/install' && method === 'POST') {
+      const { language } = body;
+      if (!language) return { _status: 400, error: 'language required' };
+      try {
+        const cmd = await lspBundleManager.ensureLanguage(language);
+        return { success: true, ...cmd, status: lspBundleManager.getStatus() };
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    }
+    if (p === '/api/lsp/stop' && method === 'POST') {
+      const { serverId } = body;
+      if (serverId) languageServerManager.stop(serverId);
+      else languageServerManager.stopAll();
+      return { success: true };
+    }
+    if (p === '/api/lsp/list' && method === 'GET') {
+      return { success: true, servers: languageServerManager.listRunning() };
+    }
+    if (p === '/api/lsp/send' && method === 'POST') {
+      const { serverId, method: lspMethod, params, language, cwd } = body;
+      if (!lspMethod) return { _status: 400, error: 'method required' };
+      const basePath = cwd || currentProjectPath;
+      let sid = serverId;
+      if (!sid) {
+        const lang = language || params?.textDocument?.uri?.split('.').pop() || 'typescript';
+        const ensured = await languageServerManager.ensureServer(lang, basePath);
+        if (!ensured.success) return { _status: 503, error: ensured.error || 'No LSP server' };
+        sid = ensured.serverId;
+      }
+      // Notifications (didOpen/didChange/didClose) — fire and forget
+      if (lspMethod.startsWith('textDocument/did') || lspMethod.startsWith('$/')) {
+        languageServerManager.sendNotification(sid, lspMethod, params || {});
+        return { success: true };
+      }
+      try {
+        const result = await languageServerManager.sendRequest(sid, lspMethod, params || {});
+        return { success: true, result };
+      } catch (e) {
+        return { _status: 502, error: e.message };
+      }
+    }
+    if (p === '/api/lsp/completion' && method === 'POST') {
+      const { uri, line, character, language, cwd } = body;
+      if (!uri) return { _status: 400, error: 'uri required' };
+      const basePath = cwd || currentProjectPath;
+      const ensured = await languageServerManager.ensureServer(language || 'typescript', basePath);
+      if (!ensured.success) return { _status: 503, error: ensured.error || 'No LSP server' };
+      try {
+        const result = await languageServerManager.sendRequest(ensured.serverId, 'textDocument/completion', {
+          textDocument: { uri },
+          position: { line, character },
+        });
+        return { success: true, result };
+      } catch (e) {
+        return { _status: 502, error: e.message };
+      }
+    }
+    if (p === '/api/lsp/hover' && method === 'POST') {
+      const { uri, line, character, language, cwd } = body;
+      if (!uri) return { _status: 400, error: 'uri required' };
+      const basePath = cwd || currentProjectPath;
+      const ensured = await languageServerManager.ensureServer(language || 'typescript', basePath);
+      if (!ensured.success) return { _status: 503, error: ensured.error || 'No LSP server' };
+      try {
+        const result = await languageServerManager.sendRequest(ensured.serverId, 'textDocument/hover', {
+          textDocument: { uri },
+          position: { line, character },
+        });
+        return { success: true, result };
+      } catch (e) {
+        return { _status: 502, error: e.message };
+      }
+    }
+    if (p === '/api/lsp/definition' && method === 'POST') {
+      const { uri, line, character, language, cwd } = body;
+      if (!uri) return { _status: 400, error: 'uri required' };
+      const basePath = cwd || currentProjectPath;
+      const ensured = await languageServerManager.ensureServer(language || 'typescript', basePath);
+      if (!ensured.success) return { _status: 503, error: ensured.error || 'No LSP server' };
+      try {
+        const result = await languageServerManager.sendRequest(ensured.serverId, 'textDocument/definition', {
+          textDocument: { uri },
+          position: { line, character },
+        });
+        return { success: true, result };
+      } catch (e) {
+        return { _status: 502, error: e.message };
+      }
+    }
+    if (p === '/api/lsp/documentSymbol' && method === 'POST') {
+      const { uri, language, cwd } = body;
+      if (!uri) return { _status: 400, error: 'uri required' };
+      const basePath = cwd || currentProjectPath;
+      const ensured = await languageServerManager.ensureServer(language || 'typescript', basePath);
+      if (!ensured.success) return { _status: 503, error: ensured.error || 'No LSP server' };
+      try {
+        const result = await languageServerManager.sendRequest(ensured.serverId, 'textDocument/documentSymbol', {
+          textDocument: { uri },
+        });
+        return { success: true, result };
+      } catch (e) {
+        return { _status: 502, error: e.message };
+      }
+    }
+
+    if (p === '/api/lsp/rename' && method === 'POST') {
+      const { uri, line, character, newName, language, cwd } = body;
+      if (!uri || !newName) return { _status: 400, error: 'uri and newName required' };
+      const basePath = cwd || currentProjectPath;
+      const ensured = await languageServerManager.ensureServer(language || 'typescript', basePath);
+      if (!ensured.success) return { _status: 503, error: ensured.error || 'No LSP server' };
+      try {
+        const result = await languageServerManager.sendRequest(ensured.serverId, 'textDocument/rename', {
+          textDocument: { uri },
+          position: { line, character },
+          newName,
+        });
+        return { success: true, result };
+      } catch (e) {
+        return { _status: 502, error: e.message };
+      }
+    }
+
+    // ── Inline completion (FIM) ─────────────────────────
+    if (p === '/api/complete' && method === 'POST') {
+      const result = await fimCompletionService.complete(body);
+      return { success: true, text: result?.text || '' };
+    }
+
+    if (p === '/api/voice/status' && method === 'GET') {
+      return { success: true, ...voiceService.getStatus() };
+    }
+    if (p === '/api/voice/transcribe' && method === 'POST') {
+      if (body._audioBuffer) {
+        const buf = Buffer.from(body._audioBuffer);
+        return await voiceService.transcribe(buf, { format: body.format || 'wav' });
+      }
+      return { success: false, error: 'audio buffer required', useWebSpeech: true };
+    }
+
+    // ── Extension host commands ─────────────────────────
+    if (p === '/api/extensions/commands' && method === 'GET') {
+      return { success: true, commands: extensionHost.listCommands() };
+    }
+    if (p === '/api/extensions/runCommand' && method === 'POST') {
+      const { commandId, args } = body;
+      if (!commandId) return { _status: 400, error: 'commandId required' };
+      return extensionHost.executeCommand(commandId, ...(args || []));
+    }
+
+    // ── Extensions marketplace ──────────────────────────
+    if (p === '/api/extensions/catalog' && method === 'GET') {
+      return await fetchCatalog();
+    }
+
     // ── Extensions ──────────────────────────────────────
     if (p === '/api/extensions' && method === 'GET') {
       return { extensions: extensionManager.getInstalled(), categories: extensionManager.getCategories() };
     }
     if (p === '/api/extensions/install' && method === 'POST') {
+      if (body.downloadUrl) {
+        const result = await extensionManager.installFromUrl(body.downloadUrl);
+        extensionHost.activate(result.id, extensionManager.getExtension(result.id));
+        return { success: true, ...result };
+      }
+      if (body._vsixBuffer && body._fileName) {
+        const result = await loadVsix(Buffer.from(body._vsixBuffer), extensionManager);
+        if (result.success && result.id) {
+          extensionHost.activate(result.id, extensionManager.getExtension(result.id));
+        }
+        return result;
+      }
       // File upload — handle binary data passed from frontend
       if (body._fileBuffer && body._fileName) {
         const result = await extensionManager.installFromZip(Buffer.from(body._fileBuffer), body._fileName);
+        extensionHost.activate(result.id, extensionManager.getExtension(result.id));
         return { success: true, ...result };
       }
-      return { _status: 400, error: 'File upload required' };
+      return { _status: 400, error: 'File upload or downloadUrl required' };
     }
     if (p === '/api/extensions/uninstall' && method === 'POST') {
       const { id } = body;
@@ -1541,6 +1985,35 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       return { sessions: debugService.getActiveSessions() };
     }
 
+    // ── Background agents ─────────────────────────────
+    if (p === '/api/agent/background' && method === 'POST') {
+      try {
+        const job = backgroundAgentQueue.enqueue({ task: body?.task, context: body?.context });
+        return { success: true, job };
+      } catch (err) {
+        return { _status: 400, error: err.message };
+      }
+    }
+    if (p === '/api/agent/background' && method === 'GET') {
+      return { jobs: backgroundAgentQueue.list() };
+    }
+
+    // ── Docs index / search ─────────────────────────────
+    if (p === '/api/docs/index' && method === 'POST') {
+      if (!currentProjectPath) return { _status: 400, error: 'No project open' };
+      const result = await docsIndexService.index(currentProjectPath);
+      return { success: true, ...result };
+    }
+    if (p === '/api/docs/search' && method === 'GET') {
+      const results = docsIndexService.search(q.q || q.query || '', parseInt(q.limit || '12', 10));
+      return { results };
+    }
+
+    // ── Listening ports ─────────────────────────────────
+    if (p === '/api/ports/list' && method === 'GET') {
+      return { ports: listListeningPorts() };
+    }
+
     // ── Code formatting (Prettier) ──────────────────────
     if (p === '/api/format' && method === 'POST') {
       const prettier = require('prettier');
@@ -1568,6 +2041,120 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       }
       const formatted = await prettier.format(content, { parser, ...prettierConfig, filepath: fp || undefined });
       return { formatted };
+    }
+
+    // ── Format on save ──────────────────────────────────
+    if (p === '/api/format-on-save' && method === 'POST') {
+      const { content, filePath, formatEnabled, lintEnabled } = body;
+      return await formatOnSave({
+        content,
+        filePath,
+        projectPath: currentProjectPath,
+        formatEnabled: formatEnabled !== false,
+        lintEnabled: lintEnabled !== false,
+      });
+    }
+
+    // ── Multi-root workspace ────────────────────────────
+    if (p === '/api/workspace/roots' && method === 'GET') {
+      return multiRootWorkspace.getRoots();
+    }
+    if (p === '/api/workspace/roots' && method === 'POST') {
+      const { path: rootPath, action, primary } = body;
+      if (action === 'remove') return multiRootWorkspace.removeRoot(rootPath);
+      if (action === 'setPrimary') return multiRootWorkspace.setPrimary(primary || rootPath);
+      if (!rootPath) return { _status: 400, error: 'path required' };
+      return multiRootWorkspace.addRoot(rootPath);
+    }
+
+    // ── Settings sync ───────────────────────────────────
+    if (p === '/api/sync/export' && method === 'POST') {
+      const { passphrase } = body;
+      return exportSettings(settingsManager, passphrase);
+    }
+    if (p === '/api/sync/import' && method === 'POST') {
+      const { bundle, passphrase } = body;
+      if (!bundle) return { _status: 400, error: 'bundle required' };
+      return importSettings(settingsManager, bundle, passphrase);
+    }
+
+    // ── Remote SSH ──────────────────────────────────────
+    if (p === '/api/remote/connect' && method === 'POST') {
+      return remoteManager.connect(body);
+    }
+    if (p === '/api/remote/disconnect' && method === 'POST') {
+      return remoteManager.disconnect(body.id);
+    }
+    if (p === '/api/remote/list' && method === 'GET') {
+      return { connections: remoteManager.listConnections() };
+    }
+    if (p === '/api/remote/read' && method === 'POST') {
+      const { id, path: remotePath } = body;
+      if (!id || !remotePath) return { _status: 400, error: 'id and path required' };
+      return await remoteManager.readFile(id, remotePath);
+    }
+    if (p === '/api/remote/write' && method === 'POST') {
+      const { id, path: remotePath, content } = body;
+      if (!id || !remotePath) return { _status: 400, error: 'id and path required' };
+      return await remoteManager.writeFile(id, remotePath, content);
+    }
+    if (p === '/api/remote/listdir' && method === 'POST') {
+      const { id, path: remotePath } = body;
+      if (!id || !remotePath) return { _status: 400, error: 'id and path required' };
+      return await remoteManager.listDir(id, remotePath);
+    }
+
+    // ── Dev container ───────────────────────────────────
+    if (p === '/api/devcontainer/parse' && method === 'GET') {
+      const root = q.path || currentProjectPath;
+      if (!root) return { _status: 400, error: 'No project path' };
+      return devContainerManager.parse(root);
+    }
+    if (p === '/api/devcontainer/start' && method === 'POST') {
+      const root = body.path || currentProjectPath;
+      if (!root) return { _status: 400, error: 'No project path' };
+      return devContainerManager.start(root);
+    }
+    if (p === '/api/devcontainer/stop' && method === 'POST') {
+      return devContainerManager.stop(body.sessionId);
+    }
+    if (p === '/api/devcontainer/status' && method === 'GET') {
+      return devContainerManager.status();
+    }
+
+    // ── Team sharing ────────────────────────────────────
+    if (p === '/api/team/export' && method === 'POST') {
+      const { passphrase } = body;
+      return exportTeamBundle({ rulesManager, memoryStore, longTermMemory, passphrase });
+    }
+    if (p === '/api/team/import' && method === 'POST') {
+      const { bundle, passphrase, merge } = body;
+      if (!bundle) return { _status: 400, error: 'bundle required' };
+      return importTeamBundle({ rulesManager, memoryStore, longTermMemory, bundle, passphrase, merge });
+    }
+
+    // ── PR integration ──────────────────────────────────
+    if (p === '/api/pr/review' && method === 'POST') {
+      const basePath = body.path || currentProjectPath;
+      if (!basePath) return { _status: 400, error: 'No project path' };
+      return prIntegration.submitReview(basePath, body);
+    }
+    if (p === '/api/pr/info' && method === 'GET') {
+      const basePath = q.path || currentProjectPath;
+      if (!basePath) return { _status: 400, error: 'No project path' };
+      return prIntegration.getPrInfo(basePath, parseInt(q.number));
+    }
+    if (p === '/api/pr/comments' && method === 'GET') {
+      const basePath = q.path || currentProjectPath;
+      if (!basePath) return { _status: 400, error: 'No project path' };
+      return prIntegration.listPrComments(basePath, parseInt(q.number));
+    }
+
+    // ── RAG embed search ────────────────────────────────
+    if (p === '/api/rag/embed-search' && method === 'POST') {
+      const { query, maxResults } = body;
+      if (!query) return { _status: 400, error: 'query required' };
+      return { results: ragEngine.embedSearch(query, maxResults || 10) };
     }
 
     // ── TODO Scanner ────────────────────────────────────

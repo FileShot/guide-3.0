@@ -4,6 +4,7 @@
  */
 import { useState, useRef, useEffect, useCallback } from 'react';
 import useAppStore from '../stores/appStore';
+import { openFileFromReadResponse } from '../utils/openFileFromRead';
 import { Terminal as TerminalIcon, FileOutput, AlertTriangle, X, Plus, Trash2, Globe, Bug, ChevronDown, MoreHorizontal, CheckSquare, RefreshCw } from 'lucide-react';
 
 const mainTabs = [
@@ -27,6 +28,7 @@ export default function BottomPanel() {
   const setActiveTerminalTab = useAppStore(s => s.setActiveTerminalTab);
   const addTerminalTab = useAppStore(s => s.addTerminalTab);
   const closeTerminalTab = useAppStore(s => s.closeTerminalTab);
+  const clearActiveTerminal = useAppStore(s => s.clearActiveTerminal);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [termDropdown, setTermDropdown] = useState(null);
 
@@ -117,7 +119,7 @@ export default function BottomPanel() {
           >
             <Plus size={13} />
           </button>
-          <button className="p-1 hover:bg-vsc-list-hover rounded flex-shrink-0" title="Clear" onClick={() => {}}>
+          <button className="p-1 hover:bg-vsc-list-hover rounded flex-shrink-0" title="Clear" onClick={clearActiveTerminal}>
             <Trash2 size={13} className="text-vsc-text-dim" />
           </button>
           <button className="p-1 hover:bg-vsc-list-hover rounded flex-shrink-0" title="Close Panel" onClick={togglePanel}>
@@ -132,17 +134,246 @@ export default function BottomPanel() {
         {activePanelTab === 'output' && <OutputPanel />}
         {activePanelTab === 'problems' && <ProblemsPanel />}
         {activePanelTab === 'todo' && <TodoPanel />}
-        {activePanelTab === 'debug' && <PlaceholderPanel label="Debug Console" />}
-        {activePanelTab === 'ports' && <PlaceholderPanel label="Ports" />}
+        {activePanelTab === 'debug' && <DebugConsolePanel />}
+        {activePanelTab === 'ports' && <PortsPanel />}
       </div>
     </div>
   );
 }
 
-function PlaceholderPanel({ label }) {
+function OutputPanel() {
+  const outputLogLines = useAppStore(s => s.outputLogLines);
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [outputLogLines.length]);
+
+  if (outputLogLines.length === 0) {
+    return (
+      <div className="h-full p-2 overflow-y-auto scrollbar-thin font-vsc-code text-vsc-sm text-vsc-text-dim">
+        <div className="text-vsc-xs">Output channel — logs will appear here</div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex items-center justify-center h-full text-vsc-text-dim/40 text-[12px]">
-      {label}
+    <div ref={scrollRef} className="h-full p-2 overflow-y-auto scrollbar-thin font-vsc-code text-vsc-xs">
+      {outputLogLines.map((line, i) => (
+        <div key={i} className="whitespace-pre-wrap text-vsc-text-dim leading-relaxed">
+          <span className="text-vsc-text-dim/50 mr-2">{new Date(line.time).toLocaleTimeString()}</span>
+          <span className="text-vsc-accent/70 mr-2">[{line.channel}]</span>
+          {line.text}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProblemsPanel() {
+  const workspaceProblems = useAppStore(s => s.workspaceProblems);
+  const setActiveTab = useAppStore(s => s.setActiveTab);
+  const openTabs = useAppStore(s => s.openTabs);
+
+  const grouped = {};
+  workspaceProblems.forEach(p => {
+    const file = p.file || 'unknown';
+    if (!grouped[file]) grouped[file] = [];
+    grouped[file].push(p);
+  });
+
+  const SEVERITY_COLORS = {
+    error: 'text-vsc-error',
+    warning: 'text-vsc-warning',
+    info: 'text-vsc-accent',
+    hint: 'text-vsc-text-dim',
+  };
+
+  const handleClick = async (problem) => {
+    const file = problem.file;
+    if (!file || file === 'unknown') return;
+    try {
+      const existing = openTabs.find(t => t.path === file);
+      if (existing) {
+        setActiveTab(existing.id);
+      } else {
+        const r = await fetch(`/api/files/read?path=${encodeURIComponent(file)}`);
+        const data = await r.json();
+        openFileFromReadResponse(data);
+      }
+      window.dispatchEvent(new CustomEvent('guide-goto-line', {
+        detail: { line: problem.line || 1, column: problem.column || 1 },
+      }));
+    } catch (_) {}
+  };
+
+  if (workspaceProblems.length === 0) {
+    return (
+      <div className="h-full p-2 overflow-y-auto scrollbar-thin text-vsc-sm">
+        <div className="flex items-center gap-2 text-vsc-text-dim text-vsc-xs">
+          <AlertTriangle size={14} />
+          <span>No problems detected in workspace</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full overflow-y-auto scrollbar-thin p-1">
+      {Object.entries(grouped).map(([file, problems]) => (
+        <div key={file} className="mb-1">
+          <div className="px-2 py-0.5 text-vsc-xs text-vsc-text-dim font-medium truncate" title={file}>
+            {file}
+          </div>
+          {problems.map((p, i) => (
+            <button
+              key={`${file}-${p.line}-${p.column}-${i}`}
+              className="w-full text-left flex items-baseline gap-2 px-4 py-0.5 text-vsc-xs hover:bg-vsc-list-hover rounded cursor-pointer"
+              onClick={() => handleClick(p)}
+            >
+              <span className={`flex-shrink-0 font-medium ${SEVERITY_COLORS[p.severity] || 'text-vsc-text'}`}>
+                {p.severity || 'error'}
+              </span>
+              <span className="text-vsc-text-dim flex-shrink-0">
+                [{p.line || 1},{p.column || 1}]
+              </span>
+              <span className="text-vsc-text truncate">{p.message}</span>
+              {p.source && <span className="text-vsc-text-dim/60 flex-shrink-0 ml-auto">{p.source}</span>}
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DebugConsolePanel() {
+  const debugConsoleLines = useAppStore(s => s.debugConsoleLines);
+  const clearDebugConsole = useAppStore(s => s.clearDebugConsole);
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [debugConsoleLines.length]);
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="flex items-center gap-2 px-2 py-1 border-b border-vsc-panel-border/15 flex-shrink-0">
+        <button
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover transition-colors"
+          onClick={clearDebugConsole}
+        >
+          <Trash2 size={12} />
+          Clear
+        </button>
+      </div>
+      <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin p-2 font-vsc-code text-vsc-xs">
+        {debugConsoleLines.length === 0 ? (
+          <div className="text-vsc-text-dim/40 text-[12px]">Debug console output will appear here</div>
+        ) : (
+          debugConsoleLines.map((line, i) => (
+            <div key={i} className="whitespace-pre-wrap text-vsc-text-dim leading-relaxed">
+              {line.text}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PortsPanel() {
+  const portsList = useAppStore(s => s.portsList);
+  const setPortsList = useAppStore(s => s.setPortsList);
+  const outputLogLines = useAppStore(s => s.outputLogLines);
+  const openBrowserTab = useAppStore(s => s.openBrowserTab);
+  const setViewportNavigateUrl = useAppStore(s => s.setViewportNavigateUrl);
+
+  const scanOutputForPorts = useCallback((lines) => {
+    const found = new Map();
+    const re = /(?:https?:\/\/)?(?:localhost|127\.0\.0\.1):(\d{2,5})/gi;
+    for (const line of lines) {
+      const text = typeof line === 'string' ? line : line?.text || '';
+      let m;
+      re.lastIndex = 0;
+      while ((m = re.exec(text)) !== null) {
+        const port = parseInt(m[1], 10);
+        if (port > 0 && port < 65536) {
+          found.set(port, { port, label: `localhost:${port}`, url: `http://localhost:${port}` });
+        }
+      }
+    }
+    return Array.from(found.values());
+  }, []);
+
+  const refreshPorts = useCallback(async () => {
+    try {
+      const r = await fetch('/api/ports/list');
+      const data = await r.json();
+      if (Array.isArray(data.ports) && data.ports.length) {
+        setPortsList(data.ports);
+        return;
+      }
+    } catch (_) {}
+    const fromOutput = scanOutputForPorts(outputLogLines);
+    if (fromOutput.length) setPortsList(fromOutput);
+  }, [outputLogLines, scanOutputForPorts, setPortsList]);
+
+  useEffect(() => {
+    refreshPorts();
+    const t = setInterval(refreshPorts, 8000);
+    return () => clearInterval(t);
+  }, [refreshPorts]);
+
+  useEffect(() => {
+    const fromOutput = scanOutputForPorts(outputLogLines.slice(-50));
+    if (fromOutput.length) {
+      const prev = useAppStore.getState().portsList || [];
+      const merged = new Map(prev.map((p) => [p.port, p]));
+      for (const p of fromOutput) merged.set(p.port, p);
+      setPortsList(Array.from(merged.values()).sort((a, b) => a.port - b.port));
+    }
+  }, [outputLogLines.length, scanOutputForPorts, setPortsList]);
+
+  const handleOpenPort = (entry) => {
+    if (!entry?.url) return;
+    setViewportNavigateUrl(entry.url);
+    openBrowserTab();
+  };
+
+  if (!portsList.length) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-2 text-vsc-text-dim/40 text-[12px]">
+        <span>No forwarded ports detected</span>
+        <button className="text-vsc-accent hover:underline text-[11px]" onClick={refreshPorts}>Scan now</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full overflow-y-auto scrollbar-thin p-2 text-vsc-xs">
+      <div className="flex items-center justify-between px-2 pb-1">
+        <span className="text-vsc-text-dim">{portsList.length} port{portsList.length !== 1 ? 's' : ''}</span>
+        <button className="text-vsc-accent hover:underline text-[10px]" onClick={refreshPorts}>Refresh</button>
+      </div>
+      {portsList.map((entry, i) => (
+        <div key={`${entry.port}-${i}`} className="flex items-center gap-3 py-1 px-2 hover:bg-vsc-list-hover rounded">
+          <Globe size={12} className="text-vsc-text-dim flex-shrink-0" />
+          <span className="text-vsc-text font-medium">{entry.port}</span>
+          {entry.label && <span className="text-vsc-text-dim">{entry.label}</span>}
+          {entry.url && (
+            <button
+              type="button"
+              className="text-vsc-accent truncate ml-auto hover:underline text-left"
+              onClick={() => handleOpenPort(entry)}
+            >
+              {entry.url}
+            </button>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -160,8 +391,15 @@ function XTermPanel() {
   const [loadTimedOut, setLoadTimedOut] = useState(false);
   const activeTerminalTab = useAppStore(s => s.activeTerminalTab);
   const activePanelTab = useAppStore(s => s.activePanelTab);
+  const terminalClearTick = useAppStore(s => s.terminalClearTick);
 
   const projectPath = useAppStore(s => s.projectPath);
+
+  useEffect(() => {
+    if (terminalClearTick > 0 && xtermRef.current) {
+      xtermRef.current.clear();
+    }
+  }, [terminalClearTick]);
 
   useEffect(() => {
     const t = setTimeout(() => setLoadTimedOut(true), 12000);
@@ -286,6 +524,22 @@ function XTermPanel() {
           cleanupData = api.terminal.onData((msg) => {
             if (msg.terminalId === termId && msg.data) {
               term.write(msg.data);
+              const re = /(?:https?:\/\/)?(?:localhost|127\.0\.0\.1):(\d{2,5})/gi;
+              const found = new Map();
+              let m;
+              re.lastIndex = 0;
+              while ((m = re.exec(msg.data)) !== null) {
+                const port = parseInt(m[1], 10);
+                if (port > 0 && port < 65536) {
+                  found.set(port, { port, label: `localhost:${port}`, url: `http://localhost:${port}` });
+                }
+              }
+              if (found.size > 0) {
+                const prev = useAppStore.getState().portsList || [];
+                const merged = new Map(prev.map((p) => [p.port, p]));
+                for (const p of found.values()) merged.set(p.port, p);
+                useAppStore.getState().setPortsList(Array.from(merged.values()).sort((a, b) => a.port - b.port));
+              }
             }
           });
 
@@ -532,25 +786,6 @@ function _setupExecMode(term) {
       term.write(data);
     }
   });
-}
-
-function OutputPanel() {
-  return (
-    <div className="h-full p-2 overflow-y-auto scrollbar-thin font-vsc-code text-vsc-sm text-vsc-text-dim">
-      <div className="text-vsc-xs">Output channel - AI generation logs will appear here</div>
-    </div>
-  );
-}
-
-function ProblemsPanel() {
-  return (
-    <div className="h-full p-2 overflow-y-auto scrollbar-thin text-vsc-sm">
-      <div className="flex items-center gap-2 text-vsc-text-dim text-vsc-xs">
-        <AlertTriangle size={14} />
-        <span>No problems detected in workspace</span>
-      </div>
-    </div>
-  );
 }
 
 function TodoPanel() {

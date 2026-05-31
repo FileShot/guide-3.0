@@ -81,6 +81,9 @@ jobs:
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
+      - name: Verify bundled TypeScript LSP
+        run: npx typescript-language-server --version
+
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)
         working-directory: frontend
@@ -145,6 +148,9 @@ jobs:
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
+      - name: Verify bundled TypeScript LSP
+        run: npx typescript-language-server --version
+
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)
         working-directory: frontend
@@ -200,6 +206,9 @@ jobs:
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
+      - name: Verify bundled TypeScript LSP
+        run: npx typescript-language-server --version
+
       - name: Install frontend dependencies
         run: npm ci --force
         working-directory: frontend
@@ -252,6 +261,9 @@ jobs:
 
       - name: Install root dependencies
         run: npm ci --ignore-scripts
+
+      - name: Verify bundled TypeScript LSP
+        run: npx typescript-language-server --version
 
       - name: Install frontend dependencies
         run: npm ci --force
@@ -308,6 +320,9 @@ jobs:
 
       - name: Install root dependencies
         run: npm ci --ignore-scripts
+
+      - name: Verify bundled TypeScript LSP
+        run: npx typescript-language-server --version
 
       - name: Install frontend dependencies
         run: npm ci --force

@@ -9,6 +9,20 @@ import DiffViewer from './DiffViewer';
 import InlineChat from './InlineChat';
 import BrowserPanel from './BrowserPanel';
 import {
+  initLspBridge,
+  pathToUri,
+  uriToPath,
+  requestCompletion,
+  requestHover,
+  requestDefinition,
+  requestDocumentSymbols,
+  notifyDidOpen,
+  notifyDidChange,
+  symbolPathAtLine,
+  computeTodoDecorations,
+  refreshLspDiagnosticsMode,
+} from '../lib/lspBridge';
+import {
   isPreviewable, getPreviewType,
   HtmlPreview, MarkdownPreview, JsonPreview, CsvPreview, SvgPreview, ImagePreview, PdfPreview
 } from './EditorPreviews';
@@ -59,6 +73,7 @@ export default function EditorArea() {
   const addNotification = useAppStore(s => s.addNotification);
   const setEditorCursorPosition = useAppStore(s => s.setEditorCursorPosition);
   const setEditorDiagnostics = useAppStore(s => s.setEditorDiagnostics);
+  const setWorkspaceProblems = useAppStore(s => s.setWorkspaceProblems);
   const setEditorSelection = useAppStore(s => s.setEditorSelection);
   const setSymbolOutline = useAppStore(s => s.setSymbolOutline);
   const minimapEnabled = useAppStore(s => s.settings.minimapEnabled);
@@ -79,15 +94,23 @@ export default function EditorArea() {
         api.apiFetch('/api/files/write', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: filePath, content }),
-        }).then(() => {
-          useAppStore.getState().markTabSaved(tabId);
+          body: JSON.stringify({ filePath, content, formatOnSave: true }),
+        }).then((res) => {
+          const store = useAppStore.getState();
+          store.markTabSaved(tabId);
+          if (res?.formatted && res?.content && res.content !== content) {
+            store.updateTabContent(tabId, res.content);
+          }
+          if (res?.problems?.length) {
+            const existing = store.workspaceProblems.filter(p => p.file !== filePath);
+            store.setWorkspaceProblems([...existing, ...res.problems]);
+          }
         }).catch(err => {
           console.error(`[AutoSave] Failed to save ${filePath}:`, err);
         });
       }
     }, 1000));
-  }, []);
+  }, [setWorkspaceProblems]);
   const setChatFilesChanged = useAppStore(s => s.setChatFilesChanged);
   const openDiff = useAppStore(s => s.openDiff);
   const closeDiff = useAppStore(s => s.closeDiff);
@@ -98,7 +121,189 @@ export default function EditorArea() {
   const togglePreviewMode = useAppStore(s => s.togglePreviewMode);
   const editorRef = useRef(null);
   const dirtyDecorationsRef = useRef(null);
+  const todoDecorationsRef = useRef(null);
+  const breakpointDecorationsRef = useRef(null);
+  const lspDisposablesRef = useRef([]);
+  const lspVersionRef = useRef(new Map());
+  const documentSymbolsRef = useRef([]);
+  const fileBreakpointsRef = useRef(new Map()); // filePath -> Set<line>
   const previewRequested = useAppStore(s => s.previewRequested);
+  const editorSplit = useAppStore(s => s.editorSplit);
+  const toggleEditorSplit = useAppStore(s => s.toggleEditorSplit);
+  const moveTabToEditorGroup = useAppStore(s => s.moveTabToEditorGroup);
+  const setActiveEditorGroup = useAppStore(s => s.setActiveEditorGroup);
+  const activeEditorGroup = useAppStore(s => s.activeEditorGroup);
+  const secondaryEditorRef = useRef(null);
+  const [dragTabId, setDragTabId] = useState(null);
+  const projectPath = useAppStore(s => s.projectPath);
+  const debugSessionId = useAppStore(s => s.debugSessionId);
+  const [symbolBreadcrumbs, setSymbolBreadcrumbs] = useState([]);
+  const [cursorLine, setCursorLine] = useState(1);
+
+  const activeTab = openTabs.find(t => t.id === activeTabId);
+
+  // Sync breakpoints to debug session when session becomes active
+  useEffect(() => {
+    if (!debugSessionId || !activeTab?.path) return;
+    const lines = fileBreakpointsRef.current.get(activeTab.path);
+    if (!lines?.size) return;
+    const api = window.electronAPI;
+    const payload = {
+      sessionId: debugSessionId,
+      filePath: activeTab.path,
+      breakpoints: [...lines].map((line) => ({ line })),
+    };
+    const req = api?.apiFetch
+      ? api.apiFetch('/api/debug/setBreakpoints', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      : fetch('/api/debug/setBreakpoints', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    req.catch(() => {});
+  }, [debugSessionId, activeTab?.path]);
+
+  // LSP didOpen / didChange when active tab content changes
+  useEffect(() => {
+    if (!activeTab?.path || activeTab.isBinary) return;
+    const uri = pathToUri(activeTab.path);
+    const lang = activeTab.language || 'plaintext';
+    const prev = lspVersionRef.current.get(activeTab.path) || 0;
+    const ver = prev + 1;
+    lspVersionRef.current.set(activeTab.path, ver);
+    if (prev === 0) {
+      notifyDidOpen({ uri, language: lang, text: activeTab.content || '', version: ver }).catch(() => {});
+    } else {
+      notifyDidChange({ uri, text: activeTab.content || '', version: ver }).catch(() => {});
+    }
+  }, [activeTab?.path, activeTab?.content, activeTab?.language, activeTab?.isBinary]);
+
+  // Fetch LSP document symbols for breadcrumbs + outline
+  useEffect(() => {
+    if (!activeTab?.path || activeTab.isBinary) {
+      documentSymbolsRef.current = [];
+      setSymbolBreadcrumbs([]);
+      return;
+    }
+    let cancelled = false;
+    const uri = pathToUri(activeTab.path);
+    requestDocumentSymbols({ uri, language: activeTab.language, cwd: projectPath })
+      .then((symbols) => {
+        if (cancelled) return;
+        const syms = Array.isArray(symbols) ? symbols : [];
+        documentSymbolsRef.current = syms;
+        setSymbolOutline(syms.map((s) => ({
+          name: s.name,
+          kind: s.kind,
+          line: (s.range?.start?.line ?? 0) + 1,
+          indent: 0,
+        })));
+        setSymbolBreadcrumbs(symbolPathAtLine(syms, cursorLine));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        documentSymbolsRef.current = [];
+        // Fallback: regex-based outline when LSP unavailable
+        if (!activeTab?.content) { setSymbolOutline([]); return; }
+        const lines = activeTab.content.split('\n');
+        const symbols = [];
+        const patterns = [
+          { regex: /^(export\s+)?(default\s+)?(async\s+)?function\s+(\w+)/, kind: 'function' },
+          { regex: /^(export\s+)?(default\s+)?class\s+(\w+)/, kind: 'class' },
+          { regex: /^(async\s+)?def\s+(\w+)/, kind: 'function' },
+          { regex: /^class\s+(\w+)/, kind: 'class' },
+          { regex: /^(pub\s+)?(async\s+)?fn\s+(\w+)/, kind: 'function' },
+          { regex: /^func\s+(\w+)/, kind: 'function' },
+        ];
+        for (let i = 0; i < lines.length && symbols.length < 100; i++) {
+          for (const { regex, kind } of patterns) {
+            const m = lines[i].match(regex);
+            if (m) {
+              const name = m[m.length - 1];
+              if (name && /^[A-Za-z_]\w*$/.test(name)) {
+                symbols.push({ name, kind, line: i + 1, indent: 0 });
+              }
+              break;
+            }
+          }
+        }
+        setSymbolOutline(symbols);
+      });
+    return () => { cancelled = true; };
+  }, [activeTab?.path, activeTab?.content, activeTab?.language, activeTab?.isBinary, projectPath, setSymbolOutline]);
+
+  // Update symbol breadcrumbs when cursor moves
+  useEffect(() => {
+    if (documentSymbolsRef.current.length) {
+      setSymbolBreadcrumbs(symbolPathAtLine(documentSymbolsRef.current, cursorLine));
+    }
+  }, [cursorLine]);
+
+  // TODO/FIXME squiggle decorations
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || !activeTab?.content) return;
+    const decos = computeTodoDecorations(activeTab.content);
+    if (todoDecorationsRef.current) {
+      todoDecorationsRef.current.set(decos);
+    } else {
+      todoDecorationsRef.current = editor.createDecorationsCollection(decos);
+    }
+  }, [activeTab?.content]);
+
+  const refreshBreakpointDecorations = useCallback((editor, filePath) => {
+    if (!editor || !filePath) return;
+    const lines = fileBreakpointsRef.current.get(filePath) || new Set();
+    const decos = [...lines].map((line) => ({
+      range: { startLineNumber: line, startColumn: 1, endLineNumber: line, endColumn: 1 },
+      options: {
+        isWholeLine: false,
+        glyphMarginClassName: 'editor-breakpoint-glyph',
+        glyphMarginHoverMessage: { value: 'Breakpoint' },
+      },
+    }));
+    if (breakpointDecorationsRef.current) {
+      breakpointDecorationsRef.current.set(decos);
+    } else {
+      breakpointDecorationsRef.current = editor.createDecorationsCollection(decos);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshBreakpointDecorations(editorRef.current, activeTab?.path);
+  }, [activeTab?.path, refreshBreakpointDecorations]);
+
+  const syncBreakpointsToBackend = useCallback((filePath) => {
+    if (!debugSessionId) return;
+    const lines = fileBreakpointsRef.current.get(filePath);
+    const payload = {
+      sessionId: debugSessionId,
+      filePath,
+      breakpoints: [...(lines || [])].map((line) => ({ line })),
+    };
+    const api = window.electronAPI;
+    const req = api?.apiFetch
+      ? api.apiFetch('/api/debug/setBreakpoints', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      : fetch('/api/debug/setBreakpoints', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    req.catch(() => {});
+  }, [debugSessionId]);
+
+  const toggleBreakpoint = useCallback((line, filePath) => {
+    if (!filePath) return;
+    let lines = fileBreakpointsRef.current.get(filePath);
+    if (!lines) {
+      lines = new Set();
+      fileBreakpointsRef.current.set(filePath, lines);
+    }
+    if (lines.has(line)) lines.delete(line);
+    else lines.add(line);
+    refreshBreakpointDecorations(editorRef.current, filePath);
+    syncBreakpointsToBackend(filePath);
+  }, [refreshBreakpointDecorations, syncBreakpointsToBackend]);
+
+  const gotoLine = useCallback((line) => {
+    const editor = editorRef.current;
+    if (!editor || !line) return;
+    editor.revealLineInCenter(line);
+    editor.setPosition({ lineNumber: line, column: 1 });
+    editor.focus();
+  }, []);
 
   // R46-B: When Sidebar play button opens a file and sets previewRequested,
   // activate preview mode on the active tab
@@ -109,8 +314,6 @@ export default function EditorArea() {
       useAppStore.getState().setPreviewRequested(false);
     }
   }, [previewRequested, activeTabId, closeDiff]);
-
-  const activeTab = openTabs.find(t => t.id === activeTabId);
 
   // Auto-open diff when AI has edited the active file (avoid side effect during render)
   useEffect(() => {
@@ -151,63 +354,14 @@ export default function EditorArea() {
     return () => window.removeEventListener('keydown', handleKey);
   }, []);
 
-  // Symbol outline — parse functions/classes from active file content
-  useEffect(() => {
-    if (!activeTab?.content) { setSymbolOutline([]); return; }
-    const content = activeTab.content;
-    const lines = content.split('\n');
-    const symbols = [];
-    // Regex patterns for common language constructs
-    const patterns = [
-      // JS/TS: function declarations, class methods, arrow consts
-      { regex: /^(export\s+)?(default\s+)?(async\s+)?function\s+(\w+)/, kind: 'function' },
-      { regex: /^(export\s+)?(default\s+)?class\s+(\w+)/, kind: 'class' },
-      { regex: /^(export\s+)?(const|let|var)\s+(\w+)\s*=\s*(async\s+)?\(?/, kind: 'variable' },
-      { regex: /^\s+(async\s+)?(\w+)\s*\([^)]*\)\s*(\{|=>)/, kind: 'method' },
-      // Python: def, class
-      { regex: /^(async\s+)?def\s+(\w+)/, kind: 'function' },
-      { regex: /^class\s+(\w+)/, kind: 'class' },
-      // Rust: fn, struct, impl
-      { regex: /^(pub\s+)?(async\s+)?fn\s+(\w+)/, kind: 'function' },
-      { regex: /^(pub\s+)?struct\s+(\w+)/, kind: 'class' },
-      { regex: /^impl\s+(\w+)/, kind: 'class' },
-      // Go: func, type
-      { regex: /^func\s+(\w+)/, kind: 'function' },
-      { regex: /^type\s+(\w+)\s+struct/, kind: 'class' },
-      // Java/C#: class, interface, method
-      { regex: /^(public|private|protected)?\s*(static\s+)?(class|interface|enum)\s+(\w+)/, kind: 'class' },
-    ];
-    for (let i = 0; i < lines.length && symbols.length < 100; i++) {
-      const line = lines[i];
-      for (const { regex, kind } of patterns) {
-        const m = line.match(regex);
-        if (m) {
-          // Extract name — last capture group is the name
-          const name = m[m.length - 1];
-          if (name && /^[A-Za-z_]\w*$/.test(name)) {
-            const indent = line.match(/^(\s*)/)[1].length;
-            symbols.push({ name, kind, line: i + 1, indent });
-          }
-          break; // one match per line
-        }
-      }
-    }
-    setSymbolOutline(symbols);
-  }, [activeTab?.content, setSymbolOutline]);
-
   // Listen for goto-line events from symbol outline sidebar
   useEffect(() => {
     const handler = (e) => {
-      const editor = editorRef.current;
-      if (!editor || !e.detail?.line) return;
-      const line = e.detail.line;
-      editor.revealLineInCenter(line);
-      editor.setPosition({ lineNumber: line, column: 1 });
-      editor.focus();
+      gotoLine(e.detail?.line);
     };
     window.addEventListener('guide-goto-line', handler);
     return () => window.removeEventListener('guide-goto-line', handler);
-  }, []);
+  }, [gotoLine]);
 
   // Dirty diff — update gutter decorations when content changes
   useEffect(() => {
@@ -320,6 +474,182 @@ export default function EditorArea() {
     return <WelcomeScreen />;
   }
 
+  const renderTabBar = (tabs, groupNum) => (
+    <div
+      className="flex h-tabbar bg-vsc-tab-border overflow-x-auto scrollbar-none no-select flex-shrink-0"
+      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }}
+      onDrop={(e) => {
+        e.preventDefault();
+        const tabId = e.dataTransfer.getData('text/tab-id') || dragTabId;
+        if (tabId) moveTabToEditorGroup(tabId, groupNum);
+        setDragTabId(null);
+      }}
+    >
+      {tabs.map(tab => {
+        const isHtml = tab.extension === 'html' || tab.extension === 'htm';
+        const isBrowserTab = tab.type === 'browser';
+        const isActive = tab.id === activeTabId;
+        return (
+          <div
+            key={tab.id}
+            draggable
+            className={`editor-tab ${isActive ? 'active' : ''}`}
+            onClick={() => { setActiveTab(tab.id); setActiveEditorGroup(groupNum); }}
+            onContextMenu={(e) => handleTabContextMenu(e, tab.id)}
+            onDragStart={(e) => {
+              e.dataTransfer.setData('text/tab-id', tab.id);
+              setDragTabId(tab.id);
+            }}
+            onDragEnd={() => setDragTabId(null)}
+          >
+            {isBrowserTab ? <Globe size={14} className="text-vsc-accent flex-shrink-0" /> : <FileIcon extension={tab.extension} size={14} />}
+            <span className="truncate text-vsc-sm">{tab.name}</span>
+            {tab.modified && <Circle size={8} className="text-vsc-text-bright fill-current flex-shrink-0" />}
+            {isHtml && (
+              <button
+                className="p-0.5 hover:bg-vsc-list-hover rounded text-vsc-success opacity-60 hover:opacity-100"
+                onClick={(e) => { e.stopPropagation(); closeDiff(); togglePreviewMode(tab.id); }}
+                title={previewMode[tab.id] ? 'Show code' : 'Preview in viewport'}
+              >
+                <Play size={12} />
+              </button>
+            )}
+            <button className="close-btn" onClick={(e) => { e.stopPropagation(); handleCloseTab(tab.id); }}>
+              <X size={14} />
+            </button>
+          </div>
+        );
+      })}
+      {groupNum === 1 && (
+        <button
+          className="flex items-center px-2 text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover flex-shrink-0"
+          title={editorSplit ? 'Close split editor' : 'Split editor right'}
+          onClick={toggleEditorSplit}
+        >
+          <Columns size={14} />
+        </button>
+      )}
+    </div>
+  );
+
+  const primaryTabs = editorSplit ? openTabs.filter(t => (t.editorGroup || 1) !== 2) : openTabs;
+  const secondaryTabs = editorSplit ? openTabs.filter(t => t.editorGroup === 2) : [];
+
+  const renderEditorContent = (paneActiveTab, paneEditorRef, isSecondary) => {
+    if (!paneActiveTab) {
+      return (
+        <div className="flex-1 flex items-center justify-center text-vsc-text-dim text-vsc-xs">
+          {isSecondary ? 'Drag a tab here or open a file' : 'No file open'}
+        </div>
+      );
+    }
+    if (diffState && !previewMode[paneActiveTab.id] && !isSecondary && paneActiveTab.id === activeTabId) {
+      return <DiffViewer />;
+    }
+    if (paneActiveTab.type === 'browser') return <BrowserPanel />;
+    if (previewMode[paneActiveTab.id] && getPreviewType(paneActiveTab.path)) {
+      const type = getPreviewType(paneActiveTab.path);
+      const toggle = () => setPreviewMode(paneActiveTab.id, false);
+      switch (type) {
+        case 'html': return <HtmlPreview content={paneActiveTab.content} filePath={paneActiveTab.path} onToggleCode={toggle} />;
+        case 'markdown': return <MarkdownPreview content={paneActiveTab.content} filePath={paneActiveTab.path} onToggleCode={toggle} />;
+        case 'json': return <JsonPreview content={paneActiveTab.content} filePath={paneActiveTab.path} onToggleCode={toggle} />;
+        case 'csv': return <CsvPreview content={paneActiveTab.content} filePath={paneActiveTab.path} onToggleCode={toggle} />;
+        case 'svg': return <SvgPreview content={paneActiveTab.content} filePath={paneActiveTab.path} onToggleCode={toggle} />;
+        case 'image': return <ImagePreview filePath={paneActiveTab.path} dataUrl={paneActiveTab.dataUrl} onToggleCode={toggle} />;
+        case 'pdf': return <PdfPreview filePath={paneActiveTab.path} dataUrl={paneActiveTab.dataUrl} onToggleCode={toggle} />;
+        default: return null;
+      }
+    }
+    if (paneActiveTab.isBinary) {
+      return (
+        <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-vsc-text-dim">
+          <p className="text-sm mb-2">This file is binary and cannot be shown as text.</p>
+          {isPreviewable(paneActiveTab.path) && (
+            <button type="button" className="px-3 py-1.5 text-[12px] rounded bg-vsc-accent/20 text-vsc-accent hover:bg-vsc-accent/30" onClick={() => setPreviewMode(paneActiveTab.id, true)}>
+              Show preview
+            </button>
+          )}
+        </div>
+      );
+    }
+    const refToUse = isSecondary ? secondaryEditorRef : editorRef;
+    return (
+      <Editor
+        key={paneActiveTab.id}
+        defaultLanguage={paneActiveTab.language}
+        language={paneActiveTab.language}
+        value={paneActiveTab.content}
+        theme="vs-dark"
+        onChange={(value) => {
+          if (value !== undefined) {
+            updateTabContent(paneActiveTab.id, value);
+            autoSaveTab(paneActiveTab.id, value, paneActiveTab.path);
+          }
+        }}
+        onMount={(editor, monaco) => {
+          refToUse.current = editor;
+          if (!isSecondary) {
+            editor.onDidChangeCursorPosition((e) => {
+              const pos = { line: e.position.lineNumber, column: e.position.column };
+              setEditorCursorPosition(pos);
+              if (paneActiveTab?.path && window.electronAPI?.sendEditorContext) {
+                window.electronAPI.sendEditorContext({ activeFilePath: paneActiveTab.path, cursorLine: pos.line, cursorCol: pos.column });
+              }
+            });
+            const pos = editor.getPosition();
+            if (pos) setEditorCursorPosition({ line: pos.lineNumber, column: pos.column });
+            editor.onDidChangeCursorSelection((e) => {
+              const sel = e.selection;
+              if (sel.isEmpty()) setEditorSelection(null);
+              else {
+                const model = editor.getModel();
+                const text = model.getValueInRange(sel);
+                setEditorSelection({ chars: text.length, lines: sel.endLineNumber - sel.startLineNumber + 1 });
+              }
+            });
+          }
+          if (monaco.languages?.typescript && !isSecondary) {
+            const tsOpts = { target: monaco.languages.typescript.ScriptTarget.ESNext, allowNonTsExtensions: true, moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs, module: monaco.languages.typescript.ModuleKind.ESNext, noEmit: true, esModuleInterop: true, jsx: monaco.languages.typescript.JsxEmit.React, allowJs: true, strict: false };
+            monaco.languages.typescript.typescriptDefaults.setCompilerOptions(tsOpts);
+            monaco.languages.typescript.javascriptDefaults.setCompilerOptions(tsOpts);
+          }
+        }}
+        options={{
+          fontSize: 14,
+          fontFamily: 'Consolas, "Courier New", monospace',
+          minimap: { enabled: minimapEnabled, scale: 1 },
+          scrollBeyondLastLine: true,
+          smoothScrolling: true,
+          automaticLayout: true,
+          tabSize: editorIndentSize,
+          insertSpaces: editorIndentType === 'spaces',
+        }}
+        loading={<div className="flex items-center justify-center h-full text-vsc-text-dim"><div className="spinner mr-2" />Loading editor...</div>}
+      />
+    );
+  };
+
+  const secondaryActiveTab = secondaryTabs.find(t => t.id === activeTabId) || secondaryTabs[secondaryTabs.length - 1] || null;
+  const primaryActiveTab = primaryTabs.find(t => t.id === activeTabId) || primaryTabs[primaryTabs.length - 1] || activeTab;
+
+  if (editorSplit) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex flex-1 min-h-0">
+          <div className="flex flex-col flex-1 min-w-0 border-r border-vsc-panel-border/20" onMouseDown={() => setActiveEditorGroup(1)}>
+            {renderTabBar(primaryTabs, 1)}
+            <div className="flex-1 min-h-0">{renderEditorContent(primaryActiveTab, editorRef, false)}</div>
+          </div>
+          <div className="flex flex-col flex-1 min-w-0" onMouseDown={() => setActiveEditorGroup(2)}>
+            {renderTabBar(secondaryTabs, 2)}
+            <div className="flex-1 min-h-0">{renderEditorContent(secondaryActiveTab, secondaryEditorRef, true)}</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Tab Bar */}
@@ -360,6 +690,13 @@ export default function EditorArea() {
             </div>
           );
         })}
+        <button
+          className="flex items-center px-2 text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover flex-shrink-0"
+          title="Split editor right"
+          onClick={toggleEditorSplit}
+        >
+          <Columns size={14} />
+        </button>
       </div>
 
       {/* Tab Context Menu */}
@@ -383,11 +720,24 @@ export default function EditorArea() {
         <div className="h-breadcrumb flex items-center px-3 bg-vsc-bg text-vsc-xs text-vsc-breadcrumb border-b border-vsc-panel-border no-select overflow-hidden min-w-0">
           <div className="flex items-center min-w-0 overflow-hidden flex-1">
           {activeTab.path.split(/[\\/]/).map((part, i, arr) => (
-            <span key={i} className="shrink-0 last:shrink">
+            <span key={`path-${i}`} className="shrink-0 last:shrink">
               {i > 0 && <span className="mx-1 text-vsc-text-dim">/</span>}
-              <span className={`${i === arr.length - 1 ? 'text-vsc-text truncate' : 'hover:text-vsc-text cursor-pointer'}`}>
+              <span className={`${i === arr.length - 1 && !symbolBreadcrumbs.length ? 'text-vsc-text truncate' : 'hover:text-vsc-text cursor-pointer'}`}>
                 {part}
               </span>
+            </span>
+          ))}
+          {symbolBreadcrumbs.map((sym, i) => (
+            <span key={`sym-${i}-${sym.line}`} className="shrink-0">
+              <span className="mx-1 text-vsc-text-dim">›</span>
+              <button
+                type="button"
+                className={`hover:text-vsc-text ${i === symbolBreadcrumbs.length - 1 ? 'text-vsc-text' : 'text-vsc-breadcrumb'}`}
+                onClick={() => gotoLine(sym.line)}
+                title={`Go to ${sym.name}`}
+              >
+                {sym.name}
+              </button>
             </span>
           ))}
           </div>
@@ -595,22 +945,90 @@ export default function EditorArea() {
             }}
             onMount={(editor, monaco) => {
               editorRef.current = editor;
+              initLspBridge(monaco);
+              refreshLspDiagnosticsMode(monaco);
+
+              const tabPath = activeTab?.path;
+              const tabLang = activeTab?.language;
+              const tabUri = tabPath ? pathToUri(tabPath) : '';
+
+              const openDefinitionLocation = (loc) => {
+                if (!loc?.uri) return;
+                const targetPath = uriToPath(loc.uri);
+                const line = (loc.range?.start?.line ?? 0) + 1;
+                const col = (loc.range?.start?.character ?? 0) + 1;
+                if (targetPath === tabPath) {
+                  editor.revealLineInCenter(line);
+                  editor.setPosition({ lineNumber: line, column: col });
+                  editor.focus();
+                  return;
+                }
+                const api = window.electronAPI;
+                const readReq = api?.apiFetch
+                  ? api.apiFetch(`/api/files/read?path=${encodeURIComponent(targetPath)}`)
+                  : fetch(`/api/files/read?path=${encodeURIComponent(targetPath)}`).then((r) => r.json());
+                readReq.then((d) => {
+                  if (d?.content != null) {
+                    useAppStore.getState().openFile({
+                      path: targetPath,
+                      name: targetPath.split(/[\\/]/).pop(),
+                      extension: targetPath.split('.').pop(),
+                      content: d.content,
+                    });
+                    setTimeout(() => {
+                      const ed = editorRef.current;
+                      if (ed) {
+                        ed.revealLineInCenter(line);
+                        ed.setPosition({ lineNumber: line, column: col });
+                        ed.focus();
+                      }
+                    }, 100);
+                  }
+                }).catch(() => {});
+              };
+
               // Track cursor position + send editor context to backend for AI awareness
               editor.onDidChangeCursorPosition((e) => {
                 const pos = { line: e.position.lineNumber, column: e.position.column };
                 setEditorCursorPosition(pos);
-                // Push active file + cursor to main process
-                if (activeTab?.path && window.electronAPI?.sendEditorContext) {
+                setCursorLine(e.position.lineNumber);
+                if (tabPath && window.electronAPI?.sendEditorContext) {
                   window.electronAPI.sendEditorContext({
-                    activeFilePath: activeTab.path,
+                    activeFilePath: tabPath,
                     cursorLine: pos.line,
                     cursorCol: pos.column,
                   });
                 }
               });
-              // Set initial position
               const pos = editor.getPosition();
-              if (pos) setEditorCursorPosition({ line: pos.lineNumber, column: pos.column });
+              if (pos) {
+                setEditorCursorPosition({ line: pos.lineNumber, column: pos.column });
+                setCursorLine(pos.lineNumber);
+              }
+
+              // Breakpoint glyph margin + Ctrl+click go-to-definition
+              editor.onMouseDown((e) => {
+                const target = e.target;
+                if (target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN && e.target.position) {
+                  toggleBreakpoint(e.target.position.lineNumber, tabPath);
+                  return;
+                }
+                if (e.event.ctrlKey && e.target.position && tabPath) {
+                  const p = e.target.position;
+                  requestDefinition({
+                    uri: tabUri,
+                    line: p.lineNumber - 1,
+                    character: p.column - 1,
+                    language: tabLang,
+                    cwd: projectPath,
+                  }).then((result) => {
+                    const loc = Array.isArray(result) ? result[0] : result;
+                    if (loc) openDefinitionLocation(loc);
+                  }).catch(() => {});
+                }
+              });
+
+              refreshBreakpointDecorations(editor, tabPath);
               // Track text selection
               editor.onDidChangeCursorSelection((e) => {
                 const sel = e.selection;
@@ -624,13 +1042,202 @@ export default function EditorArea() {
                 }
               });
               // Track diagnostics (errors/warnings) + push to backend for AI feedback loop
-              monaco.editor.onDidChangeMarkers(([resource]) => {
-                const markers = monaco.editor.getModelMarkers({ resource });
+              const syncWorkspaceProblems = () => {
+                const allMarkers = monaco.editor.getModelMarkers({});
                 let errors = 0, warnings = 0;
-                const details = [];
-                for (const m of markers) {
+                const problems = [];
+                for (const m of allMarkers) {
                   if (m.severity === monaco.MarkerSeverity.Error) errors++;
                   else if (m.severity === monaco.MarkerSeverity.Warning) warnings++;
+                  const model = monaco.editor.getModel(m.resource);
+                  const filePath = model?.uri?.fsPath || model?.uri?.path?.replace(/^\//, '') || '';
+                  problems.push({
+                    file: filePath,
+                    line: m.startLineNumber,
+                    column: m.startColumn,
+                    message: m.message,
+                    severity: m.severity === monaco.MarkerSeverity.Error ? 'error'
+                      : m.severity === monaco.MarkerSeverity.Warning ? 'warning' : 'info',
+                    source: m.source || 'editor',
+                  });
+                }
+                setEditorDiagnostics({ errors, warnings });
+                setWorkspaceProblems(problems);
+              };
+
+              // TypeScript/JavaScript IntelliSense defaults (Monaco built-in TS worker)
+              if (monaco.languages?.typescript) {
+                const tsOpts = {
+                  target: monaco.languages.typescript.ScriptTarget.ESNext,
+                  allowNonTsExtensions: true,
+                  moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
+                  module: monaco.languages.typescript.ModuleKind.ESNext,
+                  noEmit: true,
+                  esModuleInterop: true,
+                  jsx: monaco.languages.typescript.JsxEmit.React,
+                  allowJs: true,
+                  strict: false,
+                };
+                monaco.languages.typescript.typescriptDefaults.setCompilerOptions(tsOpts);
+                monaco.languages.typescript.javascriptDefaults.setCompilerOptions(tsOpts);
+                monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({ noSemanticValidation: false, noSyntaxValidation: false });
+                monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({ noSemanticValidation: false, noSyntaxValidation: false });
+              }
+
+              // LSP completion provider
+              const langId = tabLang || 'plaintext';
+              const lspCompletionDisposable = monaco.languages.registerCompletionItemProvider(
+                langId,
+                {
+                  triggerCharacters: ['.', ':', '<', '"', '/', '@', '#'],
+                  provideCompletionItems: async (model, position) => {
+                    const fp = model.uri?.fsPath || tabPath;
+                    if (!fp) return { suggestions: [] };
+                    const uri = pathToUri(fp);
+                    try {
+                      const result = await requestCompletion({
+                        uri,
+                        line: position.lineNumber - 1,
+                        character: position.column - 1,
+                        language: model.getLanguageId(),
+                        cwd: projectPath,
+                      });
+                      const items = Array.isArray(result) ? result : result?.items || [];
+                      const word = model.getWordUntilPosition(position);
+                      const range = {
+                        startLineNumber: position.lineNumber,
+                        endLineNumber: position.lineNumber,
+                        startColumn: word.startColumn,
+                        endColumn: word.endColumn,
+                      };
+                      return {
+                        suggestions: items.map((item) => ({
+                          label: typeof item.label === 'string' ? item.label : item.label?.label || String(item.label),
+                          kind: item.kind ?? monaco.languages.CompletionItemKind.Text,
+                          insertText: item.insertText ?? (typeof item.label === 'string' ? item.label : item.label?.label),
+                          range,
+                          detail: item.detail,
+                          documentation: item.documentation,
+                          sortText: item.sortText,
+                        })),
+                      };
+                    } catch {
+                      return { suggestions: [] };
+                    }
+                  },
+                },
+              );
+
+              // LSP hover provider
+              const lspHoverDisposable = monaco.languages.registerHoverProvider(
+                langId,
+                {
+                  provideHover: async (model, position) => {
+                    const fp = model.uri?.fsPath || tabPath;
+                    if (!fp) return null;
+                    try {
+                      const result = await requestHover({
+                        uri: pathToUri(fp),
+                        line: position.lineNumber - 1,
+                        character: position.column - 1,
+                        language: model.getLanguageId(),
+                        cwd: projectPath,
+                      });
+                      if (!result) return null;
+                      const value = typeof result.contents === 'string'
+                        ? result.contents
+                        : Array.isArray(result.contents)
+                          ? result.contents.map((c) => (typeof c === 'string' ? c : c.value)).join('\n')
+                          : result.contents?.value || '';
+                      if (!value) return null;
+                      return { range: new monaco.Range(position.lineNumber, 1, position.lineNumber, 1), contents: [{ value }] };
+                    } catch {
+                      return null;
+                    }
+                  },
+                },
+              );
+
+              // LSP go-to-definition provider (F12 / Ctrl+click via Monaco)
+              const lspDefinitionDisposable = monaco.languages.registerDefinitionProvider(
+                langId,
+                {
+                  provideDefinition: async (model, position) => {
+                    const fp = model.uri?.fsPath || tabPath;
+                    if (!fp) return null;
+                    try {
+                      const result = await requestDefinition({
+                        uri: pathToUri(fp),
+                        line: position.lineNumber - 1,
+                        character: position.column - 1,
+                        language: model.getLanguageId(),
+                        cwd: projectPath,
+                      });
+                      const locs = Array.isArray(result) ? result : result ? [result] : [];
+                      return locs.map((loc) => ({
+                        uri: monaco.Uri.parse(loc.uri),
+                        range: new monaco.Range(
+                          (loc.range?.start?.line ?? 0) + 1,
+                          (loc.range?.start?.character ?? 0) + 1,
+                          (loc.range?.end?.line ?? 0) + 1,
+                          (loc.range?.end?.character ?? 0) + 1,
+                        ),
+                      }));
+                    } catch {
+                      return null;
+                    }
+                  },
+                },
+              );
+
+              // AI inline completion (secondary to LSP suggest)
+              const completionDisposable = monaco.languages.registerInlineCompletionsProvider('*', {
+                provideInlineCompletions: async (model, position) => {
+                  const offset = model.getOffsetAt(position);
+                  const full = model.getValue();
+                  const prefix = full.slice(0, offset);
+                  const suffix = full.slice(offset);
+                  try {
+                    const r = await fetch('/api/complete', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        filePath: activeTab?.path,
+                        language: model.getLanguageId(),
+                        prefix,
+                        suffix,
+                        line: position.lineNumber,
+                        column: position.column,
+                      }),
+                    });
+                    const d = await r.json();
+                    if (!d?.text) return { items: [] };
+                    return {
+                      items: [{
+                        insertText: d.text,
+                        range: new monaco.Range(position.lineNumber, position.column, position.lineNumber, position.column),
+                      }],
+                    };
+                  } catch {
+                    return { items: [] };
+                  }
+                },
+                freeInlineCompletions: () => {},
+              });
+
+              const disposables = [completionDisposable, lspCompletionDisposable, lspHoverDisposable, lspDefinitionDisposable];
+              lspDisposablesRef.current = disposables;
+              editor.onDidDispose(() => disposables.forEach((d) => d.dispose()));
+
+              monaco.editor.onDidChangeMarkers(() => syncWorkspaceProblems());
+              syncWorkspaceProblems();
+              monaco.editor.onDidChangeMarkers(([resource]) => {
+                const markers = monaco.editor.getModelMarkers({ resource });
+                let fileErrors = 0, fileWarnings = 0;
+                const details = [];
+                for (const m of markers) {
+                  if (m.severity === monaco.MarkerSeverity.Error) fileErrors++;
+                  else if (m.severity === monaco.MarkerSeverity.Warning) fileWarnings++;
                   if (details.length < 20) {
                     details.push({
                       line: m.startLineNumber,
@@ -639,12 +1246,11 @@ export default function EditorArea() {
                     });
                   }
                 }
-                setEditorDiagnostics({ errors, warnings });
                 // Push per-file diagnostics to main process for AI tool feedback
                 const model = monaco.editor.getModel(resource);
                 const filePath = model?.uri?.fsPath || activeTab?.path || '';
                 if (filePath && window.electronAPI?.sendDiagnostics) {
-                  window.electronAPI.sendDiagnostics({ filePath, errors, warnings, details });
+                  window.electronAPI.sendDiagnostics({ filePath, errors: fileErrors, warnings: fileWarnings, details });
                 }
               });
             }}
