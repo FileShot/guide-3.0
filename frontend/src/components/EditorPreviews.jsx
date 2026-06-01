@@ -487,7 +487,9 @@ export function PdfPreview({ filePath, dataUrl, onToggleCode }) {
   return (
     <div className="h-full flex flex-col">
       <PreviewToolbar icon={Eye} iconColor="text-red-400" label="PDF Preview" fileName={getFileName(filePath)} onToggleCode={onToggleCode} />
-      <iframe src={src} className="flex-1 w-full border-0 min-h-0" title="PDF Preview" />
+      <div className="flex-1 min-h-0 overflow-auto scrollbar-thin">
+        <iframe src={src} className="w-full h-full min-h-[480px] border-0" title="PDF Preview" />
+      </div>
     </div>
   );
 }

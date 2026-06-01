@@ -39,6 +39,21 @@ function projectSessionStorageKey(path) {
   return key ? `guIDE-session-messages:${key}` : 'guIDE-session-messages:__none__';
 }
 
+/** Persist planSession onto the current guide-chat-sessions record before clearing or switching. */
+function persistPlanSessionForChat(messages, planSession) {
+  const sessionId = messages?.[0]?.id;
+  if (!sessionId) return;
+  try {
+    const raw = localStorage.getItem('guide-chat-sessions');
+    const existing = raw ? JSON.parse(raw) : [];
+    const planSnapshot = planSession ? { ...planSession } : null;
+    const updated = existing.map((s) => (
+      s.id === sessionId ? { ...s, planSession: planSnapshot } : s
+    ));
+    localStorage.setItem('guide-chat-sessions', JSON.stringify(updated));
+  } catch (_) {}
+}
+
 function persistProjectChatMessages(projectPath, messages) {
   try {
     const toSave = messages.length > 200 ? messages.slice(-200) : messages;
@@ -1400,6 +1415,8 @@ const useAppStore = create((set, get) => ({
     console.log('[appStore] clearChat');
 
     const store = get();
+
+    persistPlanSessionForChat(store.chatMessages, store.planSession);
 
     if (store._fileTokenTimer) clearTimeout(store._fileTokenTimer);
 

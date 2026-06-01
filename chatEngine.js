@@ -3251,6 +3251,16 @@ class ChatEngine extends EventEmitter {
                   + '\n[... result truncated by system for context size; use only text above]';
               }
             }
+            if (call.tool === 'write_todos' && toolResult?.success !== false) {
+              const allTodos = toolResult?.allTodos || toolResult?.created;
+              if (Array.isArray(allTodos) && allTodos.length > 0) {
+                const idList = allTodos.map((t) => `id ${t.id}: ${(t.text || '').slice(0, 60)}`).join('; ');
+                injectResult += `\n[Reminder: Call update_todo(id, status) when you start (in-progress) and finish (done) each item. Checklist: ${idList}]`;
+              } else {
+                injectResult += '\n[Reminder: Call update_todo(id, "in-progress") when starting each step and update_todo(id, "done") when finishing — required for live progress.]';
+              }
+            }
+
             toolResultLines.push(`${call.tool}: ${injectResult}`);
 
             {

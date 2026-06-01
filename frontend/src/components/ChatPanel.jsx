@@ -923,7 +923,15 @@ export default function ChatPanel() {
 
         const otherProjects = filtered.filter(s => s.projectPath !== (projectPath || null));
 
-        const updatedSame = [{ id: sessionId, title, messages: chatMessages, timestamp: Date.now(), projectPath: projectPath || null }, ...sameProject].slice(0, 10);
+        const planSnapshot = useAppStore.getState().planSession;
+        const updatedSame = [{
+          id: sessionId,
+          title,
+          messages: chatMessages,
+          timestamp: Date.now(),
+          projectPath: projectPath || null,
+          planSession: planSnapshot ? { ...planSnapshot } : null,
+        }, ...sameProject].slice(0, 10);
 
         const updated = [...updatedSame, ...otherProjects];
 
@@ -2349,7 +2357,21 @@ export default function ChatPanel() {
 
   }, [stopPending]);
 
-
+  const persistCurrentConversationPlan = useCallback(() => {
+    const store = useAppStore.getState();
+    const sessionId = store.chatMessages[0]?.id;
+    if (!sessionId) return;
+    try {
+      const raw = localStorage.getItem('guide-chat-sessions');
+      const existing = raw ? JSON.parse(raw) : [];
+      const planSnapshot = store.planSession ? { ...store.planSession } : null;
+      const updated = existing.map((s) => (
+        s.id === sessionId ? { ...s, planSession: planSnapshot } : s
+      ));
+      localStorage.setItem('guide-chat-sessions', JSON.stringify(updated));
+      setSavedSessions(updated);
+    } catch (_) {}
+  }, []);
 
   const handleClear = useCallback(async () => {
 
@@ -2375,6 +2397,8 @@ export default function ChatPanel() {
 
     window.electronAPI?.cancelPendingQuestion?.();
 
+    persistCurrentConversationPlan();
+
     clearChat();
 
     setActiveConversationId('current');
@@ -2387,7 +2411,7 @@ export default function ChatPanel() {
 
     } catch (_) {}
 
-  }, [clearChat]);
+  }, [clearChat, persistCurrentConversationPlan]);
 
 
 
@@ -2481,11 +2505,11 @@ export default function ChatPanel() {
 
   }, [filteredSessions, currentSessionId, currentTitle]);
 
-
-
   const openSavedSession = useCallback(async (session) => {
 
     const store = useAppStore.getState();
+
+    persistCurrentConversationPlan();
 
     if (store.chatStreaming) {
 
@@ -2515,6 +2539,12 @@ export default function ChatPanel() {
 
     useAppStore.setState({ chatMessages: session.messages || [] });
 
+    if (session.planSession) {
+      store.setPlanSession(session.planSession);
+    } else {
+      store.clearPlanSession();
+    }
+
     const revertMsgs = (session.messages || []).map((m) => ({
 
       role: m.role,
@@ -2533,7 +2563,7 @@ export default function ChatPanel() {
 
     setHistoryOpen(false);
 
-  }, []);
+  }, [persistCurrentConversationPlan]);
 
 
 

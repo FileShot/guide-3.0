@@ -83,27 +83,48 @@ function getAskModePromptAddition() {
 }
 
 function getPlanModePromptAddition(planPhase = 'awaiting_plan') {
-  let prompt = '\n\n## PLAN MODE ACTIVE\nYou are in Plan mode. Explore the codebase with read/search/git tools first.\n';
+  let prompt = '\n\n## PLAN MODE ACTIVE\n'
+    + 'You are in **Plan mode** — planning only, not implementing. The user will click **Build** (or Ctrl+Enter) to implement later.\n'
+    + '**web_search** and other implementation tools are NOT available in Plan mode. For live external data, answer from knowledge or suggest Ask mode.\n\n';
+
   if (planPhase === 'awaiting_plan') {
-    prompt += 'Then write ONE complete implementation plan to `.guide/plans/{descriptive-slug}.plan.md` using write_file.\n'
-      + 'Create `.guide/plans` with create_directory if needed.\n'
-      + 'The plan file MUST include YAML frontmatter with `title` and optional `overview` only (no todos in the file).\n'
-      + 'After writing the plan file, call **write_todos** with the implementation checklist so the user sees live progress.\n'
-      + 'STOP after the plan file and write_todos. Do NOT modify source files, run commands, or install packages.\n';
+    prompt += '### Tier A — Conversational (no plan artifact)\n'
+      + 'For greetings, small talk, or general questions unrelated to building something (e.g. "how are you", "what is X", "what\'s today\'s news?"): '
+      + 'respond in **prose only**. Do NOT call tools. Do NOT write a plan file.\n\n'
+      + '### Tier B — Build / plan requests (any wording, vague or detailed)\n'
+      + 'When the user wants something built or designed (e.g. "make me a website", a product spec): '
+      + 'you are creating an **implementation plan**, not building yet.\n'
+      + '- Optionally explore with read/list/search/git tools.\n'
+      + '- Create `.guide/plans` with create_directory if needed.\n'
+      + '- Write ONE plan to `.guide/plans/{descriptive-slug}.plan.md` using write_file (YAML frontmatter: `title`, optional `overview` only — no todos in the file).\n'
+      + '- Call **write_todos** with the implementation checklist.\n'
+      + '- STOP after plan file + write_todos. Do NOT create app directories, source files, run commands, or install packages.\n'
+      + '- If the request is vague, you may ask 1–2 clarifying questions in prose before or while planning.\n\n';
   } else {
-    prompt += 'A plan already exists. Answer questions in prose. To revise the plan, use edit_file or write_file on `.guide/plans/*.plan.md` only.\n'
-      + 'To change todo text, use update_todo with the todo `id` and new `text` (e.g. id 2 for Phase 2). To replace the full checklist, use write_todos.\n'
-      + 'Do NOT modify source files, run commands, or install packages until the user clicks **Build**.\n';
+    prompt += '### Tier C — Plan ready\n'
+      + 'A plan already exists on disk. Answer questions in prose.\n'
+      + 'To revise the plan: edit_file or write_file on `.guide/plans/*.plan.md` only.\n'
+      + 'To change todo text: update_todo with todo `id` and new `text` (e.g. id 2 for Phase 2). To replace the full checklist: write_todos.\n'
+      + 'Do NOT modify source files, run commands, or install packages until the user clicks **Build**.\n\n';
   }
-  prompt += 'The user will review the plan and click **Build** (or Ctrl+Enter) to implement — do not implement until then.\n'
-    + 'In Plan mode: read/search/git tools, create_directory (`.guide/plans` only), write_file and edit_file (`.guide/plans/*.plan.md` only), write_todos, and update_todo are permitted.';
+
+  prompt += '**Allowed tools in Plan mode:** read/search/git tools; create_directory (`.guide/plans` only); '
+    + 'write_file and edit_file (`.guide/plans/*.plan.md` only); write_todos; update_todo; ask_question.\n'
+    + 'Implementation begins only after the user clicks **Build**.';
   return prompt;
 }
 
 function getBuildingPhasePromptAddition() {
-  return '\n\n## BUILD PHASE\nImplement the approved plan in the PROJECT ROOT (the opened workspace folder).\n'
-    + 'NEVER create application source under `.guide/` — that directory is guIDE metadata only (`.guide/plans/`, checkpoints).\n'
-    + 'If no todos exist yet, call write_todos first; then call update_todo as you start and finish each step.';
+  return '\n\n## BUILD PHASE\n'
+    + 'Implement the approved plan in the PROJECT ROOT (the opened workspace folder).\n'
+    + 'NEVER create application source under `.guide/` — that directory is guIDE metadata only (`.guide/plans/`, checkpoints).\n\n'
+    + '### Todo checklist discipline (required)\n'
+    + 'If no todos exist yet, call **write_todos** first with the full checklist.\n'
+    + 'Then **throughout implementation** you MUST call **update_todo**:\n'
+    + '- When you **start** a step: `update_todo` with that item\'s `id` and `status: "in-progress"`.\n'
+    + '- When you **finish** a step: `update_todo` with `status: "done"` before moving to the next step.\n'
+    + 'Never leave the checklist at 0/N done while you are actively implementing — the user tracks progress in real time.\n'
+    + 'After each major file write or successful command that completes a plan step, update the matching todo before continuing.';
 }
 
 /**

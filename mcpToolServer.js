@@ -840,14 +840,14 @@ class MCPToolServer {
       // ── Planning / TODO Tools ──
       {
         name: 'write_todos',
-        description: 'Create a checklist to plan and track multi-step tasks. After creating todos, you MUST call update_todo to mark each item as "in_progress" when you start it and "done" when you complete it. The user sees the todo list update in real time.',
+        description: 'Create a checklist for multi-step work. REQUIRED: after write_todos, call update_todo for EVERY step — in-progress when you start, done when you finish. Never implement with 0/N todos completed. The user sees live progress in the todo UI.',
         parameters: {
           items: { type: 'array', description: 'Array of todo strings or {text,status} objects', required: true },
         },
       },
       {
         name: 'update_todo',
-        description: 'Update a TODO item status. Call this EVERY time you start or finish a task step. Status values: "pending", "in-progress", "done". Can also update the item text.',
+        description: 'Update one checklist item. REQUIRED during Agent/Build work: call when starting a step (status in-progress) and when finishing (status done). Without update_todo calls the list stays 0/N forever. Status: pending, in-progress, done. Optional text to change item label.',
         parameters: {
           id: { type: 'number', description: 'Todo ID (from write_todos result)', required: true },
           status: { type: 'string', description: 'New status: pending, in-progress, or done', required: true },
@@ -4554,6 +4554,7 @@ class MCPToolServer {
     rules += '- Web: after web_search, in the same continuation, call fetch_webpage on the first and second ranked result URLs before answering (or each returned URL if fewer than two). Do not ask the user to confirm fetching. Do not call list_directory in the same tool round as web_search/fetch_webpage unless the user asked about the project\n';
     rules += '- Browser workflow: browser_navigate (auto-returns snapshot) → interact using [ref=N] IDs with browser_click/browser_type (auto-return snapshot after action). Only call browser_snapshot explicitly if you need to refresh refs without navigating or clicking.\n';
     rules += '- If browser_navigate fails, retry it or use fetch_webpage. Do NOT launch chrome.exe or debug Playwright via run_command.\n';
+    rules += '- After write_todos: call update_todo(in-progress) when starting each step and update_todo(done) when finishing — never leave 0/N checked during implementation.\n';
     parts.push(rules);
 
     // header + Browser + Core Files + Terminal = tier-0 (always inject in Agent mode)

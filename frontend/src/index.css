@@ -570,6 +570,21 @@
     display: none;
   }
 
+  /* Monaco editor scrollbars — thin, rounded, theme-aligned */
+  .monaco-scrollable-element > .scrollbar > .slider {
+    border-radius: 4px !important;
+    background: rgb(var(--guide-scrollbar) / 0.85) !important;
+  }
+  .monaco-scrollable-element > .scrollbar > .slider:hover {
+    background: rgb(var(--guide-scrollbar-hover)) !important;
+  }
+  .monaco-scrollable-element > .scrollbar.vertical {
+    width: 8px !important;
+  }
+  .monaco-scrollable-element > .scrollbar.horizontal {
+    height: 8px !important;
+  }
+
   /* ─── Text utilities ────────────────────────────────── */
   .truncate-2 {
     display: -webkit-box;

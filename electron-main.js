@@ -634,9 +634,6 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       if (settings.planContext && settings.agentPhase === 'building') {
         effectiveMessage = `[Build approved]\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
       }
-      if (planMode && settings.agentPhase !== 'building') {
-        await mcpToolServer.emitExistingPlanIfFound();
-      }
       const executeToolFn = async (toolName, params) => {
         if (toolName === 'spawn_subagent') {
           return { success: false, error: 'Sub-agents require a loaded local model. Switch to local or disable sub-agents.' };
@@ -733,10 +730,6 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
 
     if (settings.planContext && settings.agentPhase === 'building') {
       effectiveMessage = `[Build approved]\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
-    }
-
-    if (planMode && settings.agentPhase !== 'building') {
-      await mcpToolServer.emitExistingPlanIfFound();
     }
 
     console.log(`[electron-main] ai-chat: calling llmEngine.chat, effectiveMessageLen=${effectiveMessage.length}, mode=${mode.planning ? 'plan' : mode.askOnly ? 'ask' : 'agent'}`);
