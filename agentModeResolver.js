@@ -99,7 +99,7 @@ function getPlanModePromptAddition(planPhase = 'awaiting_plan') {
       + '- Write ONE plan to `.guide/plans/{descriptive-slug}.plan.md` using write_file (YAML frontmatter: `title`, optional `overview` only — no todos in the file).\n'
       + '- Call **write_todos** with the implementation checklist.\n'
       + '- STOP after plan file + write_todos. Do NOT create app directories, source files, run commands, or install packages.\n'
-      + '- If the request is vague, you may ask 1–2 clarifying questions in prose before or while planning.\n\n';
+      + '- If the request is vague, ask 1–2 clarifying questions in prose or use ask_question before or while planning.\n\n';
   } else {
     prompt += '### Tier C — Plan ready\n'
       + 'A plan already exists on disk. Answer questions in prose.\n'

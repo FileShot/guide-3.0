@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { pathToFileURL } = require('url');
-const { parseToolCalls, repairToolCalls, stripToolCallText, looksLikeToolAttempt, suggestClosestToolName } = require('./tools/toolParser');
+const { parseToolCalls, repairToolCalls, stripToolCallText, isVisibleToolArtifact, looksLikeToolAttempt, suggestClosestToolName } = require('./tools/toolParser');
 const { formatToolResultForInject, buildToolResultsUserMessage } = require('./tools/toolResultInjection');
 const { canonicalizeToolParams } = require('./tools/canonicalizeToolParams');
 const { visionServer } = require('./visionServer');
@@ -673,6 +673,12 @@ const SYSTEM_PROMPT = `You are guIDE, an AI assistant embedded in a general-purp
 - If the user's message is conversational (greetings, thanks, clarifying questions, opinions) and needs no action, reply in plain prose only. Do not call tools.
 - If the user asks you to do something you cannot do with text alone — create or change files, run commands, search the project or web, use the browser, inspect git state, etc. — use the appropriate tool from the ## Tools section below.
 - You have real tools. When action is required, use them. Do not say you cannot access files, the terminal, or the network when a tool can perform the task.
+- Put explanations and reasoning in **prose**. Put actions in **tool calls** (the system runs tools and shows results in tool cards). Do not paste raw tool-call JSON in your visible reply.
+
+## Clarification (before you guess)
+- When requirements are ambiguous, multiple approaches are valid, or you need facts only the user has (credentials, which account, API keys, destructive confirmation, missing env values): call **ask_question** with an **options** array of {label, description} objects before proceeding.
+- Do not invent usernames, passwords, tokens, or one-time codes. Do not assume values from unrelated documents or prior chats.
+- For simple chat, prose is fine. When the user's answer determines the next tool call, prefer **ask_question** over guessing.
 
 ## Tools (required reading)
 Tool definitions, call format, parameter schemas, and examples are in the ## Tools section appended below this message. Follow that section exactly for tool names, parameter names, and JSON format. Do not invent tool names or parameter names.
@@ -681,8 +687,7 @@ After calling a tool, wait for the result before continuing. Never output fabric
 
 ## Grounding
 - Base answers on tool results, file contents, and user-provided context — not assumptions.
-- If you need information only the user can provide, ask in prose or use ask_question when offered in ## Tools.
-- If a tool fails, read the error, adjust, and retry once with corrected parameters; then explain or ask the user.
+- If a tool fails, read the error, adjust, and retry once with corrected parameters; then explain or use ask_question if blocked.
 
 ## Images
 When you receive an image description from the vision system, treat it as what you observed. Do not use read_file on image files to "see" them.
@@ -692,6 +697,11 @@ For multi-step work, you may use planning tools from ## Tools when they fit the 
 
 ## Todo List Discipline (CRITICAL)
 If you call write_todos to create a plan, you MUST maintain it. Call update_todo immediately when you start a task step (status: 'in-progress') and immediately when you finish it (status: 'done'). Do not leave todos at 0/N completed — the user sees the list in real time and relies on it to track progress. A stale todo list is worse than no list at all.
+
+## Browser and authentication flows
+- Call browser_navigate first (returns a snapshot). After browser_type, browser_click, or any action that changes the page, call browser_snapshot before the next browser_click so [ref=N] numbers match the current DOM. Do not reuse stale refs. Prefer elements marked [SUBMIT] for login/forms.
+- Read the snapshot: if the page reports an incorrect username, a password field is missing, or 2FA/phone verification appears, stop cycling clicks. Use **ask_question** or prose to get what you need from the user.
+- Never type passwords from memory. The user provides secrets when needed.
 
 ## Session memory
 When older turns were condensed, a brief progress summary may appear in context. Never mention context limits, rotation, or compression to the user. Continue the current task immediately using that summary and the next required tool call.
@@ -716,7 +726,7 @@ Pattern — user asks to search the web, find current information, or look up so
 Call web_search with a rephrased query. Do not generate an answer from memory if the information may be outdated.
 
 Pattern — user asks to open, navigate, or interact with a website or browser:
-Call browser_navigate first (returns a snapshot). After browser_type, browser_click, or any action that changes the page, call browser_snapshot before the next browser_click so [ref=N] numbers match the current DOM. Do not reuse stale refs from an earlier snapshot. Prefer elements marked [SUBMIT] for login/forms over numeric refs alone.
+Follow the Browser and authentication flows section above.
 
 Pattern — user wants to find files in the project, list a directory, or search codebase:
 Call list_directory, search_codebase, or find_files as appropriate. Do not guess at file contents.
@@ -1690,7 +1700,25 @@ class ChatEngine extends EventEmitter {
       let _sfRoundVisibleBuf = ''; // exact text forwarded this generation round (for llm-replace-last)
       let _sfFenceInThink = false; // fence that opened inside think mode
 
+      const _scrubVisibleRoundBuffer = () => {
+        if (!onStreamEvent || !_sfRoundVisibleBuf) return;
+        const cleanRound = stripToolCallText(_sfRoundVisibleBuf);
+        if (cleanRound !== _sfRoundVisibleBuf) {
+          console.log(`[ChatEngine] llm-replace-last: visibleRound=${_sfRoundVisibleBuf.length} cleanRound=${cleanRound.length}`);
+          onStreamEvent('llm-replace-last', {
+            originalLength: _sfRoundVisibleBuf.length,
+            replacement: cleanRound,
+          });
+          _sfRoundVisibleBuf = cleanRound;
+        }
+      };
+
       const _sfForward = (text) => {
+        if (!text) return;
+        if (isVisibleToolArtifact(text)) {
+          console.log(`[ChatEngine] _sfForward: suppressed tool artifact (${text.length} chars)`);
+          return;
+        }
         _sfVisibleChars += text.length;
         _sfRoundVisibleBuf += text;
         if (_sfVisibleChars <= 30 || _sfVisibleChars % 1000 < text.length) {
@@ -2980,18 +3008,7 @@ class ChatEngine extends EventEmitter {
           console.log(`[ChatEngine] Tool calls after repair/filter: ${parsedCalls.length} — [${parsedCalls.map(c => c.tool).join(', ')}]`);
         }
 
-        // Safety net: strip leaked tool JSON from visible prose when we have parsed/repair calls OR a repair retry.
-        if ((parsedCalls.length > 0 || repairRetryPending) && onStreamEvent && _sfRoundVisibleBuf) {
-          const cleanRound = stripToolCallText(_sfRoundVisibleBuf);
-          if (cleanRound !== _sfRoundVisibleBuf) {
-            console.log(`[ChatEngine] llm-replace-last (primary): visibleRound=${_sfRoundVisibleBuf.length} cleanRound=${cleanRound.length}`);
-            onStreamEvent('llm-replace-last', {
-              originalLength: _sfRoundVisibleBuf.length,
-              replacement: cleanRound,
-            });
-            _sfRoundVisibleBuf = cleanRound;
-          }
-        }
+        _scrubVisibleRoundBuffer();
 
         // Hoisted outside while loop — avoids reallocating a new Set on every tool-call iteration
         const FILE_MODIFY_OPS_SET = new Set(['write_file', 'create_file', 'append_to_file', 'edit_file', 'replace_in_file']);
@@ -3537,6 +3554,9 @@ class ChatEngine extends EventEmitter {
           // in the generation-speed parity fix. Preserving cache = fast prefill every round.
           console.log('[ChatEngine] KV cache preserved — fast prefill enabled');
 
+          _sfFlush();
+          _sfFlushFence();
+
           // Reset streaming filter state for the next generation round
           _sfBuf = '';
           _sfDepth = 0;
@@ -3620,11 +3640,9 @@ class ChatEngine extends EventEmitter {
           }
           console.log(`[ChatEngine] ─── CONTINUATION RESPONSE ─── "${_contResp}"`);
 
-          // Flush streaming filter buffer before parsing new text
           _sfFlush();
           _sfFlushFence();
 
-          // Parse only the NEW text from this round (avoid re-executing previous tool calls)
           const newText = fullResponse.substring(roundStart);
           parsedCalls = parseToolCalls(newText);
           if (parsedCalls.length > 0) {
@@ -3659,20 +3677,9 @@ class ChatEngine extends EventEmitter {
               }
               parsedCalls = planCalls;
             }
-
-            // Safety net: strip only what was actually sent to the UI this round (not raw model output)
-            if (onStreamEvent && _sfRoundVisibleBuf) {
-              const cleanRound = stripToolCallText(_sfRoundVisibleBuf);
-              if (cleanRound !== _sfRoundVisibleBuf) {
-                console.log(`[ChatEngine] llm-replace-last (continuation): visibleRound=${_sfRoundVisibleBuf.length} cleanRound=${cleanRound.length}`);
-                onStreamEvent('llm-replace-last', {
-                  originalLength: _sfRoundVisibleBuf.length,
-                  replacement: cleanRound,
-                });
-                _sfRoundVisibleBuf = cleanRound;
-              }
-            }
           }
+
+          _scrubVisibleRoundBuffer();
 
         }
           planAutoContinuePending = (

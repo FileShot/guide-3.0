@@ -1205,26 +1205,45 @@ function _inferFilePath(text, content, lang) {
   return 'output.txt';
 }
 
-// ─── Strip Tool Call Text ───
-// Removes tool call JSON blocks from model output text, leaving only prose.
-// Uses the same structural patterns that parseToolCalls detects.
-// Returns the cleaned text (empty string if nothing remains).
-function stripToolCallText(text) {
-  if (!text || typeof text !== 'string') {
-    console.log('[ToolParser] stripToolCallText: empty or non-string input');
-    return '';
+// ─── Tool-call range detection (shared by strip + stream guard) ───
+
+/** Comma-led JSON interior from a split tool-call object (continuation round tail). Structural only — no user-message keywords. */
+function isToolJsonContinuationFragment(text) {
+  const t = String(text || '').trim();
+  if (!t || t.length > 4096) return false;
+  const head = /^(?:,\s*|"\s*,\s*)"[a-zA-Z_][a-zA-Z0-9_]*"\s*:/;
+  if (!head.test(t)) return false;
+  if (!/}\s*}$/.test(t)) return false;
+  if (/^[A-Za-z]/.test(t)) return false;
+  return true;
+}
+
+function _mergeRanges(ranges) {
+  if (!ranges.length) return [];
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged = [ranges[0].slice()];
+  for (let i = 1; i < ranges.length; i++) {
+    const last = merged[merged.length - 1];
+    if (ranges[i][0] <= last[1]) {
+      last[1] = Math.max(last[1], ranges[i][1]);
+    } else {
+      merged.push(ranges[i].slice());
+    }
   }
-  console.log(`[ToolParser] stripToolCallText START: textLen=${text.length}`);
+  return merged;
+}
+
+/** Structural spans of tool-call syntax in text (same rules as parseToolCalls / strip). */
+function findToolCallRanges(text) {
+  if (!text || typeof text !== 'string') return [];
   const ranges = [];
   let m;
 
-  // Pattern 0a: <tool_call>...</tool_call> blocks (GLM/Qwen XML)
   const toolCallXmlRe = /<tool_call>[\s\S]*?<\/tool_call>/g;
   while ((m = toolCallXmlRe.exec(text)) !== null) {
     ranges.push([m.index, m.index + m[0].length]);
   }
 
-  // Pattern 0b: orphan <tool_call> through end (truncated generation)
   const orphanToolCallRe = /<tool_call>[\s\S]*$/g;
   while ((m = orphanToolCallRe.exec(text)) !== null) {
     if (!_isInsideExistingRange(ranges, m.index)) {
@@ -1232,25 +1251,21 @@ function stripToolCallText(text) {
     }
   }
 
-  // Pattern 0c: <arg_key>...</arg_key><arg_value>...</arg_value> pairs
   const argPairRe = /<arg_key>[\s\S]*?<\/arg_key>\s*<arg_value>[\s\S]*?<\/arg_value>/g;
   while ((m = argPairRe.exec(text)) !== null) {
     ranges.push([m.index, m.index + m[0].length]);
   }
 
-  // Pattern 1: XML ◠...◠
   const xmlRe = /◠\s*[\s\S]*?\s*<\/tool_call>/g;
   while ((m = xmlRe.exec(text)) !== null) {
     ranges.push([m.index, m.index + m[0].length]);
   }
 
-  // Pattern 1.5: <tool_code>...</tool_code> tags
   const toolCodeRe = /<tool_code>\s*[\s\S]*?\s*<\/tool_code>/g;
   while ((m = toolCodeRe.exec(text)) !== null) {
     ranges.push([m.index, m.index + m[0].length]);
   }
 
-  // Pattern 2: Fenced code blocks containing tool calls (standard or bare-name JSON)
   const fenceRe = /```(?:json|tool_call|tool)?\s*\n([\s\S]*?)```/g;
   while ((m = fenceRe.exec(text)) !== null) {
     const inner = m[1];
@@ -1259,7 +1274,6 @@ function stripToolCallText(text) {
     }
   }
 
-  // Pattern 3: Unclosed fenced blocks at end of text
   const unclosedFenceRe = /```(?:json|tool_call|tool)\s*\n([\s\S]*)$/g;
   while ((m = unclosedFenceRe.exec(text)) !== null) {
     const inner = m[1];
@@ -1268,7 +1282,6 @@ function stripToolCallText(text) {
     }
   }
 
-  // Pattern 4: Raw JSON objects with "tool" or "name" key, using brace-counting
   const rawJsonRe = /(?:^|\n)[ \t]*\{/gm;
   while ((m = rawJsonRe.exec(text)) !== null) {
     const jsonStart = text.indexOf('{', m.index);
@@ -1308,21 +1321,41 @@ function stripToolCallText(text) {
     }
   }
 
-  if (ranges.length === 0) return text;
-
-  // Sort and merge overlapping ranges
-  ranges.sort((a, b) => a[0] - b[0]);
-  const merged = [ranges[0]];
-  for (let i = 1; i < ranges.length; i++) {
-    const last = merged[merged.length - 1];
-    if (ranges[i][0] <= last[1]) {
-      last[1] = Math.max(last[1], ranges[i][1]);
-    } else {
-      merged.push([...ranges[i]]);
+  const trimmed = text.trim();
+  if (trimmed && isToolJsonContinuationFragment(trimmed)) {
+    const start = text.indexOf(trimmed);
+    if (start >= 0 && !_isInsideExistingRange(ranges, start)) {
+      ranges.push([start, start + trimmed.length]);
     }
   }
 
-  // Build result excluding the removed ranges
+  const embeddedFragRe = /(?:^|\n)(\s*(?:"?\s*,\s*)"[a-zA-Z_][a-zA-Z0-9_]*"\s*:[^\n]*}\s*})/g;
+  while ((m = embeddedFragRe.exec(text)) !== null) {
+    const chunk = m[1].trim();
+    if (!isToolJsonContinuationFragment(chunk)) continue;
+    const start = m.index + (m[0].length - m[1].length);
+    const end = m.index + m[0].length;
+    if (!_isInsideExistingRange(ranges, start)) {
+      ranges.push([start, end]);
+    }
+  }
+
+  return _mergeRanges(ranges);
+}
+
+/** True if this chunk should not be forwarded to the prose/chat stream (tool channel only). */
+function isVisibleToolArtifact(text) {
+  if (!text || typeof text !== 'string') return false;
+  const t = text.trim();
+  if (!t) return false;
+  const ranges = findToolCallRanges(text);
+  if (!ranges.length) return false;
+  let covered = 0;
+  for (const [s, e] of ranges) covered += e - s;
+  return covered >= Math.max(1, t.length) * 0.85;
+}
+
+function _applyRangeStrip(text, merged) {
   let result = '';
   let pos = 0;
   for (const [start, end] of merged) {
@@ -1330,8 +1363,19 @@ function stripToolCallText(text) {
     pos = end;
   }
   result += text.slice(pos);
-
   return result.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// ─── Strip Tool Call Text ───
+function stripToolCallText(text) {
+  if (!text || typeof text !== 'string') {
+    console.log('[ToolParser] stripToolCallText: empty or non-string input');
+    return '';
+  }
+  console.log(`[ToolParser] stripToolCallText START: textLen=${text.length}`);
+  const merged = findToolCallRanges(text);
+  if (merged.length === 0) return text;
+  return _applyRangeStrip(text, merged);
 }
 
 function _isInsideExistingRange(ranges, index) {
@@ -1361,6 +1405,9 @@ module.exports = {
   parseToolCalls,
   repairToolCalls,
   stripToolCallText,
+  findToolCallRanges,
+  isVisibleToolArtifact,
+  isToolJsonContinuationFragment,
   looksLikeToolAttempt,
   suggestClosestToolName,
   _recoverWriteFileContent,

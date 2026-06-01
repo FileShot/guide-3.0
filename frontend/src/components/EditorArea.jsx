@@ -32,7 +32,7 @@ import {
   X, Circle, FolderOpen, MessageSquare, Settings,
   FileText, Copy, RefreshCw,
   Eye, Code2, Play, ExternalLink, Globe, Wand2,
-  ChevronUp, ChevronDown, Check, Undo2, Columns
+  ChevronUp, ChevronDown, Check, Undo2, Columns, MoreHorizontal
 } from 'lucide-react';
 
 // ── Dirty diff helper — compute line-level changes ──
@@ -455,6 +455,16 @@ export default function EditorArea() {
     setTabContextMenu(null);
   }, [openTabs, closeTab]);
 
+  const handleCloseSavedTabs = useCallback((scopeTabIds) => {
+    const scope = scopeTabIds ? new Set(scopeTabIds) : null;
+    openTabs.forEach(t => {
+      if (t.modified) return;
+      if (scope && !scope.has(t.id)) return;
+      closeTab(t.id);
+    });
+    setTabContextMenu(null);
+  }, [openTabs, closeTab]);
+
   const handleCopyPath = useCallback((tabId) => {
     const tab = openTabs.find(t => t.id === tabId);
     if (tab) {
@@ -521,6 +531,21 @@ export default function EditorArea() {
           </div>
         );
       })}
+      {tabs.length > 0 && (
+        <button
+          type="button"
+          className="flex items-center justify-center w-7 h-full text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover flex-shrink-0 border-l border-vsc-panel-border/30"
+          title="Tab actions"
+          onClick={(e) => {
+            e.stopPropagation();
+            const rect = e.currentTarget.getBoundingClientRect();
+            const tabId = tabs.some(t => t.id === activeTabId) ? activeTabId : tabs[0].id;
+            setTabContextMenu({ x: Math.max(8, rect.right - 200), y: rect.bottom + 2, tabId });
+          }}
+        >
+          <MoreHorizontal size={14} />
+        </button>
+      )}
       {groupNum === 1 && (
         <button
           className="flex items-center px-2 text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover flex-shrink-0"
@@ -707,12 +732,15 @@ export default function EditorArea() {
           y={tabContextMenu.y}
           tabId={tabContextMenu.tabId}
           isBrowserTab={openTabs.find(t => t.id === tabContextMenu.tabId)?.type === 'browser'}
+          editorSplit={editorSplit}
           onClose={() => setTabContextMenu(null)}
           onCloseTab={handleCloseTab}
           onCloseOthers={handleCloseOtherTabs}
           onCloseAll={handleCloseAllTabs}
+          onCloseSaved={handleCloseSavedTabs}
           onCopyPath={handleCopyPath}
           onReload={handleReloadBrowserTab}
+          onToggleSplit={toggleEditorSplit}
         />
       )}
 
@@ -1493,7 +1521,9 @@ function WelcomeScreen() {
 
 
 
-function TabContextMenu({ x, y, tabId, isBrowserTab, onClose, onCloseTab, onCloseOthers, onCloseAll, onCopyPath, onReload }) {
+function TabContextMenu({
+  x, y, tabId, isBrowserTab, editorSplit, onClose, onCloseTab, onCloseOthers, onCloseAll, onCloseSaved, onCopyPath, onReload, onToggleSplit,
+}) {
   const menuRef = useRef(null);
 
   useEffect(() => {
@@ -1533,10 +1563,21 @@ function TabContextMenu({ x, y, tabId, isBrowserTab, onClose, onCloseTab, onClos
       <button className="context-menu-item" onClick={() => onCloseAll()}>
         <X size={14} className="mr-2 text-vsc-text-dim" /> Close All
       </button>
+      <button className="context-menu-item" onClick={() => { onCloseSaved(); onClose(); }}>
+        <X size={14} className="mr-2 text-vsc-text-dim" /> Close Saved
+      </button>
       <div className="context-menu-separator" />
       <button className="context-menu-item" onClick={() => onCopyPath(tabId)}>
         <Copy size={14} className="mr-2 text-vsc-text-dim" /> Copy Path
       </button>
+      {onToggleSplit && (
+        <>
+          <div className="context-menu-separator" />
+          <button className="context-menu-item" onClick={() => { onToggleSplit(); onClose(); }}>
+            <Columns size={14} className="mr-2 text-vsc-text-dim" /> {editorSplit ? 'Close Split Editor' : 'Split Editor Right'}
+          </button>
+        </>
+      )}
     </div>
   );
 }
