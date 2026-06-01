@@ -221,7 +221,8 @@ class SettingsManager extends EventEmitter {
 
   setAll(obj) {
     const prev = { ...this._settings };
-    this._settings = { ...SETTINGS_DEFAULTS, ...obj };
+    // Patch-merge: do not re-apply SETTINGS_DEFAULTS for omitted keys (e.g. setupCompleted).
+    this._settings = { ...this._settings, ...obj };
     for (const k of Object.keys(this._settings)) {
       if (prev[k] !== this._settings[k]) {
         console.log(`[SettingsManager] setAll diff ${k}: ${JSON.stringify(prev[k])} -> ${JSON.stringify(this._settings[k])}`);

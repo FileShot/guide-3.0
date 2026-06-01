@@ -41,6 +41,7 @@ export default function FirstRunWizard() {
       });
       const d = await r.json();
       if (d.success) {
+        updateSetting('setupCompleted', true);
         if (applyRecommended && recommended) {
           if (recommended.gpuLayers != null) updateSetting('gpuLayers', recommended.gpuLayers);
           if (recommended.contextSize != null) updateSetting('contextSize', recommended.contextSize);

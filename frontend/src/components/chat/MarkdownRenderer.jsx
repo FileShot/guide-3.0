@@ -48,6 +48,7 @@ const markdownComponents = {
         return <MermaidBlock>{text}</MermaidBlock>;
       }
       const codeText = Array.isArray(safeChildren) ? safeChildren.join('') : String(safeChildren || '');
+      if (!codeText.trim()) return null;
       if (isProseTextFence(lang, codeText)) {
         return <p className="my-1.5 leading-relaxed">{codeText.trim()}</p>;
       }
@@ -204,7 +205,7 @@ function MarkdownRendererImpl({ content, streaming }) {
           {displayContent}
         </ReactMarkdown>
       ) : null}
-      {openCode && (
+      {openCode && openCode.text.trim() && (
         isProseTextFence(openCode.lang, openCode.text) ? (
           <p className="my-1.5 leading-relaxed">{openCode.text.trim()}</p>
         ) : (

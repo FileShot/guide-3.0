@@ -3,6 +3,7 @@
 const assert = require('assert');
 const {
   stripToolCallText,
+  collapseOrphanMarkdownFences,
   findToolCallRanges,
   isVisibleToolArtifact,
   isToolJsonContinuationFragment,
@@ -33,5 +34,12 @@ assert(!cleaned.includes('"reason"'), 'tail removed from mixed');
 assert(cleaned.includes('Some explanation'), 'prose kept in mixed');
 
 assert(findToolCallRanges(TAIL).length > 0);
+
+const ORPHAN_FENCES = 'Intro prose.\n\n```\n\n```\n\n```json\n{"tool":"create_directory","params":{"path":".guide/plans"}}\n```\n\nMore.';
+const ORPHAN_CLEANED = stripToolCallText(ORPHAN_FENCES);
+assert(!ORPHAN_CLEANED.includes('```'), 'orphan fences removed after tool strip');
+assert(ORPHAN_CLEANED.includes('Intro prose'), 'prose kept after orphan fence strip');
+assert.strictEqual(collapseOrphanMarkdownFences('```\n\n```'), '');
+assert.strictEqual(collapseOrphanMarkdownFences('line\n```json\n\n```\n'), 'line');
 
 console.log('toolParser.strip.test.js: all passed');

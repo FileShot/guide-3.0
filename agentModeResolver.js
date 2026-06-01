@@ -67,6 +67,13 @@ function filterPlanModeToolCalls(calls) {
         continue;
       }
     }
+    if (c.tool === 'update_todo') {
+      const status = String(c.params?.status || '').toLowerCase().replace(/_/g, '-');
+      if (status === 'done' || status === 'in-progress' || status === 'completed') {
+        blocked.push(c);
+        continue;
+      }
+    }
     kept.push(c);
   }
   return { calls: kept, blocked };
@@ -225,6 +232,16 @@ function checkPlanModeToolGate(toolName, params, agentContext = {}) {
       return {
         allowed: false,
         error: `Plan mode: create_directory blocked for "${dp}". Only .guide/plans is allowed during planning.`,
+      };
+    }
+  }
+
+  if (toolName === 'update_todo') {
+    const status = String(params?.status || '').toLowerCase().replace(/_/g, '-');
+    if (status === 'done' || status === 'in-progress' || status === 'completed') {
+      return {
+        allowed: false,
+        error: 'Plan mode: update_todo status changes (done/in-progress) are blocked until the user clicks Build. Use update_todo with `text` only to revise checklist wording.',
       };
     }
   }

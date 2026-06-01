@@ -1355,6 +1355,16 @@ function isVisibleToolArtifact(text) {
   return covered >= Math.max(1, t.length) * 0.85;
 }
 
+function collapseOrphanMarkdownFences(text) {
+  if (!text || typeof text !== 'string') return '';
+  let out = text;
+  // Whitespace-only fenced blocks left after tool JSON strip
+  out = out.replace(/```[a-z0-9_-]*\s*\n\s*```/gi, '');
+  // Stray lone fence lines between prose segments
+  out = out.replace(/^\s*```[a-z0-9_-]*\s*$/gm, '');
+  return out.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function _applyRangeStrip(text, merged) {
   let result = '';
   let pos = 0;
@@ -1363,7 +1373,7 @@ function _applyRangeStrip(text, merged) {
     pos = end;
   }
   result += text.slice(pos);
-  return result.replace(/\n{3,}/g, '\n\n').trim();
+  return collapseOrphanMarkdownFences(result);
 }
 
 // ─── Strip Tool Call Text ───
@@ -1374,7 +1384,7 @@ function stripToolCallText(text) {
   }
   console.log(`[ToolParser] stripToolCallText START: textLen=${text.length}`);
   const merged = findToolCallRanges(text);
-  if (merged.length === 0) return text;
+  if (merged.length === 0) return collapseOrphanMarkdownFences(text);
   return _applyRangeStrip(text, merged);
 }
 
@@ -1405,6 +1415,7 @@ module.exports = {
   parseToolCalls,
   repairToolCalls,
   stripToolCallText,
+  collapseOrphanMarkdownFences,
   findToolCallRanges,
   isVisibleToolArtifact,
   isToolJsonContinuationFragment,

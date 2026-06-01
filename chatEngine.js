@@ -35,9 +35,16 @@ const TOOL_INJECT_MULTIPLIERS = {
   read_file: 0.5, fetch_webpage: 0.5, web_search: 0.25,
 };
 
+/** Whether file-content UI may stream during plan mode (plan files only until Build). */
+function shouldStreamFileContentForAgent(options, filePath) {
+  if (!options?.planMode || options.agentPhase === 'building') return true;
+  return isPlanFilePath(filePath || '');
+}
+
 /** Emit one atomic IPC event for a complete file write (native FC / batch prose path). */
-function emitCompleteFileContentBlock(onStreamEvent, filePath, content) {
+function emitCompleteFileContentBlock(onStreamEvent, filePath, content, options) {
   if (!onStreamEvent || content == null) return;
+  if (options && !shouldStreamFileContentForAgent(options, filePath)) return;
   const fp = filePath || '';
   const fn = fp.split(/[\\/]/).pop() || fp;
   const ext = fn.includes('.') ? fn.split('.').pop().toLowerCase() : '';
@@ -1715,6 +1722,7 @@ class ChatEngine extends EventEmitter {
 
       const _sfForward = (text) => {
         if (!text) return;
+        if (/^\s*```[a-z0-9_-]*\s*$/i.test(text)) return;
         if (isVisibleToolArtifact(text)) {
           console.log(`[ChatEngine] _sfForward: suppressed tool artifact (${text.length} chars)`);
           return;
@@ -2054,15 +2062,19 @@ class ChatEngine extends EventEmitter {
               }
             } else if (_sfFileWriteDetected && !_sfContentDone) {
               if (ch === '"' && RE_CONTENT_START.test(_sfFenceBuf)) {
-                _sfContentStreamActive = true;
                 const fpMatch = _sfFenceBuf.match(RE_FILE_PATH);
                 _sfContentFilePath = fpMatch ? fpMatch[1] : '';
-                const fileName = _sfContentFilePath.split(/[\\/]/).pop() || _sfContentFilePath;
-                const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
-                if (onStreamEvent) {
-                  onStreamEvent('file-content-start', { filePath: _sfContentFilePath, fileName, language: ext, fileKey: _sfContentFilePath });
+                if (shouldStreamFileContentForAgent(options, _sfContentFilePath)) {
+                  _sfContentStreamActive = true;
+                  const fileName = _sfContentFilePath.split(/[\\/]/).pop() || _sfContentFilePath;
+                  const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+                  if (onStreamEvent) {
+                    onStreamEvent('file-content-start', { filePath: _sfContentFilePath, fileName, language: ext, fileKey: _sfContentFilePath });
+                  }
+                  _sfStreamedFileWrites.add(_normalizePath(_sfContentFilePath));
+                } else {
+                  _sfContentDone = true;
                 }
-                _sfStreamedFileWrites.add(_normalizePath(_sfContentFilePath));
               }
             }
             // Emit tool-generating for ANY tool call inside a fence (not just file-write)
@@ -2253,15 +2265,19 @@ class ChatEngine extends EventEmitter {
             }
           } else if (_sfConfirmed && _sfFileWriteDetected && !_sfContentDone) {
             if (ch === '"' && RE_CONTENT_START.test(_sfBuf)) {
-              _sfContentStreamActive = true;
               const fpMatch = _sfBuf.match(RE_FILE_PATH);
               _sfContentFilePath = fpMatch ? fpMatch[1] : '';
-              const fileName = _sfContentFilePath.split(/[\\/]/).pop() || _sfContentFilePath;
-              const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
-              if (onStreamEvent) {
-                onStreamEvent('file-content-start', { filePath: _sfContentFilePath, fileName, language: ext, fileKey: _sfContentFilePath });
+              if (shouldStreamFileContentForAgent(options, _sfContentFilePath)) {
+                _sfContentStreamActive = true;
+                const fileName = _sfContentFilePath.split(/[\\/]/).pop() || _sfContentFilePath;
+                const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+                if (onStreamEvent) {
+                  onStreamEvent('file-content-start', { filePath: _sfContentFilePath, fileName, language: ext, fileKey: _sfContentFilePath });
+                }
+                _sfStreamedFileWrites.add(_normalizePath(_sfContentFilePath));
+              } else {
+                _sfContentDone = true;
               }
-              _sfStreamedFileWrites.add(_normalizePath(_sfContentFilePath));
             }
           }
           if (_sfConfirmed && !_sfFileWriteDetected && _sfBuf.length > 15) {
@@ -2544,6 +2560,10 @@ class ChatEngine extends EventEmitter {
 
             const contentMatch = s.buf.match(/"content"\s*:\s*"([\s\S]*)/);
             if (contentMatch && s.filePath) {
+              if (!shouldStreamFileContentForAgent(options, s.filePath)) {
+                s.phase = 2;
+                return;
+              }
               s.phase = 1;
               s.buf = '';
               if (onStreamEvent) {
@@ -2837,8 +2857,11 @@ class ChatEngine extends EventEmitter {
               // causing write_file calls from Qwen/DeepSeek native FC to produce no code blocks.
               if (_NATIVE_FILE_WRITE_OPS.has(toolName) && toolParams?.content && onStreamEvent) {
                 const _fp = toolParams.filePath || toolParams.path || '';
-                if (!_sfStreamedFileWrites.has(_normalizePath(_fp))) {
-                  emitCompleteFileContentBlock(onStreamEvent, _fp, toolParams.content);
+                if (
+                  shouldStreamFileContentForAgent(options, _fp)
+                  && !_sfStreamedFileWrites.has(_normalizePath(_fp))
+                ) {
+                  emitCompleteFileContentBlock(onStreamEvent, _fp, toolParams.content, options);
                 }
               }
 
@@ -3096,8 +3119,12 @@ class ChatEngine extends EventEmitter {
             if (FILE_WRITE_OPS.has(call.tool) && call.params?.content && onStreamEvent) {
               const filePath = call.params.filePath || call.params.path || '';
               const _np = _normalizePath(filePath);
-              if (!_sfStreamedFileWrites.has(_np) && !_sfProsedFileWrites.has(_np)) {
-                emitCompleteFileContentBlock(onStreamEvent, filePath, call.params.content);
+              if (
+                shouldStreamFileContentForAgent(options, filePath)
+                && !_sfStreamedFileWrites.has(_np)
+                && !_sfProsedFileWrites.has(_np)
+              ) {
+                emitCompleteFileContentBlock(onStreamEvent, filePath, call.params.content, options);
               }
             }
 
@@ -3590,6 +3617,25 @@ class ChatEngine extends EventEmitter {
           if (isCancelled()) {
             _userAbortedGeneration = true;
             console.log('[ChatEngine] Tool loop aborted before continuation — user cancelled');
+            break;
+          }
+          if (planArtifactThisTurn) {
+            options.planReady = true;
+            options.planFileExists = true;
+          }
+          const skipPlanToolContinuation = options.planMode && options.agentPhase !== 'building' && (
+            planArtifactThisTurn
+            || resolvePlanPhase({
+              planMode: true,
+              agentPhase: options.agentPhase,
+              planReady: !!options.planReady,
+              planFileExists: !!options.planFileExists,
+            }) === 'plan_ready'
+          );
+          if (skipPlanToolContinuation) {
+            console.log('[ChatEngine] Plan mode — skipping tool-loop continuation (plan ready; user must click Build)');
+            parsedCalls = [];
+            repairRetryPending = false;
             break;
           }
           // Recalculate maxTokens for this round — tool results consumed context space
