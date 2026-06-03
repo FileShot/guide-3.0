@@ -4993,6 +4993,11 @@ function buildCloudSystemPrompt({ userSystemPrompt, customInstructions, toolProm
   if (toolPrompt && String(toolPrompt).trim()) {
     text += `\n\n${String(toolPrompt).trim()}`;
   }
+  text +=
+    '\n\n## Cloud output channels\n' +
+    'Put reasoning in your reasoning stream only (plain language). ' +
+    'Emit executable tool calls as JSON in the assistant message body, not inside reasoning. ' +
+    'Never paste full file contents or raw tool JSON in reasoning; use write_file/edit_file tools instead.';
   return text;
 }
 

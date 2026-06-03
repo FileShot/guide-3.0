@@ -7,7 +7,14 @@ const {
   findToolCallRanges,
 } = require('./toolParser');
 
-/** True when buffer may contain incomplete tool JSON/fences — hold prose until complete. */
+/** Mirror chatEngine thinking bailout — tool/file bytes must not go to Thought UI. */
+function looksLikeToolOrFilePayload(text) {
+  if (!text || typeof text !== 'string') return false;
+  const sample = text.length > 4096 ? text.slice(0, 4096) : text;
+  return /"filePath"|"content"\s*:|className=|<\/\w+>|"tool"\s*:|"params"\s*:|<!DOCTYPE/i.test(sample);
+}
+
+/** True when buffer may contain incomplete tool JSON/fences — hold until complete. */
 function shouldHoldToolBuffer(rawBuf) {
   if (!rawBuf || typeof rawBuf !== 'string') return false;
 
@@ -17,6 +24,11 @@ function shouldHoldToolBuffer(rawBuf) {
     const tail = fenceMatch[0];
     const closes = (tail.match(/```/g) || []).length;
     if (closes < 2) return true;
+  }
+
+  if (looksLikeToolOrFilePayload(rawBuf) && looksLikeToolAttempt(rawBuf)) {
+    const clean = stripToolCallText(rawBuf);
+    if (clean.length < rawBuf.trim().length) return true;
   }
 
   if (!looksLikeToolAttempt(rawBuf)) return false;
@@ -57,6 +69,10 @@ function shouldHoldToolBuffer(rawBuf) {
   const ranges = findToolCallRanges(rawBuf);
   if (ranges.length === 0) return true;
 
+  let covered = 0;
+  for (const [s, e] of ranges) covered += e - s;
+  if (covered < rawBuf.trim().length) return true;
+
   return false;
 }
 
@@ -69,9 +85,9 @@ function forwardChunk(chunk, onToken) {
 }
 
 /**
- * Stream filter: hold-and-forward tool JSON (prevention-first, matches local stream FSM goals).
+ * Stream filter: route only non-tool prose/thinking to UI; tool-shaped bytes stay in rawBuf for parse.
  */
-function createStripBasedStreamFilter({ onToken, onStreamEvent } = {}) {
+function createStripBasedStreamFilter({ onToken, onStreamEvent, channel = 'text' } = {}) {
   let rawBuf = '';
   let lastClean = '';
   let visibleChars = 0;
@@ -80,6 +96,7 @@ function createStripBasedStreamFilter({ onToken, onStreamEvent } = {}) {
     const rep = replacement || '';
     if (onStreamEvent) {
       onStreamEvent('llm-replace-last', {
+        channel,
         originalLength: visibleChars,
         replacement: rep,
       });
@@ -89,6 +106,14 @@ function createStripBasedStreamFilter({ onToken, onStreamEvent } = {}) {
   };
 
   const sync = ({ forceFlush = false } = {}) => {
+    if (looksLikeToolOrFilePayload(rawBuf) && !forceFlush) {
+      if (visibleChars > 0) {
+        const clean = stripToolCallText(rawBuf);
+        emitReplace(clean);
+      }
+      return;
+    }
+
     const clean = stripToolCallText(rawBuf);
     const hold = !forceFlush && shouldHoldToolBuffer(rawBuf);
 
@@ -142,7 +167,53 @@ function createStripBasedStreamFilter({ onToken, onStreamEvent } = {}) {
   };
 }
 
+/** Prose + thinking stream routers for cloud (same classification rules, separate UI sinks). */
+function createCloudStreamFilters({ onToken, onThinkingToken, onStreamEvent } = {}) {
+  const proseFilter = createStripBasedStreamFilter({
+    channel: 'text',
+    onToken,
+    onStreamEvent,
+  });
+  const thinkingFilter = createStripBasedStreamFilter({
+    channel: 'thinking',
+    onToken: onThinkingToken,
+    onStreamEvent,
+  });
+
+  return {
+    proseFilter,
+    thinkingFilter,
+    processContentChunk(chunk) {
+      proseFilter.processChunk(chunk);
+    },
+    processThinkingChunk(chunk) {
+      thinkingFilter.processChunk(chunk);
+    },
+    flush() {
+      proseFilter.flush();
+      thinkingFilter.flush();
+    },
+    resetRound() {
+      proseFilter.resetRound();
+      thinkingFilter.resetRound();
+    },
+    getCombinedRawBuffer() {
+      return proseFilter.getRawBuffer() + thinkingFilter.getRawBuffer();
+    },
+    getProseCleanText() {
+      return proseFilter.getCleanText();
+    },
+    getThinkingCleanText() {
+      return thinkingFilter.getCleanText();
+    },
+    getProseVisibleChars: () => proseFilter.getVisibleChars(),
+    getThinkingVisibleChars: () => thinkingFilter.getVisibleChars(),
+  };
+}
+
 module.exports = {
   createStripBasedStreamFilter,
+  createCloudStreamFilters,
   shouldHoldToolBuffer,
+  looksLikeToolOrFilePayload,
 };

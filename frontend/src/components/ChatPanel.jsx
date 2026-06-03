@@ -1958,7 +1958,7 @@ export default function ChatPanel() {
 
       for (let _si = 0; _si < messageSegments.length; _si++) {
         const seg = messageSegments[_si];
-        if (seg.type === 'text' && seg.content) {
+        if ((seg.type === 'text' || seg.type === 'thinking') && seg.content) {
           const stripped = await stripToolProseViaApi(seg.content);
           messageSegments[_si] = { ...seg, content: stripped };
         }

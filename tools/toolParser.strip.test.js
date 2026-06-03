@@ -55,4 +55,12 @@ const bigClean = stripToolCallText(BIG_RAW);
 assert(bigClean.includes('Starting implementation'), '16k write_file: prose prefix kept');
 assert(!bigClean.includes('"tool"'), '16k write_file: JSON removed');
 
+// Screenshot-2: glued prose + update_todo + trailing brace garbage
+const GLUED_ACTIONS =
+  'We will now perform the required actions.{"tool":"update_todo","params":{"todos":[{"id":"1","content":"x","status":"pending"}]}}}}}}}}';
+const gluedActionsClean = stripToolCallText(GLUED_ACTIONS);
+assert(gluedActionsClean.includes('We will now perform the required actions'), 'glued actions prose kept');
+assert(!gluedActionsClean.includes('"tool"'), 'glued update_todo stripped');
+assert(!/\}+\s*$/.test(gluedActionsClean.trim()), 'trailing } garbage removed');
+
 console.log('toolParser.strip.test.js: all passed');

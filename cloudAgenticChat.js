@@ -13,7 +13,7 @@ const {
   buildToolResultsUserMessage,
   sanitizeCloudConversationHistory,
 } = require('./tools/toolResultInjection');
-const { createStripBasedStreamFilter } = require('./tools/streamingToolFilter');
+const { createCloudStreamFilters } = require('./tools/streamingToolFilter');
 const {
   resolveAgentMode,
   filterToolDefinitions,
@@ -22,6 +22,9 @@ const {
 } = require('./agentModeResolver');
 
 const CLOUD_CONTINUE_PROMPT = 'Continue from the tool results above. Call more tools if needed, or give a concise final answer.';
+
+const PLAN_BLOCKED_TOOLS_MSG =
+  '[System: Plan mode — update_todo cannot mark items done/in-progress or edit non-plan files until Build. Use write_todos for planning; write_file/edit_file only for .guide/plans/*.plan.md. Do not repeat blocked tool JSON in your reply.]';
 
 const FILE_WRITE_OPS = new Set(['write_file', 'create_file', 'append_to_file']);
 
@@ -105,7 +108,7 @@ async function runCloudAgenticChat({
   let nextUserPrompt = userMessage;
   const contextTokens = settings.maxResponseTokens > 0 ? settings.maxResponseTokens : 8192;
 
-  const streamFilter = createStripBasedStreamFilter({ onToken, onStreamEvent });
+  const streamFilters = createCloudStreamFilters({ onToken, onThinkingToken, onStreamEvent });
 
   const genBase = {
     provider: cloudProvider,
@@ -115,7 +118,6 @@ async function runCloudAgenticChat({
     maxTokens: settings.maxResponseTokens || -1,
     topP: settings.topP,
     images,
-    onThinkingToken,
     stream: true,
   };
 
@@ -125,38 +127,41 @@ async function runCloudAgenticChat({
       break;
     }
 
-    streamFilter.resetRound();
-    const visibleAtRoundStart = streamFilter.getVisibleChars();
+    streamFilters.resetRound();
+    const proseVisibleAtRoundStart = streamFilters.getProseVisibleChars();
 
     const result = await cloudLLM.generate(nextUserPrompt, {
       ...genBase,
       conversationHistory,
       images: iter === 0 ? images : [],
-      onToken: (token) => streamFilter.processChunk(token),
+      onToken: (token) => streamFilters.processContentChunk(token),
+      onThinkingToken: (token) => streamFilters.processThinkingChunk(token),
     });
 
-    streamFilter.flush();
+    streamFilters.flush();
 
     if (result?.isQuotaError) {
       return { isQuotaError: true, error: '__QUOTA_EXCEEDED__', text: displayResponse || fullResponse, toolCallCount: totalToolCalls };
     }
 
-    const roundText = result?.text || '';
-    fullResponse += roundText;
-    const roundClean = streamFilter.getCleanText() || stripToolCallText(roundText);
-    displayResponse += roundClean;
+    const roundTextContent = result?.text || '';
+    const roundRawCombined = streamFilters.getCombinedRawBuffer() || roundTextContent;
+    fullResponse += roundRawCombined;
+
+    const roundCleanProse = streamFilters.getProseCleanText() || stripToolCallText(roundTextContent);
+    displayResponse += roundCleanProse;
 
     if (mode.askOnly || !mode.toolsActive || !executeToolFn) {
       break;
     }
 
-    let parsedCalls = parseToolCalls(roundText);
+    let parsedCalls = parseToolCalls(roundRawCombined);
     if (!parsedCalls.length) {
-      if (looksLikeToolAttempt(roundText)) {
-        const closestHint = suggestClosestToolName(roundText);
+      if (looksLikeToolAttempt(roundRawCombined)) {
+        const closestHint = suggestClosestToolName(roundRawCombined);
         conversationHistory.push({
           role: 'assistant',
-          content: roundClean.trim() || '(tool calls)',
+          content: roundCleanProse.trim() || '(tool calls)',
         });
         conversationHistory.push({
           role: 'user',
@@ -168,22 +173,35 @@ async function runCloudAgenticChat({
       break;
     }
 
-    const { repaired, issues } = repairToolCalls(parsedCalls, roundText);
+    const { repaired, issues } = repairToolCalls(parsedCalls, roundRawCombined);
     parsedCalls = repaired.filter((c) => c.tool !== 'spawn_subagent');
 
+    let planBlockedAll = false;
     if (mode.planning && parsedCalls.length > 0) {
       const { calls: planCalls, blocked } = filterPlanModeToolCalls(parsedCalls);
       if (blocked.length) {
         console.log(`[CloudAgentic] Plan mode blocked: ${blocked.map((c) => c.tool).join(', ')}`);
       }
+      if (parsedCalls.length > 0 && planCalls.length === 0 && blocked.length > 0) {
+        planBlockedAll = true;
+      }
       parsedCalls = planCalls;
     }
 
     if (!parsedCalls.length) {
+      if (planBlockedAll) {
+        conversationHistory.push({
+          role: 'assistant',
+          content: roundCleanProse.trim() || '(tool calls)',
+        });
+        conversationHistory.push({ role: 'user', content: PLAN_BLOCKED_TOOLS_MSG });
+        nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+        continue;
+      }
       if (issues?.length) {
         conversationHistory.push({
           role: 'assistant',
-          content: roundClean.trim() || '(tool calls)',
+          content: roundCleanProse.trim() || '(tool calls)',
         });
         conversationHistory.push({
           role: 'user',
@@ -192,11 +210,11 @@ async function runCloudAgenticChat({
         nextUserPrompt = CLOUD_CONTINUE_PROMPT;
         continue;
       }
-      if (looksLikeToolAttempt(roundText)) {
-        const closestHint = suggestClosestToolName(roundText);
+      if (looksLikeToolAttempt(roundRawCombined)) {
+        const closestHint = suggestClosestToolName(roundRawCombined);
         conversationHistory.push({
           role: 'assistant',
-          content: roundClean.trim() || '(tool calls)',
+          content: roundCleanProse.trim() || '(tool calls)',
         });
         conversationHistory.push({
           role: 'user',
@@ -208,14 +226,15 @@ async function runCloudAgenticChat({
       break;
     }
 
-    const visibleAssistant = roundClean.trim();
+    const visibleAssistant = roundCleanProse.trim();
     conversationHistory.push({ role: 'assistant', content: visibleAssistant || '(tool calls)' });
 
-    const newVisibleChars = streamFilter.getVisibleChars() - visibleAtRoundStart;
-    if (onStreamEvent && newVisibleChars > 0 && roundClean.length < newVisibleChars) {
+    const newProseVisible = streamFilters.getProseVisibleChars() - proseVisibleAtRoundStart;
+    if (onStreamEvent && newProseVisible > 0 && roundCleanProse.length < newProseVisible) {
       onStreamEvent('llm-replace-last', {
-        originalLength: newVisibleChars,
-        replacement: roundClean,
+        channel: 'text',
+        originalLength: newProseVisible,
+        replacement: roundCleanProse,
       });
     }
 

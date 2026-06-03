@@ -797,7 +797,7 @@ const useAppStore = create((set, get) => ({
 
 
 
-  replaceLastStreamingChunk: (originalLength, replacement) => {
+  replaceLastStreamingChunk: (originalLength, replacement, channel = 'text') => {
 
     const store = get();
 
@@ -807,25 +807,12 @@ const useAppStore = create((set, get) => ({
       console.warn('[ChatPanel] replaceLastStreamingChunk: replacing', originalLength, 'chars with empty string');
     }
 
-    if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
-
-    let currentText = store.chatStreamingText;
-
-    if (store._textTokenBuffer) {
-
-      currentText += store._textTokenBuffer;
-
-    }
-
-    const keepLen = Math.max(0, currentText.length - originalLength);
-
-    const newText = currentText.slice(0, keepLen) + (replacement || '');
-
+    const segType = channel === 'thinking' ? 'thinking' : 'text';
     const segs = [...store.streamingSegments];
 
     for (let i = segs.length - 1; i >= 0; i--) {
 
-      if (segs[i].type === 'text') {
+      if (segs[i].type === segType) {
 
         const segContent = segs[i].content;
 
@@ -848,6 +835,32 @@ const useAppStore = create((set, get) => ({
       }
 
     }
+
+    if (segType === 'thinking') {
+      const newThinking = segs
+        .filter((s) => s.type === 'thinking')
+        .map((s) => s.content || '')
+        .join('');
+      set({
+        chatThinkingText: newThinking,
+        streamingSegments: segs,
+      });
+      return;
+    }
+
+    if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
+
+    let currentText = store.chatStreamingText;
+
+    if (store._textTokenBuffer) {
+
+      currentText += store._textTokenBuffer;
+
+    }
+
+    const keepLen = Math.max(0, currentText.length - originalLength);
+
+    const newText = currentText.slice(0, keepLen) + (replacement || '');
 
     set({
 

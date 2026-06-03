@@ -160,7 +160,7 @@ export default function App() {
 
       case 'llm-replace-last':
 
-        s.replaceLastStreamingChunk(data.originalLength, data.replacement);
+        s.replaceLastStreamingChunk(data.originalLength, data.replacement, data.channel);
 
         break;
 
@@ -955,23 +955,32 @@ export default function App() {
 
     }
 
+    const isPocketWeb = window.__POCKET__ || isPocket();
+    let connectionReadyFired = false;
 
+    const fireConnectionReady = () => {
+      if (connectionReadyFired) return;
+      connectionReadyFired = true;
+      handleEvent('connection-ready', null);
+    };
 
-    // Mark as connected immediately in Electron IPC mode
-
-    useAppStore.getState().setConnected(true);
-
-
-
-    // Fire connection-ready to load initial state
-
-    handleEvent('connection-ready', null);
-
-
+    if (isPocketWeb) {
+      useAppStore.getState().setConnected(false);
+    } else {
+      useAppStore.getState().setConnected(true);
+      fireConnectionReady();
+    }
 
     // Register IPC event listeners — each returns a cleanup function
 
     const cleanups = [
+
+      isPocketWeb && api.onConnectionChange
+        ? api.onConnectionChange((connected) => {
+            useAppStore.getState().setConnected(connected);
+            if (connected) fireConnectionReady();
+          })
+        : null,
 
       api.onLlmToken?.((d) => handleEvent('llm-token', d)),
 

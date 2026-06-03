@@ -1282,6 +1282,35 @@ function findToolCallRanges(text) {
     }
   }
 
+  // Glued prose + JSON: `actions.{"tool":"write_file"...` (no newline before `{`)
+  const gluedJsonRe = /[.!?\s][ \t]*\{\s*"tool"\s*:/g;
+  while ((m = gluedJsonRe.exec(text)) !== null) {
+    const jsonStart = m.index + m[0].indexOf('{');
+    if (jsonStart < 0 || _isInsideExistingRange(ranges, jsonStart)) continue;
+    let depth = 0;
+    let inStr = false;
+    let escaped = false;
+    let jsonEnd = -1;
+    for (let i = jsonStart; i < text.length; i++) {
+      const ch = text[i];
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\' && inStr) { escaped = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) { jsonEnd = i + 1; break; }
+      }
+    }
+    if (jsonEnd > jsonStart) {
+      const slice = text.slice(jsonStart, jsonEnd);
+      if (_fenceLooksLikeToolCall(slice) || (/"tool"\s*:\s*"/.test(slice) && BARE_NAME_JSON_RE.test(slice))) {
+        ranges.push([jsonStart, jsonEnd]);
+      }
+    }
+  }
+
   const rawJsonRe = /(?:^|\n)[ \t]*\{/gm;
   while ((m = rawJsonRe.exec(text)) !== null) {
     const jsonStart = text.indexOf('{', m.index);
@@ -1365,6 +1394,11 @@ function collapseOrphanMarkdownFences(text) {
   return out.replace(/\n{3,}/g, '\n\n').trim();
 }
 
+function _collapseTrailingToolBraceGarbage(text) {
+  if (!text || typeof text !== 'string') return '';
+  return text.replace(/\s*\}+[ \t]*$/g, '').replace(/\s*"[ \t]*$/g, '');
+}
+
 function _applyRangeStrip(text, merged) {
   let result = '';
   let pos = 0;
@@ -1373,7 +1407,11 @@ function _applyRangeStrip(text, merged) {
     pos = end;
   }
   result += text.slice(pos);
-  return collapseOrphanMarkdownFences(result);
+  let out = collapseOrphanMarkdownFences(result);
+  if (looksLikeToolAttempt(text)) {
+    out = _collapseTrailingToolBraceGarbage(out);
+  }
+  return out;
 }
 
 // ─── Strip Tool Call Text ───
