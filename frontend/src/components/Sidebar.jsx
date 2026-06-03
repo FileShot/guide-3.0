@@ -21,6 +21,8 @@ import {
   Pause, SkipForward, ArrowDownRight, ArrowUpRight, Square, Bug, AlertTriangle, Eye, Shield, Mic
 } from 'lucide-react';
 import { openFileFromReadResponse } from '../utils/openFileFromRead';
+import isPocket from '../lib/isPocket';
+import { uploadFilesToPath, downloadFileUrl, downloadFolderZipUrl, triggerDownload } from '../lib/pocketFiles';
 
 export default function Sidebar() {
   const activeActivity = useAppStore(s => s.activeActivity);
@@ -64,6 +66,9 @@ function FileExplorer() {
   const symbolOutline = useAppStore(s => s.symbolOutline);
   const [tasksExpanded, setTasksExpanded] = useState(true);
   const [outlineExpanded, setOutlineExpanded] = useState(true);
+  const pocket = isPocket();
+  const uploadInputRef = useRef(null);
+  const [dropActive, setDropActive] = useState(false);
 
   // Load npm scripts when project opens
   useEffect(() => {
@@ -195,6 +200,55 @@ function FileExplorer() {
     }).catch(e => addNotification({ type: 'error', message: e.message }));
   }, [projectPath, addNotification, refreshTree]);
 
+  const handleUploadClick = useCallback(() => {
+    uploadInputRef.current?.click();
+  }, []);
+
+  const handleUploadChange = useCallback(async (e) => {
+    const files = e.target.files;
+    if (!files?.length || !projectPath) return;
+    try {
+      await uploadFilesToPath(Array.from(files), projectPath);
+      addNotification({ type: 'info', message: `Uploaded ${files.length} file(s)` });
+      refreshTree();
+    } catch (err) {
+      addNotification({ type: 'error', message: err.message });
+    }
+    e.target.value = '';
+  }, [projectPath, addNotification, refreshTree]);
+
+  const handleDownloadProject = useCallback(() => {
+    if (!projectPath) return;
+    triggerDownload(downloadFolderZipUrl(projectPath));
+  }, [projectPath]);
+
+  const handleExplorerDragOver = useCallback((e) => {
+    if (!pocket || !projectPath) return;
+    if (Array.from(e.dataTransfer.types).includes('Files')) {
+      e.preventDefault();
+      setDropActive(true);
+    }
+  }, [pocket, projectPath]);
+
+  const handleExplorerDragLeave = useCallback((e) => {
+    if (!e.currentTarget.contains(e.relatedTarget)) setDropActive(false);
+  }, []);
+
+  const handleExplorerDrop = useCallback(async (e) => {
+    if (!pocket || !projectPath) return;
+    e.preventDefault();
+    setDropActive(false);
+    const files = e.dataTransfer.files;
+    if (!files?.length) return;
+    try {
+      await uploadFilesToPath(Array.from(files), projectPath);
+      addNotification({ type: 'info', message: `Uploaded ${files.length} file(s)` });
+      refreshTree();
+    } catch (err) {
+      addNotification({ type: 'error', message: err.message });
+    }
+  }, [pocket, projectPath, addNotification, refreshTree]);
+
   return (
     <div className="flex flex-col h-full min-h-0 bg-vsc-sidebar/85 backdrop-blur-sm">
       <div className="sidebar-header justify-between">
@@ -209,6 +263,17 @@ function FileExplorer() {
           <button className="p-1 hover:bg-vsc-list-hover rounded" title="Refresh" onClick={refreshTree}>
             <RefreshCw size={14} />
           </button>
+          {pocket && projectPath && (
+            <>
+              <button className="p-1 hover:bg-vsc-list-hover rounded" title="Upload files" onClick={handleUploadClick}>
+                <Upload size={14} />
+              </button>
+              <button className="p-1 hover:bg-vsc-list-hover rounded" title="Download project as ZIP" onClick={handleDownloadProject}>
+                <Download size={14} />
+              </button>
+              <input ref={uploadInputRef} type="file" multiple className="hidden" onChange={handleUploadChange} />
+            </>
+          )}
         </div>
       </div>
 
@@ -223,7 +288,17 @@ function FileExplorer() {
           </button>
         </div>
       ) : (
-        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden scrollbar-thin">
+        <div
+          className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden scrollbar-thin relative ${dropActive ? 'ring-2 ring-inset ring-vsc-accent/40' : ''}`}
+          onDragOver={handleExplorerDragOver}
+          onDragLeave={handleExplorerDragLeave}
+          onDrop={handleExplorerDrop}
+        >
+          {dropActive && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-vsc-accent/10 pointer-events-none text-vsc-sm text-vsc-accent">
+              Drop files to upload
+            </div>
+          )}
           <div className="sidebar-section-header shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]">
             <ChevronDown size={12} className="mr-1 flex-shrink-0" />
             <span className="truncate">{projectPath.split(/[\\/]/).pop()}</span>
@@ -451,6 +526,16 @@ function FileTreeItem({ item, depth }) {
     closeContextMenu();
   };
 
+  const handleDownload = () => {
+    triggerDownload(downloadFileUrl(item.path));
+    closeContextMenu();
+  };
+
+  const handleDownloadZip = () => {
+    triggerDownload(downloadFolderZipUrl(item.path));
+    closeContextMenu();
+  };
+
   const icon = <FileIcon
     extension={item.extension}
     name={item.name}
@@ -481,6 +566,19 @@ function FileTreeItem({ item, depth }) {
     e.preventDefault();
     e.stopPropagation();
     setDragOver(false);
+
+    if (isPocket() && e.dataTransfer.files?.length > 0) {
+      const destDir = item.type === 'directory' ? item.path : projectPath;
+      if (!destDir) return;
+      uploadFilesToPath(Array.from(e.dataTransfer.files), destDir)
+        .then((d) => {
+          const n = d.uploaded?.length || e.dataTransfer.files.length;
+          addNotification({ type: 'info', message: `Uploaded ${n} file(s)` });
+        })
+        .catch(err => addNotification({ type: 'error', message: err.message }));
+      return;
+    }
+
     const sourcePath = e.dataTransfer.getData('text/plain');
     if (!sourcePath || sourcePath === item.path) return;
     if (item.type !== 'directory') return;
@@ -575,13 +673,16 @@ function FileTreeItem({ item, depth }) {
           onCopyPath={handleCopyPath}
           onCopyRelativePath={handleCopyRelativePath}
           onRevealInExplorer={handleRevealInExplorer}
+          showDownload={isPocket()}
+          onDownload={handleDownload}
+          onDownloadZip={item.type === 'directory' ? handleDownloadZip : undefined}
         />
       )}
     </>
   );
 }
 
-function FileContextMenu({ x, y, isDirectory, onClose, onNewFile, onNewFolder, onRename, onDelete, onCopyPath, onCopyRelativePath, onRevealInExplorer }) {
+function FileContextMenu({ x, y, isDirectory, onClose, onNewFile, onNewFolder, onRename, onDelete, onCopyPath, onCopyRelativePath, onRevealInExplorer, showDownload, onDownload, onDownloadZip }) {
   const menuRef = useRef(null);
 
   useEffect(() => {
@@ -631,6 +732,16 @@ function FileContextMenu({ x, y, isDirectory, onClose, onNewFile, onNewFolder, o
       <button className="context-menu-item" onClick={onCopyRelativePath}>
         <Copy size={14} className="mr-2 text-vsc-text-dim" /> Copy Relative Path
       </button>
+      {showDownload && !isDirectory && onDownload && (
+        <button className="context-menu-item" onClick={onDownload}>
+          <Download size={14} className="mr-2 text-vsc-text-dim" /> Download
+        </button>
+      )}
+      {showDownload && isDirectory && onDownloadZip && (
+        <button className="context-menu-item" onClick={onDownloadZip}>
+          <Download size={14} className="mr-2 text-vsc-text-dim" /> Download as ZIP
+        </button>
+      )}
       {window.electronAPI?.showItemInFolder && (
         <button className="context-menu-item" onClick={onRevealInExplorer}>
           <ExternalLink size={14} className="mr-2 text-vsc-text-dim" /> Reveal in File Explorer

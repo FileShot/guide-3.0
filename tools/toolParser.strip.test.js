@@ -42,4 +42,17 @@ assert(ORPHAN_CLEANED.includes('Intro prose'), 'prose kept after orphan fence st
 assert.strictEqual(collapseOrphanMarkdownFences('```\n\n```'), '');
 assert.strictEqual(collapseOrphanMarkdownFences('line\n```json\n\n```\n'), 'line');
 
+const PROSE_GLUE = 'Given tool usage:\n';
+const RAW_WRITE = '{"tool":"write_file","params":{"filePath":"game.html","content":"' + 'x'.repeat(200) + '"}}';
+const GLUED = PROSE_GLUE + RAW_WRITE;
+const gluedClean = stripToolCallText(GLUED);
+assert(gluedClean.includes('Given tool usage'), 'prose prefix kept for glued JSON');
+assert(!gluedClean.includes('"tool"'), 'glued write_file JSON stripped');
+
+const BIG_PREFIX = 'Starting implementation.\n';
+const BIG_RAW = BIG_PREFIX + '{"tool":"write_file","params":{"filePath":"index.html","content":"' + 'A'.repeat(16000) + '"}}';
+const bigClean = stripToolCallText(BIG_RAW);
+assert(bigClean.includes('Starting implementation'), '16k write_file: prose prefix kept');
+assert(!bigClean.includes('"tool"'), '16k write_file: JSON removed');
+
 console.log('toolParser.strip.test.js: all passed');

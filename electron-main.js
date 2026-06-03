@@ -648,7 +648,18 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         userMessage: effectiveMessage,
         cloudProvider,
         cloudModel,
-        settings: { ...settings, askOnly, planMode, enableSubAgents, toolsEnabled: settings.toolsEnabled !== false, chatMode: settings.chatMode, agentPhase: settings.agentPhase || 'planning' },
+        settings: {
+          ...settings,
+          askOnly,
+          planMode,
+          enableSubAgents,
+          toolsEnabled: settings.toolsEnabled !== false,
+          chatMode: settings.chatMode,
+          agentPhase: settings.agentPhase || 'planning',
+          projectPath: currentProjectPath || undefined,
+          editorContext: llmEngine._ctx?.editorContext,
+          editorDiagnostics: llmEngine._ctx?.editorDiagnostics,
+        },
         conversationHistory,
         images,
         executeToolFn,
@@ -1104,6 +1115,10 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/models/load' && method === 'POST') {
       const { modelPath } = body;
       if (!modelPath) return { _status: 400, error: 'modelPath required' };
+      cloudLLM.activeProvider = null;
+      cloudLLM.activeModel = null;
+      settingsManager.set('lastCloudProvider', null);
+      settingsManager.set('lastCloudModel', null);
       applyModelRuntimeDefaults(modelPath);
       const loadSettings = buildEngineLoadSettings(settingsManager.getAll());
       console.log(`[Settings] model-load START path=${modelPath} thinkingMode=${loadSettings.thinkingMode} toolsEnabled=${settingsManager.get('toolsEnabled')} enableThinking=${loadSettings.enableThinking}`);
@@ -1513,10 +1528,29 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     }
     if (p === '/api/cloud/provider' && method === 'POST') {
       const { provider, model } = body;
-      if (!provider) return { _status: 400, error: 'provider required' };
+      if (!provider || provider === 'none') {
+        cloudLLM.activeProvider = null;
+        cloudLLM.activeModel = null;
+        settingsManager.set('lastCloudProvider', null);
+        settingsManager.set('lastCloudModel', null);
+        return { success: true, activeProvider: null, activeModel: null };
+      }
+      try { llmEngine.cancelGeneration('cloud-select'); } catch (_) {}
+      if (llmEngine.isReady || llmEngine.getStatus().loadState === 'loading') {
+        console.log('[Main] Unloading local model — cloud provider selected');
+        await llmEngine.dispose();
+        _send('model-unloaded', {});
+      }
       cloudLLM.activeProvider = provider;
       if (model) cloudLLM.activeModel = model;
+      settingsManager.set('lastCloudProvider', provider);
+      settingsManager.set('lastCloudModel', model || null);
       return { success: true, activeProvider: cloudLLM.activeProvider, activeModel: cloudLLM.activeModel };
+    }
+    if (p === '/api/tools/strip-prose' && method === 'POST') {
+      const { stripToolCallText } = require('./tools/toolParser');
+      const text = body?.text != null ? String(body.text) : '';
+      return { text: stripToolCallText(text) };
     }
     if (p === '/api/cloud/apikey' && method === 'POST') {
       const { provider, key } = body;
@@ -2572,6 +2606,13 @@ app.whenReady().then(async () => {
   // Initialize models
   modelManager.initialize().then((models) => {
     console.log(`[Main] Found ${models.length} model(s)`);
+    const lastCloud = settingsManager.get('lastCloudProvider');
+    if (lastCloud) {
+      cloudLLM.activeProvider = lastCloud;
+      cloudLLM.activeModel = settingsManager.get('lastCloudModel') || null;
+      console.log(`[Main] Skipping local auto-load — last session used cloud (${lastCloud})`);
+      return;
+    }
     if (!llmEngine.isReady && models.length > 0) {
       const lastPath = settingsManager.get('lastModelPath');
       const lastModel = lastPath && models.find(m => m.path === lastPath);

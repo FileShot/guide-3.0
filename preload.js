@@ -149,6 +149,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Model events
   onModelLoaded:       (cb) => _on('model-loaded', cb),
+  onModelUnloaded:     (cb) => _on('model-unloaded', cb),
   onModelLoading:      (cb) => _on('model-loading', cb),
   onModelError:        (cb) => _on('model-error', cb),
   onModelsUpdated:     (cb) => _on('models-updated', cb),

@@ -3,6 +3,7 @@
  */
 import { useState, useRef, useEffect } from 'react';
 import useAppStore from '../stores/appStore';
+import isPocket from '../lib/isPocket';
 import {
   FolderPlus, X, Folder, FileCode, Server, Monitor, Wrench, Bot, Cpu,
   Globe, Chrome, Terminal, Package, Boxes, Layout, Code2,
@@ -38,28 +39,52 @@ export default function NewProjectDialog() {
   const [parentDir, setParentDir] = useState('');
   const [projectName, setProjectName] = useState('');
   const [creating, setCreating] = useState(false);
+  const [templateError, setTemplateError] = useState('');
   const nameRef = useRef(null);
+  const pocket = isPocket();
 
   // Fetch templates when dialog opens
   useEffect(() => {
     if (!show) return;
+    setTemplateError('');
     fetch('/api/templates')
       .then(r => r.json())
       .then(data => {
+        if (!Array.isArray(data)) {
+          setTemplateError('Could not load templates');
+          setSelectedTemplate('blank-project');
+          return;
+        }
         setTemplates(data);
-        if (data.length && !selectedTemplate) setSelectedTemplate(data[0].id);
+        const defaultId = data.find((t) => t.id === 'blank-project')?.id || data[0]?.id || 'blank-project';
+        if (!selectedTemplate) setSelectedTemplate(defaultId);
       })
-      .catch(() => {});
+      .catch(() => {
+        setTemplateError('Could not load templates — using blank project');
+        setSelectedTemplate('blank-project');
+      });
   }, [show]);
 
-  // Pre-populate parent directory with user's home directory
+  // Pre-populate parent directory with user's home directory (desktop only)
   useEffect(() => {
-    if (!show) return;
+    if (!show || pocket) return;
     fetch('/api/system/homedir')
       .then(r => r.json())
       .then(data => { if (data.homedir && !parentDir) setParentDir(data.homedir); })
       .catch(() => {});
-  }, [show]);
+  }, [show, pocket]);
+
+  useEffect(() => {
+    if (!show || !pocket) return;
+    if (window.PocketUI?.cloudWorkspaceRoot) {
+      window.PocketUI.cloudWorkspaceRoot().then((dir) => { if (dir) setParentDir(dir); }).catch(() => {});
+    } else {
+      fetch('/api/system/homedir')
+        .then(r => r.json())
+        .then(data => { if (data.homedir) setParentDir(data.homedir); })
+        .catch(() => {});
+    }
+  }, [show, pocket]);
 
   useEffect(() => {
     if (show && nameRef.current) nameRef.current.focus();
@@ -72,17 +97,23 @@ export default function NewProjectDialog() {
     : templates.filter(t => t.category === category);
 
   const handleBrowse = async () => {
+    if (pocket && window.PocketUI?.cloudWorkspaceRoot) {
+      const dir = await window.PocketUI.cloudWorkspaceRoot();
+      if (dir) setParentDir(dir);
+      return;
+    }
     if (window.electronAPI?.openFolderDialog) {
       const dir = await window.electronAPI.openFolderDialog();
       if (dir) setParentDir(dir);
-    } else {
+    } else if (!pocket) {
       const dir = prompt('Enter parent directory path:');
       if (dir) setParentDir(dir);
     }
   };
 
   const handleCreate = async () => {
-    if (!parentDir.trim() || !projectName.trim() || !selectedTemplate) return;
+    const needsParent = !pocket;
+    if ((needsParent && !parentDir.trim()) || !projectName.trim() || !selectedTemplate) return;
     setCreating(true);
     try {
       const res = await fetch('/api/templates/create', {
@@ -187,7 +218,14 @@ export default function NewProjectDialog() {
 
         {/* Project config */}
         <div className="px-4 py-3 border-t border-vsc-panel-border flex-shrink-0 flex flex-col gap-2.5">
+          {templateError && (
+            <p className="text-vsc-xs text-amber-400/90">{templateError}</p>
+          )}
+          {pocket && (
+            <p className="text-vsc-xs text-vsc-text-dim">Projects are created in your cloud workspace.</p>
+          )}
           <div className="flex gap-2">
+            {!pocket && (
             <div className="flex-1">
               <label className="block text-vsc-xs text-vsc-text-dim mb-1">Parent Directory</label>
               <div className="flex gap-1">
@@ -207,7 +245,8 @@ export default function NewProjectDialog() {
                 </button>
               </div>
             </div>
-            <div className="w-[200px]">
+            )}
+            <div className={pocket ? 'flex-1' : 'w-[200px]'}>
               <label className="block text-vsc-xs text-vsc-text-dim mb-1">Project Name</label>
               <input
                 ref={nameRef}
@@ -220,9 +259,10 @@ export default function NewProjectDialog() {
               />
             </div>
           </div>
-          {parentDir && projectName && (
+          {projectName && (
             <p className="text-[10px] text-vsc-text-dim truncate">
-              {parentDir.replace(/[\\/]$/, '')}/{projectName.replace(/[<>:"/\\|?*]/g, '-').replace(/\s+/g, '-').toLowerCase()}
+              {pocket ? 'Cloud project: ' : `${parentDir.replace(/[\\/]$/, '')}/`}
+              {projectName.replace(/[<>:"/\\|?*]/g, '-').replace(/\s+/g, '-').toLowerCase()}
             </p>
           )}
         </div>
@@ -237,7 +277,7 @@ export default function NewProjectDialog() {
           </button>
           <button
             className="btn btn-primary disabled:opacity-50"
-            disabled={!parentDir.trim() || !projectName.trim() || !selectedTemplate || creating}
+            disabled={(!pocket && !parentDir.trim()) || !projectName.trim() || !selectedTemplate || creating}
             onClick={handleCreate}
           >
             {creating ? 'Creating...' : 'Create Project'}

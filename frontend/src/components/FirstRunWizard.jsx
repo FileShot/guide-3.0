@@ -4,6 +4,7 @@
  */
 import { useState, useEffect } from 'react';
 import useAppStore from '../stores/appStore';
+import isPocket from '../lib/isPocket';
 import { Cpu, Monitor, HardDrive, Check, Sparkles } from 'lucide-react';
 
 export default function FirstRunWizard() {
@@ -16,6 +17,7 @@ export default function FirstRunWizard() {
   const updateSetting = useAppStore(s => s.updateSetting);
 
   useEffect(() => {
+    if (isPocket()) return;
     fetch('/api/setup/status')
       .then(r => r.json())
       .then(d => {

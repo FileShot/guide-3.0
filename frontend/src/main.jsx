@@ -8,6 +8,7 @@ import './index.css';
 // instead of HTTP. This avoids rewriting 110+ fetch() calls across the app.
 // In non-Electron environments (dev server), falls through to real fetch.
 const _originalFetch = window.fetch;
+window.__nativeFetch = _originalFetch;
 window.fetch = function(url, options) {
   // Only intercept /api/* URLs when running in Electron
   if (window.electronAPI?.apiFetch && typeof url === 'string' && url.startsWith('/api/')) {
@@ -16,15 +17,17 @@ window.fetch = function(url, options) {
       body: options?.body || null,
       headers: options?.headers || {},
     }).then(result => {
-      // Wrap the IPC result in a Response-like object so callers can do .json()
       const status = result?._status || 200;
+      if (status >= 400) {
+        return _originalFetch.apply(this, arguments);
+      }
       return {
         ok: status >= 200 && status < 300,
         status,
         json: () => Promise.resolve(result),
         text: () => Promise.resolve(typeof result === 'string' ? result : JSON.stringify(result)),
       };
-    });
+    }).catch(() => _originalFetch.apply(this, arguments));
   }
   return _originalFetch.apply(this, arguments);
 };

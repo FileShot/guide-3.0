@@ -1,7 +1,13 @@
 'use strict';
 
-const { parseToolCalls, repairToolCalls, stripToolCallText } = require('./tools/toolParser');
-const { buildCloudSystemPrompt } = require('./chatEngine');
+const {
+  parseToolCalls,
+  repairToolCalls,
+  stripToolCallText,
+  looksLikeToolAttempt,
+  suggestClosestToolName,
+} = require('./tools/toolParser');
+const { buildCloudSystemPrompt, buildAgentSystemPromptLayers } = require('./chatEngine');
 const {
   formatToolResultForInject,
   buildToolResultsUserMessage,
@@ -12,6 +18,7 @@ const {
   resolveAgentMode,
   filterToolDefinitions,
   filterPlanModeToolCalls,
+  shouldStreamFileContentForAgent,
 } = require('./agentModeResolver');
 
 const CLOUD_CONTINUE_PROMPT = 'Continue from the tool results above. Call more tools if needed, or give a concise final answer.';
@@ -71,6 +78,12 @@ async function runCloudAgenticChat({
     userSystemPrompt: settings.systemPrompt,
     customInstructions: settings.customInstructions,
     toolPrompt,
+  });
+  systemPrompt += buildAgentSystemPromptLayers({
+    projectPath: settings.projectPath,
+    guideInstructionsPath: settings.guideInstructionsPath,
+    editorContext: settings.editorContext,
+    editorDiagnostics: settings.editorDiagnostics,
   });
   if (mode.systemPromptAdditions) {
     systemPrompt += mode.systemPromptAdditions;
@@ -138,9 +151,24 @@ async function runCloudAgenticChat({
     }
 
     let parsedCalls = parseToolCalls(roundText);
-    if (!parsedCalls.length) break;
+    if (!parsedCalls.length) {
+      if (looksLikeToolAttempt(roundText)) {
+        const closestHint = suggestClosestToolName(roundText);
+        conversationHistory.push({
+          role: 'assistant',
+          content: roundClean.trim() || '(tool calls)',
+        });
+        conversationHistory.push({
+          role: 'user',
+          content: `[System: Tool call could not be parsed. Retry with valid JSON: {"tool":"<name>","params":{...}}.${closestHint ? ` ${closestHint}` : ''}]`,
+        });
+        nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+        continue;
+      }
+      break;
+    }
 
-    const { repaired } = repairToolCalls(parsedCalls, roundText);
+    const { repaired, issues } = repairToolCalls(parsedCalls, roundText);
     parsedCalls = repaired.filter((c) => c.tool !== 'spawn_subagent');
 
     if (mode.planning && parsedCalls.length > 0) {
@@ -151,7 +179,34 @@ async function runCloudAgenticChat({
       parsedCalls = planCalls;
     }
 
-    if (!parsedCalls.length) break;
+    if (!parsedCalls.length) {
+      if (issues?.length) {
+        conversationHistory.push({
+          role: 'assistant',
+          content: roundClean.trim() || '(tool calls)',
+        });
+        conversationHistory.push({
+          role: 'user',
+          content: `[System: Tool Validation Failed]\n${issues.join('\n')}\n\nRetry with valid tool parameters.`,
+        });
+        nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+        continue;
+      }
+      if (looksLikeToolAttempt(roundText)) {
+        const closestHint = suggestClosestToolName(roundText);
+        conversationHistory.push({
+          role: 'assistant',
+          content: roundClean.trim() || '(tool calls)',
+        });
+        conversationHistory.push({
+          role: 'user',
+          content: `[System: Tool call could not be parsed. Retry with valid JSON: {"tool":"<name>","params":{...}}.${closestHint ? ` ${closestHint}` : ''}]`,
+        });
+        nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+        continue;
+      }
+      break;
+    }
 
     const visibleAssistant = roundClean.trim();
     conversationHistory.push({ role: 'assistant', content: visibleAssistant || '(tool calls)' });
@@ -176,7 +231,12 @@ async function runCloudAgenticChat({
         onStreamEvent('tool-executing', [{ tool: toolName, params: toolParams }]);
       }
 
-      if (FILE_WRITE_OPS.has(toolName) && call.params?.content && onStreamEvent) {
+      if (
+        FILE_WRITE_OPS.has(toolName)
+        && call.params?.content
+        && onStreamEvent
+        && shouldStreamFileContentForAgent(settings, call.params.filePath || call.params.path || '')
+      ) {
         const filePath = call.params.filePath || call.params.path || '';
         const fileName = filePath.split(/[\\/]/).pop() || filePath;
         const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';

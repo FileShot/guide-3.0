@@ -296,6 +296,12 @@ function parsePlanFileContent(content) {
   return { title, overview, todos, body };
 }
 
+/** Whether file-content UI may stream during plan mode (plan files only until Build). */
+function shouldStreamFileContentForAgent(settings, filePath) {
+  if (!settings?.planMode || settings.agentPhase === 'building') return true;
+  return isPlanFilePath(filePath || '');
+}
+
 function relativePlanPath(fullPath, projectPath) {
   if (!fullPath) return fullPath;
   if (projectPath) {
@@ -320,4 +326,5 @@ module.exports = {
   getBuildingPhasePromptAddition,
   parsePlanFileContent,
   relativePlanPath,
+  shouldStreamFileContentForAgent,
 };

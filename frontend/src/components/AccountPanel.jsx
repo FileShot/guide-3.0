@@ -4,8 +4,10 @@
  */
 import { useState, useEffect, useCallback } from 'react';
 import { UserCircle, Check, Shield, ExternalLink, LogOut, Key, Mail, Github, UserPlus } from 'lucide-react';
+import isPocket from '../lib/isPocket';
 
 export default function AccountPanel() {
+  const pocket = isPocket();
   const [licenseStatus, setLicenseStatus] = useState(null);
   const [tab, setTab] = useState('signin'); // 'signin' | 'key' | 'register'
   const [email, setEmail] = useState('');
@@ -30,6 +32,16 @@ export default function AccountPanel() {
   };
 
   const handleOAuth = async (provider) => {
+    if (pocket) {
+      if (provider === 'google') {
+        window.location.href = '/api/auth/google';
+        return;
+      }
+      if (provider === 'github') {
+        window.location.href = '/api/auth/github';
+        return;
+      }
+    }
     setLoading(true);
     showMessage(`Opening ${provider === 'google' ? 'Google' : 'GitHub'} sign-in...`, 0);
     try {
@@ -39,6 +51,14 @@ export default function AccountPanel() {
         body: JSON.stringify({ provider }),
       });
       const result = await res.json();
+      if (result?.redirect) {
+        window.location.href = result.redirect;
+        return;
+      }
+      if (result?.url && pocket) {
+        window.location.href = result.url;
+        return;
+      }
       if (result?.success) {
         await loadStatus();
         showMessage(result.licenseError
@@ -55,6 +75,14 @@ export default function AccountPanel() {
   };
 
   const handleEmailSignIn = async () => {
+    if (pocket) {
+      window.location.href = 'https://graysoft.dev/login?returnTo=' + encodeURIComponent('https://pocket.graysoft.dev/');
+      return;
+    }
+    await handleEmailSignInDesktop();
+  };
+
+  const handleEmailSignInDesktop = async () => {
     if (!email.trim() || !password) return;
     setLoading(true);
     showMessage('Signing in...', 0);
@@ -65,6 +93,10 @@ export default function AccountPanel() {
         body: JSON.stringify({ method: 'account', email: email.trim(), password }),
       });
       const result = await res.json();
+      if (result?.redirect) {
+        window.location.href = result.redirect;
+        return;
+      }
       if (result?.success) {
         setLicenseStatus({
           isActivated: true, isAuthenticated: true,
@@ -292,6 +324,56 @@ export default function AccountPanel() {
         {message && (
           <p className={`text-[10px] mt-2 ${message.includes('successfully') ? 'text-[#4ec9b0]' : 'text-[#f44747]'}`}>{message}</p>
         )}
+      </div>
+    );
+  }
+
+  if (pocket) {
+    return (
+      <div className="flex flex-col h-full p-4">
+        <div className="text-center mb-5">
+          <UserCircle size={36} className="mx-auto mb-2 text-vsc-foreground/50" />
+          <p className="text-[12px] font-medium text-vsc-foreground">Pocket account</p>
+          <p className="text-[10px] mt-1 text-vsc-foreground/50">
+            Sign in with Google, GitHub, or email — same as graysoft.dev
+          </p>
+        </div>
+        <div className="space-y-2 mb-3">
+          <button
+            type="button"
+            onClick={() => handleOAuth('google')}
+            disabled={loading}
+            className="flex items-center justify-center gap-2 w-full px-3 py-2.5 text-[11px] font-medium rounded bg-vsc-sidebar-bg border border-vsc-panel-border disabled:opacity-50"
+          >
+            Continue with Google
+          </button>
+          <button
+            type="button"
+            onClick={() => handleOAuth('github')}
+            disabled={loading}
+            className="flex items-center justify-center gap-2 w-full px-3 py-2.5 text-[11px] font-medium rounded bg-vsc-sidebar-bg border border-vsc-panel-border disabled:opacity-50"
+          >
+            <Github size={14} />
+            Continue with GitHub
+          </button>
+          <button
+            type="button"
+            onClick={handleEmailSignIn}
+            disabled={loading}
+            className="flex items-center justify-center gap-2 w-full px-3 py-2.5 text-[11px] font-medium rounded bg-vsc-sidebar-bg border border-vsc-panel-border disabled:opacity-50"
+          >
+            <Mail size={14} />
+            Sign in with email
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={() => openExternal('https://graysoft.dev/account')}
+          className="flex items-center justify-center gap-2 w-full px-3 py-2 text-[11px] rounded hover:opacity-80"
+        >
+          <ExternalLink size={12} /> Manage billing &amp; storage
+        </button>
+        {message && <p className="text-[10px] mt-2 text-vsc-foreground/60">{message}</p>}
       </div>
     );
   }

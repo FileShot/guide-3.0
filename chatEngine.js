@@ -1459,72 +1459,16 @@ class ChatEngine extends EventEmitter {
     // The raw-text detection in _sfProcessChunk still routes any thinking content to
     // llm-thinking-token events when the model does produce it.
 
-    // Layer 2: Project rules & environment context (date, OS, project path, guide instructions)
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    const timeStr = now.toTimeString().split(' ')[0];
-    const platform = `${os.type()} ${os.release()} (${os.platform()})`;
-    basePrompt += `\n\nCurrent date: ${dateStr}\nCurrent time: ${timeStr}\nOperating system: ${platform}`;
-    if (this._projectPath) {
-      basePrompt += `\nProject directory: ${this._projectPath}\nAll file tools operate relative to this directory.`;
-    }
-    // Project instructions file (AGENTS.md / guide rules)
-    if (guideInstructionsPath) {
-      try {
-        const fs = require('fs');
-        const instrPath = path.isAbsolute(guideInstructionsPath)
-          ? guideInstructionsPath
-          : path.join(this._projectPath || process.cwd(), guideInstructionsPath);
-        if (fs.existsSync(instrPath)) {
-          const guideContent = fs.readFileSync(instrPath, 'utf-8').trim();
-          if (guideContent) {
-            basePrompt += `\n\n## Project Instructions (from ${guideInstructionsPath})\n${guideContent}`;
-          }
-        }
-      } catch (e) { console.warn('[ChatEngine] Guide instructions load failed:', e.message); }
-    }
-    // Custom instructions from settings — user-defined behavior overrides
+    // Layer 2–3: Project rules, environment, editor context (shared with cloud via buildAgentSystemPromptLayers)
+    basePrompt += buildAgentSystemPromptLayers({
+      projectPath: this._projectPath,
+      guideInstructionsPath,
+      editorContext: this._ctx?.editorContext,
+      editorDiagnostics: this._ctx?.editorDiagnostics,
+    });
     const customInstructions = options.customInstructions;
     if (customInstructions && customInstructions.trim()) {
       basePrompt += `\n\n## Custom Instructions\n${customInstructions.trim()}`;
-    }
-
-    // Layer 3: Editor context (active file, cursor position, recent saves, diagnostics)
-    // This is the "real-time action context" layer — model knows what user is doing
-    if (this._ctx?.editorContext) {
-      const ec = this._ctx.editorContext;
-      const parts = [];
-      if (ec.activeFilePath) {
-        const rel = this._projectPath ? ec.activeFilePath.replace(this._projectPath.replace(/\\/g, '/'), '').replace(/^\//, '') : ec.activeFilePath;
-        let ctxLine = `Active file: ${rel}`;
-        if (ec.cursorLine) ctxLine += ` (cursor at line ${ec.cursorLine})`;
-        parts.push(ctxLine);
-      }
-      if (ec.recentSaves?.length > 0) {
-        const saveNames = ec.recentSaves
-          .map(s => this._projectPath ? s.filePath.replace(this._projectPath.replace(/\\/g, '/'), '').replace(/^\//, '') : s.filePath)
-          .filter(Boolean);
-        if (saveNames.length > 0) parts.push(`Recently saved: ${saveNames.join(', ')}`);
-      }
-      // Include global diagnostics summary if there are errors
-      const diagStore = this._ctx.editorDiagnostics;
-      if (diagStore) {
-        let totalErrors = 0, totalWarnings = 0, errorFiles = [];
-        for (const [fp, d] of Object.entries(diagStore)) {
-          if (d.errors > 0) {
-            totalErrors += d.errors;
-            const rel = this._projectPath ? fp.replace(this._projectPath.replace(/\\/g, '/').toLowerCase(), '').replace(/^\//, '') : fp;
-            errorFiles.push(`${rel} (${d.errors} errors)`);
-          }
-          totalWarnings += d.warnings || 0;
-        }
-        if (totalErrors > 0) {
-          parts.push(`Diagnostics: ${totalErrors} errors in ${errorFiles.slice(0, 5).join(', ')}`);
-        }
-      }
-      if (parts.length > 0) {
-        basePrompt += `\n\n## Editor Context\n${parts.join('\n')}`;
-      }
     }
     // Mode overrides: inject behavioral instructions before tool prompt
     if (options.agentPhase === 'building') {
@@ -5052,4 +4996,87 @@ function buildCloudSystemPrompt({ userSystemPrompt, customInstructions, toolProm
   return text;
 }
 
-module.exports = { ChatEngine, buildEngineLoadSettings, SYSTEM_PROMPT, buildCloudSystemPrompt };
+/**
+ * Shared non-model context layers (date/OS/project/guide instructions/editor) for local + cloud.
+ */
+function buildAgentSystemPromptLayers({
+  projectPath,
+  guideInstructionsPath,
+  editorContext,
+  editorDiagnostics,
+} = {}) {
+  let layers = '';
+  const now = new Date();
+  const dateStr = now.toISOString().split('T')[0];
+  const timeStr = now.toTimeString().split(' ')[0];
+  const platform = `${os.type()} ${os.release()} (${os.platform()})`;
+  layers += `\n\nCurrent date: ${dateStr}\nCurrent time: ${timeStr}\nOperating system: ${platform}`;
+  if (projectPath) {
+    layers += `\nProject directory: ${projectPath}\nAll file tools operate relative to this directory.`;
+  }
+  if (guideInstructionsPath) {
+    try {
+      const fs = require('fs');
+      const instrPath = path.isAbsolute(guideInstructionsPath)
+        ? guideInstructionsPath
+        : path.join(projectPath || process.cwd(), guideInstructionsPath);
+      if (fs.existsSync(instrPath)) {
+        const guideContent = fs.readFileSync(instrPath, 'utf-8').trim();
+        if (guideContent) {
+          layers += `\n\n## Project Instructions (from ${guideInstructionsPath})\n${guideContent}`;
+        }
+      }
+    } catch (e) {
+      console.warn('[ChatEngine] Guide instructions load failed:', e.message);
+    }
+  }
+  if (editorContext) {
+    const ec = editorContext;
+    const parts = [];
+    if (ec.activeFilePath) {
+      const rel = projectPath
+        ? ec.activeFilePath.replace(projectPath.replace(/\\/g, '/'), '').replace(/^\//, '')
+        : ec.activeFilePath;
+      let ctxLine = `Active file: ${rel}`;
+      if (ec.cursorLine) ctxLine += ` (cursor at line ${ec.cursorLine})`;
+      parts.push(ctxLine);
+    }
+    if (ec.recentSaves?.length > 0) {
+      const saveNames = ec.recentSaves
+        .map((s) => (projectPath
+          ? s.filePath.replace(projectPath.replace(/\\/g, '/'), '').replace(/^\//, '')
+          : s.filePath))
+        .filter(Boolean);
+      if (saveNames.length > 0) parts.push(`Recently saved: ${saveNames.join(', ')}`);
+    }
+    const diagStore = editorDiagnostics;
+    if (diagStore) {
+      let totalErrors = 0;
+      const errorFiles = [];
+      for (const [fp, d] of Object.entries(diagStore)) {
+        if (d.errors > 0) {
+          totalErrors += d.errors;
+          const rel = projectPath
+            ? fp.replace(projectPath.replace(/\\/g, '/').toLowerCase(), '').replace(/^\//, '')
+            : fp;
+          errorFiles.push(`${rel} (${d.errors} errors)`);
+        }
+      }
+      if (totalErrors > 0) {
+        parts.push(`Diagnostics: ${totalErrors} errors in ${errorFiles.slice(0, 5).join(', ')}`);
+      }
+    }
+    if (parts.length > 0) {
+      layers += `\n\n## Editor Context\n${parts.join('\n')}`;
+    }
+  }
+  return layers;
+}
+
+module.exports = {
+  ChatEngine,
+  buildEngineLoadSettings,
+  SYSTEM_PROMPT,
+  buildCloudSystemPrompt,
+  buildAgentSystemPromptLayers,
+};

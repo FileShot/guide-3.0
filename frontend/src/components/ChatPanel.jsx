@@ -55,6 +55,23 @@ function canonicalizeFilePath(filePath) {
   return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 
+/** Strip tool-call JSON from prose via main-process toolParser (IPC). */
+async function stripToolProseViaApi(text) {
+  if (!text) return '';
+  try {
+    const r = await fetch('/api/tools/strip-prose', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: String(text) }),
+    });
+    const d = await r.json();
+    if (d && typeof d.text === 'string') return d.text;
+  } catch (e) {
+    console.warn('[ChatPanel] strip-prose failed:', e?.message || e);
+  }
+  return text;
+}
+
 /** Safety net: rebuild file segments from write_file tool params when IPC file blocks were lost. */
 function synthesizeFileBlocksFromToolCalls(toolCalls, messageSegments, messageFileBlocks) {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) return;
@@ -1939,6 +1956,18 @@ export default function ChatPanel() {
 
       }
 
+      for (let _si = 0; _si < messageSegments.length; _si++) {
+        const seg = messageSegments[_si];
+        if (seg.type === 'text' && seg.content) {
+          const stripped = await stripToolProseViaApi(seg.content);
+          messageSegments[_si] = { ...seg, content: stripped };
+        }
+      }
+      messageContent = messageSegments
+        .filter((s) => s.type === 'text')
+        .map((s) => s.content || '')
+        .join('');
+
       // R53-Diag: Log segment shapes and streaming state to trace IPC ordering issues
       console.log('[ChatPanel] R53-Diag: segments=', JSON.stringify(
         (segments || []).map(s => ({ type: s.type, len: s.content?.length || 0 }))
@@ -1953,7 +1982,7 @@ export default function ChatPanel() {
       // in the same message as the reply and is never subject to IPC event lag.
       {
 
-        const _backendProse = result?.text || '';
+        const _backendProse = await stripToolProseViaApi(result?.text || '');
 
         if (_backendProse.trim() && _backendProse.trim().length > messageContent.trim().length) {
 
@@ -2952,9 +2981,9 @@ export default function ChatPanel() {
 
               ) : (
 
-                <div className={`chat-message ${msg.role}`}>
+                <div className={`chat-message ${msg.role}${msg.role === 'user' ? ' flex flex-col items-start w-full' : ''}`}>
 
-                  <div className="flex items-center gap-2 mb-1">
+                  <div className="flex items-center gap-2 mb-1 w-full">
 
                     <span className="text-vsc-xs font-medium tracking-wider text-vsc-text-dim">
 
@@ -3153,7 +3182,7 @@ export default function ChatPanel() {
 
                         <textarea
 
-                          className="w-full whitespace-pre-wrap text-right bg-vsc-input/60 border border-vsc-accent/40 rounded-md px-2 py-1.5 text-vsc-text text-[13px] resize-none focus:outline-none focus:border-vsc-accent/70 transition-colors"
+                          className="w-full whitespace-pre-wrap text-left bg-vsc-input/60 border border-vsc-accent/40 rounded-md px-2 py-1.5 text-vsc-text text-[13px] resize-none focus:outline-none focus:border-vsc-accent/70 transition-colors"
 
                           rows={Math.min(12, Math.max(2, editText.split('\n').length))}
 
@@ -3193,7 +3222,7 @@ export default function ChatPanel() {
 
                           tabIndex={chatStreaming ? -1 : 0}
 
-                          className={`rounded-md px-2 py-1 -mx-2 text-right transition-colors duration-150 ${
+                          className={`w-full block text-left rounded-md px-2 py-1 -mx-2 transition-colors duration-150 ${
                             chatStreaming
                               ? 'cursor-default'
                               : 'cursor-text hover:bg-vsc-list-hover/[0.07] focus-visible:outline focus-visible:outline-1 focus-visible:outline-vsc-accent/30'
@@ -3229,7 +3258,7 @@ export default function ChatPanel() {
 
                         >
 
-                          <div className="whitespace-pre-wrap">{msg.content}</div>
+                          <div className="whitespace-pre-wrap w-full block text-left">{msg.content}</div>
 
                         </div>
 
@@ -4506,6 +4535,10 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
   const setCloudModel = useAppStore(s => s.setCloudModel);
 
+  const updateSetting = useAppStore(s => s.updateSetting);
+
+  const setModelState = useAppStore(s => s.setModelState);
+
 
 
   const [searchFilter, setSearchFilter] = useState('');
@@ -4700,6 +4733,14 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
     setCloudModel(modelId);
 
+    updateSetting('lastCloudProvider', provider);
+
+    updateSetting('lastCloudModel', modelId);
+
+    setModelState({ modelLoaded: false, modelLoading: false, modelInfo: null });
+
+    fetch('/api/models/unload', { method: 'POST' }).catch(() => {});
+
     fetch('/api/cloud/provider', {
 
       method: 'POST',
@@ -4761,6 +4802,20 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
     setCloudProvider(null);
 
     setCloudModel(null);
+
+    updateSetting('lastCloudProvider', null);
+
+    updateSetting('lastCloudModel', null);
+
+    fetch('/api/cloud/provider', {
+
+      method: 'POST',
+
+      headers: { 'Content-Type': 'application/json' },
+
+      body: JSON.stringify({ provider: 'none' }),
+
+    }).catch(() => {});
 
     fetch('/api/models/load', {
 

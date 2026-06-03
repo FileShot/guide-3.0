@@ -23,6 +23,7 @@ import WelcomeGuide from './components/WelcomeGuide';
 import FirstRunWizard from './components/FirstRunWizard';
 import { openFileFromReadResponse } from './utils/openFileFromRead';
 import { handleLspDiagnostics } from './lib/lspBridge';
+import isPocket from './lib/isPocket';
 
 
 
@@ -81,6 +82,11 @@ export default function App() {
         fetch('/api/settings').then(r => r.json()).then(d => {
 
           s.setSettings(d);
+
+          if (d?.lastCloudProvider) {
+            s.setCloudProvider(d.lastCloudProvider);
+            s.setCloudModel(d.lastCloudModel || null);
+          }
 
           settingsHydratedFromBackendRef.current = true;
 
@@ -587,6 +593,14 @@ export default function App() {
 
         break;
 
+      case 'model-unloaded': {
+
+        s.setModelState({ modelLoaded: false, modelLoading: false, modelInfo: null });
+
+        break;
+
+      }
+
       case 'model-loaded': {
 
         s.setModelState({ modelLoaded: true, modelLoading: false, modelInfo: data });
@@ -876,6 +890,39 @@ export default function App() {
 
   }, []);
 
+  // Pocket: load settings over HTTP immediately (do not wait for WS apiFetch)
+  useEffect(() => {
+    if (!window.__POCKET__ && !isPocket()) return;
+    const nativeFetch = window.__nativeFetch || window.fetch;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await nativeFetch('/api/settings', { credentials: 'include' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d = await r.json();
+        if (cancelled || !d || d.error) return;
+        const s = useAppStore.getState();
+        s.setSettings(d);
+        if (d?.lastCloudProvider) {
+          s.setCloudProvider(d.lastCloudProvider);
+          s.setCloudModel(d.lastCloudModel || null);
+        }
+        settingsHydratedFromBackendRef.current = true;
+        lastSyncedSettingsJsonRef.current = JSON.stringify(d || {});
+        s.setSettingsSyncState({ status: 'saved', error: null, at: Date.now() });
+      } catch (_) {
+        if (!cancelled) {
+          useAppStore.getState().setSettingsSyncState({
+            status: 'error',
+            error: 'Failed to load settings from backend',
+            at: null,
+          });
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   useEffect(() => {
 
     // Global error handlers for debugging "not iterable" and other frontend errors
@@ -991,6 +1038,8 @@ export default function App() {
       api.onFileContentLint?.((d) => handleEvent('file-content-lint', d)),
 
       api.onModelLoaded?.((d) => handleEvent('model-loaded', d)),
+
+      api.onModelUnloaded?.((d) => handleEvent('model-unloaded', d)),
 
       api.onModelLoading?.((d) => handleEvent('model-loading', d)),
 

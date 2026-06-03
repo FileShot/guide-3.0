@@ -390,6 +390,7 @@ function XTermPanel() {
   const ptyCwdRef = useRef(null); // cwd the PTY was spawned with (avoid redundant visible cd)
   const ptySpawnAtRef = useRef(0);
   const ptyStartupRetryRef = useRef(0);
+  const wsRef = useRef(null);
   const [loaded, setLoaded] = useState(false);
   const [loadTimedOut, setLoadTimedOut] = useState(false);
   const activeTerminalTab = useAppStore(s => s.activeTerminalTab);
@@ -642,9 +643,12 @@ function XTermPanel() {
             }
           });
 
-          // Store ws ref for cleanup and resize
+          wsRef.current = ws;
           termIdRef.current = null;
-          cleanupData = () => { if (ws.readyState === WebSocket.OPEN) ws.close(); };
+          cleanupData = () => {
+            wsRef.current = null;
+            if (ws.readyState === WebSocket.OPEN) ws.close();
+          };
         }
 
       } catch (err) {
@@ -713,7 +717,13 @@ function XTermPanel() {
         try {
           fitAddonRef.current.fit();
           // Notify PTY of new size
-          if (termIdRef.current && window.electronAPI?.terminal && xtermRef.current) {
+          if (wsRef.current?.readyState === WebSocket.OPEN && modeRef.current === 'pty' && xtermRef.current) {
+            wsRef.current.send(JSON.stringify({
+              type: 'resize',
+              cols: xtermRef.current.cols,
+              rows: xtermRef.current.rows,
+            }));
+          } else if (termIdRef.current && window.electronAPI?.terminal && xtermRef.current) {
             window.electronAPI.terminal.resize(termIdRef.current, xtermRef.current.cols, xtermRef.current.rows);
           }
         } catch {}

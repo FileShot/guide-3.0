@@ -1,5 +1,6 @@
-﻿import { useState } from 'react';
+import { useState } from 'react';
 import useAppStore from '../stores/appStore';
+import isPocket from '../lib/isPocket';
 import {
   X, Rocket, Keyboard, Brain, Code2, Wrench, Lightbulb,
   FolderOpen, MessageSquare, Settings, Download, Cpu,
@@ -53,7 +54,9 @@ export default function WelcomeGuide() {
 
   const [activeSection, setActiveSection] = useState('getting-started');
   const [dontShowAgain, setDontShowAgain] = useState(false);
+  const pocket = isPocket();
 
+  if (pocket) return null;
   if (!showWelcomeGuide) return null;
 
   const handleClose = () => {

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * WelcomeScreen — Full-page overlay shown on app startup.
  * Premium Windsurf/Cursor-inspired design with animated wavy background,
  * glassmorphism cards, recommended model downloads, and smooth animations.
@@ -7,6 +7,7 @@ import { useState, useEffect, useCallback } from 'react';
 import useAppStore from '../stores/appStore';
 import ModelDownloadPanel from './ModelDownloadPanel';
 import GuideLogo from './GuideLogo';
+import isPocket from '../lib/isPocket';
 import {
   FolderOpen, Plus, Clock, ChevronRight, Package, Cloud,
   Star, Loader2, Zap, Code2, Brain, Keyboard, ArrowRight, Download,
@@ -53,6 +54,21 @@ export default function WelcomeScreen() {
   const [downloadingRec, setDownloadingRec] = useState(null);
   const [mounted, setMounted] = useState(false);
   const [showAllRecent, setShowAllRecent] = useState(false);
+  const [pocketStatus, setPocketStatus] = useState(null);
+  const pocket = isPocket();
+
+  useEffect(() => {
+    if (!pocket || !showWelcomeScreen) return;
+    fetch('/api/pocket/status', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d) setPocketStatus(d); })
+      .catch(() => {});
+    try {
+      localStorage.setItem('guide-cloud-provider', 'cerebras');
+      localStorage.setItem('guide-cloud-model', 'gpt-oss-120b');
+      localStorage.setItem('guide-use-cloud', 'true');
+    } catch (_) {}
+  }, [pocket, showWelcomeScreen]);
 
   // Trigger entrance animations
   useEffect(() => {
@@ -76,11 +92,16 @@ export default function WelcomeScreen() {
   }
 
   const openFolder = async () => {
+    if (pocket && window.PocketUI?.openProjectPicker) {
+      const path = await window.PocketUI.openProjectPicker();
+      if (path) openProjectPath(path);
+      return;
+    }
     if (window.electronAPI?.openFolderDialog) {
       const result = await window.electronAPI.openFolderDialog();
       if (result) openProjectPath(result);
     } else {
-      useAppStore.getState().addNotification({ type: 'warning', message: 'Open Folder requires the desktop app.' });
+      useAppStore.getState().addNotification({ type: 'warning', message: pocket ? 'Reload to use cloud projects.' : 'Open Folder requires the desktop app.' });
     }
   };
 
@@ -126,9 +147,11 @@ export default function WelcomeScreen() {
   };
 
   const useCloudAI = () => {
-    localStorage.setItem('guide-cloud-provider', 'groq');
-    localStorage.setItem('guide-cloud-model', 'llama-3.3-70b-versatile');
-    if (recentFolders.length > 0) openRecent(recentFolders[0]);
+    localStorage.setItem('guide-cloud-provider', 'cerebras');
+    localStorage.setItem('guide-cloud-model', 'gpt-oss-120b');
+    localStorage.setItem('guide-use-cloud', 'true');
+    const recents = pocket ? recentFolders.filter((p) => !/^[a-zA-Z]:[\\/]/i.test(String(p))) : recentFolders;
+    if (recents.length > 0) openRecent(recents[0]);
     else setShowWelcomeScreen(false);
   };
 
@@ -208,8 +231,10 @@ export default function WelcomeScreen() {
           <div className="absolute inset-0 w-20 h-20 rounded-full animate-pulse"
                style={{ background: 'radial-gradient(circle, rgb(var(--guide-accent) / 0.15) 0%, transparent 70%)' }} />
         </div>
-        <p className="text-[13px] text-vsc-text-dim/70 mt-1 font-light">
-          Local AI — No cloud required
+        <p className="text-[13px] text-vsc-text-dim/70 mt-1 font-light text-center max-w-md">
+          {pocket
+            ? 'Cloud IDE — projects saved on your Pocket workspace'
+            : 'Local AI — No cloud required'}
         </p>
       </div>
 
@@ -222,8 +247,36 @@ export default function WelcomeScreen() {
             hover:-translate-y-0.5 hover:shadow-lg hover:shadow-vsc-accent/20 active:translate-y-0"
         >
           <FolderOpen size={16} />
-          Open Folder
+          {pocket ? 'Open Cloud Project' : 'Open Folder'}
         </button>
+        {pocket && !pocketStatus?.authenticated && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => { window.location.href = '/api/auth/google'; }}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-medium
+                bg-white/5 text-vsc-text border border-vsc-accent/30 hover:bg-white/10 transition-all"
+            >
+              Google
+            </button>
+            <button
+              type="button"
+              onClick={() => { window.location.href = '/api/auth/github'; }}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-medium
+                bg-white/5 text-vsc-text border border-white/10 hover:bg-white/10 transition-all"
+            >
+              GitHub
+            </button>
+            <button
+              type="button"
+              onClick={() => { window.location.href = 'https://graysoft.dev/login?returnTo=' + encodeURIComponent('https://pocket.graysoft.dev/'); }}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-medium
+                bg-white/5 text-vsc-text border border-white/10 hover:bg-white/10 transition-all"
+            >
+              Email
+            </button>
+          </div>
+        )}
         <button
           onClick={newProject}
           className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-[13px] font-medium
@@ -241,14 +294,14 @@ export default function WelcomeScreen() {
 
         {/* Left Column — Recent + Shortcuts */}
         <div className="flex-1 min-w-0" style={anim(0.3)}>
-          {recentFolders.length > 0 ? (
+          {(pocket ? recentFolders.filter((p) => !/^[a-zA-Z]:[\\/]/i.test(String(p))) : recentFolders).length > 0 ? (
             <div className="glass-card rounded-2xl p-4 mb-5">
               <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim/80">
                 <Clock size={12} />
-                Recent Projects
+                {pocket ? 'Recent Cloud Projects' : 'Recent Projects'}
               </div>
               <div className="flex flex-col gap-0.5">
-                {recentFolders.slice(0, showAllRecent ? recentFolders.length : 4).map(path => {
+                {(pocket ? recentFolders.filter((p) => !/^[a-zA-Z]:[\\/]/i.test(String(p))) : recentFolders).slice(0, showAllRecent ? recentFolders.length : 4).map(path => {
                   const { name, parent } = formatPath(path);
                   return (
                     <button
@@ -309,21 +362,26 @@ export default function WelcomeScreen() {
           </div>
         </div>
 
-        {/* Right Column — Models */}
+        {/* Right Column — Models (desktop) / Plans (Pocket) */}
         <div className={recentFolders.length > 0 ? 'w-[340px] flex-shrink-0' : 'flex-1 min-w-0'} style={anim(0.4)}>
-          {/* Cloud AI Card */}
           <div className="glass-card rounded-2xl p-4 mb-5">
             <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim/80">
               <Cloud size={12} />
-              Cloud AI
+              guIDE Cloud AI
             </div>
             <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-white/3 border border-white/5">
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-vsc-accent/20 to-vsc-accent/5 flex items-center justify-center">
                 <Globe size={16} className="text-vsc-accent" />
               </div>
               <div className="flex-1 min-w-0">
-                <div className="text-[12px] font-medium text-vsc-text">guIDE Cloud AI</div>
-                <div className="text-[10px] text-vsc-text-dim/60">20 free messages/day</div>
+                <div className="text-[12px] font-medium text-vsc-text">
+                  guIDE Cloud AI
+                </div>
+                <div className="text-[10px] text-vsc-text-dim/60">
+                  {pocket && pocketStatus?.api
+                    ? `${pocketStatus.api.remaining ?? '?'}/${pocketStatus.api.dailyLimit ?? 30} messages today · Cerebras rotation`
+                    : 'Cerebras key rotation · 20 free messages/day'}
+                </div>
               </div>
               <button
                 onClick={useCloudAI}
@@ -335,7 +393,19 @@ export default function WelcomeScreen() {
             </div>
           </div>
 
-          {/* Recommended Models */}
+          {pocket && pocketStatus?.plans && (
+            <div className="glass-card rounded-2xl p-4 mb-5">
+              <div className="text-[11px] font-semibold tracking-wider text-vsc-text-dim/80 mb-2">Plans</div>
+              <ul className="text-[11px] text-vsc-text-dim/80 space-y-1.5">
+                <li>Guest — {pocketStatus.plans.guest?.storage}, {pocketStatus.plans.guest?.messages}</li>
+                <li>Free — {pocketStatus.plans.free?.storage}, {pocketStatus.plans.free?.messages}</li>
+                <li>Pro storage — {pocketStatus.plans.proStorage?.storage} {pocketStatus.plans.proStorage?.price}</li>
+                <li>Pro API — {pocketStatus.plans.proApi?.messages} {pocketStatus.plans.proApi?.price}</li>
+              </ul>
+            </div>
+          )}
+
+          {!pocket && (
           <div className="glass-card rounded-2xl p-4 mb-5">
             <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim/80">
               <Sparkles size={12} />
@@ -400,9 +470,10 @@ export default function WelcomeScreen() {
               })}
             </div>
           </div>
+          )}
 
           {/* Installed Models */}
-          {llmModels.length > 0 && (
+          {!pocket && llmModels.length > 0 && (
             <div className="glass-card rounded-2xl p-4">
               <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim/80">
                 <Package size={12} />

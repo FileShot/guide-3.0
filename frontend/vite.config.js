@@ -3,6 +3,9 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   base: './',
+  define: {
+    'import.meta.env.VITE_POCKET': JSON.stringify(process.env.VITE_POCKET || ''),
+  },
   plugins: [react()],
   server: {
     port: 5173,
