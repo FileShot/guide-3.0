@@ -580,6 +580,37 @@ function buildAgentModeTooling(mcpToolServer, settings, enableSubAgents) {
   return { mode, toolPrompt, compactToolParts, compactToolPrompt, functions };
 }
 
+function buildCloudChatErrorResponse(cloudLLM, cloudProvider, err) {
+  const detail = err?.message || 'Cloud request failed';
+  const cooldownUntil = cloudLLM.getRateLimitCooldownUntil(cloudProvider);
+  let errorCode = err?.status || err?.statusCode || null;
+  if (!errorCode) {
+    const codeMatch = detail.match(/API error (\d+)/i) || detail.match(/\b(429|402|403|401)\b/);
+    if (codeMatch) errorCode = parseInt(codeMatch[1], 10);
+  }
+
+  let error = detail;
+  let errorSuggestion = '';
+  if (errorCode === 429 || /rate limit/i.test(detail)) {
+    error = 'guIDE Cloud AI is rate limited. Slow down and try again.';
+    errorSuggestion = cooldownUntil
+      ? 'Wait for the countdown below before sending another message.'
+      : 'Please wait about a minute before trying again.';
+  } else if (errorCode === 402 || /payment method/i.test(detail)) {
+    error = 'Cloud provider requires payment (402). Try again later or switch providers.';
+    errorSuggestion = 'This usually happens when the fallback provider needs a paid account.';
+  }
+
+  return {
+    success: false,
+    error,
+    errorDetail: detail,
+    errorCode,
+    errorSuggestion,
+    cooldownUntil,
+  };
+}
+
 ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
   console.log(`[electron-main] ai-chat START: userMessageLen=${String(userMessage).length}, cloudProvider=${chatContext?.cloudProvider || 'none'}`);
   cancelPendingQuestion('(user sent a new message)');
@@ -641,6 +672,11 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         return await mcpToolServer.executeTool(toolName, params);
       };
 
+      const paceDisplay = cloudProvider === 'cerebras'
+        && cloudLLM._isBundledProvider(cloudProvider)
+        && !cloudLLM.isUsingOwnKey(cloudProvider);
+      _send('llm-stream-config', { paceDisplay, paceTokensPerSec: 50 });
+
       const result = await runCloudAgenticChat({
         cloudLLM,
         mcpToolServer,
@@ -670,7 +706,17 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       });
 
       if (result?.isQuotaError) {
-        return { isQuotaError: true, error: '__QUOTA_EXCEEDED__' };
+        const cooldownUntil = cloudLLM.getRateLimitCooldownUntil(cloudProvider);
+        _send('llm-stream-end', null);
+        return {
+          success: false,
+          isQuotaError: true,
+          error: 'guIDE Cloud AI quota exceeded. Slow down and try again.',
+          errorSuggestion: cooldownUntil
+            ? 'Wait for the countdown before sending another message.'
+            : 'Please wait about a minute before trying again.',
+          cooldownUntil,
+        };
       }
 
       // ── Checkpoint: finalize turn after cloud generation ──
@@ -682,13 +728,32 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         console.log('[electron-main] checkpoint: finalizeCurrentTurn → no files modified this turn');
       }
 
-      return { text: result.text || '', toolCallCount: result.toolCallCount || 0, checkpoint: snapshot ? { turnId: snapshot.turnId, timestamp: snapshot.timestamp, fileCount: snapshot.files.length } : null };
+      console.log(`[electron-main] ai-chat DONE: toolCallCount=${result.toolCallCount || 0}`);
+      _send('llm-stream-end', null);
+      return {
+        success: true,
+        text: result.text || '',
+        toolCallCount: result.toolCallCount || 0,
+        checkpoint: snapshot ? { turnId: snapshot.turnId, timestamp: snapshot.timestamp, fileCount: snapshot.files.length } : null,
+      };
     } catch (err) {
       console.error(`[electron-main] ai-chat cloud ERROR: ${err.message}`);
       // Reset checkpoint state on error to prevent stale captures
       mcpToolServer.startTurn(null);
-      if (err.isQuotaError) return { isQuotaError: true, error: '__QUOTA_EXCEEDED__' };
-      return { error: err.message };
+      _send('llm-stream-end', null);
+      if (err.isQuotaError) {
+        const cooldownUntil = cloudLLM.getRateLimitCooldownUntil(cloudProvider);
+        return {
+          success: false,
+          isQuotaError: true,
+          error: 'guIDE Cloud AI quota exceeded. Slow down and try again.',
+          errorSuggestion: cooldownUntil
+            ? 'Wait for the countdown before sending another message.'
+            : 'Please wait about a minute before trying again.',
+          cooldownUntil,
+        };
+      }
+      return buildCloudChatErrorResponse(cloudLLM, cloudProvider, err);
     }
   }
 

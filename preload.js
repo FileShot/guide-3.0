@@ -117,6 +117,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onLlmToolGenerating: (cb) => _on('llm-tool-generating', cb),
   onLlmIterationBegin: (cb) => _on('llm-iteration-begin', cb),
   onLlmReplaceLast:    (cb) => _on('llm-replace-last', cb),
+  onLlmStreamConfig:   (cb) => _on('llm-stream-config', cb),
+  onLlmStreamEnd:      (cb) => _on('llm-stream-end', cb),
   onLlmStatus:         (cb) => _on('llm-status', cb),
   onLlmFileAccUpdate:  (cb) => _on('llm-file-acc-update', cb),
 

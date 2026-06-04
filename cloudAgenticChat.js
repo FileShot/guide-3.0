@@ -108,7 +108,7 @@ async function runCloudAgenticChat({
   let nextUserPrompt = userMessage;
   const contextTokens = settings.maxResponseTokens > 0 ? settings.maxResponseTokens : 8192;
 
-  const streamFilters = createCloudStreamFilters({ onToken, onThinkingToken, onStreamEvent });
+  const streamFilters = createCloudStreamFilters({ onToken, onThinkingToken });
 
   const genBase = {
     provider: cloudProvider,
@@ -128,7 +128,6 @@ async function runCloudAgenticChat({
     }
 
     streamFilters.resetRound();
-    const proseVisibleAtRoundStart = streamFilters.getProseVisibleChars();
 
     const result = await cloudLLM.generate(nextUserPrompt, {
       ...genBase,
@@ -228,15 +227,6 @@ async function runCloudAgenticChat({
 
     const visibleAssistant = roundCleanProse.trim();
     conversationHistory.push({ role: 'assistant', content: visibleAssistant || '(tool calls)' });
-
-    const newProseVisible = streamFilters.getProseVisibleChars() - proseVisibleAtRoundStart;
-    if (onStreamEvent && newProseVisible > 0 && roundCleanProse.length < newProseVisible) {
-      onStreamEvent('llm-replace-last', {
-        channel: 'text',
-        originalLength: newProseVisible,
-        replacement: roundCleanProse,
-      });
-    }
 
     const toolResultLines = [];
     for (const call of parsedCalls) {

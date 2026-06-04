@@ -2150,15 +2150,21 @@ export default function ChatPanel() {
 
         });
 
-      } else if (result && result.success === false && result.error) {
-
-        // v2.2.10: Display backend error messages (e.g. "Provider not configured")
+      } else if (result?.error && !hasContent && !hasToolCalls && !hasThinking && !(state.chatStreamingText && state.chatStreamingText.trim())) {
 
         useAppStore.getState().addChatMessage({
 
           role: 'assistant',
 
-          content: `Error: ${result.error}`,
+          content: '',
+
+          isError: true,
+
+          errorMessage: result.error,
+
+          errorSuggestion: result.errorSuggestion || '',
+
+          cooldownUntil: result.cooldownUntil || null,
 
         });
 
@@ -2188,9 +2194,39 @@ export default function ChatPanel() {
 
       }
 
+      if (result?.error && (hasContent || hasToolCalls || hasThinking || (state.chatStreamingText && state.chatStreamingText.trim()))) {
+
+        useAppStore.getState().addChatMessage({
+
+          role: 'assistant',
+
+          content: '',
+
+          isError: true,
+
+          errorMessage: result.error,
+
+          errorSuggestion: result.errorSuggestion || '',
+
+          cooldownUntil: result.cooldownUntil || null,
+
+        });
+
+      }
+
     } catch (err) {
 
-      useAppStore.getState().addChatMessage({ role: 'assistant', content: `Error: ${err.message}` });
+      useAppStore.getState().addChatMessage({
+
+        role: 'assistant',
+
+        content: '',
+
+        isError: true,
+
+        errorMessage: err.message || 'Request failed',
+
+      });
 
     } finally {
 
@@ -3011,7 +3047,7 @@ export default function ChatPanel() {
 
                       {msg.isError ? (
 
-                        <GenerationErrorCard message={msg.errorMessage} suggestion={msg.errorSuggestion} />
+                        <GenerationErrorCard message={msg.errorMessage} suggestion={msg.errorSuggestion} cooldownUntil={msg.cooldownUntil} />
 
                       ) : msg.quotaExceeded ? (
 
@@ -4221,11 +4257,33 @@ export default function ChatPanel() {
 
 // ── Generation Error Card ──────────────────────────────────────────────────
 
-function GenerationErrorCard({ message, suggestion }) {
+function GenerationErrorCard({ message, suggestion, cooldownUntil }) {
 
   const clearChat = useAppStore(s => s.clearChat);
 
   const setActiveActivity = useAppStore(s => s.setActiveActivity);
+
+  const [secondsLeft, setSecondsLeft] = useState(() => {
+    if (!cooldownUntil) return null;
+    return Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000));
+  });
+
+  useEffect(() => {
+    if (!cooldownUntil) {
+      setSecondsLeft(null);
+      return undefined;
+    }
+    const tick = () => {
+      setSecondsLeft(Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000)));
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [cooldownUntil]);
+
+  const countdownLabel = secondsLeft != null && secondsLeft > 0
+    ? `${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, '0')}`
+    : null;
 
 
 
@@ -4252,6 +4310,16 @@ function GenerationErrorCard({ message, suggestion }) {
         <p className="text-vsc-xs text-vsc-text-dim/70 mb-3">
 
           {suggestion}
+
+        </p>
+
+      )}
+
+      {countdownLabel && (
+
+        <p className="text-vsc-sm text-vsc-warning mb-3 font-mono">
+
+          Try again in {countdownLabel}
 
         </p>
 

@@ -1446,6 +1446,19 @@ class CloudLLMService extends EventEmitter {
 
   // ─── Status ─────────────────────────────────────────────────────────────────
 
+  /** Latest cooldown expiry for a provider (pool keys + provider-level). */
+  getRateLimitCooldownUntil(provider) {
+    const now = Date.now();
+    let until = this._rateLimitedUntil[provider] || 0;
+    const pool = this._keyPools[provider];
+    if (pool) {
+      for (const entry of pool) {
+        if (entry.cooldownUntil > until) until = entry.cooldownUntil;
+      }
+    }
+    return until > now ? until : null;
+  }
+
   getStatus() {
     const configured = this.getConfiguredProviders();
     return {

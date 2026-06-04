@@ -85,56 +85,34 @@ function forwardChunk(chunk, onToken) {
 }
 
 /**
- * Stream filter: route only non-tool prose/thinking to UI; tool-shaped bytes stay in rawBuf for parse.
+ * Append-only stream filter: route prose/thinking to UI; hold tool bytes in rawBuf for parse.
+ * Never shrinks or replaces visible display text (no llm-replace-last).
  */
-function createStripBasedStreamFilter({ onToken, onStreamEvent, channel = 'text' } = {}) {
+function createStripBasedStreamFilter({ onToken, channel = 'text' } = {}) {
   let rawBuf = '';
   let lastClean = '';
   let visibleChars = 0;
 
-  const emitReplace = (replacement) => {
-    const rep = replacement || '';
-    if (onStreamEvent) {
-      onStreamEvent('llm-replace-last', {
-        channel,
-        originalLength: visibleChars,
-        replacement: rep,
-      });
-    }
-    visibleChars = rep.length;
-    lastClean = rep;
-  };
-
-  const sync = ({ forceFlush = false } = {}) => {
-    if (looksLikeToolOrFilePayload(rawBuf) && !forceFlush) {
-      if (visibleChars > 0) {
-        const clean = stripToolCallText(rawBuf);
-        emitReplace(clean);
-      }
-      return;
-    }
-
+  const forwardCleanDelta = () => {
     const clean = stripToolCallText(rawBuf);
-    const hold = !forceFlush && shouldHoldToolBuffer(rawBuf);
-
-    if (hold) {
-      if (visibleChars > clean.length) {
-        emitReplace(clean);
-      }
+    if (clean.length < lastClean.length) {
+      // Invariant: display must never shrink — keep lastClean, do not retract.
       return;
     }
-
-    if (clean.length < visibleChars) {
-      emitReplace(clean);
-      return;
-    }
-
     const delta = clean.slice(lastClean.length);
     if (delta) {
       const added = forwardChunk(delta, onToken);
       visibleChars += added;
+      lastClean = clean;
     }
-    lastClean = clean;
+  };
+
+  const sync = ({ forceFlush = false } = {}) => {
+    if (!forceFlush) {
+      if (shouldHoldToolBuffer(rawBuf)) return;
+      if (looksLikeToolOrFilePayload(rawBuf)) return;
+    }
+    forwardCleanDelta();
   };
 
   return {
@@ -145,16 +123,6 @@ function createStripBasedStreamFilter({ onToken, onStreamEvent, channel = 'text'
     },
     flush() {
       sync({ forceFlush: true });
-      const clean = stripToolCallText(rawBuf);
-      if (visibleChars === 0 && clean) {
-        const added = forwardChunk(clean, onToken);
-        visibleChars = added;
-        lastClean = clean;
-      } else if (visibleChars !== clean.length) {
-        emitReplace(clean);
-      } else {
-        lastClean = clean;
-      }
     },
     resetRound() {
       rawBuf = '';
@@ -164,20 +132,19 @@ function createStripBasedStreamFilter({ onToken, onStreamEvent, channel = 'text'
     getVisibleChars: () => visibleChars,
     getCleanText: () => stripToolCallText(rawBuf),
     getRawBuffer: () => rawBuf,
+    getLastClean: () => lastClean,
   };
 }
 
-/** Prose + thinking stream routers for cloud (same classification rules, separate UI sinks). */
-function createCloudStreamFilters({ onToken, onThinkingToken, onStreamEvent } = {}) {
+/** Prose + thinking stream routers for cloud (separate UI sinks, append-only). */
+function createCloudStreamFilters({ onToken, onThinkingToken } = {}) {
   const proseFilter = createStripBasedStreamFilter({
     channel: 'text',
     onToken,
-    onStreamEvent,
   });
   const thinkingFilter = createStripBasedStreamFilter({
     channel: 'thinking',
     onToken: onThinkingToken,
-    onStreamEvent,
   });
 
   return {

@@ -217,7 +217,13 @@ const useAppStore = create((set, get) => ({
 
   workspaceRootTrees: {},
 
-  setWorkspaceRoots: (roots) => set({ workspaceRoots: roots || [] }),
+  setWorkspaceRoots: (roots) => set({
+    workspaceRoots: (roots || []).map((r) => {
+      if (typeof r === 'string') return r;
+      if (r && typeof r === 'object') return r.path || r.projectPath || r.relPath || r.name || '';
+      return String(r || '');
+    }).filter(Boolean),
+  }),
 
   setWorkspaceRootTree: (root, items) => set((state) => ({
     workspaceRootTrees: { ...state.workspaceRootTrees, [root]: items || [] },
@@ -803,7 +809,15 @@ const useAppStore = create((set, get) => ({
 
     if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
 
-    if (originalLength > 0 && !replacement) {
+    const rep = replacement || '';
+    if (rep.length < originalLength) {
+      console.error(
+        `[appStore] replaceLastStreamingChunk REJECTED: would shrink display by ${originalLength - rep.length} chars (channel=${channel})`
+      );
+      return;
+    }
+
+    if (originalLength > 0 && !rep) {
       console.warn('[ChatPanel] replaceLastStreamingChunk: replacing', originalLength, 'chars with empty string');
     }
 
@@ -818,7 +832,7 @@ const useAppStore = create((set, get) => ({
 
         const segKeepLen = Math.max(0, segContent.length - originalLength);
 
-        const newSegContent = segContent.slice(0, segKeepLen) + (replacement || '');
+        const newSegContent = segContent.slice(0, segKeepLen) + rep;
 
         if (newSegContent) {
 
@@ -860,7 +874,7 @@ const useAppStore = create((set, get) => ({
 
     const keepLen = Math.max(0, currentText.length - originalLength);
 
-    const newText = currentText.slice(0, keepLen) + (replacement || '');
+    const newText = currentText.slice(0, keepLen) + rep;
 
     set({
 
@@ -1788,6 +1802,11 @@ const useAppStore = create((set, get) => ({
 
       const r = await fetch(`/api/files/read?path=${encodeURIComponent(projectPath + '/package.json')}`);
 
+      if (!r.ok) {
+        set({ taskScripts: [], taskScriptsLoading: false });
+        return;
+      }
+
       const data = await r.json();
 
       if (data.success && data.content) {
@@ -2605,10 +2624,22 @@ const useAppStore = create((set, get) => ({
   recentFolders: JSON.parse(localStorage.getItem('guIDE-recent-folders') || '[]'),
 
   addRecentFolder: (folderPath) => set(s => {
+    let path = folderPath;
+    if (typeof path === 'object' && path) {
+      path = path.path || path.projectPath || path.relPath || path.name || '';
+    }
+    path = String(path || '').trim();
+    if (!path) return s;
 
-    const filtered = s.recentFolders.filter(p => p !== folderPath);
+    const filtered = s.recentFolders.filter(p => {
+      let existing = p;
+      if (typeof existing === 'object' && existing) {
+        existing = existing.path || existing.projectPath || existing.relPath || existing.name || '';
+      }
+      return String(existing) !== path;
+    });
 
-    const updated = [folderPath, ...filtered].slice(0, 10);
+    const updated = [path, ...filtered].slice(0, 10);
 
     localStorage.setItem('guIDE-recent-folders', JSON.stringify(updated));
 

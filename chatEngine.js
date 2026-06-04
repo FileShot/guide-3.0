@@ -1648,21 +1648,7 @@ class ChatEngine extends EventEmitter {
         return /^[a-z]:\//i.test(n) ? n.toLowerCase() : n;
       };
       let _sfVisibleChars = 0; // tracks chars forwarded to frontend (after filter removes tool JSON)
-      let _sfRoundVisibleBuf = ''; // exact text forwarded this generation round (for llm-replace-last)
       let _sfFenceInThink = false; // fence that opened inside think mode
-
-      const _scrubVisibleRoundBuffer = () => {
-        if (!onStreamEvent || !_sfRoundVisibleBuf) return;
-        const cleanRound = stripToolCallText(_sfRoundVisibleBuf);
-        if (cleanRound !== _sfRoundVisibleBuf) {
-          console.log(`[ChatEngine] llm-replace-last: visibleRound=${_sfRoundVisibleBuf.length} cleanRound=${cleanRound.length}`);
-          onStreamEvent('llm-replace-last', {
-            originalLength: _sfRoundVisibleBuf.length,
-            replacement: cleanRound,
-          });
-          _sfRoundVisibleBuf = cleanRound;
-        }
-      };
 
       const _sfForward = (text) => {
         if (!text) return;
@@ -1672,7 +1658,6 @@ class ChatEngine extends EventEmitter {
           return;
         }
         _sfVisibleChars += text.length;
-        _sfRoundVisibleBuf += text;
         if (_sfVisibleChars <= 30 || _sfVisibleChars % 1000 < text.length) {
           _logStreamDiag(`[StreamDiag] FORWARD: chars=${_sfVisibleChars} tail=${JSON.stringify(text.slice(-10))}`);
         }
@@ -2975,8 +2960,6 @@ class ChatEngine extends EventEmitter {
           console.log(`[ChatEngine] Tool calls after repair/filter: ${parsedCalls.length} — [${parsedCalls.map(c => c.tool).join(', ')}]`);
         }
 
-        _scrubVisibleRoundBuffer();
-
         // Hoisted outside while loop — avoids reallocating a new Set on every tool-call iteration
         const FILE_MODIFY_OPS_SET = new Set(['write_file', 'create_file', 'append_to_file', 'edit_file', 'replace_in_file']);
         const FILE_WRITE_OPS = new Set(['write_file', 'create_file', 'append_to_file']);
@@ -3548,7 +3531,6 @@ class ChatEngine extends EventEmitter {
           _sfUnicodeCount = 0;
           _sfUnicodeChars = '';
           _sfVisibleChars = 0;
-          _sfRoundVisibleBuf = '';
           _sfInThink = false;
           _sfThinkBuf = '';
           _sfThinkTagMatch = '';
@@ -3668,8 +3650,6 @@ class ChatEngine extends EventEmitter {
               parsedCalls = planCalls;
             }
           }
-
-          _scrubVisibleRoundBuffer();
 
         }
           planAutoContinuePending = (

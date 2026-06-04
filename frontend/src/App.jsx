@@ -24,6 +24,7 @@ import FirstRunWizard from './components/FirstRunWizard';
 import { openFileFromReadResponse } from './utils/openFileFromRead';
 import { handleLspDiagnostics } from './lib/lspBridge';
 import isPocket from './lib/isPocket';
+import { createDisplayPaceQueue } from './utils/displayPaceQueue';
 
 
 
@@ -34,6 +35,32 @@ export default function App() {
   const settingsHydratedFromBackendRef = useRef(false);
 
   const lastSyncedSettingsJsonRef = useRef('');
+
+  const paceEnabledRef = useRef(false);
+
+  const paceTextRef = useRef(null);
+
+  const paceThinkRef = useRef(null);
+
+  if (!paceTextRef.current) {
+
+    paceTextRef.current = createDisplayPaceQueue({
+
+      tokensPerSec: 50,
+
+      onFlush: (chunk) => useAppStore.getState().appendStreamToken(chunk),
+
+    });
+
+    paceThinkRef.current = createDisplayPaceQueue({
+
+      tokensPerSec: 50,
+
+      onFlush: (chunk) => useAppStore.getState().appendThinkingToken(chunk),
+
+    });
+
+  }
 
 
 
@@ -106,9 +133,41 @@ export default function App() {
 
       // LLM streaming events
 
+      case 'llm-stream-config':
+
+        paceEnabledRef.current = !!data?.paceDisplay;
+
+        if (!data?.paceDisplay) {
+
+          paceTextRef.current?.reset();
+
+          paceThinkRef.current?.reset();
+
+        }
+
+        break;
+
+      case 'llm-stream-end':
+
+        paceTextRef.current?.flushNow();
+
+        paceThinkRef.current?.flushNow();
+
+        paceEnabledRef.current = false;
+
+        break;
+
       case 'llm-token':
 
-        s.appendStreamToken(data);
+        if (paceEnabledRef.current) {
+
+          paceTextRef.current?.enqueue(data);
+
+        } else {
+
+          s.appendStreamToken(data);
+
+        }
 
         break;
 
@@ -144,7 +203,15 @@ export default function App() {
 
       case 'llm-thinking-token':
 
-        s.appendThinkingToken(data);
+        if (paceEnabledRef.current) {
+
+          paceThinkRef.current?.enqueue(data);
+
+        } else {
+
+          s.appendThinkingToken(data);
+
+        }
 
         break;
 
@@ -991,6 +1058,10 @@ export default function App() {
       api.onLlmIterationBegin?.((d) => handleEvent('llm-iteration-begin', d)),
 
       api.onLlmReplaceLast?.((d) => handleEvent('llm-replace-last', d)),
+
+      api.onLlmStreamConfig?.((d) => handleEvent('llm-stream-config', d)),
+
+      api.onLlmStreamEnd?.((d) => handleEvent('llm-stream-end', d)),
 
       api.onLlmStatus?.((d) => handleEvent('llm-status', d)),
 
