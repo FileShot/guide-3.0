@@ -1,14 +1,20 @@
 'use strict';
 
 /**
- * Drip queued text to the UI at a fixed rate (display-only pacing).
- * @param {{ tokensPerSec?: number, onFlush: (chunk: string) => void }} opts
+ * Drip queued stream items to the UI at a fixed rate (display-only pacing).
+ * Preserves arrival order across text and thinking channels.
+ * @param {{ tokensPerSec?: number, onFlush: (channel: 'text'|'thinking', chunk: string) => void }} opts
  */
 export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush } = {}) {
   const charsPerSec = tokensPerSec * 4;
-  let queue = '';
+  /** @type {{ channel: 'text'|'thinking', chunk: string }[]} */
+  let queue = [];
   let timer = null;
   let lastTick = 0;
+
+  const flushItem = (channel, chunk) => {
+    if (chunk) onFlush(channel, chunk);
+  };
 
   const tick = () => {
     if (!queue.length) {
@@ -21,10 +27,22 @@ export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush } = {}) {
     const now = performance.now();
     const elapsed = lastTick ? (now - lastTick) / 1000 : 0;
     lastTick = now;
-    const budget = Math.max(1, Math.floor(charsPerSec * Math.max(elapsed, 1 / 60)));
-    const chunk = queue.slice(0, budget);
-    queue = queue.slice(budget);
-    if (chunk) onFlush(chunk);
+    let budget = Math.max(1, Math.floor(charsPerSec * Math.max(elapsed, 1 / 60)));
+
+    while (budget > 0 && queue.length) {
+      const head = queue[0];
+      if (head.chunk.length <= budget) {
+        budget -= head.chunk.length;
+        flushItem(head.channel, head.chunk);
+        queue.shift();
+      } else {
+        const part = head.chunk.slice(0, budget);
+        head.chunk = head.chunk.slice(budget);
+        budget = 0;
+        flushItem(head.channel, part);
+      }
+    }
+
     if (!queue.length && timer) {
       clearInterval(timer);
       timer = null;
@@ -38,16 +56,16 @@ export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush } = {}) {
   };
 
   return {
-    enqueue(text) {
+    enqueue(channel, text) {
       if (!text) return;
-      queue += text;
+      const ch = channel === 'thinking' ? 'thinking' : 'text';
+      queue.push({ channel: ch, chunk: text });
       schedule();
     },
     flushNow() {
-      if (queue.length) {
-        const all = queue;
-        queue = '';
-        onFlush(all);
+      while (queue.length) {
+        const item = queue.shift();
+        flushItem(item.channel, item.chunk);
       }
       if (timer) {
         clearInterval(timer);
@@ -55,13 +73,13 @@ export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush } = {}) {
       }
     },
     reset() {
-      queue = '';
+      queue = [];
       if (timer) {
         clearInterval(timer);
         timer = null;
       }
       lastTick = 0;
     },
-    pendingLength: () => queue.length,
+    pendingLength: () => queue.reduce((n, item) => n + item.chunk.length, 0),
   };
 }

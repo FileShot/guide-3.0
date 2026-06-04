@@ -38,25 +38,23 @@ export default function App() {
 
   const paceEnabledRef = useRef(false);
 
-  const paceTextRef = useRef(null);
+  const paceStreamRef = useRef(null);
 
-  const paceThinkRef = useRef(null);
+  if (!paceStreamRef.current) {
 
-  if (!paceTextRef.current) {
-
-    paceTextRef.current = createDisplayPaceQueue({
+    paceStreamRef.current = createDisplayPaceQueue({
 
       tokensPerSec: 50,
 
-      onFlush: (chunk) => useAppStore.getState().appendStreamToken(chunk),
+      onFlush: (channel, chunk) => {
 
-    });
+        const st = useAppStore.getState();
 
-    paceThinkRef.current = createDisplayPaceQueue({
+        if (channel === 'thinking') st.appendThinkingToken(chunk);
 
-      tokensPerSec: 50,
+        else st.appendStreamToken(chunk);
 
-      onFlush: (chunk) => useAppStore.getState().appendThinkingToken(chunk),
+      },
 
     });
 
@@ -205,7 +203,7 @@ export default function App() {
 
         if (paceEnabledRef.current) {
 
-          paceThinkRef.current?.enqueue(data);
+          paceStreamRef.current?.enqueue('thinking', data);
 
         } else {
 

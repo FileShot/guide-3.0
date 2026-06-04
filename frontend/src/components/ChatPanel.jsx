@@ -356,6 +356,8 @@ function StreamingHeader() {
 
   const connected = useAppStore(s => s.connected);
 
+  const cloudProvider = useAppStore(s => s.cloudProvider);
+
   const todos = useAppStore(s => s.todos);
 
 
@@ -364,7 +366,7 @@ function StreamingHeader() {
 
     <>
 
-      {!modelLoaded && connected && (
+      {!modelLoaded && connected && !cloudProvider && (
 
         <div className="m-3 p-3 bg-vsc-sidebar rounded-lg border border-vsc-warning/20 text-vsc-sm">
 

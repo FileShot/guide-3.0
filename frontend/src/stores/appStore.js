@@ -975,8 +975,26 @@ const useAppStore = create((set, get) => ({
       const lastSeg = newSegs[newSegs.length - 1];
       newSegs[newSegs.length - 1] = { ...lastSeg, content: lastSeg.content + tokenStr };
     } else {
-      // New thinking block — create a new segment (model started thinking again after prose)
-      newSegs = [...segs, { type: 'thinking', content: tokenStr }];
+      const MICRO_TEXT_MAX = 24;
+      let mergeIdx = -1;
+      const last = segs[segs.length - 1];
+      if (last?.type === 'text' && (last.content || '').trim().length < MICRO_TEXT_MAX) {
+        for (let i = segs.length - 2; i >= 0; i--) {
+          if (segs[i].type === 'tool' || segs[i].type === 'file') break;
+          if (segs[i].type === 'thinking') {
+            mergeIdx = i;
+            break;
+          }
+          if (segs[i].type === 'text' && (segs[i].content || '').trim().length >= MICRO_TEXT_MAX) break;
+        }
+      }
+      if (mergeIdx >= 0) {
+        newSegs = [...segs];
+        const target = newSegs[mergeIdx];
+        newSegs[mergeIdx] = { ...target, content: target.content + tokenStr };
+      } else {
+        newSegs = [...segs, { type: 'thinking', content: tokenStr }];
+      }
     }
 
     set({
