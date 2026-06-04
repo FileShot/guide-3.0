@@ -4,7 +4,7 @@
  * Drip queued text to the UI at a fixed rate (display-only pacing).
  * @param {{ tokensPerSec?: number, onFlush: (chunk: string) => void }} opts
  */
-function createDisplayPaceQueue({ tokensPerSec = 50, onFlush } = {}) {
+export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush } = {}) {
   const charsPerSec = tokensPerSec * 4;
   let queue = '';
   let timer = null;
@@ -65,5 +65,3 @@ function createDisplayPaceQueue({ tokensPerSec = 50, onFlush } = {}) {
     pendingLength: () => queue.length,
   };
 }
-
-module.exports = { createDisplayPaceQueue };
