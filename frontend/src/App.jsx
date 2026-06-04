@@ -37,34 +37,43 @@ export default function App() {
   const lastSyncedSettingsJsonRef = useRef('');
 
   const paceEnabledRef = useRef(false);
-
   const paceStreamRef = useRef(null);
+  const applyEventRef = useRef((event, data, _opts) => {});
+  const streamFlushRafRef = useRef(null);
 
   if (!paceStreamRef.current) {
-
     paceStreamRef.current = createDisplayPaceQueue({
-
       tokensPerSec: 50,
-
       onFlush: (channel, chunk) => {
-
         const st = useAppStore.getState();
-
         if (channel === 'thinking') st.appendThinkingToken(chunk);
-
         else st.appendStreamToken(chunk);
-
       },
-
+      onFlushEvent: (event, data) => {
+        applyEventRef.current(event, data, { fromPaceQueue: true });
+      },
     });
-
   }
 
+  const scheduleStreamFlushRaf = () => {
+    if (streamFlushRafRef.current) return;
+    streamFlushRafRef.current = requestAnimationFrame(() => {
+      streamFlushRafRef.current = null;
+      useAppStore.getState().flushPendingStreamTokens?.();
+    });
+  };
 
+  const PACED_UI_EVENTS = new Set(['tool-generating', 'tool-executing', 'mcp-tool-results']);
 
-  const handleEvent = useCallback((event, data) => {
+  const handleEvent = useCallback((event, data, opts = {}) => {
 
     const s = useAppStore.getState();
+    const fromPaceQueue = !!opts.fromPaceQueue;
+
+    if (!fromPaceQueue && paceEnabledRef.current && PACED_UI_EVENTS.has(event)) {
+      paceStreamRef.current?.enqueueEvent(event, data);
+      return;
+    }
 
     // Log all events except high-frequency token streaming
 
@@ -137,9 +146,7 @@ export default function App() {
 
         if (!data?.paceDisplay) {
 
-          paceTextRef.current?.reset();
-
-          paceThinkRef.current?.reset();
+          paceStreamRef.current?.reset();
 
         }
 
@@ -147,9 +154,7 @@ export default function App() {
 
       case 'llm-stream-end':
 
-        paceTextRef.current?.flushNow();
-
-        paceThinkRef.current?.flushNow();
+        paceStreamRef.current?.flushNow();
 
         paceEnabledRef.current = false;
 
@@ -159,11 +164,13 @@ export default function App() {
 
         if (paceEnabledRef.current) {
 
-          paceTextRef.current?.enqueue(data);
+          paceStreamRef.current?.enqueue('text', data);
 
         } else {
 
           s.appendStreamToken(data);
+
+          scheduleStreamFlushRaf();
 
         }
 
@@ -265,7 +272,15 @@ export default function App() {
 
           errorMessage: data?.message || 'Generation failed',
 
-          errorSuggestion: data?.suggestion || '',
+          errorSuggestion: data?.usageLimit ? '' : (data?.suggestion || ''),
+
+          usageLimit: !!data?.usageLimit,
+
+          needsAccount: data?.needsAccount != null
+            ? !!data.needsAccount
+            : data?.tier === 'guest',
+
+          usageTier: data?.tier || null,
 
         });
 
@@ -925,7 +940,9 @@ export default function App() {
 
   }, []);
 
-
+  useEffect(() => {
+    applyEventRef.current = handleEvent;
+  }, [handleEvent]);
 
   // Hydrate the application version from package.json (via Electron IPC or
   // websocket fallback) into the global store exactly once. Every UI surface

@@ -331,6 +331,8 @@ const CLOUD_SYSTEM_PROMPT = 'You are guIDE Cloud AI, an AI coding assistant buil
 // ─── Stream timeout constants ────────────────────────────────────────────────
 const STREAM_TIMEOUT = 20000;
 const IDLE_TIMEOUT = 10000;
+/** Longer idle window while rotating API keys after 429 (no SSE bytes between attempts). */
+const IDLE_TIMEOUT_POOL_RETRY = 45000;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -871,7 +873,10 @@ class CloudLLMService extends EventEmitter {
       this._recordRequest(provider);
 
       try {
-        return await this._executeGeneration(provider, model, systemPrompt, prompt, options, onToken, conversationHistory, onThinkingToken, images, attemptKey);
+        const genOptions = attempt > 0
+          ? { ...options, streamIdleMs: IDLE_TIMEOUT_POOL_RETRY }
+          : options;
+        return await this._executeGeneration(provider, model, systemPrompt, prompt, genOptions, onToken, conversationHistory, onThinkingToken, images, attemptKey);
       } catch (err) {
         // Classify errors using actual HTTP status codes when available,
         // falling back to string matching only when no status code is present
@@ -1036,7 +1041,8 @@ class CloudLLMService extends EventEmitter {
     });
 
     if (onToken) {
-      return this._streamRequest(endpoint.host, endpoint.path, apiKey, body, 'openai', onToken, {}, onThinkingToken, provider);
+      const streamIdleMs = options.streamIdleMs || IDLE_TIMEOUT;
+      return this._streamRequest(endpoint.host, endpoint.path, apiKey, body, 'openai', onToken, {}, onThinkingToken, provider, streamIdleMs);
     }
 
     const data = await this._makeRequest(endpoint.host, endpoint.path, apiKey, body, {}, provider);
@@ -1299,7 +1305,7 @@ class CloudLLMService extends EventEmitter {
     reject(new Error(errMsg));
   }
 
-  _streamRequest(host, path, apiKey, body, format, onToken, extraHeaders = {}, onThinkingToken = null, provider = null) {
+  _streamRequest(host, path, apiKey, body, format, onToken, extraHeaders = {}, onThinkingToken = null, provider = null, streamIdleMs = IDLE_TIMEOUT) {
     return new Promise((resolve, reject) => {
       const headers = {
         'Content-Type': 'application/json',
@@ -1365,10 +1371,11 @@ class CloudLLMService extends EventEmitter {
           reject(new Error(`No response from ${host} within ${STREAM_TIMEOUT / 1000}s. The model may be overloaded. Try again or switch models.`));
         }, STREAM_TIMEOUT);
 
+        const effectiveIdle = streamIdleMs > 0 ? streamIdleMs : IDLE_TIMEOUT;
         const resetIdleTimer = () => {
           if (idleTimer) clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
-            console.error(`[CloudLLM] Stream idle timeout: no data for ${IDLE_TIMEOUT / 1000}s from ${host}`);
+            console.error(`[CloudLLM] Stream idle timeout: no data for ${effectiveIdle / 1000}s from ${host} (provider=${provider || 'unknown'})`);
             clearTimers();
             req.destroy();
             if (fullText) {
@@ -1376,7 +1383,7 @@ class CloudLLMService extends EventEmitter {
             } else {
               reject(new Error(`Stream stalled from ${host}. Try again or switch models.`));
             }
-          }, IDLE_TIMEOUT);
+          }, effectiveIdle);
         };
 
         res.on('data', (chunk) => {

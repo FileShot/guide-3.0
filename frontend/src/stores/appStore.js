@@ -892,6 +892,26 @@ const useAppStore = create((set, get) => ({
 
 
 
+  flushPendingStreamTokens: () => {
+    const store = get();
+    if (!store._textTokenBuffer) return;
+    if (store._textTokenTimer) {
+      clearTimeout(store._textTokenTimer);
+    }
+    const buf = store._textTokenBuffer;
+    const newText = store.chatStreamingText + buf;
+    const segs = store.streamingSegments;
+    let newSegs;
+    if (segs.length > 0 && segs[segs.length - 1].type === 'text') {
+      newSegs = [...segs];
+      const lastSeg = newSegs[newSegs.length - 1];
+      newSegs[newSegs.length - 1] = { ...lastSeg, content: lastSeg.content + buf };
+    } else {
+      newSegs = [...segs, { type: 'text', content: buf }];
+    }
+    set({ chatStreamingText: newText, streamingSegments: newSegs, _textTokenBuffer: null, _textTokenTimer: null });
+  },
+
   appendStreamToken: (token) => {
 
     // R34: Batch text token appends — accumulate in buffer, flush every 80ms
@@ -900,7 +920,12 @@ const useAppStore = create((set, get) => ({
 
     const store = get();
 
-    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) {
+      if (store.settings?.debugStreamDiag) {
+        _uiLog(`appendStreamToken dropped epoch=${store.activeChatEpoch} gen=${store.chatGenerationEpoch}`);
+      }
+      return;
+    }
 
     if (!store._textTokenBuffer) {
 

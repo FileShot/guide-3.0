@@ -582,20 +582,28 @@ function buildAgentModeTooling(mcpToolServer, settings, enableSubAgents) {
 
 function buildCloudChatErrorResponse(cloudLLM, cloudProvider, err) {
   const detail = err?.message || 'Cloud request failed';
-  const cooldownUntil = cloudLLM.getRateLimitCooldownUntil(cloudProvider);
   let errorCode = err?.status || err?.statusCode || null;
   if (!errorCode) {
     const codeMatch = detail.match(/API error (\d+)/i) || detail.match(/\b(429|402|403|401)\b/);
     if (codeMatch) errorCode = parseInt(codeMatch[1], 10);
   }
 
+  const isRateLimit = errorCode === 429 || /rate limit/i.test(detail);
+  const isStreamStall = /stream stalled/i.test(detail) || /idle timeout/i.test(detail) || /no data for/i.test(detail);
+
   let error = detail;
   let errorSuggestion = '';
-  if (errorCode === 429 || /rate limit/i.test(detail)) {
+  let cooldownUntil = null;
+
+  if (isRateLimit) {
+    cooldownUntil = cloudLLM.getRateLimitCooldownUntil(cloudProvider);
     error = 'guIDE Cloud AI is rate limited. Slow down and try again.';
     errorSuggestion = cooldownUntil
       ? 'Wait for the countdown below before sending another message.'
       : 'Please wait about a minute before trying again.';
+  } else if (isStreamStall) {
+    error = 'guIDE Cloud AI is retrying keys (rate limited). Try again in a moment.';
+    errorSuggestion = 'The previous request timed out while switching API keys. You can send a new message.';
   } else if (errorCode === 402 || /payment method/i.test(detail)) {
     error = 'Cloud provider requires payment (402). Try again later or switch providers.';
     errorSuggestion = 'This usually happens when the fallback provider needs a paid account.';
@@ -808,9 +816,18 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       effectiveMessage = `[Build approved]\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
     }
 
+    _send('llm-stream-config', { paceDisplay: false, paceTokensPerSec: 50 });
+    let localTokenSendCount = 0;
+    const debugStreamDiag = !!settings.debugStreamDiag;
     console.log(`[electron-main] ai-chat: calling llmEngine.chat, effectiveMessageLen=${effectiveMessage.length}, mode=${mode.planning ? 'plan' : mode.askOnly ? 'ask' : 'agent'}`);
     const result = await llmEngine.chat(effectiveMessage, {
-      onToken: (token) => _send('llm-token', token),
+      onToken: (token) => {
+        localTokenSendCount += 1;
+        if (debugStreamDiag && (localTokenSendCount === 1 || localTokenSendCount % 100 === 0)) {
+          console.log(`[electron-main] local llm-token #${localTokenSendCount} len=${String(token).length}`);
+        }
+        _send('llm-token', token);
+      },
       onContextUsage: (data) => _send('context-usage', data),
       onToolCall: (data) => _send('tool-call', data),
       onStreamEvent: (eventName, data) => _send(eventName, data),
@@ -884,12 +901,14 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       console.log('[electron-main] checkpoint: finalizeCurrentTurn → no files modified this turn');
     }
 
-    console.log(`[electron-main] ai-chat DONE: toolCallCount=${result.toolCallCount}`);
+    console.log(`[electron-main] ai-chat DONE: toolCallCount=${result.toolCallCount}, localTokensSent=${localTokenSendCount}`);
+    _send('llm-stream-end', null);
     return { text: result.text, toolCallCount: result.toolCallCount, checkpoint: snapshot ? { turnId: snapshot.turnId, timestamp: snapshot.timestamp, fileCount: snapshot.files.length } : null };
   } catch (err) {
     console.error(`[electron-main] ai-chat local ERROR: ${err.message}`);
     // Reset checkpoint state on error to prevent stale captures
     mcpToolServer.startTurn(null);
+    _send('llm-stream-end', null);
     return { error: err.message };
   }
 });

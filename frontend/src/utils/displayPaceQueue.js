@@ -2,18 +2,26 @@
 
 /**
  * Drip queued stream items to the UI at a fixed rate (display-only pacing).
- * Preserves arrival order across text and thinking channels.
- * @param {{ tokensPerSec?: number, onFlush: (channel: 'text'|'thinking', chunk: string) => void }} opts
+ * Preserves arrival order across text, thinking, and tool UI events.
+ * @param {{
+ *   tokensPerSec?: number,
+ *   onFlush?: (channel: 'text'|'thinking', chunk: string) => void,
+ *   onFlushEvent?: (event: string, data: unknown) => void,
+ * }} opts
  */
-export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush } = {}) {
+export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush, onFlushEvent } = {}) {
   const charsPerSec = tokensPerSec * 4;
-  /** @type {{ channel: 'text'|'thinking', chunk: string }[]} */
+  /** @type {Array<{ kind: 'token', channel: 'text'|'thinking', chunk: string } | { kind: 'event', event: string, data: unknown }>} */
   let queue = [];
   let timer = null;
   let lastTick = 0;
 
-  const flushItem = (channel, chunk) => {
-    if (chunk) onFlush(channel, chunk);
+  const flushToken = (channel, chunk) => {
+    if (chunk && onFlush) onFlush(channel, chunk);
+  };
+
+  const flushEvent = (event, data) => {
+    if (onFlushEvent) onFlushEvent(event, data);
   };
 
   const tick = () => {
@@ -29,18 +37,24 @@ export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush } = {}) {
     lastTick = now;
     let budget = Math.max(1, Math.floor(charsPerSec * Math.max(elapsed, 1 / 60)));
 
-    while (budget > 0 && queue.length) {
+    while (queue.length) {
       const head = queue[0];
+      if (head.kind === 'event') {
+        flushEvent(head.event, head.data);
+        queue.shift();
+        continue;
+      }
       if (head.chunk.length <= budget) {
         budget -= head.chunk.length;
-        flushItem(head.channel, head.chunk);
+        flushToken(head.channel, head.chunk);
         queue.shift();
       } else {
         const part = head.chunk.slice(0, budget);
         head.chunk = head.chunk.slice(budget);
         budget = 0;
-        flushItem(head.channel, part);
+        flushToken(head.channel, part);
       }
+      if (budget <= 0) break;
     }
 
     if (!queue.length && timer) {
@@ -59,13 +73,19 @@ export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush } = {}) {
     enqueue(channel, text) {
       if (!text) return;
       const ch = channel === 'thinking' ? 'thinking' : 'text';
-      queue.push({ channel: ch, chunk: text });
+      queue.push({ kind: 'token', channel: ch, chunk: text });
+      schedule();
+    },
+    enqueueEvent(event, data) {
+      if (!event) return;
+      queue.push({ kind: 'event', event, data });
       schedule();
     },
     flushNow() {
       while (queue.length) {
         const item = queue.shift();
-        flushItem(item.channel, item.chunk);
+        if (item.kind === 'event') flushEvent(item.event, item.data);
+        else flushToken(item.channel, item.chunk);
       }
       if (timer) {
         clearInterval(timer);
@@ -80,6 +100,9 @@ export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush } = {}) {
       }
       lastTick = 0;
     },
-    pendingLength: () => queue.reduce((n, item) => n + item.chunk.length, 0),
+    pendingLength: () => queue.reduce((n, item) => {
+      if (item.kind === 'event') return n + 1;
+      return n + item.chunk.length;
+    }, 0),
   };
 }
