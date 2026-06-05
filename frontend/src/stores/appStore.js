@@ -584,6 +584,10 @@ const useAppStore = create((set, get) => ({
 
   clearViewportNavigateUrl: () => set({ viewportNavigateUrl: null }),
 
+  browserPreviewResetTick: 0,
+
+  resetBrowserPreview: () => set({ browserPreviewResetTick: Date.now(), viewportNavigateUrl: null }),
+
 
 
   addChatMessage: (msg) => {
@@ -1137,7 +1141,7 @@ const useAppStore = create((set, get) => ({
 
 
 
-  startFileContentBlock: ({ filePath, fileKey, language, fileName }) => {
+  startFileContentBlock: ({ filePath, fileKey, language, fileName, op, oldText, newText }) => {
 
     console.log('[appStore] startFileContentBlock:', fileKey || filePath);
 
@@ -1223,6 +1227,12 @@ const useAppStore = create((set, get) => ({
 
       complete: false,
 
+      op: op || 'write',
+
+      oldText: oldText || '',
+
+      newText: newText || '',
+
     }];
 
     const newSegs = [...currentSegs, { type: 'file', index: newBlocks.length - 1 }];
@@ -1265,8 +1275,20 @@ const useAppStore = create((set, get) => ({
     const updated = [...store.streamingFileBlocks];
     const last = { ...updated[targetIdx] };
     last.content += chunk;
+    if (last.op === 'edit') last.newText = (last.newText || '') + chunk;
     updated[targetIdx] = last;
     set({ streamingFileBlocks: updated, _fileTokenBuffer: null, _fileTokenTimer: null });
+
+    if (last.op === 'edit' && last.filePath && last.oldText) {
+      const norm = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
+      const tab = get().openTabs.find((t) => norm(t.path) === norm(last.filePath));
+      if (tab) {
+        const projected = tab.originalContent.includes(last.oldText)
+          ? tab.originalContent.replace(last.oldText, last.newText || last.content)
+          : tab.content;
+        get().updateTabContent(tab.id, projected);
+      }
+    }
   },
 
   /**
@@ -1275,7 +1297,7 @@ const useAppStore = create((set, get) => ({
    * can arrive in the same tick before React/Zustand flushes — the burst path
    * dropped content and left only ToolCallCard bubbles visible.
    */
-  addCompleteFileContentBlock: ({ filePath, fileKey, language, fileName, content }) => {
+  addCompleteFileContentBlock: ({ filePath, fileKey, language, fileName, content, op, oldText, newText }) => {
     const store = get();
     if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
     // Always canonicalize filePath for dedup — the fileKey from events may be raw
@@ -1327,6 +1349,9 @@ const useAppStore = create((set, get) => ({
         language: language || newBlocks[existingIdx].language,
         content: String(content),
         complete: true,
+        op: op || newBlocks[existingIdx].op || 'write',
+        oldText: oldText != null ? String(oldText) : (newBlocks[existingIdx].oldText || ''),
+        newText: newText != null ? String(newText) : (newBlocks[existingIdx].newText || String(content)),
       };
       fileIndex = existingIdx;
     } else {
@@ -1339,6 +1364,9 @@ const useAppStore = create((set, get) => ({
           fileName,
           content: String(content),
           complete: true,
+          op: op || 'write',
+          oldText: oldText != null ? String(oldText) : '',
+          newText: newText != null ? String(newText) : String(content),
         },
       ];
       fileIndex = newBlocks.length - 1;
@@ -2383,6 +2411,8 @@ const useAppStore = create((set, get) => ({
       autoLintFix: true,       // Plan F: auto-inject lint correction after file writes
 
       enableSubAgents: true,  // Plan G: allow model to spawn isolated sub-agents
+
+      browserControl: 'auto', // 'auto' | 'playwright' | 'screencast'
 
       // System Prompt
 

@@ -125,13 +125,12 @@ function getBuildingPhasePromptAddition() {
   return '\n\n## BUILD PHASE\n'
     + 'Implement the approved plan in the PROJECT ROOT (the opened workspace folder).\n'
     + 'NEVER create application source under `.guide/` — that directory is guIDE metadata only (`.guide/plans/`, checkpoints).\n\n'
-    + '### Todo checklist discipline (required)\n'
-    + 'If no todos exist yet, call **write_todos** first with the full checklist.\n'
-    + 'Then **throughout implementation** you MUST call **update_todo**:\n'
-    + '- When you **start** a step: `update_todo` with that item\'s `id` and `status: "in-progress"`.\n'
-    + '- When you **finish** a step: `update_todo` with `status: "done"` before moving to the next step.\n'
-    + 'Never leave the checklist at 0/N done while you are actively implementing — the user tracks progress in real time.\n'
-    + 'After each major file write or successful command that completes a plan step, update the matching todo before continuing.';
+    + '### Todo list discipline (multi-step builds only)\n'
+    + 'For multi-step builds, call **write_todos** first with the full todo list.\n'
+    + 'If you called **write_todos**, call **update_todo** as you work:\n'
+    + '- When you **start** a todo item: `update_todo` with that item\'s `id` and `status: "in-progress"`.\n'
+    + '- When you **finish** a todo item: `update_todo` with `status: "done"` before moving on.\n'
+    + 'Skip write_todos for simple one-shot tasks.';
 }
 
 /**

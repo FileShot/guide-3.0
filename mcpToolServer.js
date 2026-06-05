@@ -413,6 +413,11 @@ class MCPToolServer {
         parameters: {},
       },
       {
+        name: 'viewport_browser_snapshot',
+        description: 'Snapshot the page currently shown in the guIDE viewport browser (live preview / screencast). Use when the user asks to analyze what is open in the viewport browser.',
+        parameters: {},
+      },
+      {
         name: 'browser_click',
         description: 'Click an element by its ref number. Handles scrolling and overlays automatically. Auto-retries with a fresh snapshot if the ref is stale.',
         parameters: {
@@ -840,14 +845,14 @@ class MCPToolServer {
       // ── Planning / TODO Tools ──
       {
         name: 'write_todos',
-        description: 'Create a checklist for multi-step work. REQUIRED: after write_todos, call update_todo for EVERY step — in-progress when you start, done when you finish. Never implement with 0/N todos completed. The user sees live progress in the todo UI.',
+        description: 'Create a todo list for multi-step builds only (skip for simple one-shot tasks). After write_todos, call update_todo for each item — in-progress when you start, done when you finish. Example done: {"tool":"update_todo","params":{"id":1,"status":"done"}}',
         parameters: {
           items: { type: 'array', description: 'Array of todo strings or {text,status} objects', required: true },
         },
       },
       {
         name: 'update_todo',
-        description: 'Update one checklist item. REQUIRED during Agent/Build work: call when starting a step (status in-progress) and when finishing (status done). Without update_todo calls the list stays 0/N forever. Status: pending, in-progress, done. Optional text to change item label.',
+        description: 'Update one todo list item (only if write_todos was used). Call when starting (status in-progress) and finishing (status done) each todo. Status: pending, in-progress, done. Optional text to relabel the item.',
         parameters: {
           id: { type: 'number', description: 'Todo ID (from write_todos result)', required: true },
           status: { type: 'string', description: 'New status: pending, in-progress, or done', required: true },
@@ -1185,6 +1190,9 @@ class MCPToolServer {
           break;
         case 'browser_snapshot':
           result = await this._withTimeout(this._browserSnapshot(), 30000, 'browser_snapshot');
+          break;
+        case 'viewport_browser_snapshot':
+          result = await this._withTimeout(this._viewportBrowserSnapshot(), 30000, 'viewport_browser_snapshot');
           break;
         case 'browser_click':
           if (!params.ref) return { success: false, error: 'Missing "ref" parameter. Use the [ref=eN] from browser_snapshot, e.g. {"ref":"e5"}' };
@@ -2008,6 +2016,16 @@ class MCPToolServer {
         totalOccurrences = (content.split(oldText).length - 1);
         content = content.replace(oldText, newText);
       }
+      if (this.browserManager?.parentWindow) {
+        this.browserManager.parentWindow.webContents.send('agent-file-modified', {
+          filePath: fullPath,
+          newContent: content,
+          originalContent,
+          preview: true,
+          isNew: false,
+          tool: 'edit_file',
+        });
+      }
       await fs.writeFile(fullPath, content, 'utf8');
 
       if (this.browserManager?.parentWindow) {
@@ -2054,7 +2072,7 @@ class MCPToolServer {
         await fs.unlink(fullPath);
       }
       if (this.browserManager?.parentWindow) {
-        this.browserManager.parentWindow.webContents.send('files-changed');
+        this.browserManager.parentWindow.webContents.send('files-changed', { deletedPaths: [fullPath] });
       }
       return { success: true, path: fullPath, message: stats.isDirectory() ? `Directory deleted: ${fullPath}` : `File deleted: ${fullPath}` };
     } catch (error) {
@@ -4495,7 +4513,7 @@ class MCPToolServer {
     // Tier 0 categories are ALWAYS included in Agent mode (see buildBudgetProportionalToolPrompt).
     // Order matters: Browser + core file/shell tools first — never drop Browser when budget is tight.
     const categoryOrder = [
-      ['Browser', ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_screenshot']],
+      ['Browser', ['browser_navigate', 'browser_snapshot', 'viewport_browser_snapshot', 'browser_click', 'browser_type', 'browser_screenshot']],
       ['Core Files', ['read_file', 'list_directory', 'grep_search', 'find_files', 'get_file_info']],
       ['Terminal', ['run_command', 'check_port', 'install_packages']],
       ['File Operations', ['write_file', 'edit_file', 'append_to_file', 'delete_file', 'rename_file', 'copy_file', 'create_directory', 'get_project_structure', 'open_file_in_editor', 'diff_files']],
@@ -4552,7 +4570,7 @@ class MCPToolServer {
     rules += '- For edits: read_file first, then edit_file with exact oldText\n';
     rules += '- For large files: write_file for first section, then append_to_file for remaining sections\n';
     rules += '- Web: after web_search, in the same continuation, call fetch_webpage on the first and second ranked result URLs before answering (or each returned URL if fewer than two). Do not ask the user to confirm fetching. Do not call list_directory in the same tool round as web_search/fetch_webpage unless the user asked about the project\n';
-    rules += '- Browser workflow: browser_navigate (auto-returns snapshot) → interact using [ref=N] IDs with browser_click/browser_type (auto-return snapshot after action). Only call browser_snapshot explicitly if you need to refresh refs without navigating or clicking.\n';
+    rules += '- Browser workflow: browser_navigate (auto-returns snapshot) → interact using [ref=N] IDs with browser_click/browser_type (auto-return snapshot after action). Use viewport_browser_snapshot when the user asks about the page open in the viewport browser.\n';
     rules += '- If browser_navigate fails, retry it or use fetch_webpage. Do NOT launch chrome.exe or debug Playwright via run_command.\n';
     rules += '- After write_todos: call update_todo(in-progress) when starting each step and update_todo(done) when finishing — never leave 0/N checked during implementation.\n';
     parts.push(rules);

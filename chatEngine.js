@@ -42,7 +42,7 @@ function shouldStreamFileContentForAgent(options, filePath) {
 }
 
 /** Emit one atomic IPC event for a complete file write (native FC / batch prose path). */
-function emitCompleteFileContentBlock(onStreamEvent, filePath, content, options) {
+function emitCompleteFileContentBlock(onStreamEvent, filePath, content, options, meta = {}) {
   if (!onStreamEvent || content == null) return;
   if (options && !shouldStreamFileContentForAgent(options, filePath)) return;
   const fp = filePath || '';
@@ -54,6 +54,9 @@ function emitCompleteFileContentBlock(onStreamEvent, filePath, content, options)
     language: ext,
     fileKey: fp,
     content: String(content),
+    op: meta.op || 'write',
+    oldText: meta.oldText != null ? String(meta.oldText) : undefined,
+    newText: meta.newText != null ? String(meta.newText) : undefined,
   });
 }
 
@@ -151,7 +154,12 @@ function _sfExtractGeneratingToolName(buf) {
   return bare ? bare[1] : 'unknown';
 }
 const RE_FILE_WRITE_TOOLS = /write_file|create_file|append_to_file/;
+const RE_FILE_EDIT_TOOLS = /edit_file|replace_in_file/;
+const RE_FILE_STREAM_TOOLS = /write_file|create_file|append_to_file|edit_file|replace_in_file/;
 const RE_CONTENT_START = /"content"\s*:\s*"$/;
+const RE_NEW_TEXT_START = /"newText"\s*:\s*"$/;
+const RE_OLD_TEXT_CAPTURE = /"oldText"\s*:\s*"((?:\\.|[^"\\])*)"/;
+const FILE_EDIT_OPS = new Set(['edit_file', 'replace_in_file']);
 const RE_FILE_PATH = /"(?:filePath|path)"\s*:\s*"([^"]*)"/;
 const RE_TOOL_OR_SYSTEM_INJECT = /^\[(?:Tool Results|System)\]/i;
 const RE_CONTEXT_ROTATED = /\[System: (?:Context rotated|Session memory condensed)\]/i;
@@ -702,8 +710,8 @@ When you receive an image description from the vision system, treat it as what y
 ## Planning
 For multi-step work, you may use planning tools from ## Tools when they fit the task. For simple requests, act directly without unnecessary planning overhead.
 
-## Todo List Discipline (CRITICAL)
-If you call write_todos to create a plan, you MUST maintain it. Call update_todo immediately when you start a task step (status: 'in-progress') and immediately when you finish it (status: 'done'). Do not leave todos at 0/N completed — the user sees the list in real time and relies on it to track progress. A stale todo list is worse than no list at all.
+## Todo List Discipline
+Use write_todos only for multi-step builds — skip it for simple one-shot tasks. If you called write_todos, call update_todo when you start each todo item (status: 'in-progress') and when you finish it (status: 'done'). The user sees the todo list in real time.
 
 ## Browser and authentication flows
 - Call browser_navigate first (returns a snapshot). After browser_type, browser_click, or any action that changes the page, call browser_snapshot before the next browser_click so [ref=N] numbers match the current DOM. Do not reuse stale refs. Prefer elements marked [SUBMIT] for login/forms.
@@ -1614,6 +1622,8 @@ class ChatEngine extends EventEmitter {
       let _sfContentEsc = false;
       let _sfContentBuf = '';
       let _sfContentFilePath = '';
+      let _sfContentOldText = '';
+      let _sfStreamIsEdit = false;
       let _sfUnicodeCount = 0;
       let _sfUnicodeChars = '';
 
@@ -1697,6 +1707,8 @@ class ChatEngine extends EventEmitter {
         _sfLastToolProgressAt = 0;
         _sfContentDone = false;
         _sfContentEsc = false;
+        _sfContentOldText = '';
+        _sfStreamIsEdit = false;
         _sfUnicodeCount = 0;
         _sfUnicodeChars = '';
         _sfThinkTagMatch = '';
@@ -1990,15 +2002,27 @@ class ChatEngine extends EventEmitter {
                 }
               }
             } else if (_sfFileWriteDetected && !_sfContentDone) {
-              if (ch === '"' && RE_CONTENT_START.test(_sfFenceBuf)) {
+              const _startRe = _sfStreamIsEdit ? RE_NEW_TEXT_START : RE_CONTENT_START;
+              if (ch === '"' && _startRe.test(_sfFenceBuf)) {
                 const fpMatch = _sfFenceBuf.match(RE_FILE_PATH);
                 _sfContentFilePath = fpMatch ? fpMatch[1] : '';
+                if (_sfStreamIsEdit) {
+                  const oldM = _sfFenceBuf.match(RE_OLD_TEXT_CAPTURE);
+                  if (oldM) _sfContentOldText = _jsonUnescape(oldM[1]);
+                }
                 if (shouldStreamFileContentForAgent(options, _sfContentFilePath)) {
                   _sfContentStreamActive = true;
                   const fileName = _sfContentFilePath.split(/[\\/]/).pop() || _sfContentFilePath;
                   const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
                   if (onStreamEvent) {
-                    onStreamEvent('file-content-start', { filePath: _sfContentFilePath, fileName, language: ext, fileKey: _sfContentFilePath });
+                    onStreamEvent('file-content-start', {
+                      filePath: _sfContentFilePath,
+                      fileName,
+                      language: ext,
+                      fileKey: _sfContentFilePath,
+                      op: _sfStreamIsEdit ? 'edit' : 'write',
+                      oldText: _sfContentOldText || undefined,
+                    });
                   }
                   _sfStreamedFileWrites.add(_normalizePath(_sfContentFilePath));
                 } else {
@@ -2030,8 +2054,9 @@ class ChatEngine extends EventEmitter {
             }
             // File-write detection is separate — only for content streaming
             if (!_sfFileWriteDetected && _sfFenceBuf.length > 30) {
-              if (RE_FILE_WRITE_TOOLS.test(_sfFenceBuf) && _sfIsToolLikeJson(_sfFenceBuf)) {
+              if (RE_FILE_STREAM_TOOLS.test(_sfFenceBuf) && _sfIsToolLikeJson(_sfFenceBuf)) {
                 _sfFileWriteDetected = true;
+                _sfStreamIsEdit = RE_FILE_EDIT_TOOLS.test(_sfFenceBuf);
               }
             }
 
@@ -2193,15 +2218,27 @@ class ChatEngine extends EventEmitter {
               }
             }
           } else if (_sfConfirmed && _sfFileWriteDetected && !_sfContentDone) {
-            if (ch === '"' && RE_CONTENT_START.test(_sfBuf)) {
+            const _startRe = _sfStreamIsEdit ? RE_NEW_TEXT_START : RE_CONTENT_START;
+            if (ch === '"' && _startRe.test(_sfBuf)) {
               const fpMatch = _sfBuf.match(RE_FILE_PATH);
               _sfContentFilePath = fpMatch ? fpMatch[1] : '';
+              if (_sfStreamIsEdit) {
+                const oldM = _sfBuf.match(RE_OLD_TEXT_CAPTURE);
+                if (oldM) _sfContentOldText = _jsonUnescape(oldM[1]);
+              }
               if (shouldStreamFileContentForAgent(options, _sfContentFilePath)) {
                 _sfContentStreamActive = true;
                 const fileName = _sfContentFilePath.split(/[\\/]/).pop() || _sfContentFilePath;
                 const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
                 if (onStreamEvent) {
-                  onStreamEvent('file-content-start', { filePath: _sfContentFilePath, fileName, language: ext, fileKey: _sfContentFilePath });
+                  onStreamEvent('file-content-start', {
+                    filePath: _sfContentFilePath,
+                    fileName,
+                    language: ext,
+                    fileKey: _sfContentFilePath,
+                    op: _sfStreamIsEdit ? 'edit' : 'write',
+                    oldText: _sfContentOldText || undefined,
+                  });
                 }
                 _sfStreamedFileWrites.add(_normalizePath(_sfContentFilePath));
               } else {
@@ -2210,8 +2247,9 @@ class ChatEngine extends EventEmitter {
             }
           }
           if (_sfConfirmed && !_sfFileWriteDetected && _sfBuf.length > 15) {
-            if (RE_FILE_WRITE_TOOLS.test(_sfBuf)) {
+            if (RE_FILE_STREAM_TOOLS.test(_sfBuf)) {
               _sfFileWriteDetected = true;
+              _sfStreamIsEdit = RE_FILE_EDIT_TOOLS.test(_sfBuf);
             }
           }
 
@@ -2446,9 +2484,9 @@ class ChatEngine extends EventEmitter {
               logBuf: '', buf: '', phase: 0, chunkCount: 0,
               filePath: '', fileName: '', ext: '', escPending: false,
             });
-            // File-write ops are shown via FileContentBlock — all others get a tool-generating card
-            const _FC_FILE_WRITE_OPS = new Set(['write_file', 'create_file', 'append_to_file']);
-            if (!_FC_FILE_WRITE_OPS.has(functionName) && onStreamEvent) {
+            // File stream ops use FileContentBlock / FileDiffBlock — others get tool-generating card
+            const _FC_FILE_STREAM_OPS = new Set(['write_file', 'create_file', 'append_to_file', 'edit_file', 'replace_in_file']);
+            if (!_FC_FILE_STREAM_OPS.has(functionName) && onStreamEvent) {
               onStreamEvent('tool-generating', { tool: functionName });
             }
           }
@@ -2472,8 +2510,12 @@ class ChatEngine extends EventEmitter {
             _logStreamDiag(`[StreamDiag] FC ${functionName}[${callIndex}] DONE chunks=${s.chunkCount} bytes=${total}: "${preview}"`);
           }
 
-          // ── write_file content streaming → file-content-start/token/end ─────
-          if (functionName !== 'write_file' || s.phase === 2) return;
+          // ── write_file / edit_file content streaming → file-content-start/token/end ─────
+          const _FC_FILE_STREAM_OPS = new Set(['write_file', 'create_file', 'append_to_file', 'edit_file', 'replace_in_file']);
+          if (!_FC_FILE_STREAM_OPS.has(functionName) || s.phase === 2) return;
+          if (s.isEdit == null) {
+            s.isEdit = functionName === 'edit_file' || functionName === 'replace_in_file';
+          }
 
           if (s.phase === 0) {
             s.buf += paramsChunk;
@@ -2487,7 +2529,13 @@ class ChatEngine extends EventEmitter {
               }
             }
 
-            const contentMatch = s.buf.match(/"content"\s*:\s*"([\s\S]*)/);
+            if (s.isEdit && !s.oldText) {
+              const oldM = s.buf.match(/"oldText"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+              if (oldM) s.oldText = _jsonUnescape(oldM[1]);
+            }
+
+            const contentRe = s.isEdit ? /"newText"\s*:\s*"([\s\S]*)/ : /"content"\s*:\s*"([\s\S]*)/;
+            const contentMatch = s.buf.match(contentRe);
             if (contentMatch && s.filePath) {
               if (!shouldStreamFileContentForAgent(options, s.filePath)) {
                 s.phase = 2;
@@ -2497,7 +2545,12 @@ class ChatEngine extends EventEmitter {
               s.buf = '';
               if (onStreamEvent) {
                 onStreamEvent('file-content-start', {
-                  filePath: s.filePath, fileName: s.fileName, language: s.ext, fileKey: s.filePath,
+                  filePath: s.filePath,
+                  fileName: s.fileName,
+                  language: s.ext,
+                  fileKey: s.filePath,
+                  op: s.isEdit ? 'edit' : 'write',
+                  oldText: s.oldText || undefined,
                 });
               }
               const after = contentMatch[1];
@@ -3041,8 +3094,8 @@ class ChatEngine extends EventEmitter {
               console.log(`[ChatEngine] browser_click detail: ref=${refVal}, text="${call.params.text || ''}"`);
             }
 
-            // Emit file-content events for file write operations so the UI
-            // can show a FileContentBlock with syntax highlighting
+            // Emit file-content events for file write/edit operations so the UI
+            // can show a FileContentBlock / FileDiffBlock with syntax highlighting
             if (FILE_WRITE_OPS.has(call.tool) && call.params?.content && onStreamEvent) {
               const filePath = call.params.filePath || call.params.path || '';
               const _np = _normalizePath(filePath);
@@ -3054,7 +3107,21 @@ class ChatEngine extends EventEmitter {
                 emitCompleteFileContentBlock(onStreamEvent, filePath, call.params.content, options);
               }
             }
-
+            if (FILE_EDIT_OPS.has(call.tool) && call.params?.newText != null && onStreamEvent) {
+              const filePath = call.params.filePath || call.params.path || '';
+              const _np = _normalizePath(filePath);
+              if (
+                shouldStreamFileContentForAgent(options, filePath)
+                && !_sfStreamedFileWrites.has(_np)
+                && !_sfProsedFileWrites.has(_np)
+              ) {
+                emitCompleteFileContentBlock(onStreamEvent, filePath, call.params.newText, options, {
+                  op: 'edit',
+                  oldText: call.params.oldText || '',
+                  newText: call.params.newText,
+                });
+              }
+            }
             let toolResult;
             console.log(`[ChatEngine] Executing toolFn: ${call.tool}`);
             try {
@@ -3226,9 +3293,9 @@ class ChatEngine extends EventEmitter {
               const allTodos = toolResult?.allTodos || toolResult?.created;
               if (Array.isArray(allTodos) && allTodos.length > 0) {
                 const idList = allTodos.map((t) => `id ${t.id}: ${(t.text || '').slice(0, 60)}`).join('; ');
-                injectResult += `\n[Reminder: Call update_todo(id, status) when you start (in-progress) and finish (done) each item. Checklist: ${idList}]`;
+                injectResult += `\n[Reminder: Call update_todo(id, status) when you start (in-progress) and finish (done) each todo item. Todo list: ${idList}. Example: {"tool":"update_todo","params":{"id":1,"status":"done"}}]`;
               } else {
-                injectResult += '\n[Reminder: Call update_todo(id, "in-progress") when starting each step and update_todo(id, "done") when finishing — required for live progress.]';
+                injectResult += '\n[Reminder: Call update_todo(id, "in-progress") when starting each step and update_todo(id, "done") when finishing — required for live todo list progress.]';
               }
             }
 
@@ -3371,6 +3438,12 @@ class ChatEngine extends EventEmitter {
             ? `${DUPLICATE_TOOL_HINT_MESSAGE}\n\n`
             : '';
 
+          let todoListPrefix = '';
+          const activeTodos = typeof options.getActiveTodos === 'function' ? options.getActiveTodos() : [];
+          if (Array.isArray(activeTodos) && activeTodos.length > 0 && activeTodos.some((t) => t.status === 'in-progress')) {
+            todoListPrefix = '[Active todo list: mark completed items with update_todo(id, "done").]\n\n';
+          }
+
           if (this._sessionId !== sessionAtStart) {
             console.warn(`[ChatEngine] Session changed during tool execution (was ${sessionAtStart}, now ${this._sessionId}) — dropping stale tool results`);
             break;
@@ -3379,7 +3452,7 @@ class ChatEngine extends EventEmitter {
           if (!skipToolExecution) {
           this._chatHistory.push({
             type: 'user',
-            text: `${userInterruptPrefix}${duplicateHint}[System: Tool Results]\nThe tools below have ALREADY been executed. Do not repeat these actions or re-narrate work that is already complete. Give a brief summary of outcomes, then either call the next tool if more work is needed or give a short final answer. Do NOT enumerate long lists of hypothetical future options or features.\n\n${toolResultLines.join('\n')}${relatedSection}`,
+            text: `${userInterruptPrefix}${todoListPrefix}${duplicateHint}[System: Tool Results]\nThe tools below have ALREADY been executed. Do not repeat these actions or re-narrate work that is already complete. Give a brief summary of outcomes, then either call the next tool if more work is needed or give a short final answer. Do NOT enumerate long lists of hypothetical future options or features.\n\n${toolResultLines.join('\n')}${relatedSection}`,
           });
           console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${hadUserInterrupt}`);
           } else {

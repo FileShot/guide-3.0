@@ -711,6 +711,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         onThinkingToken: (token) => _send('llm-thinking-token', token),
         onStreamEvent: (eventName, data) => _send(eventName, data),
         getCancelled: () => agenticCancelled,
+        getActiveTodos: () => (mcpToolServer?._todos ? [...mcpToolServer._todos] : []),
       });
 
       if (result?.isQuotaError) {
@@ -821,6 +822,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     const debugStreamDiag = !!settings.debugStreamDiag;
     console.log(`[electron-main] ai-chat: calling llmEngine.chat, effectiveMessageLen=${effectiveMessage.length}, mode=${mode.planning ? 'plan' : mode.askOnly ? 'ask' : 'agent'}`);
     const result = await llmEngine.chat(effectiveMessage, {
+      getActiveTodos: () => (mcpToolServer?._todos ? [...mcpToolServer._todos] : []),
       onToken: (token) => {
         localTokenSendCount += 1;
         if (debugStreamDiag && (localTokenSendCount === 1 || localTokenSendCount % 100 === 0)) {
@@ -1435,7 +1437,9 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       } else {
         fs.unlinkSync(fullPath);
       }
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('files-changed');
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('files-changed', { deletedPaths: [fullPath] });
+      }
       return { success: true };
     }
     if (p === '/api/files/rename' && method === 'POST') {

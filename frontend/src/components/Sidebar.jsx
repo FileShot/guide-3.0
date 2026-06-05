@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Sidebar — Renders the active sidebar panel based on ActivityBar selection.
  * Panels: Explorer (file tree), Search, Git, Settings
  */
@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { openFileFromReadResponse } from '../utils/openFileFromRead';
 import isPocket from '../lib/isPocket';
+import { pathString, fileBaseName } from '../lib/pathString';
 import { uploadFilesToPath, downloadFileUrl, downloadFolderZipUrl, triggerDownload } from '../lib/pocketFiles';
 
 export default function Sidebar() {
@@ -102,10 +103,11 @@ function FileExplorer() {
     fetch('/api/workspace/roots')
       .then(r => r.json())
       .then(d => {
-        const roots = d.roots || [];
+        const roots = (d.roots || []).map((r) => pathString(r)).filter(Boolean);
         setWorkspaceRoots(roots);
+        const active = pathString(projectPath);
         for (const root of roots) {
-          if (root === projectPath) continue;
+          if (root === active) continue;
           fetch(`/api/files/tree?path=${encodeURIComponent(root)}`)
             .then(r => r.json())
             .then(t => setWorkspaceRootTree(root, t.items || []))
@@ -301,22 +303,25 @@ function FileExplorer() {
           )}
           <div className="sidebar-section-header shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]">
             <ChevronDown size={12} className="mr-1 flex-shrink-0" />
-            <span className="truncate">{projectPath.split(/[\\/]/).pop()}</span>
+            <span className="truncate">{fileBaseName(projectPath) || 'Project'}</span>
           </div>
           {fileTree.map((item, idx) => (
             <FileTreeItem key={item.path || idx} item={item} depth={0} />
           ))}
-          {workspaceRoots.filter(r => r !== projectPath).map((root) => (
-            <div key={root} className="mt-1">
+          {workspaceRoots.filter(r => pathString(r) !== pathString(projectPath)).map((root) => {
+            const rootPath = pathString(root);
+            return (
+            <div key={rootPath} className="mt-1">
               <div className="sidebar-section-header shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]">
                 <ChevronDown size={12} className="mr-1 flex-shrink-0" />
-                <span className="truncate">{root.split(/[\\/]/).pop()}</span>
+                <span className="truncate">{fileBaseName(rootPath) || rootPath}</span>
               </div>
-              {(workspaceRootTrees[root] || []).map((item, idx) => (
-                <FileTreeItem key={`${root}-${item.path || idx}`} item={item} depth={0} />
+              {(workspaceRootTrees[rootPath] || workspaceRootTrees[root] || []).map((item, idx) => (
+                <FileTreeItem key={`${rootPath}-${item.path || idx}`} item={item} depth={0} />
               ))}
             </div>
-          ))}
+            );
+          })}
           {taskScripts.length > 0 && (
             <div className="mt-1">
               <div
@@ -1893,6 +1898,19 @@ function SettingsPanel() {
         <SettingToggle label="Sub-Agents" value={!!settings.enableSubAgents}
           onChange={v => updateSetting('enableSubAgents', v)}
           hint="Allow model to spawn focused sub-agents using a fresh context window. Off by default — uses extra VRAM." />
+        <div>
+          <label className="text-[11px] text-vsc-text-dim block mb-1">Browser control</label>
+          <select
+            className="w-full text-[11px] bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
+            value={settings.browserControl || 'auto'}
+            onChange={e => updateSetting('browserControl', e.target.value)}
+          >
+            <option value="auto">Auto (local iframe, external screencast)</option>
+            <option value="screencast">Viewport screencast</option>
+            <option value="playwright">Playwright only (no live canvas)</option>
+          </select>
+          <p className="text-[10px] text-vsc-text-dim mt-1">How the viewport shows agent browser sessions.</p>
+        </div>
       </SettingsSection>
 
       {/* Command Execution Policy */}

@@ -206,4 +206,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onShowViewportBrowser: (cb) => _on('show-viewport-browser', cb),
   onPreviewNavigate: (cb) => _on('preview-navigate', cb),
+  onBrowserFrame: (cb) => _on('browser-frame', cb),
 });

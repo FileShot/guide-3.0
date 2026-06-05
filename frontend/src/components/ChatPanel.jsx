@@ -18,6 +18,7 @@ import ToolCallCard from './chat/ToolCallCard';
 import SlideDown from './SlideDown';
 
 import FileContentBlock from './chat/FileContentBlock';
+import FileDiffBlock from './chat/FileDiffBlock';
 import MentionPicker from './MentionPicker';
 import { blobToWav } from '../utils/audioToWav';
 
@@ -63,6 +64,46 @@ function quotaErrorFlags(errorText, result = {}) {
 }
 
 const FILE_WRITE_TOOL_NAMES = new Set(['write_file', 'create_file', 'append_to_file']);
+const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'replace_in_file']);
+
+function pathExistsInTree(items, targetPath) {
+  if (!targetPath || !Array.isArray(items)) return false;
+  const norm = canonicalizeFilePath(targetPath);
+  for (const item of items) {
+    if (canonicalizeFilePath(item.path) === norm) return true;
+    if (item.children?.length && pathExistsInTree(item.children, targetPath)) return true;
+  }
+  return false;
+}
+
+function renderFileBlock(block, key) {
+  if (!block) return null;
+  if (block.op === 'edit') {
+    return (
+      <FileDiffBlock
+        key={key}
+        filePath={block.filePath}
+        language={block.language}
+        fileName={block.fileName}
+        content={block.content}
+        complete={block.complete ?? true}
+        op="edit"
+        oldText={block.oldText}
+        newText={block.newText || block.content}
+      />
+    );
+  }
+  return (
+    <FileContentBlock
+      key={key}
+      filePath={block.filePath}
+      language={block.language}
+      fileName={block.fileName}
+      content={block.content}
+      complete={block.complete ?? true}
+    />
+  );
+}
 
 /** Canonicalize a file path for dedup — backslashes→forward-slashes, collapse dupes, lowercase drive letter. */
 function canonicalizeFilePath(filePath) {
@@ -94,10 +135,12 @@ function synthesizeFileBlocksFromToolCalls(toolCalls, messageSegments, messageFi
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) return;
   const existingPaths = new Set(messageFileBlocks.map((b) => canonicalizeFilePath(b.filePath)));
   for (const tc of toolCalls) {
-    if (!FILE_WRITE_TOOL_NAMES.has(tc.functionName)) continue;
-    const content = tc.params?.content;
+    const isWrite = FILE_WRITE_TOOL_NAMES.has(tc.functionName);
+    const isEdit = FILE_EDIT_TOOL_NAMES.has(tc.functionName);
+    if (!isWrite && !isEdit) continue;
+    const content = isEdit ? tc.params?.newText : tc.params?.content;
     const rawFilePath = tc.params?.filePath || tc.params?.path || '';
-    if (!content || !rawFilePath) continue;
+    if (content == null || !rawFilePath) continue;
     const normalizedFilePath = canonicalizeFilePath(rawFilePath);
     if (existingPaths.has(normalizedFilePath)) continue;
     existingPaths.add(normalizedFilePath);
@@ -109,6 +152,9 @@ function synthesizeFileBlocksFromToolCalls(toolCalls, messageSegments, messageFi
       language,
       fileName,
       content: String(content),
+      op: isEdit ? 'edit' : 'write',
+      oldText: isEdit ? String(tc.params?.oldText || '') : undefined,
+      newText: isEdit ? String(content) : undefined,
     });
   }
 }
@@ -642,25 +688,7 @@ function StreamingFooter() {
 
           if (!block) return null;
 
-          return (
-
-            <FileContentBlock
-
-              key={`seg-file-${seg.index}`}
-
-              filePath={block.filePath}
-
-              language={block.language}
-
-              fileName={block.fileName}
-
-              content={block.content}
-
-              complete={block.complete}
-
-            />
-
-          );
+          return renderFileBlock(block, `seg-file-${seg.index}`);
 
         }
 
@@ -2563,7 +2591,7 @@ export default function ChatPanel() {
 
     : modelInfo
 
-      ? (modelInfo.name || modelInfo.family || '').split('/').pop().slice(0, 20)
+      ? (modelInfo.name || modelInfo.family || '').split('/').pop().slice(0, 10)
 
       : 'No Model';
 
@@ -3138,25 +3166,7 @@ export default function ChatPanel() {
 
                             if (!block) return null;
 
-                            return (
-
-                              <FileContentBlock
-
-                                key={`file-${i}`}
-
-                                filePath={block.filePath}
-
-                                language={block.language}
-
-                                fileName={block.fileName}
-
-                                content={block.content}
-
-                                complete={true}
-
-                              />
-
-                            );
+                            return renderFileBlock(block, `file-${i}`);
 
                           }
 
@@ -3389,12 +3399,13 @@ export default function ChatPanel() {
           {(() => {
 
             const activeFile = openTabs.find(t => t.id === activeTabId);
+            const activeFileInTree = activeFile && pathExistsInTree(fileTree, activeFile.path);
 
-            return ((activeFile && !fileContextDismissed) || editorSelection) ? (
+            return ((activeFile && !fileContextDismissed && activeFileInTree) || editorSelection) ? (
 
               <div className="flex items-center gap-1.5 px-3 pt-2 pb-0.5">
 
-                {activeFile && !fileContextDismissed && (
+                {activeFile && !fileContextDismissed && activeFileInTree && (
 
                   <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-vsc-accent/10 text-vsc-accent text-[10px] rounded-md group">
 
@@ -4063,21 +4074,6 @@ export default function ChatPanel() {
 
 
 
-            {/* Mic — Web Speech API */}
-            <button
-              className={`p-1.5 rounded-md transition-colors ${
-                voiceListening
-                  ? 'bg-vsc-error/20 text-vsc-error animate-pulse'
-                  : 'hover:bg-vsc-list-hover text-vsc-text-dim hover:text-vsc-text'
-              }`}
-              title={voiceListening ? 'Stop voice input' : 'Voice input (local Whisper or Web Speech)'}
-              onClick={toggleVoiceInput}
-            >
-              <Mic size={14} />
-            </button>
-
-
-
             {/* Separator */}
 
             <div className="w-px h-4 bg-vsc-panel-border/50 mx-0.5" />
@@ -4190,7 +4186,7 @@ export default function ChatPanel() {
 
                 {cloudProvider ? <Cloud size={12} className="text-vsc-accent" /> : <Cpu size={12} />}
 
-                <span className="truncate max-w-[80px]">{modelDisplayName}</span>
+                <span className="truncate max-w-[56px]">{modelDisplayName}</span>
 
                 <ChevronUp size={10} className={`transition-transform ${modelPickerOpen ? '' : 'rotate-180'}`} />
 
@@ -4210,7 +4206,18 @@ export default function ChatPanel() {
 
             <div className="flex-1" />
 
-
+            {/* Mic — left of send */}
+            <button
+              className={`p-1.5 rounded-md transition-colors ${
+                voiceListening
+                  ? 'bg-vsc-error/20 text-vsc-error animate-pulse'
+                  : 'hover:bg-vsc-list-hover text-vsc-text-dim hover:text-vsc-text'
+              }`}
+              title={voiceListening ? 'Stop voice input' : 'Voice input (local Whisper or Web Speech)'}
+              onClick={toggleVoiceInput}
+            >
+              <Mic size={14} />
+            </button>
 
             {/* Send / Stop */}
 
@@ -6635,13 +6642,13 @@ function TodoDropdown({ todos }) {
 
         >
 
-          {todos.map(todo => (
+          {todos.map((todo, idx) => (
 
             <div
 
               key={todo.id}
 
-              className="flex items-start gap-1.5 py-[1px] text-[10px] transition-all duration-200"
+              className={`flex items-start gap-1.5 py-[2px] text-[10px] transition-all duration-200 ${idx < todos.length - 1 ? 'border-b border-vsc-panel-border/25' : ''}`}
 
               style={{
 

@@ -419,6 +419,30 @@ async function _browserGetLinks(selector) {
   return { success: false, error: 'Cannot extract links' };
 }
 
+async function _viewportBrowserSnapshot() {
+  console.log('[mcpBrowserTools] _viewportBrowserSnapshot START');
+  const browser = this._getBrowser();
+  if (!browser) {
+    return { success: false, error: 'No browser available. Open the viewport browser or navigate first.' };
+  }
+  if (typeof browser.getViewportSnapshot === 'function') {
+    return browser.getViewportSnapshot();
+  }
+  if (typeof browser.getSnapshot === 'function') {
+    const snap = await browser.getSnapshot();
+    const url = typeof browser.getUrl === 'function' ? (await browser.getUrl())?.url : browser._page?.url?.();
+    return {
+      success: snap?.success !== false,
+      source: 'playwright',
+      url: url || snap?.url,
+      title: snap?.title,
+      text: snap?.text || snap?.snapshot,
+      elements: snap?.elements,
+    };
+  }
+  return { success: false, error: 'Viewport browser snapshot not available' };
+}
+
 module.exports = {
   _browserNavigate, _browserClick, _browserType, _browserFillForm,
   _browserSelectOption, _browserSnapshot, _browserScreenshot, _browserGetContent,
@@ -426,4 +450,5 @@ module.exports = {
   _browserDrag, _browserTabs, _browserHandleDialog, _browserConsoleMessages,
   _browserFileUpload, _browserResize, _browserClose, _browserWaitFor,
   _browserScroll, _browserWait, _browserGetUrl, _browserGetLinks,
+  _viewportBrowserSnapshot,
 };

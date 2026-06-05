@@ -27,6 +27,7 @@ const PLAN_BLOCKED_TOOLS_MSG =
   '[System: Plan mode — update_todo cannot mark items done/in-progress or edit non-plan files until Build. Use write_todos for planning; write_file/edit_file only for .guide/plans/*.plan.md. Do not repeat blocked tool JSON in your reply.]';
 
 const FILE_WRITE_OPS = new Set(['write_file', 'create_file', 'append_to_file']);
+const FILE_EDIT_OPS = new Set(['edit_file', 'replace_in_file']);
 
 /**
  * Agentic cloud chat: same tool catalog and mode rules as local (via agentModeResolver).
@@ -46,6 +47,7 @@ async function runCloudAgenticChat({
   onThinkingToken,
   onStreamEvent,
   getCancelled,
+  getActiveTodos,
 }) {
   const enableSubAgents = !!(settings.enableSubAgents);
   const toolsEnabled = settings.toolsEnabled !== false;
@@ -255,6 +257,27 @@ async function runCloudAgenticChat({
           language: ext,
           fileKey: filePath,
           content: String(call.params.content),
+          op: 'write',
+        });
+      }
+      if (
+        FILE_EDIT_OPS.has(toolName)
+        && call.params?.newText != null
+        && onStreamEvent
+        && shouldStreamFileContentForAgent(settings, call.params.filePath || call.params.path || '')
+      ) {
+        const filePath = call.params.filePath || call.params.path || '';
+        const fileName = filePath.split(/[\\/]/).pop() || filePath;
+        const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+        onStreamEvent('file-content-block-complete', {
+          filePath,
+          fileName,
+          language: ext,
+          fileKey: filePath,
+          content: String(call.params.newText),
+          op: 'edit',
+          oldText: call.params.oldText != null ? String(call.params.oldText) : '',
+          newText: String(call.params.newText),
         });
       }
 
@@ -276,7 +299,12 @@ async function runCloudAgenticChat({
 
     if (!toolResultLines.length) break;
 
-    const injectText = buildToolResultsUserMessage(toolResultLines);
+    let todoListPrefix = '';
+    const activeTodos = typeof getActiveTodos === 'function' ? getActiveTodos() : [];
+    if (Array.isArray(activeTodos) && activeTodos.length > 0 && activeTodos.some((t) => t.status === 'in-progress')) {
+      todoListPrefix = '[Active todo list: mark completed items with update_todo(id, "done").]\n\n';
+    }
+    const injectText = buildToolResultsUserMessage(toolResultLines, { interruptPrefix: todoListPrefix });
     conversationHistory.push({ role: 'user', content: injectText });
     console.log(`[CloudAgentic] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s)`);
 

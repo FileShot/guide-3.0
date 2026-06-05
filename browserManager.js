@@ -40,6 +40,7 @@ class BrowserManager extends EventEmitter {
     this._refGenMap = new Map();   // ref number → snapshot generation it belongs to
     this._chromiumInstallTried = false;
     this._lastLaunchError = null;
+    this._screencastClient = null;
     console.log('[BrowserManager] constructor DONE');
   }
 
@@ -278,7 +279,12 @@ class BrowserManager extends EventEmitter {
         // Auto-snapshot: include page content so the model can see what's on the page
         // without needing a separate browser_snapshot call
         if (this._isExternalWebUrl(finalUrl)) {
-          this._emitBrowserAgentStatus({ url: finalUrl, title, message: 'Playwright is browsing this page. The guIDE preview cannot embed authenticated/SSO sites.' });
+          await this._startScreencast();
+          this._emitBrowserAgentStatus({
+            url: finalUrl,
+            title,
+            message: 'Live viewport screencast active. Use viewport_browser_snapshot to analyze this page.',
+          });
         }
         const snapshot = await this.getSnapshot();
         if (snapshot.success) {
@@ -406,6 +412,11 @@ class BrowserManager extends EventEmitter {
    */
   async closePlaywright() {
     console.log('[BrowserManager] closePlaywright START');
+    if (this._screencastClient) {
+      try { await this._screencastClient.send('Page.stopScreencast'); } catch (_) {}
+      try { await this._screencastClient.detach(); } catch (_) {}
+      this._screencastClient = null;
+    }
     if (this._page) { try { await this._page.close(); } catch (e) { console.warn('[BrowserManager] closePlaywright page close failed:', e.message); } }
     if (this._browser) { try { await this._browser.close(); } catch (e) { console.warn('[BrowserManager] closePlaywright browser close failed:', e.message); } }
     this._page = null;
@@ -1621,6 +1632,53 @@ class BrowserManager extends EventEmitter {
    */
   async close() {
     return this.closePlaywright();
+  }
+
+  async _startScreencast() {
+    if (!this._page || !this.parentWindow?.webContents) return;
+    try {
+      if (this._screencastClient) {
+        try { await this._screencastClient.send('Page.stopScreencast'); } catch (_) {}
+        try { await this._screencastClient.detach(); } catch (_) {}
+        this._screencastClient = null;
+      }
+      const client = await this._page.context().newCDPSession(this._page);
+      this._screencastClient = client;
+      client.on('Page.screencastFrame', async (frame) => {
+        if (this.parentWindow?.webContents && !this.parentWindow.isDestroyed()) {
+          this.parentWindow.webContents.send('browser-frame', {
+            data: frame.data,
+            url: this._page?.url?.() || '',
+            width: frame.metadata?.deviceWidth,
+            height: frame.metadata?.deviceHeight,
+          });
+        }
+        try {
+          await client.send('Page.screencastFrameAck', { sessionId: frame.sessionId });
+        } catch (_) {}
+      });
+      await client.send('Page.startScreencast', { format: 'jpeg', quality: 75, everyNthFrame: 1 });
+      console.log('[BrowserManager] screencast started');
+    } catch (e) {
+      console.warn(`[BrowserManager] _startScreencast failed: ${e.message}`);
+    }
+  }
+
+  async getViewportSnapshot() {
+    if (!this._page) {
+      return { success: false, error: 'No browser page open. Navigate first or open the viewport browser.' };
+    }
+    const snap = await this.getSnapshot();
+    const url = this._page.url();
+    const title = await this._page.title().catch(() => '');
+    return {
+      success: snap?.success !== false,
+      source: 'viewport',
+      url,
+      title,
+      text: snap?.text || snap?.snapshot,
+      elements: snap?.elements,
+    };
   }
 
   /* ── Helpers ───────────────────────────────────────────── */

@@ -24,6 +24,14 @@ import FirstRunWizard from './components/FirstRunWizard';
 import { openFileFromReadResponse } from './utils/openFileFromRead';
 import { handleLspDiagnostics } from './lib/lspBridge';
 import isPocket from './lib/isPocket';
+
+function pocketWelcomeDismissed() {
+  try {
+    return sessionStorage.getItem('pocket-welcome-dismissed') === '1';
+  } catch (_) {
+    return false;
+  }
+}
 import { createDisplayPaceQueue } from './utils/displayPaceQueue';
 
 
@@ -98,6 +106,9 @@ export default function App() {
         }).catch(() => {});
 
         fetch('/api/project/current').then(r => r.json()).then(d => {
+
+          const pocketWeb = window.__POCKET__ || isPocket();
+          if (pocketWeb && !pocketWelcomeDismissed()) return;
 
           if (d.projectPath) {
 
@@ -497,19 +508,37 @@ export default function App() {
 
       // File events
 
-      case 'files-changed':
-
-        if (s.projectPath) {
-
-          fetch(`/api/files/tree?path=${encodeURIComponent(s.projectPath)}`).then(r => r.json()).then(t => {
-
-            s.setFileTree(t.items || []);
-
-          }).catch(() => {});
-
+      case 'files-changed': {
+        const deletedPaths = Array.isArray(data?.deletedPaths) ? data.deletedPaths : [];
+        const norm = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
+        if (deletedPaths.length > 0) {
+          const st = useAppStore.getState();
+          for (const dp of deletedPaths) {
+            const n = norm(dp);
+            const tab = st.openTabs.find((t) => norm(t.path) === n);
+            if (tab) st.closeTab(tab.id);
+            if (st.fileLintErrors?.[dp]) {
+              const nextLint = { ...st.fileLintErrors };
+              delete nextLint[dp];
+              useAppStore.setState({ fileLintErrors: nextLint });
+            }
+          }
+          st.setChatFilesChanged(st.chatFilesChanged.filter((f) => !deletedPaths.some((dp) => norm(f.path) === norm(dp))));
+          const previewUrl = st.viewportNavigateUrl || '';
+          if (previewUrl && deletedPaths.some((dp) => {
+            const n = norm(dp);
+            return norm(previewUrl).includes(n) || previewUrl.startsWith('file://') && norm(previewUrl).includes(n);
+          })) {
+            st.resetBrowserPreview();
+          }
         }
-
+        if (s.projectPath) {
+          fetch(`/api/files/tree?path=${encodeURIComponent(s.projectPath)}`).then(r => r.json()).then(t => {
+            s.setFileTree(t.items || []);
+          }).catch(() => {});
+        }
         break;
+      }
 
       case 'open-file':
 
@@ -545,27 +574,31 @@ export default function App() {
 
           const fileName = data.filePath.split(/[\\/]/).pop() || data.filePath;
 
-          const oldContent = tab?.content || '';
+          if (!data.preview) {
 
-          const newContent = data.newContent || '';
+            const oldContent = data.originalContent ?? tab?.originalContent ?? tab?.content ?? '';
 
-          const oldLines = oldContent.split('\n').length;
+            const newContent = data.newContent || '';
 
-          const newLines = newContent.split('\n').length;
+            const oldLines = oldContent.split('\n').length;
 
-          s.addChatFileChanged({
+            const newLines = newContent.split('\n').length;
 
-            path: data.filePath,
+            s.addChatFileChanged({
 
-            name: fileName,
+              path: data.filePath,
 
-            linesAdded: data.isNew ? newLines : Math.max(0, newLines - oldLines),
+              name: fileName,
 
-            linesRemoved: data.isNew ? 0 : Math.max(0, oldLines - newLines),
+              linesAdded: data.isNew ? newLines : Math.max(0, newLines - oldLines),
 
-          });
+              linesRemoved: data.isNew ? 0 : Math.max(0, oldLines - newLines),
 
-          s.syncComposerFiles();
+            });
+
+            s.syncComposerFiles();
+
+          }
 
         }
 

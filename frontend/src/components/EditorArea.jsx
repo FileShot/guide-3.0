@@ -28,11 +28,14 @@ import {
 } from './EditorPreviews';
 import FileIcon from './FileIcon';
 import GuideLogo from './GuideLogo';
+import isPocket from '../lib/isPocket';
+import useMobileViewport from '../lib/useMobileViewport';
 import {
   X, Circle, FolderOpen, MessageSquare, Settings,
   FileText, Copy, RefreshCw,
   Eye, Code2, Play, ExternalLink, Globe, Wand2,
-  ChevronUp, ChevronDown, Check, Undo2, Columns, MoreHorizontal
+  ChevronUp, ChevronDown, Check, Undo2, Columns, MoreHorizontal,
+  Monitor,
 } from 'lucide-react';
 
 // ── Dirty diff helper — compute line-level changes ──
@@ -40,7 +43,6 @@ function computeDirtyDiff(original, current) {
   const origLines = (original || '').split('\n');
   const currLines = (current || '').split('\n');
   const decorations = [];
-  const maxLen = Math.max(origLines.length, currLines.length);
   for (let i = 0; i < currLines.length; i++) {
     if (i >= origLines.length) {
       decorations.push({
@@ -54,7 +56,6 @@ function computeDirtyDiff(original, current) {
       });
     }
   }
-  // Deleted lines at end — mark the last current line
   if (origLines.length > currLines.length && currLines.length > 0) {
     decorations.push({
       range: { startLineNumber: currLines.length, startColumn: 1, endLineNumber: currLines.length, endColumn: 1 },
@@ -62,6 +63,39 @@ function computeDirtyDiff(original, current) {
     });
   }
   return decorations;
+}
+
+function computeDeletedViewZones(original, current) {
+  const origLines = (original || '').split('\n');
+  const currLines = (current || '').split('\n');
+  const zones = [];
+  let oi = 0;
+  let ci = 0;
+  while (oi < origLines.length) {
+    if (ci < currLines.length && origLines[oi] === currLines[ci]) {
+      oi += 1;
+      ci += 1;
+      continue;
+    }
+    if (ci < currLines.length && origLines[oi] !== currLines[ci]) {
+      oi += 1;
+      ci += 1;
+      continue;
+    }
+    const div = document.createElement('div');
+    div.className = 'dirty-diff-deleted-line';
+    div.style.padding = '0 0 0 64px';
+    div.style.opacity = '0.75';
+    div.style.textDecoration = 'line-through';
+    div.textContent = origLines[oi];
+    zones.push({
+      afterLineNumber: Math.max(0, ci),
+      heightInLines: 1,
+      domNode: div,
+    });
+    oi += 1;
+  }
+  return zones;
 }
 
 export default function EditorArea() {
@@ -121,6 +155,7 @@ export default function EditorArea() {
   const togglePreviewMode = useAppStore(s => s.togglePreviewMode);
   const editorRef = useRef(null);
   const dirtyDecorationsRef = useRef(null);
+  const deletedZonesRef = useRef([]);
   const todoDecorationsRef = useRef(null);
   const breakpointDecorationsRef = useRef(null);
   const errorLensRef = useRef(null);
@@ -364,7 +399,7 @@ export default function EditorArea() {
     return () => window.removeEventListener('guide-goto-line', handler);
   }, [gotoLine]);
 
-  // Dirty diff — update gutter decorations when content changes
+  // Dirty diff — update gutter decorations and deleted-line ghost rows when content changes
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor || !activeTab) return;
@@ -375,12 +410,27 @@ export default function EditorArea() {
       } else {
         dirtyDecorationsRef.current = editor.createDecorationsCollection(decos);
       }
+      const zoneSpecs = computeDeletedViewZones(activeTab.originalContent, activeTab.content);
+      deletedZonesRef.current.forEach((id) => {
+        try { editor.changeViewZones((accessor) => accessor.removeZone(id)); } catch (_) {}
+      });
+      deletedZonesRef.current = [];
+      if (zoneSpecs.length > 0) {
+        editor.changeViewZones((accessor) => {
+          for (const spec of zoneSpecs) {
+            deletedZonesRef.current.push(accessor.addZone(spec));
+          }
+        });
+      }
     } else {
-      // File not modified — clear decorations
       if (dirtyDecorationsRef.current) {
         dirtyDecorationsRef.current.clear();
         dirtyDecorationsRef.current = null;
       }
+      deletedZonesRef.current.forEach((id) => {
+        try { editor.changeViewZones((accessor) => accessor.removeZone(id)); } catch (_) {}
+      });
+      deletedZonesRef.current = [];
     }
   }, [activeTab?.content, activeTab?.originalContent, activeTab?.modified]);
 
@@ -1420,6 +1470,9 @@ export default function EditorArea() {
 }
 
 function WelcomeScreen() {
+  const pocket = isPocket();
+  const hideShortcuts = pocket && useMobileViewport();
+  const hideStartActions = hideShortcuts;
   const setActiveActivity = useAppStore(s => s.setActiveActivity);
   const toggleChatPanel = useAppStore(s => s.toggleChatPanel);
   const openCommandPalette = useAppStore(s => s.openCommandPalette);
@@ -1472,10 +1525,27 @@ function WelcomeScreen() {
 
       <GuideLogo size={48} className="relative z-10 mb-3 mx-auto" />
       <h1 className="font-brand text-vsc-accent relative z-10">guIDE</h1>
-      <p className="relative z-10">Local-first AI-powered IDE. Zero cloud dependency.</p>
+      <p className="relative z-10">
+        {pocket
+          ? 'Cloud AI IDE — projects & chat in your browser.'
+          : 'Local-first AI-powered IDE. Zero cloud dependency.'}
+      </p>
+
+      {pocket && (
+        <a
+          className="pocket-offline-compact relative z-10"
+          href="https://guide.graysoft.dev"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <Monitor size={12} />
+          Desktop app (offline models)
+        </a>
+      )}
 
       <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4 w-full max-w-xl mx-auto text-left relative z-10">
-        {/* Start */}
+        {/* Start — hidden on Pocket mobile (toolbar covers Files/Chat/Settings) */}
+        {!hideStartActions && (
         <div>
           <h3 className="text-vsc-xs font-semibold text-vsc-text-dim tracking-wider mb-2">Start</h3>
           <div className="flex flex-col gap-1">
@@ -1497,8 +1567,10 @@ function WelcomeScreen() {
             </button>
           </div>
         </div>
+        )}
 
         {/* Shortcuts */}
+        {!hideShortcuts && (
         <div>
           <h3 className="text-vsc-xs font-semibold text-vsc-text-dim tracking-wider mb-2">Keyboard Shortcuts</h3>
           <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-vsc-xs">
@@ -1512,9 +1584,14 @@ function WelcomeScreen() {
             <kbd className="kbd">Ctrl+`</kbd><span className="text-vsc-text">Toggle Terminal</span>
           </div>
         </div>
+        )}
       </div>
 
-      <p className="mt-8 text-[10px] text-vsc-text-dim/50 relative z-10">guIDE — Built for local AI inference</p>
+      {!hideShortcuts && (
+        <p className="mt-8 text-[10px] text-vsc-text-dim/50 relative z-10">
+          {pocket ? 'Pocket guIDE — Cloud workspace on graysoft.dev' : 'guIDE — Built for local AI inference'}
+        </p>
+      )}
     </div>
   );
 }
