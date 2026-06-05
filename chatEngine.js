@@ -3357,6 +3357,7 @@ class ChatEngine extends EventEmitter {
           // patterns that cause the model to ignore newer user messages and to emit
           // <|im_end|> at the same offsets as the echoes (mid-word truncation).
           let userInterruptPrefix = '';
+          const hadUserInterrupt = !!this._pendingUserMessage;
           if (this._pendingUserMessage) {
             userInterruptPrefix = `[USER INTERRUPT — OBEY THIS IMMEDIATELY]: ${this._pendingUserMessage}\n\n`;
             this._toolRoundCount = 0; // reset round count when user redirects mid-loop
@@ -3380,7 +3381,7 @@ class ChatEngine extends EventEmitter {
             type: 'user',
             text: `${userInterruptPrefix}${duplicateHint}[System: Tool Results]\nThe tools below have ALREADY been executed. Do not repeat these actions or re-narrate work that is already complete. Give a brief summary of outcomes, then either call the next tool if more work is needed or give a short final answer. Do NOT enumerate long lists of hypothetical future options or features.\n\n${toolResultLines.join('\n')}${relatedSection}`,
           });
-          console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${!!this._pendingUserMessage}`);
+          console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${hadUserInterrupt}`);
           } else {
             console.log('[ChatEngine] Repair retry — skipping tool results push (validation error already in history)');
           }
@@ -3875,6 +3876,7 @@ class ChatEngine extends EventEmitter {
   injectUserMessage(text) {
     console.log(`[ChatEngine] injectUserMessage: text=${String(text)}`);
     this._pendingUserMessage = text;
+    this.cancelGeneration('user-interrupt');
   }
 
   async resetSession() {

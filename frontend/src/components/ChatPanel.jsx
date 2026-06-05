@@ -45,6 +45,23 @@ import {
 
 const GUIDE_CLOUD_PROVIDERS = new Set(['cerebras', 'groq', 'sambanova', 'google', 'openrouter']);
 
+function isQuotaLikeError(message) {
+  const m = String(message || '').toLowerCase();
+  return /quota|daily limit|messages today|__quota_exceeded__|usage limit|free messages|sign in.*upgrade|upgrade to pro/.test(m);
+}
+
+function pocketShowsQuotaCtas(pocketWeb, message, usageLimit, needsAccount) {
+  if (!pocketWeb) return false;
+  return !!(usageLimit || needsAccount != null || isQuotaLikeError(message));
+}
+
+function quotaErrorFlags(errorText, result = {}) {
+  const usageLimit = !!(result.usageLimit || result.isQuotaError || isQuotaLikeError(errorText));
+  const needsAccount =
+    result.needsAccount != null ? !!result.needsAccount : usageLimit ? true : undefined;
+  return { usageLimit, needsAccount };
+}
+
 const FILE_WRITE_TOOL_NAMES = new Set(['write_file', 'create_file', 'append_to_file']);
 
 /** Canonicalize a file path for dedup — backslashes→forward-slashes, collapse dupes, lowercase drive letter. */
@@ -1718,55 +1735,55 @@ export default function ChatPanel() {
 
       if (result?.isQuotaError || result?.error === '__QUOTA_EXCEEDED__') {
 
-        // Check if user has an account
-
         let isAuthenticated = false;
 
         try {
 
-          const statusRes = await fetch('/api/license/status');
+          const pr = await fetch('/api/pocket/status', { credentials: 'include' });
 
-          const status = await statusRes.json();
+          if (pr.ok) {
 
-          isAuthenticated = status?.isAuthenticated || false;
+            const ps = await pr.json();
+
+            isAuthenticated = !!ps?.authenticated;
+
+          } else {
+
+            const statusRes = await fetch('/api/license/status', { credentials: 'include' });
+
+            const status = await statusRes.json();
+
+            isAuthenticated = !!(status?.authenticated || status?.isAuthenticated);
+
+          }
 
         } catch (_) {}
 
 
 
-        if (!isAuthenticated) {
+        const needsAccount = !isAuthenticated;
 
-          // No account — prompt to create one first
+        const errorMessage = needsAccount
 
-          useAppStore.getState().addChatMessage({
+          ? "You've used all your free messages today. Log in and upgrade to Pro for more."
 
-            role: 'assistant',
+          : "You've used all your free messages today. Upgrade to Pro for more daily messages.";
 
-            content: '',
+        useAppStore.getState().addChatMessage({
 
-            quotaExceeded: true,
+          role: 'assistant',
 
-            needsAccount: true,
+          content: '',
 
-          });
+          isError: true,
 
-        } else {
+          errorMessage,
 
-          // Has account but free plan — prompt to upgrade
+          usageLimit: true,
 
-          useAppStore.getState().addChatMessage({
+          needsAccount,
 
-            role: 'assistant',
-
-            content: '',
-
-            quotaExceeded: true,
-
-            needsAccount: false,
-
-          });
-
-        }
+        });
 
         return;
 
@@ -2154,6 +2171,8 @@ export default function ChatPanel() {
 
       } else if (result?.error && !hasContent && !hasToolCalls && !hasThinking && !(state.chatStreamingText && state.chatStreamingText.trim())) {
 
+        const flags = quotaErrorFlags(result.error, result);
+
         useAppStore.getState().addChatMessage({
 
           role: 'assistant',
@@ -2167,6 +2186,10 @@ export default function ChatPanel() {
           errorSuggestion: result.errorSuggestion || '',
 
           cooldownUntil: result.cooldownUntil || null,
+
+          usageLimit: flags.usageLimit,
+
+          needsAccount: flags.needsAccount,
 
         });
 
@@ -2198,6 +2221,8 @@ export default function ChatPanel() {
 
       if (result?.error && (hasContent || hasToolCalls || hasThinking || (state.chatStreamingText && state.chatStreamingText.trim()))) {
 
+        const flags = quotaErrorFlags(result.error, result);
+
         useAppStore.getState().addChatMessage({
 
           role: 'assistant',
@@ -2212,11 +2237,17 @@ export default function ChatPanel() {
 
           cooldownUntil: result.cooldownUntil || null,
 
+          usageLimit: flags.usageLimit,
+
+          needsAccount: flags.needsAccount,
+
         });
 
       }
 
     } catch (err) {
+
+      const flags = quotaErrorFlags(err.message, {});
 
       useAppStore.getState().addChatMessage({
 
@@ -2227,6 +2258,10 @@ export default function ChatPanel() {
         isError: true,
 
         errorMessage: err.message || 'Request failed',
+
+        usageLimit: flags.usageLimit,
+
+        needsAccount: flags.needsAccount,
 
       });
 
@@ -2380,15 +2415,17 @@ export default function ChatPanel() {
     removeQueuedMessage(msg.id);
 
     if (useAppStore.getState().chatStreaming) {
-      useAppStore.getState().materializePartialAssistant();
-      addChatMessage({ role: 'user', content: msg.text });
       try {
-        if (window.electronAPI?.injectUserMessage) {
-          await window.electronAPI.injectUserMessage(msg.text);
+        if (window.electronAPI?.agentPause) {
+          await window.electronAPI.agentPause();
         } else {
-          await (await import('../api/websocket')).invoke('inject-user-message', { text: msg.text });
+          await (await import('../api/websocket')).invoke('agent-pause');
         }
       } catch (_) {}
+      useAppStore.getState().bumpChatGenerationEpoch();
+      useAppStore.getState().materializePartialAssistant();
+      addChatMessage({ role: 'user', content: msg.text });
+      await doSend(msg.text, { skipAddMessage: true });
       return;
     }
 
@@ -3047,9 +3084,20 @@ export default function ChatPanel() {
 
                       {/* Generation error card */}
 
-                      {msg.isError ? (
+                      {msg.isError || (msg.quotaExceeded && (window.__POCKET__ || /pocket\.graysoft\.dev/i.test(window.location?.hostname || ''))) ? (
 
-                        <GenerationErrorCard message={msg.errorMessage} suggestion={msg.errorSuggestion} cooldownUntil={msg.cooldownUntil} />
+                        <GenerationErrorCard
+                          message={
+                            msg.errorMessage ||
+                            (msg.needsAccount
+                              ? "You've used all your free messages today. Log in and upgrade to Pro for more."
+                              : "You've used all your free messages today. Upgrade to Pro for more daily messages.")
+                          }
+                          suggestion={msg.errorSuggestion}
+                          cooldownUntil={msg.cooldownUntil}
+                          usageLimit={!!(msg.usageLimit || msg.quotaExceeded)}
+                          needsAccount={msg.needsAccount}
+                        />
 
                       ) : msg.quotaExceeded ? (
 
@@ -3892,7 +3940,7 @@ export default function ChatPanel() {
 
                       onClick={() => handleForceSend(msg)}
 
-                      title="Send now (inject into agent)"
+                      title="Send now (interrupt)"
 
                     >
 
@@ -4259,11 +4307,69 @@ export default function ChatPanel() {
 
 // ── Generation Error Card ──────────────────────────────────────────────────
 
-function GenerationErrorCard({ message, suggestion, cooldownUntil }) {
+function GenerationErrorCard({ message, suggestion, cooldownUntil, usageLimit, needsAccount }) {
 
   const clearChat = useAppStore(s => s.clearChat);
 
   const setActiveActivity = useAppStore(s => s.setActiveActivity);
+
+  const [upgrading, setUpgrading] = useState(false);
+
+  const pocketWeb = typeof window !== 'undefined' && (window.__POCKET__ || /pocket\.graysoft\.dev/i.test(window.location?.hostname || ''));
+
+  const pocketRestoreHref = () =>
+    location.pathname + location.search + location.hash;
+
+  const savePocketRestore = (extra = {}) => {
+    let mobileSplit;
+    try {
+      mobileSplit = parseFloat(localStorage.getItem('pocket-mobile-split'));
+    } catch (_) {}
+    const snap = {
+      href: pocketRestoreHref(),
+      mobileSplit: Number.isFinite(mobileSplit) ? mobileSplit : undefined,
+      autoCheckout: 'pro',
+      ...extra,
+    };
+    try {
+      sessionStorage.setItem('pocket_auth_restore', JSON.stringify(snap));
+    } catch (_) {}
+  };
+
+  const handlePocketLogin = () => {
+    savePocketRestore();
+    try {
+      sessionStorage.setItem('pocket_auto_checkout', 'pro');
+    } catch (_) {}
+    const ret = encodeURIComponent(pocketRestoreHref());
+    location.href = `/api/auth/google?return=${ret}&checkout=1&plan=pro`;
+  };
+
+  const handlePocketUpgrade = async () => {
+    if (needsAccount) {
+      handlePocketLogin();
+      return;
+    }
+    savePocketRestore({ autoCheckout: null });
+    setUpgrading(true);
+    try {
+      const res = await fetch('/api/account/subscribe-api', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan: 'pro', returnUrl: pocketRestoreHref() }),
+      });
+      const data = await res.json();
+      if (data?.url) {
+        location.href = data.url;
+      } else {
+        alert(data?.error || 'Checkout unavailable. Sign in and try again.');
+      }
+    } catch (_) {
+      alert('Checkout unavailable. Try again in a moment.');
+    }
+    setUpgrading(false);
+  };
 
   const [secondsLeft, setSecondsLeft] = useState(() => {
     if (!cooldownUntil) return null;
@@ -4287,6 +4393,8 @@ function GenerationErrorCard({ message, suggestion, cooldownUntil }) {
     ? `${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, '0')}`
     : null;
 
+  const pocketQuota = pocketShowsQuotaCtas(pocketWeb, message, usageLimit, needsAccount);
+
 
 
   return (
@@ -4297,7 +4405,9 @@ function GenerationErrorCard({ message, suggestion, cooldownUntil }) {
 
         <AlertCircle size={16} className="text-red-400" />
 
-        <span className="font-medium text-vsc-text">Generation Error</span>
+        <span className="font-medium text-vsc-text">
+          {pocketQuota ? 'Daily limit reached' : 'Generation Error'}
+        </span>
 
       </div>
 
@@ -4307,7 +4417,7 @@ function GenerationErrorCard({ message, suggestion, cooldownUntil }) {
 
       </p>
 
-      {suggestion && (
+      {suggestion && !pocketQuota && (
 
         <p className="text-vsc-xs text-vsc-text-dim/70 mb-3">
 
@@ -4327,31 +4437,44 @@ function GenerationErrorCard({ message, suggestion, cooldownUntil }) {
 
       )}
 
-      <div className="flex gap-2 mt-3">
+      <div className="flex gap-2 mt-3 flex-wrap">
 
-        <button
-
-          onClick={() => { clearChat(); }}
-
-          className="px-3 py-1.5 bg-red-600 text-white text-vsc-xs rounded hover:bg-red-700 transition-colors font-medium"
-
-        >
-
-          New Session
-
-        </button>
-
-        <button
-
-          onClick={() => setActiveActivity('settings')}
-
-          className="px-3 py-1.5 border border-vsc-panel-border text-vsc-text-dim text-vsc-xs rounded hover:bg-vsc-list-hover transition-colors"
-
-        >
-
-          Settings
-
-        </button>
+        {pocketQuota ? (
+          <>
+            <button
+              type="button"
+              onClick={handlePocketUpgrade}
+              disabled={upgrading}
+              className="px-3 py-1.5 bg-vsc-accent text-vsc-bg text-vsc-xs rounded hover:bg-vsc-accent-hover transition-colors font-medium disabled:opacity-50"
+            >
+              {upgrading ? 'Loading…' : 'Upgrade to Pro'}
+            </button>
+            <button
+              type="button"
+              onClick={handlePocketLogin}
+              className="px-3 py-1.5 border border-vsc-panel-border text-vsc-text-dim text-vsc-xs rounded hover:bg-vsc-list-hover transition-colors"
+            >
+              Log in
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => { clearChat(); }}
+              className="px-3 py-1.5 bg-red-600 text-white text-vsc-xs rounded hover:bg-red-700 transition-colors font-medium"
+            >
+              New Session
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveActivity('settings')}
+              className="px-3 py-1.5 border border-vsc-panel-border text-vsc-text-dim text-vsc-xs rounded hover:bg-vsc-list-hover transition-colors"
+            >
+              Settings
+            </button>
+          </>
+        )}
 
       </div>
 

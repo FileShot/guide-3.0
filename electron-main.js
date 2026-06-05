@@ -1086,6 +1086,7 @@ ipcMain.handle('cancel-generation', async () => {
   ctx.agenticCancelled = true;
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
+  _send('llm-stream-end', null);
   return { success: true };
 });
 
@@ -1095,6 +1096,7 @@ ipcMain.handle('agent-pause', async () => {
   ctx.agenticCancelled = true;
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
+  _send('llm-stream-end', null);
   return { success: true };
 });
 
@@ -1104,6 +1106,7 @@ ipcMain.handle('force-send-queued', async () => {
   ctx.agenticCancelled = true;
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
+  _send('llm-stream-end', null);
   return { success: true };
 });
 
