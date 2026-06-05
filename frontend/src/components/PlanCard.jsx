@@ -24,7 +24,7 @@ export default function PlanCard({ onBuild, chatStreaming }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [planSession, chatStreaming, handleBuild]);
 
-  if (!planSession || planSession.status === 'building' || planSession.status === 'done') {
+  if (!planSession || planSession.status === 'building' || planSession.status === 'done' || planSession.status === 'dismissed') {
     return null;
   }
 

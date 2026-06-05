@@ -78,29 +78,17 @@ function pathExistsInTree(items, targetPath) {
 
 function renderFileBlock(block, key) {
   if (!block) return null;
-  if (block.op === 'edit') {
-    return (
-      <FileDiffBlock
-        key={key}
-        filePath={block.filePath}
-        language={block.language}
-        fileName={block.fileName}
-        content={block.content}
-        complete={block.complete ?? true}
-        op="edit"
-        oldText={block.oldText}
-        newText={block.newText || block.content}
-      />
-    );
-  }
   return (
-    <FileContentBlock
+    <FileDiffBlock
       key={key}
       filePath={block.filePath}
       language={block.language}
       fileName={block.fileName}
       content={block.content}
       complete={block.complete ?? true}
+      op={block.op || 'write'}
+      oldText={block.oldText || ''}
+      newText={block.newText || block.content}
     />
   );
 }
@@ -1505,6 +1493,13 @@ export default function ChatPanel() {
         });
       }
       // Preserve ready session on revision — do not reset path/todos when user asks to edit plan.
+    } else {
+      const trimmed = String(text).trim();
+      const isBuildApproved = trimmed === '[Build approved]';
+      const ps = useAppStore.getState().planSession;
+      if (!skipAddMessage && !isBuildApproved && ps?.status === 'ready') {
+        useAppStore.getState().setPlanSession({ ...ps, status: 'dismissed' });
+      }
     }
 
 
@@ -2328,6 +2323,14 @@ export default function ChatPanel() {
       },
     );
   }, [doSend]);
+
+  const planBuildRequest = useAppStore((s) => s.planBuildRequest);
+  const clearPlanBuildRequest = useAppStore((s) => s.clearPlanBuildRequest);
+  useEffect(() => {
+    if (!planBuildRequest?.session) return;
+    handleBuildPlan(planBuildRequest.session);
+    clearPlanBuildRequest();
+  }, [planBuildRequest, handleBuildPlan, clearPlanBuildRequest]);
 
   const resendFromUserEdit = useCallback((msgId, newContent) => {
     const trimmed = (newContent || '').trim();

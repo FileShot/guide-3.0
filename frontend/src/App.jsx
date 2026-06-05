@@ -169,6 +169,10 @@ export default function App() {
 
         paceEnabledRef.current = false;
 
+        if (s.planSession?.status === 'building') {
+          s.setPlanSession({ ...s.planSession, status: 'done' });
+        }
+
         break;
 
       case 'llm-token':
@@ -554,10 +558,31 @@ export default function App() {
 
         if (data?.filePath) {
 
-          const tab = s.openTabs.find(t => t.path === data.filePath);
+          const normPath = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
+          let tab = s.openTabs.find(t => normPath(t.path) === normPath(data.filePath));
 
-          if (tab) {
-
+          if (!tab) {
+            const fileName = data.filePath.split(/[\\/]/).pop() || data.filePath;
+            s.openFile({
+              path: data.filePath,
+              name: fileName,
+              extension: fileName.includes('.') ? fileName.split('.').pop() : '',
+              content: data.newContent || '',
+              originalContent: data.originalContent != null ? data.originalContent : '',
+            });
+            tab = useAppStore.getState().openTabs.find(t => normPath(t.path) === normPath(data.filePath));
+          } else if (data.originalContent != null) {
+            const newContent = data.newContent || '';
+            const baseline = data.originalContent;
+            useAppStore.setState({
+              openTabs: useAppStore.getState().openTabs.map((t) =>
+                t.id === tab.id
+                  ? { ...t, content: newContent, originalContent: baseline, modified: newContent !== baseline }
+                  : t,
+              ),
+            });
+            tab = useAppStore.getState().openTabs.find(t => t.id === tab.id);
+          } else {
             // R51-Fix: Don't markTabSaved — keep the tab in a modified state
 
             // so dirty diff decorations (green/red gutter) show the AI's changes.
@@ -565,7 +590,6 @@ export default function App() {
             // originalContent stays as-is (the pre-AI state), content gets updated.
 
             s.updateTabContent(tab.id, data.newContent || '');
-
           }
 
           // R51-Fix: Populate chatFilesChanged so the keep/undo banner appears
@@ -824,15 +848,20 @@ export default function App() {
       case 'plan-ready':
 
         if (data) {
+          const cur = s.planSession;
+          const curStatus = cur?.status;
+          if (curStatus === 'building' || curStatus === 'done' || curStatus === 'dismissed') {
+            break;
+          }
           s.setPlanSession({
-            id: data.path || `plan-${Date.now()}`,
+            id: data.path || cur?.id || `plan-${Date.now()}`,
             path: data.path,
             fullPath: data.fullPath,
             content: data.content,
             title: data.title || 'Implementation Plan',
             overview: data.overview || '',
             todos: Array.isArray(data.todos) ? data.todos : [],
-            status: 'ready',
+            status: curStatus === 'planning' || !curStatus ? 'ready' : (curStatus === 'ready' ? 'ready' : 'ready'),
           });
         }
 

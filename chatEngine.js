@@ -76,52 +76,20 @@ function _jsonUnescape(s) {
  *   escPending  — true if trailing \ needs next chunk to resolve
  *   ended       — true if unescaped " (end of JSON string) was found
  */
-function _jsonStringChunkDecode(chunk, escPending) {
-  let out = '';
-  let i = 0;
-  if (escPending && chunk.length > 0) {
-    const c = chunk[0];
-    switch (c) {
-      case '"':  out += '"';  break;
-      case '\\': out += '\\'; break;
-      case '/':  out += '/';  break;
-      case 'n':  out += '\n'; break;
-      case 'r':  out += '\r'; break;
-      case 't':  out += '\t'; break;
-      case 'b':  out += '\b'; break;
-      case 'f':  out += '\f'; break;
-      default:   out += '\\' + c;
-    }
-    i = 1;
+const { jsonStringChunkDecode: _jsonStringChunkDecode } = require('./tools/jsonStringChunkDecode');
+
+function _decodeFenceContentEscape(ch) {
+  switch (ch) {
+    case 'n': return '\n';
+    case 't': return '\t';
+    case 'r': return '\r';
+    case '"': return '"';
+    case '\\': return '\\';
+    case '/': return '/';
+    case 'b': return '\b';
+    case 'f': return '\f';
+    default: return '\\' + ch;
   }
-  while (i < chunk.length) {
-    const c = chunk[i];
-    if (c === '\\') {
-      if (i + 1 < chunk.length) {
-        const nc = chunk[i + 1];
-        switch (nc) {
-          case '"':  out += '"';  break;
-          case '\\': out += '\\'; break;
-          case '/':  out += '/';  break;
-          case 'n':  out += '\n'; break;
-          case 'r':  out += '\r'; break;
-          case 't':  out += '\t'; break;
-          case 'b':  out += '\b'; break;
-          case 'f':  out += '\f'; break;
-          default:   out += '\\' + nc;
-        }
-        i += 2;
-      } else {
-        return { out, escPending: true, ended: false };
-      }
-    } else if (c === '"') {
-      return { out, escPending: false, ended: true };
-    } else {
-      out += c;
-      i++;
-    }
-  }
-  return { out, escPending: false, ended: false };
 }
 
 // Pre-compiled regex patterns for the streaming tool call filter.
@@ -1659,6 +1627,34 @@ class ChatEngine extends EventEmitter {
       };
       let _sfVisibleChars = 0; // tracks chars forwarded to frontend (after filter removes tool JSON)
       let _sfFenceInThink = false; // fence that opened inside think mode
+      let _sfEarlyFileStartEmitted = false;
+
+      const _tryEarlyFileContentStart = (buf) => {
+        if (_sfEarlyFileStartEmitted || !_sfFileWriteDetected || _sfContentDone || !onStreamEvent) return;
+        const fpM = buf.match(RE_FILE_PATH);
+        if (!fpM) return;
+        const filePath = _jsonUnescape(fpM[1]);
+        if (!filePath || !shouldStreamFileContentForAgent(options, filePath)) return;
+        const np = _normalizePath(filePath);
+        if (_sfStreamedFileWrites.has(np)) return;
+        _sfEarlyFileStartEmitted = true;
+        _sfContentFilePath = filePath;
+        if (_sfStreamIsEdit && !_sfContentOldText) {
+          const oldM = buf.match(RE_OLD_TEXT_CAPTURE);
+          if (oldM) _sfContentOldText = _jsonUnescape(oldM[1]);
+        }
+        const fileName = filePath.split(/[\\/]/).pop() || filePath;
+        const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+        onStreamEvent('file-content-start', {
+          filePath,
+          fileName,
+          language: ext,
+          fileKey: filePath,
+          op: _sfStreamIsEdit ? 'edit' : 'write',
+          oldText: _sfContentOldText || undefined,
+        });
+        _sfStreamedFileWrites.add(np);
+      };
 
       const _sfForward = (text) => {
         if (!text) return;
@@ -1709,6 +1705,7 @@ class ChatEngine extends EventEmitter {
         _sfContentEsc = false;
         _sfContentOldText = '';
         _sfStreamIsEdit = false;
+        _sfEarlyFileStartEmitted = false;
         _sfUnicodeCount = 0;
         _sfUnicodeChars = '';
         _sfThinkTagMatch = '';
@@ -1976,7 +1973,7 @@ class ChatEngine extends EventEmitter {
                   case 'b': decoded = '\b'; break;
                   case 'f': decoded = '\f'; break;
                   case 'u': _sfUnicodeCount = 4; _sfUnicodeChars = ''; decoded = null; break;
-                  default: decoded = ch;
+                  default: decoded = _decodeFenceContentEscape(ch);
                 }
                 _sfContentEsc = false;
                 if (decoded !== null) _sfContentBuf += decoded;
@@ -2058,6 +2055,9 @@ class ChatEngine extends EventEmitter {
                 _sfFileWriteDetected = true;
                 _sfStreamIsEdit = RE_FILE_EDIT_TOOLS.test(_sfFenceBuf);
               }
+            }
+            if (_sfFileWriteDetected && !_sfContentDone) {
+              _tryEarlyFileContentStart(_sfFenceBuf);
             }
 
             // Detect closing ``` — but NOT while inside the content string
@@ -2192,7 +2192,7 @@ class ChatEngine extends EventEmitter {
                 case 'b': decoded = '\b'; break;
                 case 'f': decoded = '\f'; break;
                 case 'u': _sfUnicodeCount = 4; _sfUnicodeChars = ''; decoded = null; break;
-                default: decoded = ch;
+                default: decoded = _decodeFenceContentEscape(ch);
               }
               _sfContentEsc = false;
               if (decoded !== null) _sfContentBuf += decoded;
@@ -2251,6 +2251,9 @@ class ChatEngine extends EventEmitter {
               _sfFileWriteDetected = true;
               _sfStreamIsEdit = RE_FILE_EDIT_TOOLS.test(_sfBuf);
             }
+          }
+          if (_sfFileWriteDetected && !_sfContentDone) {
+            _tryEarlyFileContentStart(_sfBuf);
           }
 
           if (_sfEscaped) { _sfEscaped = false; continue; }
@@ -2483,6 +2486,7 @@ class ChatEngine extends EventEmitter {
             _fcStreams.set(callIndex, {
               logBuf: '', buf: '', phase: 0, chunkCount: 0,
               filePath: '', fileName: '', ext: '', escPending: false,
+              startEmitted: false, oldText: '',
             });
             // File stream ops use FileContentBlock / FileDiffBlock — others get tool-generating card
             const _FC_FILE_STREAM_OPS = new Set(['write_file', 'create_file', 'append_to_file', 'edit_file', 'replace_in_file']);
@@ -2534,15 +2538,12 @@ class ChatEngine extends EventEmitter {
               if (oldM) s.oldText = _jsonUnescape(oldM[1]);
             }
 
-            const contentRe = s.isEdit ? /"newText"\s*:\s*"([\s\S]*)/ : /"content"\s*:\s*"([\s\S]*)/;
-            const contentMatch = s.buf.match(contentRe);
-            if (contentMatch && s.filePath) {
+            if (s.filePath && !s.startEmitted) {
               if (!shouldStreamFileContentForAgent(options, s.filePath)) {
                 s.phase = 2;
                 return;
               }
-              s.phase = 1;
-              s.buf = '';
+              s.startEmitted = true;
               if (onStreamEvent) {
                 onStreamEvent('file-content-start', {
                   filePath: s.filePath,
@@ -2552,6 +2553,28 @@ class ChatEngine extends EventEmitter {
                   op: s.isEdit ? 'edit' : 'write',
                   oldText: s.oldText || undefined,
                 });
+              }
+            }
+
+            const contentRe = s.isEdit ? /"newText"\s*:\s*"([\s\S]*)/ : /"content"\s*:\s*"([\s\S]*)/;
+            const contentMatch = s.buf.match(contentRe);
+            if (contentMatch && s.filePath) {
+              if (!shouldStreamFileContentForAgent(options, s.filePath)) {
+                s.phase = 2;
+                return;
+              }
+              s.phase = 1;
+              s.buf = '';
+              if (!s.startEmitted && onStreamEvent) {
+                onStreamEvent('file-content-start', {
+                  filePath: s.filePath,
+                  fileName: s.fileName,
+                  language: s.ext,
+                  fileKey: s.filePath,
+                  op: s.isEdit ? 'edit' : 'write',
+                  oldText: s.oldText || undefined,
+                });
+                s.startEmitted = true;
               }
               const after = contentMatch[1];
               if (after) {

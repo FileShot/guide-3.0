@@ -1516,11 +1516,12 @@ class MCPToolServer {
       this.toolHistory.shift();
     }
 
-    if (toolName === 'write_file' && result?.success && isPlanFilePath(params.filePath || params.path)) {
+    const inBuildPhase = this._agentContext?.agentPhase === 'building';
+    if (!inBuildPhase && toolName === 'write_file' && result?.success && isPlanFilePath(params.filePath || params.path)) {
       this._emitPlanReady(params.filePath || params.path, params.content != null ? String(params.content) : '', result.path);
     }
 
-    if (toolName === 'edit_file' && result?.success && isPlanFilePath(params.filePath || params.path)) {
+    if (!inBuildPhase && toolName === 'edit_file' && result?.success && isPlanFilePath(params.filePath || params.path)) {
       try {
         const fp = result.path || path.resolve(this.projectPath, params.filePath || params.path);
         const content = await fs.readFile(fp, 'utf8');
@@ -1896,6 +1897,17 @@ class MCPToolServer {
     try {
       let content = await fs.readFile(fullPath, 'utf8');
       const originalContent = content;
+
+      if (this.browserManager?.parentWindow) {
+        this.browserManager.parentWindow.webContents.send('agent-file-modified', {
+          filePath: fullPath,
+          newContent: originalContent,
+          originalContent,
+          preview: true,
+          isNew: false,
+          tool: 'edit_file',
+        });
+      }
 
       const normLF = s => s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
       const trimLines = s => s.split('\n').map(l => l.trimEnd()).join('\n');

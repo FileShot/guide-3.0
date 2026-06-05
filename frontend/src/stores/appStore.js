@@ -145,6 +145,35 @@ function findActiveStreamingFileBlockIndex(blocks, fileKey) {
 
 }
 
+function normalizeTabPath(filePath) {
+  return String(filePath || '').replace(/\\/g, '/').toLowerCase();
+}
+
+/** Mirror streaming file content into an open editor tab (Monaco dirty diff). */
+function syncStreamingFileToEditor(get, filePath, content, { op, oldText, newText, language, fileName, openIfMissing } = {}) {
+  if (!filePath) return;
+  const norm = normalizeTabPath(filePath);
+  let tab = get().openTabs.find((t) => normalizeTabPath(t.path) === norm);
+  if (!tab && openIfMissing) {
+    get().openFile({
+      path: filePath,
+      name: fileName || filePath.split(/[\\/]/).pop(),
+      extension: language || filePath.split('.').pop(),
+      content: '',
+    });
+    tab = get().openTabs.find((t) => normalizeTabPath(t.path) === norm);
+  }
+  if (!tab) return;
+  let nextContent = content;
+  if (op === 'edit' && oldText) {
+    const base = tab.originalContent ?? tab.content ?? '';
+    nextContent = base.includes(oldText)
+      ? base.replace(oldText, newText || content)
+      : content;
+  }
+  get().updateTabContent(tab.id, nextContent);
+}
+
 
 
 const useAppStore = create((set, get) => ({
@@ -363,7 +392,9 @@ const useAppStore = create((set, get) => ({
 
       content: fileInfo.isBinary ? '' : (fileInfo.content || ''),
 
-      originalContent: fileInfo.isBinary ? '' : (fileInfo.content || ''),
+      originalContent: fileInfo.isBinary
+        ? ''
+        : (fileInfo.originalContent != null ? fileInfo.originalContent : (fileInfo.content || '')),
 
       modified: false,
 
@@ -1253,6 +1284,15 @@ const useAppStore = create((set, get) => ({
 
     });
 
+    syncStreamingFileToEditor(get, filePath, '', {
+      op: op || 'write',
+      oldText,
+      newText,
+      language,
+      fileName,
+      openIfMissing: true,
+    });
+
   },
 
   appendFileContentToken: (chunk) => {
@@ -1268,6 +1308,9 @@ const useAppStore = create((set, get) => ({
     const targetIdx = findActiveStreamingFileBlockIndex(store.streamingFileBlocks, store.activeStreamingFileKey);
     if (targetIdx === -1) return;
 
+    const block = store.streamingFileBlocks[targetIdx];
+    if (block.complete) return;
+
     // Per-token flush for smooth file-content streaming (plan/file write blocks only).
     if (store._fileTokenTimer) {
       clearTimeout(store._fileTokenTimer);
@@ -1279,15 +1322,15 @@ const useAppStore = create((set, get) => ({
     updated[targetIdx] = last;
     set({ streamingFileBlocks: updated, _fileTokenBuffer: null, _fileTokenTimer: null });
 
-    if (last.op === 'edit' && last.filePath && last.oldText) {
-      const norm = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
-      const tab = get().openTabs.find((t) => norm(t.path) === norm(last.filePath));
-      if (tab) {
-        const projected = tab.originalContent.includes(last.oldText)
-          ? tab.originalContent.replace(last.oldText, last.newText || last.content)
-          : tab.content;
-        get().updateTabContent(tab.id, projected);
-      }
+    if (last.filePath) {
+      syncStreamingFileToEditor(get, last.filePath, last.content, {
+        op: last.op || 'write',
+        oldText: last.oldText,
+        newText: last.newText || last.content,
+        language: last.language,
+        fileName: last.fileName,
+        openIfMissing: true,
+      });
     }
   },
 
@@ -1384,6 +1427,18 @@ const useAppStore = create((set, get) => ({
       _textTokenTimer: null,
       _fileTokenBuffer: null,
       _fileTokenTimer: null,
+    });
+
+    const finalOp = op || newBlocks[fileIndex]?.op || 'write';
+    const finalOld = oldText != null ? String(oldText) : (newBlocks[fileIndex]?.oldText || '');
+    const finalNew = newText != null ? String(newText) : String(content);
+    syncStreamingFileToEditor(get, filePath, String(content), {
+      op: finalOp,
+      oldText: finalOld,
+      newText: finalNew,
+      language: language || newBlocks[fileIndex]?.language,
+      fileName: fileName || newBlocks[fileIndex]?.fileName,
+      openIfMissing: true,
     });
   },
 
@@ -2030,6 +2085,9 @@ const useAppStore = create((set, get) => ({
   planSession: null,
   setPlanSession: (planSession) => set({ planSession }),
   clearPlanSession: () => set({ planSession: null }),
+  planBuildRequest: null,
+  requestPlanBuild: (session) => set({ planBuildRequest: { session, ts: Date.now() } }),
+  clearPlanBuildRequest: () => set({ planBuildRequest: null }),
 
   // ─── Pending Permission Request (from execution policy) ──
   pendingPermission: null, // { id, toolName, params, reason }

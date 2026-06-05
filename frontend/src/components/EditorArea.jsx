@@ -3,6 +3,7 @@
  * Shows a welcome screen when no files are open.
  */
 import { useRef, useCallback, useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import Editor from '@monaco-editor/react';
 import useAppStore from '../stores/appStore';
 import DiffViewer from './DiffViewer';
@@ -37,6 +38,8 @@ import {
   ChevronUp, ChevronDown, Check, Undo2, Columns, MoreHorizontal,
   Monitor,
 } from 'lucide-react';
+import PlanBuildButton from './PlanBuildButton';
+import { isPlanFilePath } from '../utils/planPath';
 
 // ── Dirty diff helper — compute line-level changes ──
 function computeDirtyDiff(original, current) {
@@ -650,7 +653,15 @@ export default function EditorArea() {
       );
     }
     const refToUse = isSecondary ? secondaryEditorRef : editorRef;
+    const showPlanToolbar = isPlanFilePath(paneActiveTab.path);
     return (
+      <div className="flex flex-col h-full min-h-0">
+      {showPlanToolbar && (
+        <div className="flex items-center px-3 py-0.5 border-b border-vsc-panel-border/20 bg-vsc-bg min-h-[28px]">
+          <PlanBuildButton filePath={paneActiveTab.path} />
+        </div>
+      )}
+      <div className="flex-1 min-h-0">
       <Editor
         key={paneActiveTab.id}
         defaultLanguage={paneActiveTab.language}
@@ -703,15 +714,37 @@ export default function EditorArea() {
         }}
         loading={<div className="flex items-center justify-center h-full text-vsc-text-dim"><div className="spinner mr-2" />Loading editor...</div>}
       />
+      </div>
+      </div>
     );
   };
 
   const secondaryActiveTab = secondaryTabs.find(t => t.id === activeTabId) || secondaryTabs[secondaryTabs.length - 1] || null;
   const primaryActiveTab = primaryTabs.find(t => t.id === activeTabId) || primaryTabs[primaryTabs.length - 1] || activeTab;
 
+  const tabContextMenuPortal = tabContextMenu ? createPortal(
+    <TabContextMenu
+      x={tabContextMenu.x}
+      y={tabContextMenu.y}
+      tabId={tabContextMenu.tabId}
+      isBrowserTab={openTabs.find(t => t.id === tabContextMenu.tabId)?.type === 'browser'}
+      editorSplit={editorSplit}
+      onClose={() => setTabContextMenu(null)}
+      onCloseTab={handleCloseTab}
+      onCloseOthers={handleCloseOtherTabs}
+      onCloseAll={handleCloseAllTabs}
+      onCloseSaved={handleCloseSavedTabs}
+      onCopyPath={handleCopyPath}
+      onReload={handleReloadBrowserTab}
+      onToggleSplit={toggleEditorSplit}
+    />,
+    document.body,
+  ) : null;
+
   if (editorSplit) {
     return (
       <div className="flex flex-col h-full">
+        {tabContextMenuPortal}
         <div className="flex flex-1 min-h-0">
           <div className="flex flex-col flex-1 min-w-0 border-r border-vsc-panel-border/20" onMouseDown={() => setActiveEditorGroup(1)}>
             {renderTabBar(primaryTabs, 1)}
@@ -728,76 +761,14 @@ export default function EditorArea() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Tab Bar */}
-      <div className="flex h-tabbar bg-vsc-tab-border overflow-x-auto scrollbar-none no-select">
-        {openTabs.map(tab => {
-          const isHtml = tab.extension === 'html' || tab.extension === 'htm';
-          const isBrowserTab = tab.type === 'browser';
-          return (
-            <div
-              key={tab.id}
-              className={`editor-tab ${tab.id === activeTabId ? 'active' : ''}`}
-              onClick={() => setActiveTab(tab.id)}
-              onContextMenu={(e) => handleTabContextMenu(e, tab.id)}
-            >
-              {isBrowserTab ? <Globe size={14} className="text-vsc-accent flex-shrink-0" /> : <FileIcon extension={tab.extension} size={14} />}
-              <span className="truncate text-vsc-sm">{tab.name}</span>
-              {tab.modified && <Circle size={8} className="text-vsc-text-bright fill-current flex-shrink-0" />}
-              {/* Play button for HTML files */}
-              {isHtml && (
-                <button
-                  className="p-0.5 hover:bg-vsc-list-hover rounded text-vsc-success opacity-60 hover:opacity-100"
-                  onClick={(e) => { 
-                    e.stopPropagation(); 
-                    closeDiff();
-                    togglePreviewMode(tab.id);
-                  }}
-                  title={previewMode[tab.id] ? 'Show code' : 'Preview in viewport'}
-                >
-                  <Play size={12} />
-                </button>
-              )}
-              <button
-                className="close-btn"
-                onClick={(e) => { e.stopPropagation(); handleCloseTab(tab.id); }}
-              >
-                <X size={14} />
-              </button>
-            </div>
-          );
-        })}
-        <button
-          className="flex items-center px-2 text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover flex-shrink-0"
-          title="Split editor right"
-          onClick={toggleEditorSplit}
-        >
-          <Columns size={14} />
-        </button>
-      </div>
-
-      {/* Tab Context Menu */}
-      {tabContextMenu && (
-        <TabContextMenu
-          x={tabContextMenu.x}
-          y={tabContextMenu.y}
-          tabId={tabContextMenu.tabId}
-          isBrowserTab={openTabs.find(t => t.id === tabContextMenu.tabId)?.type === 'browser'}
-          editorSplit={editorSplit}
-          onClose={() => setTabContextMenu(null)}
-          onCloseTab={handleCloseTab}
-          onCloseOthers={handleCloseOtherTabs}
-          onCloseAll={handleCloseAllTabs}
-          onCloseSaved={handleCloseSavedTabs}
-          onCopyPath={handleCopyPath}
-          onReload={handleReloadBrowserTab}
-          onToggleSplit={toggleEditorSplit}
-        />
-      )}
+      {tabContextMenuPortal}
+      {renderTabBar(openTabs, 1)}
 
       {/* Breadcrumb */}
       {activeTab && (
         <div className="h-breadcrumb flex items-center px-3 bg-vsc-bg text-vsc-xs text-vsc-breadcrumb border-b border-vsc-panel-border no-select overflow-hidden min-w-0">
-          <div className="flex items-center min-w-0 overflow-hidden flex-1">
+          <PlanBuildButton filePath={activeTab.path} />
+          <div className="flex items-center min-w-0 overflow-hidden flex-1 ml-2">
           {activeTab.path.split(/[\\/]/).map((part, i, arr) => (
             <span key={`path-${i}`} className="shrink-0 last:shrink">
               {i > 0 && <span className="mx-1 text-vsc-text-dim">/</span>}
@@ -1620,11 +1591,11 @@ function TabContextMenu({
     position: 'fixed',
     left: Math.min(x, window.innerWidth - 200),
     top: Math.min(y, window.innerHeight - 180),
-    zIndex: 9999,
+    zIndex: 100000,
   };
 
   return (
-    <div ref={menuRef} className="context-menu" style={style}>
+    <div ref={menuRef} className="context-menu" style={style} role="menu">
       {isBrowserTab && onReload && (
         <button className="context-menu-item" onClick={() => onReload()}>
           <RefreshCw size={14} className="mr-2 text-vsc-text-dim" /> Reload

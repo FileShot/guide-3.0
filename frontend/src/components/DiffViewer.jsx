@@ -6,10 +6,12 @@ import { useState, useRef, useEffect } from 'react';
 import { DiffEditor } from '@monaco-editor/react';
 import useAppStore from '../stores/appStore';
 import { X, Columns, Rows } from 'lucide-react';
+import PlanBuildButton from './PlanBuildButton';
 
 export default function DiffViewer() {
   const diffState = useAppStore(s => s.diffState);
   const closeDiff = useAppStore(s => s.closeDiff);
+  const activeTab = useAppStore((s) => s.openTabs.find((t) => t.id === s.activeTabId));
   const [inline, setInline] = useState(false);
   const diffEditorRef = useRef(null);
 
@@ -33,7 +35,8 @@ export default function DiffViewer() {
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="h-[35px] flex items-center justify-between px-3 border-b border-vsc-panel-border/25 no-select flex-shrink-0 bg-vsc-tab-border">
-        <div className="flex items-center gap-2 text-vsc-sm text-vsc-text">
+        <div className="flex items-center gap-2 text-vsc-sm text-vsc-text min-w-0">
+          <PlanBuildButton filePath={activeTab?.path} />
           <span className="text-vsc-accent font-medium">Diff</span>
           <span className="text-vsc-text-dim truncate max-w-[200px]">{diffState.title || 'Untitled'}</span>
         </div>
