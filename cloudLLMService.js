@@ -108,8 +108,7 @@ const PROVIDER_MODELS = {
     { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant (Free, 14K RPM)' },
   ],
   cerebras: [
-    { id: 'gpt-oss-120b', name: 'GPT-OSS 120B (Free, Default, 30 RPM/key)' },
-    { id: 'llama3.1-8b', name: 'Llama 3.1 8B (Free, 30 RPM/key)' },
+    { id: 'gpt-oss-120b', name: 'GPT-OSS 120B (Free, Default, ~3000 tok/s)' },
   ],
   sambanova: [
     { id: 'Meta-Llama-3.3-70B-Instruct', name: 'Llama 3.3 70B (Free, Default)' },
@@ -231,7 +230,7 @@ const CONTEXT_LIMITS = {
   'meta-llama/llama-4-scout-17b-16e-instruct': 131072,
   'moonshotai/kimi-k2-instruct': 131072,
   'openai/gpt-oss-120b': 32768, 'qwen/qwen3-32b': 32768,
-  'gpt-oss-120b': 32768, 'llama3.1-8b': 8192,
+  'gpt-oss-120b': 32768,
   'DeepSeek-V3.2': 65536, 'DeepSeek-V3.1': 65536, 'Meta-Llama-3.3-70B-Instruct': 8192,
   'DeepSeek-R1-0528': 65536, 'Qwen3-235B': 32768, 'Qwen3-32B': 32768,
   'Llama-4-Maverick-17B-128E-Instruct': 131072, 'MiniMax-M2.5': 65536,
@@ -270,7 +269,7 @@ const PREFERRED_FALLBACK_MODEL = {
 
 // ─── Default RPM per-key estimates for free tiers ────────────────────────────
 const DEFAULT_RPM = {
-  groq: 30, cerebras: 30, sambanova: 10, google: 15,
+  groq: 30, cerebras: 5, sambanova: 10, google: 15,
   openrouter: 20, openai: 3, anthropic: 5, xai: 60,
 };
 
@@ -297,15 +296,12 @@ const CEREBRAS_POOL_KEYS = [
   'OSkxd2I0LjA+KGk+Py1pImIqLG8sOSI+Py1jNz9jMTciPD4iKDc3LSM5Ii4/Km8wMDwsaA==',
   'OSkxdzIyPzI0bjRvbzkuLT5sMWljPC40b2g8P25sLS0sbzdsN2IxIjEyPzk5MD83LC1sLg==',
   'OSkxd2w0MjkwYmhibigobDE+NzkwbCNuaCJjMiNsbGJuY2M/LmxjN28jPjw8Kj5jPGM5bg==',
-  'OSkxdz4qPygyPiJiLG9uaS05MG5oIz5oby43LGk+Mmk3I2kjPmMuLGw0bGMxOTA5LG4tPw==',
   'OSkxdzlobzQ3PiwuOTQqN283Mi00KjIuKixjMj9pIippIzE+IjQtbGI3IzkjbD8uN28xIg==',
   'OSkxdzdubzxoLSosMWw8OSIxaCMtLjQ+MjEjPj5jbm4yLi5ubzJpYyosaCxoNDE+OS5jMg==',
   'OSkxd2gwKigiaD85LjwxPCguLCxpbC4wLi1jMihoaSIqaTQsPzI0aWg0PjkjP2IxOSJvIg==',
   'OSkxd2ljLDk3NCpsNGg8Yi0+YjIoPDxsPjE+LCIibCo0aCgtMSo3Yj8qPz8/PGNjIj43LQ==',
   'OSkxd29iPC40b2MsKCMxPy4yN24uYipub2wqLGkxYj8yLD8yPz4+bDxpaCM3Kj4sYywjOQ==',
-  'OSkxdzxvMSJuMGw0MGw8MD4ybmhsaCM3MWxvLDktKm5uaDxpIio/OTliLG4wLGkwKmkxMg==',
   'OSkxd28qKiIuYiwtYiwtbmhpIjEiMGw3Yz4yPChvYjc+LipuaW40KCI+MTdpbyxjbyhiPw==',
-  'OSkxd29oPj83bChubj4oP280MWwqLi0uMTFoLjFvMjw8P2gwIy4iLGIjYmNjbGlpbzAtaA==',
   'OSkxdz8taDkxLm4jbz9jLDluNy0wbDc5OWIyLGwwMm9jKDxvLG4iIypoPC03MSJjND9jMQ==',
 ];
 
@@ -349,7 +345,7 @@ class CloudLLMService extends EventEmitter {
     };
 
     this.activeProvider = null;
-    this.activeModel = 'llama3.1-8b';
+    this.activeModel = 'gpt-oss-120b';
 
     this._openRouterModelsCache = null;
     this._openRouterModelsFetchedAt = 0;
@@ -400,6 +396,8 @@ class CloudLLMService extends EventEmitter {
       for (const encoded of GROQ_POOL_KEYS) {
         this.addKeyToPool('groq', decode(encoded));
       }
+      const cerebrasPool = this._keyPools.cerebras || [];
+      console.log(`[CloudLLM] Cerebras key pool: ${cerebrasPool.length} keys loaded`);
     } catch (e) {
       console.warn('[CloudLLM] Key seed error:', e.message);
     }
@@ -499,7 +497,7 @@ class CloudLLMService extends EventEmitter {
   addKeyToPool(provider, key) {
     if (!this._keyPools[provider]) this._keyPools[provider] = [];
     if (this._keyPools[provider].some(e => e.key === key)) return;
-    this._keyPools[provider].push({ key, cooldownUntil: 0 });
+    this._keyPools[provider].push({ key, cooldownUntil: 0, disabled: false });
     if (!this._keyPoolIndex[provider]) this._keyPoolIndex[provider] = 0;
     if (!this.apiKeys[provider] || !this.apiKeys[provider].trim()) {
       this.apiKeys[provider] = key;
@@ -515,6 +513,7 @@ class CloudLLMService extends EventEmitter {
 
     for (let i = 0; i < pool.length; i++) {
       const idx = (startIdx + i) % pool.length;
+      if (pool[idx].disabled) continue;
       if (pool[idx].cooldownUntil <= now) {
         this._keyPoolIndex[provider] = (idx + 1) % pool.length;
         return pool[idx].key;
@@ -535,12 +534,23 @@ class CloudLLMService extends EventEmitter {
     if (entry) entry.cooldownUntil = Date.now() + durationMs;
   }
 
+  _disablePoolKey(provider, key, reason) {
+    const pool = this._keyPools[provider];
+    if (!pool) return;
+    const entry = pool.find(e => e.key === key);
+    if (entry && !entry.disabled) {
+      entry.disabled = true;
+      console.warn(`[CloudLLM] Disabled ${provider} key ...${key.slice(-6)} (${reason})`);
+    }
+  }
+
   getPoolStatus(provider) {
     const pool = this._keyPools[provider];
     if (!pool) return { total: 0, available: 0, onCooldown: 0 };
     const now = Date.now();
-    const available = pool.filter(e => e.cooldownUntil <= now).length;
-    return { total: pool.length, available, onCooldown: pool.length - available };
+    const available = pool.filter(e => !e.disabled && e.cooldownUntil <= now).length;
+    const disabled = pool.filter(e => e.disabled).length;
+    return { total: pool.length, available, onCooldown: pool.length - available - disabled, disabled };
   }
 
   // ─── Provider catalog ───────────────────────────────────────────────────────
@@ -864,7 +874,8 @@ class CloudLLMService extends EventEmitter {
     }
 
     const pool = this._keyPools[provider];
-    const maxRetries = pool ? pool.length : 1;
+    const activePool = pool ? pool.filter(e => !e.disabled) : [];
+    const maxRetries = activePool.length || (pool ? pool.length : 1);
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       const attemptKey = this._getPoolKey(provider) || this.apiKeys[provider];
@@ -884,17 +895,26 @@ class CloudLLMService extends EventEmitter {
         const msgLower = msg.toLowerCase();
         const statusCode = err.status || err.statusCode || err.response?.status || 0;
 
-        let is429, is403, is5xx;
+        let is429, is401, is403, is5xx;
         if (statusCode > 0) {
-          // Use the actual HTTP status code — no string matching needed
-          is429 = statusCode === 429 || statusCode === 401 || statusCode === 413;
-          is403 = !is429 && statusCode === 403;
-          is5xx = !is429 && !is403 && statusCode >= 500 && statusCode < 600;
+          is401 = statusCode === 401;
+          is429 = !is401 && (statusCode === 429 || statusCode === 413);
+          is403 = !is401 && !is429 && statusCode === 403;
+          is5xx = !is401 && !is429 && !is403 && statusCode >= 500 && statusCode < 600;
         } else {
-          // Fallback: string matching only when no status code is available
-          is429 = msg.includes('429') || msg.includes('401') || msg.includes('413') || msgLower.includes('rate limit') || msgLower.includes('unauthorized') || msgLower.includes('too large') || msgLower.includes('tokens per minute');
-          is403 = !is429 && (msg.includes('403') || msgLower.includes('forbidden'));
-          is5xx = !is429 && !is403 && (msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('ECONNRESET') || msgLower.includes('timeout'));
+          is401 = msg.includes('401') || msgLower.includes('unauthorized');
+          is429 = !is401 && (msg.includes('429') || msg.includes('413') || msgLower.includes('rate limit') || msgLower.includes('too large') || msgLower.includes('tokens per minute'));
+          is403 = !is401 && !is429 && (msg.includes('403') || msgLower.includes('forbidden'));
+          is5xx = !is401 && !is429 && !is403 && (msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('ECONNRESET') || msgLower.includes('timeout'));
+        }
+
+        if (is401) {
+          this._disablePoolKey(provider, attemptKey, '401 auth failed');
+          if (pool && pool.length > 1 && attempt < maxRetries - 1) {
+            console.log(`[CloudLLM] 401 on ${provider} key ...${attemptKey.slice(-6)}, skipping dead key (attempt ${attempt + 2}/${maxRetries})`);
+            continue;
+          }
+          throw new Error(`${this._getProviderLabel(provider)} API key rejected (401). Check your API key in Settings.`);
         }
 
         if (is429) {

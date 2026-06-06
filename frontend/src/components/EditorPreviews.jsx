@@ -5,15 +5,16 @@
  */
 import { useState, useRef, useMemo } from 'react';
 import { Play, Code2, ExternalLink, RefreshCw, Eye } from 'lucide-react';
-
-// ─── Helpers ─────────────────────────────────────────────
+import { pathString, fileBaseName } from '../lib/pathString';
 
 function getFileName(filePath) {
-  return filePath?.split(/[\\/]/).pop() || '';
+  return fileBaseName(filePath);
 }
 
 function getFileDir(filePath) {
-  return filePath?.replace(/\\/g, '/').replace(/\/[^/]*$/, '') || '';
+  const s = pathString(filePath);
+  if (!s) return '';
+  return s.replace(/\\/g, '/').replace(/\/[^/]*$/, '') || '';
 }
 
 const PREVIEW_EXTENSIONS = new Set([
@@ -22,18 +23,18 @@ const PREVIEW_EXTENSIONS = new Set([
 ]);
 
 export function isPreviewable(filePath) {
-  if (!filePath) return false;
-  // F7: blob: and data: URLs from chat attachments are previewable as images
-  if (filePath.startsWith('blob:') || filePath.startsWith('data:')) return true;
-  const ext = filePath.split('.').pop()?.toLowerCase();
+  const s = pathString(filePath);
+  if (!s) return false;
+  if (s.startsWith('blob:') || s.startsWith('data:')) return true;
+  const ext = s.split('.').pop()?.toLowerCase();
   return PREVIEW_EXTENSIONS.has(ext);
 }
 
 export function getPreviewType(filePath) {
-  if (!filePath) return null;
-  // F7: blob: and data: URLs from chat attachments are image previews
-  if (filePath.startsWith('blob:') || filePath.startsWith('data:')) return 'image';
-  const ext = filePath.split('.').pop()?.toLowerCase();
+  const s = pathString(filePath);
+  if (!s) return null;
+  if (s.startsWith('blob:') || s.startsWith('data:')) return 'image';
+  const ext = s.split('.').pop()?.toLowerCase();
   if (ext === 'html' || ext === 'htm') return 'html';
   if (ext === 'md' || ext === 'markdown') return 'markdown';
   if (ext === 'json') return 'json';
@@ -305,7 +306,8 @@ export function JsonPreview({ content, filePath, onToggleCode }) {
 // ─── CSV/TSV Preview ─────────────────────────────────────
 
 export function CsvPreview({ content, filePath, onToggleCode }) {
-  const isTsv = filePath?.toLowerCase().endsWith('.tsv');
+  const pathStr = pathString(filePath);
+  const isTsv = pathStr.toLowerCase().endsWith('.tsv');
   const delimiter = isTsv ? '\t' : ',';
 
   const { headers, rows } = useMemo(() => {

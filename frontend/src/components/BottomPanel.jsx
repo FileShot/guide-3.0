@@ -1,4 +1,4 @@
-﻿/**
+/**
  * BottomPanel — Terminal, Output, Problems, Debug Console, and Ports tabs.
  * VS Code-style: tabs left, terminal instance list right, badge on Problems.
  */
@@ -7,6 +7,7 @@ import useAppStore from '../stores/appStore';
 import { openFileFromReadResponse } from '../utils/openFileFromRead';
 import { Terminal as TerminalIcon, FileOutput, AlertTriangle, X, Plus, Trash2, Globe, Bug, ChevronDown, MoreHorizontal, CheckSquare, RefreshCw, Send } from 'lucide-react';
 import RestClientPanel from './RestClientPanel';
+import isPocket from '../lib/isPocket';
 
 const mainTabs = [
   { id: 'problems', label: 'Problems', icon: AlertTriangle },
@@ -601,6 +602,13 @@ function XTermPanel() {
             term.write('> ');
             _setupExecMode(term);
           }
+        } else if (window.__POCKET__ || isPocket()) {
+          modeRef.current = 'exec';
+          term.writeln('Pocket secure terminal');
+          term.writeln('\x1b[90mCommands run in your cloud sandbox (one line at a time)\x1b[0m');
+          term.writeln('');
+          term.write('> ');
+          _setupExecMode(term);
         } else {
           // No Electron API — try legacy WebSocket
           const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

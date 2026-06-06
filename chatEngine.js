@@ -132,7 +132,7 @@ const RE_FILE_PATH = /"(?:filePath|path)"\s*:\s*"([^"]*)"/;
 const RE_TOOL_OR_SYSTEM_INJECT = /^\[(?:Tool Results|System)\]/i;
 const RE_CONTEXT_ROTATED = /\[System: (?:Context rotated|Session memory condensed)\]/i;
 const LIST_DIRECTORY_INJECT_MAX_ITEMS = 50;
-const DUPLICATE_TOOL_HINT_MESSAGE = '[System: You already ran this exact tool call three times in a row. Try a different path or answer the user.]';
+const DUPLICATE_TOOL_HINT_MESSAGE = '[System: You already called this exact tool with the same parameters twice in a row. Use the prior tool results or try a different approach.]';
 
 function stableToolFingerprint(tool, params) {
   try {
@@ -1531,6 +1531,11 @@ class ChatEngine extends EventEmitter {
       this._chatHistory[0].text = basePrompt;
     }
 
+    if (this._pendingUserMessage) {
+      console.warn('[ChatEngine] Clearing stale _pendingUserMessage at chat() start');
+      this._pendingUserMessage = null;
+    }
+
     this._chatHistory.push({ type: 'user', text: effectiveUserMessage });
     console.log(`[ChatEngine] chat() generation START: userMsg=${effectiveUserMessage.length} chars, history=${this._chatHistory.length} msgs`);
 
@@ -1546,6 +1551,7 @@ class ChatEngine extends EventEmitter {
     const genStartTime = Date.now();
     let genTokenCount = 0;
     let totalGenTokens = 0; // counts ALL tokens: prose + thinking + FC grammar (genTokenCount only counts prose)
+    let _chatStopReason = null;
 
     try {
       console.log(`[ChatEngine] chat() try block ENTER: abortController=${!!this._abortController}`);
@@ -3457,7 +3463,7 @@ class ChatEngine extends EventEmitter {
           this._toolRoundCount++;
 
           const fps = this._toolExecFingerprints || [];
-          const duplicateHint = fps.length >= 3 && fps.every((f) => f === fps[0])
+          const duplicateHint = fps.length >= 2 && fps.every((f) => f === fps[0])
             ? `${DUPLICATE_TOOL_HINT_MESSAGE}\n\n`
             : '';
 
@@ -3839,11 +3845,13 @@ class ChatEngine extends EventEmitter {
       visibleResponse = stripToolCallText(fullResponse);
       console.log(`[ChatEngine] chat() returning: textLen=${visibleResponse.length}, stopReason=${stopReason}, toolCalls=${totalToolCalls}`);
       if (onComplete) onComplete(fullResponse);
+      _chatStopReason = stopReason;
       return { text: visibleResponse, stopReason, toolCallCount: totalToolCalls };
     } catch (err) {
       console.error(`[ChatEngine] chat() CATCH: ${err.name}: ${err.message}`);
       if (err.name === 'AbortError' || this._abortController?.signal?.aborted) {
         console.log('[ChatEngine] chat() returning cancelled');
+        _chatStopReason = 'cancelled';
         return { text: stripToolCallText(fullResponse), stopReason: 'cancelled', toolCallCount: totalToolCalls };
       }
       const isContextFull = /context shift strategy|did not return a history that fits|context size is too small/i.test(err.message || '');
@@ -3860,6 +3868,13 @@ class ChatEngine extends EventEmitter {
       throw err;
     } finally {
       console.log('[ChatEngine] chat() FINALLY: abortController cleared');
+      if (
+        this._pendingUserMessage
+        && (_chatStopReason === 'cancelled' || _chatStopReason === 'abort')
+      ) {
+        console.warn('[ChatEngine] Clearing undelivered _pendingUserMessage after cancelled chat()');
+        this._pendingUserMessage = null;
+      }
       this._abortController = null;
       this._cancelRequested = false;
       this._toolExecFingerprints = [];
@@ -3971,8 +3986,13 @@ class ChatEngine extends EventEmitter {
    */
   injectUserMessage(text) {
     console.log(`[ChatEngine] injectUserMessage: text=${String(text)}`);
+    if (!this._abortController) {
+      console.warn('[ChatEngine] injectUserMessage rejected: no active generation');
+      return { delivered: false };
+    }
     this._pendingUserMessage = text;
     this.cancelGeneration('user-interrupt');
+    return { delivered: true };
   }
 
   async resetSession() {

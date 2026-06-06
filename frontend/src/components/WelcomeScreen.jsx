@@ -8,6 +8,14 @@ import useAppStore from '../stores/appStore';
 import ModelDownloadPanel from './ModelDownloadPanel';
 import GuideLogo from './GuideLogo';
 import isPocket from '../lib/isPocket';
+
+function dismissPocketWelcome() {
+  try {
+    sessionStorage.setItem('pocket-welcome-dismissed', '1');
+  } catch (_) {}
+}
+import { pathString } from '../lib/pathString';
+import PocketSignInRow from './PocketSignInRow';
 import {
   FolderOpen, Plus, Clock, ChevronRight, Package, Cloud,
   Star, Loader2, Zap, Code2, Brain, Keyboard, ArrowRight, Download,
@@ -105,11 +113,18 @@ export default function WelcomeScreen() {
     }
   };
 
+  const pocketDismissWelcome = () => {
+    if (pocket) dismissPocketWelcome();
+  };
+
   const openProjectPath = (path) => {
+    const projectPath = pathString(path);
+    if (!projectPath) return;
+    pocketDismissWelcome();
     fetch('/api/project/open', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectPath: path }),
+      body: JSON.stringify({ projectPath }),
     }).then(r => r.json()).then(d => {
       if (d.success) {
         setProjectPath(d.path);
@@ -150,8 +165,8 @@ export default function WelcomeScreen() {
     localStorage.setItem('guide-cloud-provider', 'cerebras');
     localStorage.setItem('guide-cloud-model', 'gpt-oss-120b');
     localStorage.setItem('guide-use-cloud', 'true');
-    const recents = pocket ? recentFolders.filter((p) => !/^[a-zA-Z]:[\\/]/i.test(String(p))) : recentFolders;
-    if (recents.length > 0) openRecent(recents[0]);
+    pocketDismissWelcome();
+    if (displayRecents.length > 0) openRecent(displayRecents[0]);
     else setShowWelcomeScreen(false);
   };
 
@@ -175,12 +190,28 @@ export default function WelcomeScreen() {
   };
 
   const formatPath = (fullPath) => {
-    const parts = fullPath.replace(/\\/g, '/').split('/').filter(Boolean);
+    const raw = pathString(fullPath);
+    const parts = raw.replace(/\\/g, '/').split('/').filter(Boolean);
     return {
-      name: parts[parts.length - 1] || fullPath,
+      name: parts[parts.length - 1] || raw || 'Project',
       parent: parts.slice(0, -1).join('/') || '/',
     };
   };
+
+  const pocketRecents = (() => {
+    if (!pocket) return recentFolders.map(pathString).filter(Boolean);
+    const fromApi = (pocketStatus?.projects || []).map((p) => pathString(p)).filter(Boolean);
+    const fromLs = recentFolders.map(pathString).filter((p) => p && !/^[a-zA-Z]:[\\/]/i.test(p));
+    const seen = new Set();
+    return [...fromApi, ...fromLs].filter((p) => {
+      if (!p || seen.has(p)) return false;
+      seen.add(p);
+      return true;
+    });
+  })();
+
+  const desktopRecents = recentFolders.map(pathString).filter(Boolean);
+  const displayRecents = pocket ? pocketRecents : desktopRecents;
 
   const llmModels = (availableModels || []).filter(m =>
     m.modelType === 'llm' && !/mmproj/i.test(m.name || m.path || '')
@@ -213,7 +244,10 @@ export default function WelcomeScreen() {
 
       {/* Skip button */}
       <button
-        onClick={() => setShowWelcomeScreen(false)}
+        onClick={() => {
+          pocketDismissWelcome();
+          setShowWelcomeScreen(false);
+        }}
         className="absolute top-4 right-4 text-vsc-xs text-vsc-text-dim/50 hover:text-vsc-text transition-colors px-3 py-1 rounded-lg hover:bg-white/5"
         style={anim(0)}
       >
@@ -221,7 +255,7 @@ export default function WelcomeScreen() {
       </button>
 
       {/* Logo + Brand */}
-      <div className="flex flex-col items-center mt-14 mb-6 select-none relative z-10" style={anim(0.1)}>
+      <div className="flex flex-col items-center mt-10 mb-4 select-none relative z-10" style={anim(0.1)}>
         <div className="relative">
           <GuideLogo
             size={80}
@@ -238,78 +272,53 @@ export default function WelcomeScreen() {
         </p>
       </div>
 
+      {/* Pocket sign-in — compact, centered, branded */}
+      {pocket && (
+        <div style={anim(0.18)}>
+          <PocketSignInRow authenticated={!!pocketStatus?.authenticated} email={pocketStatus?.email} />
+        </div>
+      )}
+
       {/* Action Buttons */}
-      <div className="flex gap-3 mb-8 relative z-10" style={anim(0.2)}>
+      <div className="flex flex-wrap justify-center gap-2 mb-4 relative z-10" style={anim(0.2)}>
         <button
           onClick={openFolder}
-          className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-[13px] font-medium
-            bg-vsc-accent text-vsc-bg hover:brightness-110 transition-all duration-200
-            hover:-translate-y-0.5 hover:shadow-lg hover:shadow-vsc-accent/20 active:translate-y-0"
+          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[11px] font-medium
+            bg-vsc-accent text-vsc-bg hover:brightness-110 transition-colors"
         >
-          <FolderOpen size={16} />
+          <FolderOpen size={14} />
           {pocket ? 'Open Cloud Project' : 'Open Folder'}
         </button>
-        {pocket && !pocketStatus?.authenticated && (
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => { window.location.href = '/api/auth/google'; }}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-medium
-                bg-white/5 text-vsc-text border border-vsc-accent/30 hover:bg-white/10 transition-all"
-            >
-              Google
-            </button>
-            <button
-              type="button"
-              onClick={() => { window.location.href = '/api/auth/github'; }}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-medium
-                bg-white/5 text-vsc-text border border-white/10 hover:bg-white/10 transition-all"
-            >
-              GitHub
-            </button>
-            <button
-              type="button"
-              onClick={() => { window.location.href = 'https://graysoft.dev/login?returnTo=' + encodeURIComponent('https://pocket.graysoft.dev/'); }}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-medium
-                bg-white/5 text-vsc-text border border-white/10 hover:bg-white/10 transition-all"
-            >
-              Email
-            </button>
-          </div>
-        )}
         <button
           onClick={newProject}
-          className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-[13px] font-medium
-            bg-white/5 text-vsc-text border border-white/10 backdrop-blur-sm
-            hover:bg-white/10 hover:border-white/20 transition-all duration-200
-            hover:-translate-y-0.5 hover:shadow-lg active:translate-y-0"
+          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[11px] font-medium
+            border border-white/10 text-vsc-text hover:bg-white/[0.06] transition-colors"
         >
-          <Plus size={16} />
+          <Plus size={14} />
           New Project
         </button>
       </div>
 
-      {/* Main content grid */}
-      <div className="w-full max-w-[920px] px-6 flex gap-6 min-h-0 pb-12 relative z-10">
+      {/* Main content */}
+      <div className={`w-full px-4 min-h-0 pb-8 relative z-10 ${pocket ? 'max-w-sm mx-auto flex flex-col gap-3' : 'max-w-[920px] flex gap-6 px-6 pb-12'}`}>
 
         {/* Left Column — Recent + Shortcuts */}
-        <div className="flex-1 min-w-0" style={anim(0.3)}>
-          {(pocket ? recentFolders.filter((p) => !/^[a-zA-Z]:[\\/]/i.test(String(p))) : recentFolders).length > 0 ? (
-            <div className="glass-card rounded-2xl p-4 mb-5">
-              <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim/80">
-                <Clock size={12} />
-                {pocket ? 'Recent Cloud Projects' : 'Recent Projects'}
+        <div className={`${pocket ? 'w-full' : 'flex-1 min-w-0'}`} style={anim(0.3)}>
+          {displayRecents.length > 0 ? (
+            <div className={pocket ? '' : 'glass-card rounded-2xl p-4 mb-5'}>
+              <div className="flex items-center gap-2 mb-2 text-[10px] font-semibold uppercase tracking-wider text-vsc-text-dim/70">
+                <Clock size={11} />
+                {pocket ? 'Recent projects' : 'Recent Projects'}
               </div>
-              <div className="flex flex-col gap-0.5">
-                {(pocket ? recentFolders.filter((p) => !/^[a-zA-Z]:[\\/]/i.test(String(p))) : recentFolders).slice(0, showAllRecent ? recentFolders.length : 4).map(path => {
-                  const { name, parent } = formatPath(path);
+              <div className="flex flex-col">
+                {displayRecents.slice(0, showAllRecent ? displayRecents.length : 4).map((entry) => {
+                  const p = pathString(entry);
+                  const { name, parent } = formatPath(p);
                   return (
                     <button
-                      key={path}
-                      onClick={() => openRecent(path)}
-                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-left
-                        transition-all duration-150 group
-                        hover:bg-white/5 hover:shadow-sm"
+                      key={p}
+                      onClick={() => openRecent(p)}
+                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-left hover:bg-white/[0.04] group"
                     >
                       <FolderOpen size={16} className="text-vsc-accent flex-shrink-0" />
                       <div className="flex-1 min-w-0">
@@ -320,25 +329,27 @@ export default function WelcomeScreen() {
                     </button>
                   );
                 })}
-                {recentFolders.length > 4 && !showAllRecent && (
+                {displayRecents.length > 4 && !showAllRecent && (
                   <button
                     onClick={() => setShowAllRecent(true)}
                     className="text-[11px] text-vsc-accent hover:text-vsc-accent-hover px-3 py-1.5 transition-colors"
                   >
-                    Show all ({recentFolders.length})
+                    Show all ({displayRecents.length})
                   </button>
                 )}
               </div>
             </div>
-          ) : (
+          ) : !pocket ? (
             <div className="glass-card rounded-2xl p-8 mb-5 text-center">
               <FolderOpen size={40} className="text-vsc-text-dim/20 mx-auto mb-3" />
               <p className="text-vsc-sm text-vsc-text-dim/70">No recent projects</p>
               <p className="text-vsc-xs text-vsc-text-dim/40 mt-1">Open a folder to get started</p>
             </div>
+          ) : (
+            <p className="text-[10px] text-vsc-text-dim/50 text-center py-2">No recent projects yet</p>
           )}
 
-          {/* Keyboard Shortcuts */}
+          {!pocket && (
           <div className="glass-card rounded-2xl p-4">
             <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim/80">
               <Keyboard size={12} />
@@ -360,50 +371,43 @@ export default function WelcomeScreen() {
               ))}
             </div>
           </div>
+          )}
+
         </div>
 
-        {/* Right Column — Models (desktop) / Plans (Pocket) */}
-        <div className={recentFolders.length > 0 ? 'w-[340px] flex-shrink-0' : 'flex-1 min-w-0'} style={anim(0.4)}>
-          <div className="glass-card rounded-2xl p-4 mb-5">
+        {/* Cloud AI + desktop models */}
+        <div className={pocket ? 'w-full border-t border-white/5 pt-3' : (displayRecents.length > 0 ? 'w-[340px] flex-shrink-0' : 'flex-1 min-w-0')} style={anim(0.4)}>
+          <div className={`${pocket ? 'flex items-center gap-2' : 'glass-card rounded-2xl p-4 mb-5'}`}>
+            {!pocket && (
             <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim/80">
               <Cloud size={12} />
               guIDE Cloud AI
             </div>
-            <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-white/3 border border-white/5">
+            )}
+            <div className={`flex items-center gap-2 ${pocket ? 'w-full' : 'px-3 py-2.5 rounded-xl bg-white/3 border border-white/5'}`}>
+              {!pocket && (
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-vsc-accent/20 to-vsc-accent/5 flex items-center justify-center">
                 <Globe size={16} className="text-vsc-accent" />
               </div>
+              )}
               <div className="flex-1 min-w-0">
-                <div className="text-[12px] font-medium text-vsc-text">
-                  guIDE Cloud AI
+                <div className="text-[11px] font-medium text-vsc-text">
+                  {pocket ? 'Cloud AI' : 'guIDE Cloud AI'}
                 </div>
                 <div className="text-[10px] text-vsc-text-dim/60">
                   {pocket && pocketStatus?.api
-                    ? `${pocketStatus.api.remaining ?? '?'}/${pocketStatus.api.dailyLimit ?? 30} messages today · Cerebras rotation`
-                    : 'Cerebras key rotation · 20 free messages/day'}
+                    ? `${pocketStatus.api.remaining ?? '?'}/${pocketStatus.api.dailyLimit ?? 30} msgs today`
+                    : 'Cerebras · free tier'}
                 </div>
               </div>
               <button
                 onClick={useCloudAI}
-                className="flex-shrink-0 text-[11px] px-3 py-1.5 rounded-lg font-medium
-                  bg-vsc-accent text-vsc-bg hover:brightness-110 transition-all duration-150"
+                className="flex-shrink-0 text-[10px] px-2.5 py-1 rounded-md font-medium bg-vsc-accent text-vsc-bg hover:brightness-110"
               >
                 Use
               </button>
             </div>
           </div>
-
-          {pocket && pocketStatus?.plans && (
-            <div className="glass-card rounded-2xl p-4 mb-5">
-              <div className="text-[11px] font-semibold tracking-wider text-vsc-text-dim/80 mb-2">Plans</div>
-              <ul className="text-[11px] text-vsc-text-dim/80 space-y-1.5">
-                <li>Guest — {pocketStatus.plans.guest?.storage}, {pocketStatus.plans.guest?.messages}</li>
-                <li>Free — {pocketStatus.plans.free?.storage}, {pocketStatus.plans.free?.messages}</li>
-                <li>Pro storage — {pocketStatus.plans.proStorage?.storage} {pocketStatus.plans.proStorage?.price}</li>
-                <li>Pro API — {pocketStatus.plans.proApi?.messages} {pocketStatus.plans.proApi?.price}</li>
-              </ul>
-            </div>
-          )}
 
           {!pocket && (
           <div className="glass-card rounded-2xl p-4 mb-5">
@@ -554,8 +558,8 @@ export default function WelcomeScreen() {
             </div>
           )}
 
-          {/* No models */}
-          {llmModels.length === 0 && (
+          {/* No models (desktop only) */}
+          {!pocket && llmModels.length === 0 && (
             <div className="glass-card rounded-2xl p-8 text-center">
               <Package size={36} className="text-vsc-text-dim/15 mx-auto mb-3" />
               <p className="text-vsc-sm text-vsc-text-dim/60">No models installed</p>

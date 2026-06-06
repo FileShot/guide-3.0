@@ -18,6 +18,9 @@
  *   └─────────────────────────────────────────────────┘
  */
 import useAppStore from '../stores/appStore';
+import isPocket from '../lib/isPocket';
+import useMobileViewport from '../lib/useMobileViewport';
+import PocketMobileLayout from './PocketMobileLayout';
 import TitleBar from './TitleBar';
 import ActivityBar from './ActivityBar';
 import Sidebar from './Sidebar';
@@ -39,6 +42,15 @@ const LazyFallback = () => (
 );
 
 export default function Layout() {
+  const pocket = isPocket();
+  const isMobile = useMobileViewport();
+  if (pocket && isMobile) {
+    return <PocketMobileLayout />;
+  }
+  return <DesktopLayout />;
+}
+
+function DesktopLayout() {
   const sidebarVisible = useAppStore(s => s.sidebarVisible);
   const sidebarWidth = useAppStore(s => s.sidebarWidth);
   const panelVisible = useAppStore(s => s.panelVisible);

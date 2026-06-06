@@ -1466,6 +1466,7 @@ export default function ChatPanel() {
 
   const doSend = useCallback(async (text, {
     skipAddMessage,
+    forceNewTurn,
     agentPhase,
     planContext,
     overrideChatMode,
@@ -1507,7 +1508,7 @@ export default function ChatPanel() {
 
     // into the ongoing loop instead of blocking. The model will see it in its next continuation.
 
-    if (useAppStore.getState().chatStreaming) {
+    if (useAppStore.getState().chatStreaming && !forceNewTurn) {
 
       try {
 
@@ -2455,7 +2456,15 @@ export default function ChatPanel() {
       useAppStore.getState().bumpChatGenerationEpoch();
       useAppStore.getState().materializePartialAssistant();
       addChatMessage({ role: 'user', content: msg.text });
-      await doSend(msg.text, { skipAddMessage: true });
+      const revertMsgs = useAppStore.getState().chatMessages.map((m) => ({
+        role: m.role,
+        content: messageContentForRevert(m),
+      }));
+      try {
+        await window.electronAPI?.revertContext?.(revertMsgs);
+      } catch (_) {}
+      useAppStore.getState().resetChatStreamingUI();
+      await doSend(msg.text, { skipAddMessage: true, forceNewTurn: true });
       return;
     }
 
@@ -4553,7 +4562,7 @@ function QuotaExceededPrompt({ needsAccount }) {
 
       <p className="text-vsc-sm text-vsc-text-dim mb-3">
 
-        You've used all 20 free Cloud AI messages for today.
+        You've used all 50 free Cloud AI messages for today.
 
         {needsAccount
 
@@ -4659,7 +4668,7 @@ const PROVIDER_INFO = {
 
   groq:       { signupUrl: 'https://console.groq.com/keys', free: true, placeholder: 'gsk_...', note: 'Ultra-fast, 1000 RPM, best free tier' },
 
-  cerebras:   { signupUrl: 'https://cloud.cerebras.ai/', free: true, placeholder: 'csk-...', note: 'Ultra-fast, 7-key rotation built-in' },
+  cerebras:   { signupUrl: 'https://cloud.cerebras.ai/', free: true, placeholder: 'csk-...', note: 'Ultra-fast GPT-OSS 120B, multi-key rotation built-in' },
 
   google:     { signupUrl: 'https://aistudio.google.com/apikey', free: true, placeholder: 'AIza...', note: '1M context, 15 RPM' },
 

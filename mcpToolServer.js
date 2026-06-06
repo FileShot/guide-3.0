@@ -45,6 +45,18 @@ function formatUptime(seconds) {
   return parts.join(' ');
 }
 
+/** Tools that may attach similarNames on ENOENT (path param → sibling scan). */
+const ENOENT_SUGGEST_PATH_TOOLS = {
+  list_directory: 'dirPath',
+  read_file: 'filePath',
+  get_file_info: 'filePath',
+  open_file_in_editor: 'filePath',
+  search_in_file: 'filePath',
+  delete_file: 'filePath',
+  rename_file: 'oldPath',
+  copy_file: 'source',
+};
+
 class MCPToolServer {
   constructor(options = {}) {
     this.webSearch = options.webSearch || null;
@@ -1487,6 +1499,10 @@ class MCPToolServer {
       }
     } catch (error) {
       result = { success: false, error: error.message };
+    }
+
+    if (result && typeof result === 'object') {
+      result = await this._attachSimilarNamesOnEnoent(toolName, params, result);
     }
 
     // Truncate oversized results (50KB cap)
@@ -2938,6 +2954,84 @@ class MCPToolServer {
       );
     }
     return feedback;
+  }
+
+  _normalizePathNameForSimilarity(name) {
+    return String(name).toLowerCase().replace(/[\s_\-]+/g, '_');
+  }
+
+  async _suggestSimilarSiblingNames(failedFullPath, { maxSuggestions = 3, minSimilarity = 0.75 } = {}) {
+    const requestedName = path.basename(failedFullPath);
+    if (requestedName.length < 4) return [];
+
+    let parentDir = path.dirname(failedFullPath);
+    let entries = null;
+
+    for (let level = 0; level < 4; level++) {
+      try {
+        const dirents = await fs.readdir(parentDir, { withFileTypes: true });
+        entries = dirents
+          .filter((e) => !e.name.startsWith('.') && e.name !== 'node_modules')
+          .map((e) => {
+            const absPath = path.join(parentDir, e.name);
+            const relPath = this.projectPath
+              ? path.relative(this.projectPath, absPath).replace(/\\/g, '/')
+              : absPath;
+            return {
+              name: e.name,
+              type: e.isDirectory() ? 'directory' : 'file',
+              path: relPath,
+            };
+          });
+        break;
+      } catch (err) {
+        if (err.code !== 'ENOENT' || level >= 3) return [];
+        const parent = path.dirname(parentDir);
+        if (!parent || parent === parentDir) return [];
+        parentDir = parent;
+      }
+    }
+
+    if (!entries?.length) return [];
+
+    const normRequested = this._normalizePathNameForSimilarity(requestedName);
+    const matches = [];
+    for (const entry of entries) {
+      if (entry.name === requestedName) continue;
+      const norm = this._normalizePathNameForSimilarity(entry.name);
+      const maxLen = Math.max(normRequested.length, norm.length);
+      if (maxLen === 0) continue;
+      const dist = this._levenshtein(normRequested, norm);
+      const similarity = 1 - dist / maxLen;
+      if (similarity >= minSimilarity) {
+        matches.push({
+          ...entry,
+          similarity: Math.round(similarity * 100) / 100,
+        });
+      }
+    }
+
+    matches.sort((a, b) => b.similarity - a.similarity);
+    return matches.slice(0, maxSuggestions);
+  }
+
+  async _attachSimilarNamesOnEnoent(toolName, params, result) {
+    if (!result || result.success !== false) return result;
+    const errText = String(result.error || '');
+    if (!errText.includes('ENOENT')) return result;
+
+    const pathKey = ENOENT_SUGGEST_PATH_TOOLS[toolName];
+    if (!pathKey || !params[pathKey]) return result;
+
+    const relPath = params[pathKey];
+    const fullPath = path.isAbsolute(relPath)
+      ? relPath
+      : path.join(this.projectPath || '', relPath);
+
+    const similarNames = await this._suggestSimilarSiblingNames(fullPath);
+    if (!similarNames.length) return result;
+
+    return { ...result, similarNames };
   }
 
   /**

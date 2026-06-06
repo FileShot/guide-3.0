@@ -1115,8 +1115,13 @@ ipcMain.handle('force-send-queued', async () => {
 ipcMain.handle('inject-user-message', (_e, payload) => {
   const text = typeof payload === 'string' ? payload : payload?.text;
   console.log(`[electron-main] inject-user-message: len=${String(text ?? '').length}`);
-  llmEngine.injectUserMessage(text);
-  return { success: true };
+  if (!llmEngine._abortController) {
+    console.warn('[electron-main] inject-user-message rejected: no active generation');
+    return { success: false, delivered: false };
+  }
+  const injectResult = llmEngine.injectUserMessage(text);
+  const delivered = injectResult?.delivered !== false;
+  return { success: delivered, delivered };
 });
 
 // ─── File read helpers (binary preview) ─────────────────────────────
