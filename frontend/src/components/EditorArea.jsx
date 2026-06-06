@@ -430,12 +430,14 @@ export default function EditorArea() {
         dirtyDecorationsRef.current.clear();
         dirtyDecorationsRef.current = null;
       }
-      deletedZonesRef.current.forEach((id) => {
-        try { editor.changeViewZones((accessor) => accessor.removeZone(id)); } catch (_) {}
+      editor.changeViewZones((accessor) => {
+        deletedZonesRef.current.forEach((id) => {
+          try { accessor.removeZone(id); } catch (_) {}
+        });
       });
       deletedZonesRef.current = [];
     }
-  }, [activeTab?.content, activeTab?.originalContent, activeTab?.modified]);
+  }, [activeTab?.id, activeTab?.content, activeTab?.originalContent, activeTab?.modified]);
 
   const handleTabContextMenu = (e, tabId) => {
     e.preventDefault();
@@ -913,8 +915,7 @@ export default function EditorArea() {
               className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium text-vsc-success hover:bg-vsc-success/10 transition-colors"
               title="Keep all edits"
               onClick={() => {
-                useAppStore.getState().markTabSaved(activeTab.id);
-                setChatFilesChanged(chatFilesChanged.filter(f => f.path !== activeTab.path));
+                useAppStore.getState().acceptChatFileChanges([activeTab.path]);
               }}
             >
               <Check size={11} />

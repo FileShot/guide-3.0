@@ -11,12 +11,16 @@
 import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { Copy, Check, Download, ChevronDown, ChevronRight, FileCode, Loader, Play, Code, Wrench, AlertTriangle } from 'lucide-react';
 import useAppStore from '../../stores/appStore';
+import { computeLineDiffDisplay } from '../../utils/lineDiff';
 
 const COLLAPSE_THRESHOLD = 15;
 
 const RENDERABLE_EXTENSIONS = new Set(['html', 'htm', 'svg', 'css', 'js', 'jsx']);
 
-const FileContentBlock = React.memo(function FileContentBlock({ filePath, language, fileName, content, complete }) {
+const FileContentBlock = React.memo(function FileContentBlock({
+  filePath, language, fileName, content, complete,
+  op = 'write', oldText = '', newText = '', showLineDiff = true,
+}) {
   const [copied, setCopied] = useState(false);
   const [rendering, setRendering] = useState(false);
 
@@ -32,19 +36,32 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
   const expanded = useAppStore(state => state.fileBlockExpandedStates[filePath] || false);
   const setFileBlockExpanded = useAppStore(state => state.setFileBlockExpanded);
 
+  const displayNew = newText || content || '';
+  const isEdit = op === 'edit';
+  const useDiffLines = showLineDiff && !complete && !!displayNew;
+  const diffLines = useMemo(() => {
+    if (!useDiffLines) return null;
+    if (!isEdit || !oldText) {
+      return String(displayNew).split('\n').map((text) => ({ type: 'add', text }));
+    }
+    return computeLineDiffDisplay(oldText, displayNew);
+  }, [useDiffLines, isEdit, oldText, displayNew]);
+
   const lineCount = useMemo(() => {
-    if (!content) return 0;
-    return content.split('\n').length;
-  }, [content]);
+    const src = displayNew || content;
+    if (!src) return 0;
+    return src.split('\n').length;
+  }, [content, displayNew]);
 
   const handleCopy = useCallback(async () => {
+    const text = displayNew || content || '';
     try {
-      await navigator.clipboard.writeText(content);
+      await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
       const ta = document.createElement('textarea');
-      ta.value = content;
+      ta.value = text;
       ta.style.position = 'fixed';
       ta.style.opacity = '0';
       document.body.appendChild(ta);
@@ -54,11 +71,11 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
-  }, [content]);
+  }, [content, displayNew]);
 
   const handleDownload = useCallback(() => {
     const name = fileName || filePath || 'file.txt';
-    const blob = new Blob([content], { type: 'text/plain' });
+    const blob = new Blob([displayNew || content || ''], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -67,7 +84,7 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }, [content, fileName, filePath]);
+  }, [content, displayNew, fileName, filePath]);
 
   const handleExpand = useCallback((e) => {
     e.stopPropagation();
@@ -199,8 +216,22 @@ const FileContentBlock = React.memo(function FileContentBlock({ filePath, langua
       ) : (
       <div className="relative">
         <div ref={scrollContainerRef} style={contentStyle}>
-          <pre className="!m-0 !rounded-none !border-0 p-3 text-vsc-sm leading-relaxed bg-vsc-bg" style={preStyle}>
-            <code ref={contentRef}>{content}</code>
+          <pre className="!m-0 !rounded-none !border-0 p-3 text-vsc-sm leading-snug bg-vsc-bg" style={preStyle}>
+            <code ref={contentRef}>
+              {diffLines ? diffLines.map((line, idx) => {
+                const cls = line.type === 'add'
+                  ? 'dirty-diff-added-line'
+                  : line.type === 'del'
+                    ? 'dirty-diff-deleted-line opacity-80'
+                    : '';
+                return (
+                  <span key={idx} className={cls ? `${cls} block` : 'block'}>
+                    {line.text}
+                    {idx < diffLines.length - 1 ? '\n' : ''}
+                  </span>
+                );
+              }) : content}
+            </code>
           </pre>
         </div>
         {isCollapsed && (

@@ -1650,6 +1650,28 @@ const useAppStore = create((set, get) => ({
 
   setChatFilesChanged: (files) => set({ chatFilesChanged: files }),
 
+  /** Accept AI edits: baseline = current content, clear diff UI, drop from changed list. */
+  acceptChatFileChanges: (paths) => {
+    const s = get();
+    const pathSet = paths?.length ? new Set(paths.map(normalizeTabPath)) : null;
+    const matchesPath = (p) => !pathSet || pathSet.has(normalizeTabPath(p));
+    const activeTab = s.openTabs.find((t) => t.id === s.activeTabId);
+    const closeDiff = !s.diffState
+      || !pathSet
+      || (activeTab && matchesPath(activeTab.path));
+    set({
+      openTabs: s.openTabs.map((t) => (
+        matchesPath(t.path)
+          ? { ...t, originalContent: t.content, modified: false }
+          : t
+      )),
+      chatFilesChanged: pathSet
+        ? s.chatFilesChanged.filter((f) => !matchesPath(f.path))
+        : [],
+      ...(closeDiff ? { diffState: null } : {}),
+    });
+  },
+
   addChatFileChanged: (file) => set(s => {
 
     const existing = s.chatFilesChanged.find(f => f.path === file.path);

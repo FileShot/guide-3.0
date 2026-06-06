@@ -18,7 +18,6 @@ import ToolCallCard from './chat/ToolCallCard';
 import SlideDown from './SlideDown';
 
 import FileContentBlock from './chat/FileContentBlock';
-import FileDiffBlock from './chat/FileDiffBlock';
 import MentionPicker from './MentionPicker';
 import { blobToWav } from '../utils/audioToWav';
 
@@ -79,7 +78,7 @@ function pathExistsInTree(items, targetPath) {
 function renderFileBlock(block, key) {
   if (!block) return null;
   return (
-    <FileDiffBlock
+    <FileContentBlock
       key={key}
       filePath={block.filePath}
       language={block.language}
@@ -3510,7 +3509,7 @@ export default function ChatPanel() {
 
                   title="Keep all changes"
 
-                  onClick={() => setChatFilesChanged([])}
+                  onClick={() => useAppStore.getState().acceptChatFileChanges()}
 
                 >
 
@@ -3589,13 +3588,7 @@ export default function ChatPanel() {
                         title="Keep changes"
 
                         onClick={() => {
-
-                          const tab = useAppStore.getState().openTabs.find(t => t.path === f.path);
-
-                          if (tab) useAppStore.getState().markTabSaved(tab.id);
-
-                          setChatFilesChanged(chatFilesChanged.filter(cf => cf.path !== f.path));
-
+                          useAppStore.getState().acceptChatFileChanges([f.path]);
                         }}
 
                       >
