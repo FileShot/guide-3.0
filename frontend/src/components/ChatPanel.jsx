@@ -1752,7 +1752,12 @@ export default function ChatPanel() {
 
         : await (await import('../api/websocket')).invoke('ai-chat', modelInputText, _chatContext);
 
+      const isStaleTurn = () => useAppStore.getState().chatGenerationEpoch !== epochAtStart;
 
+      if (isStaleTurn()) {
+        console.log('[ChatPanel] doSend: superseded turn — skipping finalization (force-send/stop)');
+        return;
+      }
 
       // Quota exceeded — show upgrade prompt instead of empty message
 
@@ -2270,6 +2275,11 @@ export default function ChatPanel() {
 
     } catch (err) {
 
+      if (useAppStore.getState().chatGenerationEpoch !== epochAtStart) {
+        console.log('[ChatPanel] doSend: superseded turn — skipping error bubble');
+        return;
+      }
+
       const flags = quotaErrorFlags(err.message, {});
 
       useAppStore.getState().addChatMessage({
@@ -2446,6 +2456,7 @@ export default function ChatPanel() {
     removeQueuedMessage(msg.id);
 
     if (useAppStore.getState().chatStreaming) {
+      useAppStore.getState().bumpChatGenerationEpoch();
       try {
         if (window.electronAPI?.agentPause) {
           await window.electronAPI.agentPause();
@@ -2453,7 +2464,6 @@ export default function ChatPanel() {
           await (await import('../api/websocket')).invoke('agent-pause');
         }
       } catch (_) {}
-      useAppStore.getState().bumpChatGenerationEpoch();
       useAppStore.getState().materializePartialAssistant();
       addChatMessage({ role: 'user', content: msg.text });
       const revertMsgs = useAppStore.getState().chatMessages.map((m) => ({

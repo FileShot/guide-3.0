@@ -154,22 +154,30 @@ function isValidWindowsPortableExe(filePath) {
 
 /**
  * Tor Browser 14.x Windows portable is a single MZ executable (not a 7z archive).
- * geckodriver expects Browser/firefox.exe — hardlink/copy the portable exe there.
+ * geckodriver/Marionette expects the standard Tor layout: Tor Browser/Browser/firefox.exe.
+ * First-run install copies the official portable exe into that layout under userData.
  */
 function installPortableWindowsLayout(portableExe, userDataPath) {
   const browserDir = path.join(getManagedTorRoot(userDataPath), 'Tor Browser', 'Browser');
   const firefoxPath = path.join(browserDir, 'firefox.exe');
+  const portableSize = fs.statSync(portableExe).size;
   fs.mkdirSync(browserDir, { recursive: true });
   if (fs.existsSync(firefoxPath)) {
+    try {
+      const existingSize = fs.statSync(firefoxPath).size;
+      if (existingSize === portableSize && isValidWindowsPortableExe(firefoxPath)) {
+        console.log('[TorBrowserBackend] tor install: Browser/firefox.exe already matches portable exe');
+        return firefoxPath;
+      }
+    } catch {}
     try { fs.unlinkSync(firefoxPath); } catch {}
   }
-  try {
-    fs.linkSync(portableExe, firefoxPath);
-    console.log('[TorBrowserBackend] tor install: hardlinked portable exe to Browser/firefox.exe');
-  } catch {
-    fs.copyFileSync(portableExe, firefoxPath);
-    console.log('[TorBrowserBackend] tor install: copied portable exe to Browser/firefox.exe');
+  fs.copyFileSync(portableExe, firefoxPath);
+  if (!isValidWindowsPortableExe(firefoxPath)) {
+    try { fs.unlinkSync(firefoxPath); } catch {}
+    throw new Error('Tor Browser install copy failed validation');
   }
+  console.log('[TorBrowserBackend] tor install: copied portable exe to Browser/firefox.exe');
   return firefoxPath;
 }
 
@@ -211,9 +219,18 @@ async function downloadTorBrowser(userDataPath) {
 
     if (platform === 'win32') {
       const installed = path.join(root, 'Tor Browser', 'Browser', 'firefox.exe');
-      if (isTorFirefoxBinary(installed) && isValidWindowsPortableExe(archivePath)) {
+      const cacheValid = isValidWindowsPortableExe(archivePath);
+      const installValid = isTorFirefoxBinary(installed)
+        && isValidWindowsPortableExe(installed)
+        && cacheValid
+        && fs.statSync(installed).size === fs.statSync(archivePath).size;
+      if (installValid) {
         console.log('[TorBrowserBackend] tor resolve: using installed Browser/firefox.exe');
         return { success: true, path: installed, source: 'downloaded', version: TOR_BROWSER_VERSION };
+      }
+      if (isTorFirefoxBinary(installed) && !installValid) {
+        console.warn('[TorBrowserBackend] tor resolve: stale Browser/firefox.exe — reinstalling from portable');
+        try { fs.unlinkSync(installed); } catch {}
       }
 
       if (!isValidWindowsPortableExe(archivePath)) {

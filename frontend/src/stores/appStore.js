@@ -573,6 +573,7 @@ const useAppStore = create((set, get) => ({
 
   bumpChatGenerationEpoch: () => set((s) => ({
     chatGenerationEpoch: s.chatGenerationEpoch + 1,
+    activeChatEpoch: null,
     pendingQuestion: null,
     pendingPermission: null,
     planSession: null,
