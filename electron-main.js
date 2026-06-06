@@ -295,6 +295,11 @@ const backgroundAgentQueue = new BackgroundAgentQueue({
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(event, data);
   },
 });
+const { createPathValidator } = require('./pathValidator');
+
+let currentProjectPath = null;
+const isPathAllowed = createPathValidator(ROOT_DIR, modelsBasePath, () => currentProjectPath);
+
 const mcpToolServer = new MCPToolServer({
   projectPath: null, webSearch, ragEngine,
   executionPolicy: settingsManager.get('executionPolicy'),
@@ -303,6 +308,7 @@ const mcpToolServer = new MCPToolServer({
   commandDenyList: settingsManager.get('commandDenyList'),
   requireToolApproval: settingsManager.get('requireToolApproval'),
   userDataPath,
+  isPathAllowed,
 });
 
 // ── MCP Client: manages external MCP servers (stdio transport) ──
@@ -475,7 +481,6 @@ languageServerManager.on('log', ({ serverId, stderr }) => {
 });
 
 let currentSettings = settingsManager.getAll();
-let currentProjectPath = null;
 let agenticCancelled = false;
 let autoUpdater = null;
 

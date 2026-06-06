@@ -64,6 +64,7 @@ class MCPToolServer {
     this.terminalManager = options.terminalManager || null;
     this.mcpClient = options.mcpClient || null;
     this._userDataPath = options.userDataPath || null;
+    this._isPathAllowed = typeof options.isPathAllowed === 'function' ? options.isPathAllowed : null;
 
     // Agent persistent PTY session (separate from user's terminal)
     this._agentPty = null;
@@ -257,22 +258,45 @@ class MCPToolServer {
   _sanitizeFilePath(filePath) {
     if (!filePath) return filePath;
 
-    if (!this.projectPath) {
-      if (path.isAbsolute(filePath)) {
-        const err = new Error(`Path "${filePath}" is absolute but no project is open. Open a project before using absolute paths, or use a relative path.`);
-        err.code = 'ENOPROJECT';
-        throw err;
+    const resolved = (this.projectPath && !path.isAbsolute(filePath))
+      ? path.resolve(this.projectPath, filePath)
+      : path.resolve(filePath);
+
+    if (this._isPathAllowed && this._isPathAllowed(resolved)) {
+      if (this.projectPath) {
+        const resolvedNorm = resolved.replace(/\\/g, '/').toLowerCase();
+        const projNorm = this.projectPath.replace(/\\/g, '/').toLowerCase();
+        if (resolvedNorm === projNorm || resolvedNorm.startsWith(projNorm + '/')) {
+          const projBasename = path.basename(this.projectPath).toLowerCase();
+          const afterProj = resolvedNorm.substring(projNorm.length);
+          if (afterProj === '/' + projBasename || afterProj.startsWith('/' + projBasename + '/')) {
+            const rest = afterProj.substring(('/' + projBasename).length);
+            const corrected = this.projectPath + rest.replace(/\//g, path.sep);
+            console.log(`[MCPToolServer] Doubled project root corrected: "${filePath}" → "${corrected}"`);
+            return corrected;
+          }
+        }
       }
-      return filePath;
+      return resolved;
     }
 
-    const resolved = path.resolve(this.projectPath, filePath);
-    const resolvedNorm = resolved.replace(/\\/g, '/').toLowerCase();
+    if (!this.projectPath) {
+      const err = new Error(
+        path.isAbsolute(filePath)
+          ? `Path "${filePath}" is not allowed. Use a path under your home folder, documents, downloads, desktop, or app data.`
+          : `Path "${filePath}" is relative but no project is open. Open a project or use an absolute path to an allowed location.`,
+      );
+      err.code = 'EPATHNOTALLOWED';
+      throw err;
+    }
+
+    const projectResolved = path.isAbsolute(filePath)
+      ? path.resolve(filePath)
+      : path.resolve(this.projectPath, filePath);
+    const resolvedNorm = projectResolved.replace(/\\/g, '/').toLowerCase();
     const projNorm = this.projectPath.replace(/\\/g, '/').toLowerCase();
 
-    // Accept: resolves inside the project.
     if (resolvedNorm === projNorm || resolvedNorm.startsWith(projNorm + '/')) {
-      // Handle doubled project root — model repeated the project name inside a project-rooted path.
       const projBasename = path.basename(this.projectPath).toLowerCase();
       const afterProj = resolvedNorm.substring(projNorm.length);
       if (afterProj === '/' + projBasename || afterProj.startsWith('/' + projBasename + '/')) {
@@ -281,14 +305,12 @@ class MCPToolServer {
         console.log(`[MCPToolServer] Doubled project root corrected: "${filePath}" → "${corrected}"`);
         return corrected;
       }
-      return resolved;
+      return projectResolved;
     }
 
-    // Reject: resolves outside the project. Fail hard — the tool handler's
-    // try/catch converts this to {success:false, error} so the model sees
-    // the error and self-corrects instead of the call silently succeeding on
-    // the wrong path.
-    const err = new Error(`Path "${filePath}" is outside the current project ("${this.projectPath}"). Either reopen the target project or use a path inside the current one.`);
+    const err = new Error(
+      `Path "${filePath}" is outside allowed locations. Use a path inside the project ("${this.projectPath}") or an allowed folder (home, documents, app data).`,
+    );
     err.code = 'EOUTSIDEPROJECT';
     throw err;
   }
@@ -341,7 +363,7 @@ class MCPToolServer {
       },
       {
         name: 'read_file',
-        description: 'Read the contents of a file from the project. Supports partial reads by specifying a line range. Read a file before using edit_file to get the exact text for replacement.',
+        description: 'Read the contents of a file. Supports partial reads by specifying a line range. Paths relative to the project root resolve inside the project; absolute paths work for allowed locations outside the project (home, documents, downloads, desktop, app data). Read a file before using edit_file to get the exact text for replacement.',
         parameters: {
           filePath: { type: 'string', description: 'Relative or absolute file path', required: true },
           startLine: { type: 'number', description: 'Start line (1-based, optional)', required: false },
@@ -1112,29 +1134,20 @@ class MCPToolServer {
       }
     }
 
-    // Early-reject absolute paths that escape the project
-    const FP_TOOLS = ['write_file', 'append_to_file', 'edit_file', 'delete_file', 'read_file', 'rename_file', 'get_file_info'];
-    if (FP_TOOLS.includes(toolName) && params.filePath && path.isAbsolute(params.filePath) && this.projectPath) {
-      const rn = path.resolve(params.filePath).replace(/\\/g, '/').toLowerCase();
-      const pn = this.projectPath.replace(/\\/g, '/').toLowerCase();
-      if (!rn.startsWith(pn)) {
-        const sug = path.basename(params.filePath);
-        console.log('[MCPToolServer] Absolute path outside project for ' + toolName + ': ' + params.filePath);
-        return { success: false, error: 'Path outside project. Use relative path ' + JSON.stringify(sug) + ' instead of ' + JSON.stringify(params.filePath) + '.' };
-      }
-    }
-
     // Rate limit check
-    const rateResult = this._checkRateLimit(toolName);
     if (!rateResult.allowed) {
       return { success: false, error: `Rate limit: too many ${toolName} calls. Wait a moment and try again. (${rateResult.count}/${rateResult.max} in last ${Math.round(rateResult.window/1000)}s)` };
     }
 
     // Sanitize all file path params
-    for (const key of ['filePath', 'dirPath', 'path', 'oldPath', 'newPath', 'source', 'destination', 'searchPath']) {
-      if (params[key]) {
-        params[key] = this._sanitizeFilePath(params[key]);
+    try {
+      for (const key of ['filePath', 'dirPath', 'path', 'oldPath', 'newPath', 'source', 'destination', 'searchPath']) {
+        if (params[key]) {
+          params[key] = this._sanitizeFilePath(params[key]);
+        }
       }
+    } catch (error) {
+      return { success: false, error: error.message };
     }
 
     // Permission gate for destructive operations (skipped when auto-allow is enabled)
@@ -2220,19 +2233,25 @@ class MCPToolServer {
       }
       
       if (path.isAbsolute(cwdStr)) {
-        const cwdNorm = cwdStr.replace(/\\/g, '/').toLowerCase();
-        const projNorm = (this.projectPath || '').replace(/\\/g, '/').toLowerCase();
-        if (projNorm && cwdNorm.startsWith(projNorm)) {
-          workDir = cwdStr;
+        const resolved = path.resolve(cwdStr);
+        if (this._isPathAllowed && this._isPathAllowed(resolved)) {
+          workDir = resolved;
         } else {
-          console.log(`[MCPToolServer] Ignoring hallucinated cwd "${cwd}", using project path`);
+          const cwdNorm = cwdStr.replace(/\\/g, '/').toLowerCase();
+          const projNorm = (this.projectPath || '').replace(/\\/g, '/').toLowerCase();
+          if (projNorm && cwdNorm.startsWith(projNorm)) {
+            workDir = cwdStr;
+          } else {
+            console.log(`[MCPToolServer] Ignoring hallucinated cwd "${cwd}", using project path`);
+          }
         }
       } else {
         // Relative path — resolve relative to project
         const resolved = path.resolve(this.projectPath || process.cwd(), cwdStr);
         const resolvedNorm = resolved.replace(/\\/g, '/').toLowerCase();
         const projNorm = (this.projectPath || '').replace(/\\/g, '/').toLowerCase();
-        if (projNorm && resolvedNorm.startsWith(projNorm)) {
+        const allowed = this._isPathAllowed && this._isPathAllowed(resolved);
+        if ((projNorm && resolvedNorm.startsWith(projNorm)) || allowed) {
           // Check if directory exists
           try {
             const stats = fsSync.statSync(resolved);
@@ -4752,7 +4771,7 @@ class MCPToolServer {
     prompt += '```json\n{"tool":"create_directory","params":{"path":"src"}}\n```\n';
     prompt += '```json\n{"tool":"write_file","params":{"filePath":".gitignore","content":"node_modules\\n.env\\n"}}\n```\n\n';
     if (this.projectPath) {
-      prompt += `Project directory: ${this.projectPath}\nUse relative paths (e.g. "src/main.js") — they resolve to the project directory.\n\n`;
+      prompt += `Project directory: ${this.projectPath}\nUse relative paths (e.g. "src/main.js") for project files. Absolute paths are allowed for files outside the project when under home, documents, downloads, desktop, or app data (e.g. logs in AppData).\n\n`;
     }
 
     const categories = {

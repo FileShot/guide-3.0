@@ -9,6 +9,17 @@
 const { app } = require('electron');
 const path = require('path');
 
+function isUnderRoot(resolved, root) {
+  if (!root) return false;
+  const r = path.resolve(root);
+  if (process.platform === 'win32') {
+    const a = resolved.toLowerCase();
+    const b = r.toLowerCase();
+    return a === b || a.startsWith(b + '\\');
+  }
+  return resolved === r || resolved.startsWith(r + path.sep);
+}
+
 function createPathValidator(appBasePath, modelsBasePath, getCurrentProjectPath) {
   const ALLOWED_ROOTS = [
     appBasePath,
@@ -60,7 +71,7 @@ function createPathValidator(appBasePath, modelsBasePath, getCurrentProjectPath)
     if (projectPath) roots.push(projectPath);
 
     for (const root of roots) {
-      if (root && resolved.startsWith(path.resolve(root))) return true;
+      if (isUnderRoot(resolved, root)) return true;
     }
     return false;
   }
