@@ -15,6 +15,7 @@ class BrowserRouter {
       debugTorBrowser: false,
     };
     this._activeEngine = null;
+    this._prewarmPromise = null;
     this._chromium = new ChromiumBackend(browserManager);
     this._tor = new TorBrowserBackend({ userDataPath, parentWindow });
   }
@@ -197,6 +198,14 @@ class BrowserRouter {
 
   async prewarmTor() {
     if (this.getEngine() !== 'tor') return { success: true, skipped: true };
+    if (this._prewarmPromise) return this._prewarmPromise;
+    this._prewarmPromise = this._prewarmTorImpl().finally(() => {
+      this._prewarmPromise = null;
+    });
+    return this._prewarmPromise;
+  }
+
+  async _prewarmTorImpl() {
     console.log('[BrowserRouter] tor prewarm START');
     const resolved = await this._resolveTorPath();
     if (!resolved.success) {

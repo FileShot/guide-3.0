@@ -10,6 +10,8 @@ const { redactPathForLog } = require('./refUtils');
 
 /** Pin to a version compatible with geckodriver 0.36.x (Firefox ESR 128+) */
 const TOR_BROWSER_VERSION = '14.5.8';
+/** Official portable exe is ~107 MiB; reject truncated/corrupt cache below this. */
+const MIN_WINDOWS_PORTABLE_BYTES = 95 * 1024 * 1024;
 
 const TOR_DOWNLOAD = {
   win32: {
@@ -135,22 +137,44 @@ function downloadFile(url, destPath, onProgress) {
   });
 }
 
-function get7zaPath() {
+function isValidWindowsPortableExe(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return false;
   try {
-    return require('7zip-bin').path7za;
+    const stat = fs.statSync(filePath);
+    if (stat.size < MIN_WINDOWS_PORTABLE_BYTES) return false;
+    const fd = fs.openSync(filePath, 'r');
+    const header = Buffer.alloc(2);
+    fs.readSync(fd, header, 0, 2, 0);
+    fs.closeSync(fd);
+    return header[0] === 0x4d && header[1] === 0x5a; // MZ
   } catch {
-    return '7z';
+    return false;
   }
+}
+
+/**
+ * Tor Browser 14.x Windows portable is a single MZ executable (not a 7z archive).
+ * geckodriver expects Browser/firefox.exe — hardlink/copy the portable exe there.
+ */
+function installPortableWindowsLayout(portableExe, userDataPath) {
+  const browserDir = path.join(getManagedTorRoot(userDataPath), 'Tor Browser', 'Browser');
+  const firefoxPath = path.join(browserDir, 'firefox.exe');
+  fs.mkdirSync(browserDir, { recursive: true });
+  if (fs.existsSync(firefoxPath)) {
+    try { fs.unlinkSync(firefoxPath); } catch {}
+  }
+  try {
+    fs.linkSync(portableExe, firefoxPath);
+    console.log('[TorBrowserBackend] tor install: hardlinked portable exe to Browser/firefox.exe');
+  } catch {
+    fs.copyFileSync(portableExe, firefoxPath);
+    console.log('[TorBrowserBackend] tor install: copied portable exe to Browser/firefox.exe');
+  }
+  return firefoxPath;
 }
 
 function extractArchive(archivePath, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
-  if (archivePath.endsWith('.exe')) {
-    const sevenZip = get7zaPath();
-    console.log(`[TorBrowserBackend] tor extract: 7z x ${path.basename(archivePath)}`);
-    execFileSync(sevenZip, ['x', archivePath, `-o${destDir}`, '-y'], { stdio: 'pipe', windowsHide: true });
-    return;
-  }
   if (archivePath.endsWith('.tar.xz') || archivePath.endsWith('.tar.gz')) {
     execFileSync('tar', ['-xf', archivePath, '-C', destDir], { stdio: 'pipe' });
     return;
@@ -177,12 +201,44 @@ async function downloadTorBrowser(userDataPath) {
 
   console.log(`[TorBrowserBackend] tor resolve: download START v${TOR_BROWSER_VERSION}`);
   try {
+    let lastProgress = -1;
+    const logProgress = (pct) => {
+      if (pct >= lastProgress + 20) {
+        lastProgress = pct - (pct % 20);
+        console.log(`[TorBrowserBackend] tor download: ${lastProgress}%`);
+      }
+    };
+
+    if (platform === 'win32') {
+      const installed = path.join(root, 'Tor Browser', 'Browser', 'firefox.exe');
+      if (isTorFirefoxBinary(installed) && isValidWindowsPortableExe(archivePath)) {
+        console.log('[TorBrowserBackend] tor resolve: using installed Browser/firefox.exe');
+        return { success: true, path: installed, source: 'downloaded', version: TOR_BROWSER_VERSION };
+      }
+
+      if (!isValidWindowsPortableExe(archivePath)) {
+        if (fs.existsSync(archivePath)) {
+          console.warn('[TorBrowserBackend] tor resolve: deleting invalid cached portable exe');
+          try { fs.unlinkSync(archivePath); } catch {}
+        }
+        await downloadFile(url, archivePath, logProgress);
+      } else {
+        console.log('[TorBrowserBackend] tor resolve: using cached portable exe');
+      }
+
+      if (!isValidWindowsPortableExe(archivePath)) {
+        return { success: false, error: 'Tor Browser download incomplete or corrupt — try again' };
+      }
+
+      const firefoxPath = installPortableWindowsLayout(archivePath, userDataPath);
+      console.log(`[TorBrowserBackend] tor resolve: download DONE ${redactPathForLog(firefoxPath)}`);
+      return { success: true, path: firefoxPath, source: 'downloaded', version: TOR_BROWSER_VERSION };
+    }
+
     if (!fs.existsSync(archivePath)) {
-      await downloadFile(url, archivePath, (pct) => {
-        if (pct % 20 === 0) console.log(`[TorBrowserBackend] tor download: ${pct}%`);
-      });
+      await downloadFile(url, archivePath, logProgress);
     } else {
-      console.log('[TorBrowserBackend] tor resolve: using cached installer archive');
+      console.log('[TorBrowserBackend] tor resolve: using cached archive');
     }
 
     fs.rmSync(extractDir, { recursive: true, force: true });
@@ -202,6 +258,9 @@ async function downloadTorBrowser(userDataPath) {
     };
   } catch (e) {
     console.error(`[TorBrowserBackend] tor download FAILED: ${e.message}`);
+    if (platform === 'win32' && fs.existsSync(archivePath)) {
+      try { fs.unlinkSync(archivePath); } catch {}
+    }
     return {
       success: false,
       error: `Could not download Tor Browser automatically (${e.message}). Install from torproject.org or set path in Settings → Browser.`,
@@ -210,7 +269,7 @@ async function downloadTorBrowser(userDataPath) {
   }
 }
 
-let _resolvePromise = null;
+let _downloadPromise = null;
 
 /**
  * Resolve Tor Browser executable: user override → auto-discover → auto-download.
@@ -236,12 +295,12 @@ async function resolveTorBrowserExecutable({ configuredPath, userDataPath, autoD
     };
   }
 
-  if (!_resolvePromise) {
-    _resolvePromise = downloadTorBrowser(userDataPath).finally(() => {
-      _resolvePromise = null;
+  if (!_downloadPromise) {
+    _downloadPromise = downloadTorBrowser(userDataPath).finally(() => {
+      _downloadPromise = null;
     });
   }
-  const result = await _resolvePromise;
+  const result = await _downloadPromise;
   return { ...result, pathValid: !!result.path };
 }
 

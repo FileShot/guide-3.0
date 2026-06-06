@@ -98,7 +98,7 @@ class TorBrowserBackend {
 
     const t0 = Date.now();
     try {
-      const service = new firefox.ServiceBuilder(gecko.path).build();
+      const service = new firefox.ServiceBuilder(gecko.path);
       const options = new firefox.Options();
       options.setBinary(pathCheck.normalizedPath);
       options.addArguments('-marionette');

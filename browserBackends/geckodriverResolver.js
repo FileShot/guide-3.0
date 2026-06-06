@@ -153,8 +153,8 @@ function validateTorBrowserPath(torBrowserPath) {
     return { pathValid: false, error: 'Tor Browser executable not found at configured path' };
   }
   const base = path.basename(normalized).toLowerCase();
-  if (process.platform === 'win32' && base !== 'firefox.exe') {
-    return { pathValid: false, error: 'Path must point to firefox.exe inside Tor Browser (Browser/firefox.exe)' };
+  if (process.platform === 'win32' && base !== 'firefox.exe' && !/^tor-browser-windows-.+-portable-.+\.exe$/i.test(base)) {
+    return { pathValid: false, error: 'Path must point to firefox.exe inside Tor Browser (Browser/firefox.exe) or the Tor portable .exe' };
   }
   if (process.platform === 'linux' && base !== 'firefox' && base !== 'firefox.real') {
     return { pathValid: false, error: 'Path must point to firefox inside Tor Browser' };
