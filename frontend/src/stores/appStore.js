@@ -2493,6 +2493,10 @@ const useAppStore = create((set, get) => ({
       enableSubAgents: true,  // Plan G: allow model to spawn isolated sub-agents
 
       browserControl: 'auto', // 'auto' | 'playwright' | 'screencast'
+      browserEngine: 'chromium', // 'chromium' | 'tor'
+      torBrowserPath: '',
+      geckodriverPath: '',
+      debugTorBrowser: false,
 
       // System Prompt
 

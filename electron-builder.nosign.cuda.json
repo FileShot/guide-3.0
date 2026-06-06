@@ -11,6 +11,7 @@
     "server/**/*",
     "pipeline/**/*",
     "tools/**/*",
+    "browserBackends/**/*",
     "chatWrappers/**/*",
     "frontend/dist/**/*",
     "node_modules/**/*",

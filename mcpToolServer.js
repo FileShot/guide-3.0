@@ -31,7 +31,7 @@ const COMMAND_MAX_TIMEOUT_MS = 600000;
 const COMMAND_MIN_TIMEOUT_MS = 5000;
 
 const RUN_COMMAND_TIMEOUT_HINT =
-  'Do not launch chrome.exe or debug Playwright via run_command. Use browser_navigate, fetch_webpage, or allow browser automation setup. For long builds pass a higher timeout param or use terminal_run.';
+  'Do not launch chrome.exe, firefox.exe, Tor Browser, or debug Playwright/geckodriver via run_command. Use browser_navigate, fetch_webpage, or allow browser automation setup. For long builds pass a higher timeout param or use terminal_run.';
 
 /** Format uptime seconds into human-readable string */
 function formatUptime(seconds) {
@@ -369,7 +369,7 @@ class MCPToolServer {
       },
       {
         name: 'run_command',
-        description: 'Execute a shell command in the project directory and return the output. Default max wait 10 minutes (pass timeout in ms for long npm/build jobs, up to 600000). A UI warning appears at 3 minutes; the command is killed only at max timeout. IMPORTANT: Each call spawns a fresh shell — cd, set VAR=, export VAR= do NOT persist between calls. Do NOT use run_command to launch chrome.exe or debug Playwright — use browser_navigate or fetch_webpage instead. Default shell: Windows = PowerShell, Unix = /bin/sh. Set shell="cmd" on Windows to force cmd.exe.',
+        description: 'Execute a shell command in the project directory and return the output. Default max wait 10 minutes (pass timeout in ms for long npm/build jobs, up to 600000). A UI warning appears at 3 minutes; the command is killed only at max timeout. IMPORTANT: Each call spawns a fresh shell — cd, set VAR=, export VAR= do NOT persist between calls. Do NOT use run_command to launch chrome.exe, firefox.exe, Tor Browser, or debug Playwright/geckodriver — use browser_navigate or fetch_webpage instead. Default shell: Windows = PowerShell, Unix = /bin/sh. Set shell="cmd" on Windows to force cmd.exe.',
         parameters: {
           command: { type: 'string', description: 'Command to execute', required: true },
           shell: { type: 'string', description: 'Shell to use on Windows: "powershell" (default) or "cmd". Ignored on Unix.', required: false },
@@ -2759,12 +2759,24 @@ class MCPToolServer {
   // ─── Browser Automation Setters ──────────────────────────────────────────
 
   setBrowserManager(browserManager) { this.browserManager = browserManager; }
+  setBrowserRouter(browserRouter) { this.browserRouter = browserRouter; }
   setPlaywrightBrowser(playwrightBrowser) { this.playwrightBrowser = playwrightBrowser; }
   setGitManager(gitManager) { this.gitManager = gitManager; }
   setImageGen(imageGen) { this.imageGen = imageGen; }
 
   _getBrowser() {
+    if (this.browserRouter) return this.browserRouter.getActiveBackend();
     return this.playwrightBrowser || this.browserManager;
+  }
+
+  _getBrowserEngineTag() {
+    if (this.browserRouter) return this.browserRouter.getEngine();
+    return 'chromium';
+  }
+
+  async _ensureBrowserBackend(reason = 'tool_call') {
+    if (!this.browserRouter) return { success: true };
+    return this.browserRouter.ensureBackend(reason);
   }
 
   // Browser tools: _browserNavigate through _browserClose → tools/mcpBrowserTools.js
@@ -4677,7 +4689,7 @@ class MCPToolServer {
     rules += '- For large files: write_file for first section, then append_to_file for remaining sections\n';
     rules += '- Web: after web_search, in the same continuation, call fetch_webpage on the first and second ranked result URLs before answering (or each returned URL if fewer than two). Do not ask the user to confirm fetching. Do not call list_directory in the same tool round as web_search/fetch_webpage unless the user asked about the project\n';
     rules += '- Browser workflow: browser_navigate (auto-returns snapshot) → interact using [ref=N] IDs with browser_click/browser_type (auto-return snapshot after action). Use viewport_browser_snapshot when the user asks about the page open in the viewport browser.\n';
-    rules += '- If browser_navigate fails, retry it or use fetch_webpage. Do NOT launch chrome.exe or debug Playwright via run_command.\n';
+    rules += '- If browser_navigate fails, retry it or use fetch_webpage. Do NOT launch chrome.exe, firefox.exe, Tor Browser, or debug Playwright/geckodriver via run_command.\n';
     rules += '- After write_todos: call update_todo(in-progress) when starting each step and update_todo(done) when finishing — never leave 0/N checked during implementation.\n';
     parts.push(rules);
 

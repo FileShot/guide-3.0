@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   installExtensionFile: (buffer, fileName) => ipcRenderer.invoke('extension-install-file', { buffer, fileName }),
   showItemInFolder: (fullPath) => ipcRenderer.invoke('shell-show-item', fullPath),
   modelsAdd: () => ipcRenderer.invoke('dialog-models-add'),
+  pickTorBrowserExe: () => ipcRenderer.invoke('dialog-tor-browser-exe'),
+  getTorBrowserStatus: () => ipcRenderer.invoke('tor-browser-status'),
   openExternal: (url) => ipcRenderer.invoke('shell-open-external', url),
   showOpenDialog: () => ipcRenderer.invoke('dialog-open-folder'),
   newWindow: () => ipcRenderer.invoke('new-window'),

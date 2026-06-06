@@ -48,6 +48,12 @@ const SETTINGS_DEFAULTS = {
   // When true, destructive tools and policy-blocked commands show the approval banner.
   requireToolApproval: false,
   enableSubAgents: true,
+  // Browser automation engine for agent browser_* tools
+  browserEngine: 'chromium', // 'chromium' | 'tor'
+  torBrowserPath: '',
+  geckodriverPath: '',
+  debugTorBrowser: false,
+  browserControl: 'auto', // viewport display: 'auto' | 'screencast' | 'playwright'
   // Default shell for run_command on Windows (cmd vs PowerShell). Ignored on Unix.
   commandShell: 'powershell',
   commandAllowList: ['git status', 'git log', 'git diff', 'git branch', 'ls', 'dir', 'pwd', 'echo', 'cat', 'type', 'node --version', 'npm --version', 'python --version', 'pip --version', 'npm list', 'npm run', 'npm test', 'npm start', 'npm run build', 'npm run lint', 'npx tsc --noEmit'],

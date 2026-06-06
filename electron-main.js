@@ -253,6 +253,7 @@ const { runOAuthInWindow } = require('./oauthFlow');
 const { SettingsManager } = require('./settingsManager');
 const { GitManager } = require('./gitManager');
 const { BrowserManager } = require('./browserManager');
+const { BrowserRouter } = require('./browserBackends/BrowserRouter');
 const { FirstRunSetup } = require('./firstRunSetup');
 const { RAGEngine } = require('./ragEngine');
 const { BackgroundAgentQueue } = require('./backgroundAgentQueue');
@@ -349,8 +350,48 @@ const browserManager = new BrowserManager({
   parentWindow: { webContents: { send: (e, d) => _send(e, d) }, isDestroyed: () => !mainWindow },
 });
 
+const browserRouter = new BrowserRouter({
+  browserManager,
+  userDataPath,
+  parentWindow: { webContents: { send: (e, d) => _send(e, d) }, isDestroyed: () => !mainWindow },
+});
+
+function syncBrowserRouterFromSettings() {
+  browserRouter.updateConfig({
+    browserEngine: settingsManager.get('browserEngine') || 'chromium',
+    torBrowserPath: settingsManager.get('torBrowserPath') || '',
+    geckodriverPath: settingsManager.get('geckodriverPath') || '',
+    debugTorBrowser: !!settingsManager.get('debugTorBrowser'),
+  });
+  if (settingsManager.get('browserEngine') === 'tor') {
+    browserRouter.prewarmTor?.().catch((e) => {
+      console.warn(`[electron-main] Tor prewarm: ${e.message}`);
+    });
+  }
+}
+syncBrowserRouterFromSettings();
+
+ipcMain.handle('dialog-tor-browser-exe', async () => {
+  const isWin = process.platform === 'win32';
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: isWin ? 'Select Tor Browser firefox.exe' : 'Select Tor Browser Firefox binary',
+    properties: ['openFile'],
+    filters: isWin
+      ? [{ name: 'Firefox', extensions: ['exe'] }, { name: 'All Files', extensions: ['*'] }]
+      : [{ name: 'All Files', extensions: ['*'] }],
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  return result.filePaths[0];
+});
+
+ipcMain.handle('tor-browser-status', async () => {
+  syncBrowserRouterFromSettings();
+  return browserRouter.validateTorStatus();
+});
+
 // Wire service cross-references
 mcpToolServer.setBrowserManager(browserManager);
+mcpToolServer.setBrowserRouter(browserRouter);
 mcpToolServer.setGitManager(gitManager);
 mcpToolServer.rulesManager = rulesManager;
 mcpToolServer.onTodoUpdate = (todos) => _send('todo-update', todos);
@@ -1594,11 +1635,12 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       return settingsManager.getAll();
     }
     if (p === '/api/settings' && method === 'POST') {
-      console.log(`[Settings] POST /api/settings HANDLER START thinkingMode=${body?.thinkingMode} toolsEnabled=${body?.toolsEnabled}`);
+      console.log(`[Settings] POST /api/settings HANDLER START thinkingMode=${body?.thinkingMode} toolsEnabled=${body?.toolsEnabled} browserEngine=${body?.browserEngine}`);
       settingsManager.setAll(body);
       settingsManager.flush();
       currentSettings = settingsManager.getAll();
-      console.log(`[Settings] POST /api/settings HANDLER DONE thinkingMode=${settingsManager.get('thinkingMode')}`);
+      syncBrowserRouterFromSettings();
+      console.log(`[Settings] POST /api/settings HANDLER DONE thinkingMode=${settingsManager.get('thinkingMode')} browserEngine=${settingsManager.get('browserEngine')}`);
       console.log(`[api-fetch] DONE POST /api/settings ms=${Date.now() - _apiT0}`);
       return { success: true };
     }
@@ -2697,6 +2739,9 @@ app.whenReady().then(async () => {
       mcpToolServer.setCommandShell(settingsManager.get('commandShell'));
       mcpToolServer.setCommandLists(settingsManager.get('commandAllowList'), settingsManager.get('commandDenyList'));
     }
+    if (key === 'browserEngine' || key === 'torBrowserPath' || key === 'geckodriverPath' || key === 'debugTorBrowser' || key === null) {
+      syncBrowserRouterFromSettings();
+    }
   });
 
   // Initialize models
@@ -2761,6 +2806,7 @@ function _shutdown() {
   memoryStore.dispose();
   sessionStore.flush();
   try { mcpClient.stopAll(); } catch (_) {}
+  try { browserRouter.closeAll(); } catch (_) {}
   try { browserManager.dispose(); } catch (_) {}
   try { llmEngine.dispose(); } catch (_) {}
   modelManager.dispose();

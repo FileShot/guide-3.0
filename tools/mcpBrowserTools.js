@@ -1,12 +1,23 @@
 'use strict';
 
 // Browser automation methods — mixed onto MCPToolServer.prototype
-// All methods use `this` to access playwrightBrowser, browserManager, projectPath
+// All methods use `this` to access playwrightBrowser, browserManager, browserRouter, projectPath
 
 const path = require('path');
 
+function _browserEngineTag(ctx) {
+  return ctx._getBrowserEngineTag?.() || 'chromium';
+}
+
+async function _ensureBrowserReady(ctx, toolName) {
+  if (!ctx.browserRouter) return { success: true };
+  ctx.browserRouter.logToolDispatch(toolName);
+  return ctx._ensureBrowserBackend(toolName);
+}
+
 async function _browserNavigate(url) {
-  console.log(`[mcpBrowserTools] _browserNavigate START: url=${url}`);
+  const engine = _browserEngineTag(this);
+  console.log(`[mcpBrowserTools] _browserNavigate START: url=${url} engine=${engine}`);
   if (!url) {
     console.warn('[mcpBrowserTools] _browserNavigate: no URL provided');
     return { success: false, error: 'No URL provided' };
@@ -43,16 +54,28 @@ async function _browserNavigate(url) {
     url = 'https://' + url;
   }
 
-  // Use browserManager (has Playwright integration with auto-launch)
+  if (this.browserRouter) {
+    const policy = this.browserRouter.validateNavigateUrl(url);
+    if (!policy.ok) {
+      return { success: false, error: policy.error };
+    }
+    const ready = await _ensureBrowserReady(this, 'browser_navigate');
+    if (!ready.success) return ready;
+    const browser = this._getBrowser();
+    const result = await browser.navigate(url);
+    console.log(`[mcpBrowserTools] _browserNavigate DONE: engine=${engine} success=${result?.success}, url=${result?.url || '?'}`);
+    return result;
+  }
+
+  // Legacy: browserManager (has Playwright integration with auto-launch)
   if (this.browserManager) {
     console.log('[mcpBrowserTools] _browserNavigate: using browserManager');
-    // Auto-launch Playwright on first use so browser_snapshot and DOM tools work
     if (!this.browserManager._page) {
       console.log('[mcpBrowserTools] _browserNavigate: auto-launching Playwright');
       await this.browserManager.launchPlaywright();
     }
     const result = await this.browserManager.navigate(url);
-    console.log(`[mcpBrowserTools] _browserNavigate DONE: success=${result.success}, url=${result.url || '?'}`);
+    console.log(`[mcpBrowserTools] _browserNavigate DONE: engine=chromium success=${result.success}, url=${result.url || '?'}`);
     return result;
   }
   // Legacy: external Playwright instance (if set)
@@ -66,7 +89,10 @@ async function _browserNavigate(url) {
 }
 
 async function _browserClick(refStr, options = {}) {
-  console.log(`[mcpBrowserTools] _browserClick START: ref=${refStr}`);
+  const engine = _browserEngineTag(this);
+  console.log(`[mcpBrowserTools] _browserClick START: ref=${refStr} engine=${engine}`);
+  const ready = await _ensureBrowserReady(this, 'browser_click');
+  if (!ready.success) return ready;
   const browser = this._getBrowser();
   if (!browser) {
     console.warn('[mcpBrowserTools] _browserClick: no browser');
@@ -75,7 +101,7 @@ async function _browserClick(refStr, options = {}) {
 
   try {
     const result = await browser.click(refStr, options);
-    console.log(`[mcpBrowserTools] _browserClick DONE: success=${result?.success}, clicked=${result?.clicked || '?'}`);
+    console.log(`[mcpBrowserTools] _browserClick DONE: engine=${engine} success=${result?.success}, clicked=${result?.clicked || '?'}`);
     return result;
   } catch (err) {
     console.error(`[mcpBrowserTools] _browserClick ERROR: ${err.message}`);
@@ -88,7 +114,10 @@ async function _browserClick(refStr, options = {}) {
 }
 
 async function _browserType(refStr, text, options = {}) {
-  console.log(`[mcpBrowserTools] _browserType START: ref=${refStr}, textLen=${String(text).length}`);
+  const engine = _browserEngineTag(this);
+  console.log(`[mcpBrowserTools] _browserType START: ref=${refStr}, textLen=${String(text).length} engine=${engine}`);
+  const ready = await _ensureBrowserReady(this, 'browser_type');
+  if (!ready.success) return ready;
   const browser = this._getBrowser();
   if (!browser) {
     console.warn('[mcpBrowserTools] _browserType: no browser');
@@ -97,7 +126,7 @@ async function _browserType(refStr, text, options = {}) {
 
   try {
     const result = await browser.type(refStr, text, options);
-    console.log(`[mcpBrowserTools] _browserType DONE: success=${result?.success}`);
+    console.log(`[mcpBrowserTools] _browserType DONE: engine=${engine} success=${result?.success}`);
     return result;
   } catch (err) {
     console.error(`[mcpBrowserTools] _browserType ERROR: ${err.message}`);
@@ -138,14 +167,17 @@ async function _browserSelectOption(refStr, values) {
 }
 
 async function _browserSnapshot() {
-  console.log('[mcpBrowserTools] _browserSnapshot START');
+  const engine = _browserEngineTag(this);
+  console.log(`[mcpBrowserTools] _browserSnapshot START engine=${engine}`);
+  const ready = await _ensureBrowserReady(this, 'browser_snapshot');
+  if (!ready.success) return ready;
   const browser = this._getBrowser();
   if (!browser) {
     console.warn('[mcpBrowserTools] _browserSnapshot: no browser');
     return { success: false, error: 'No browser available' };
   }
   const result = await browser.getSnapshot();
-  console.log(`[mcpBrowserTools] _browserSnapshot DONE: success=${result?.success}, textLen=${result?.text?.length || 0}`);
+  console.log(`[mcpBrowserTools] _browserSnapshot DONE: engine=${engine} success=${result?.success}, textLen=${result?.text?.length || 0}`);
   return result;
 }
 
@@ -294,14 +326,19 @@ async function _browserResize(width, height) {
 }
 
 async function _browserClose() {
-  console.log('[mcpBrowserTools] _browserClose START');
-  if (this.playwrightBrowser) {
-    try { await this.playwrightBrowser.close(); } catch (e) { console.warn('[mcpBrowserTools] _browserClose legacy close failed:', e.message); }
+  const engine = _browserEngineTag(this);
+  console.log(`[mcpBrowserTools] _browserClose START engine=${engine}`);
+  if (this.browserRouter) {
+    try { await this.browserRouter.closeAll(); } catch (e) { console.warn('[mcpBrowserTools] _browserClose router close failed:', e.message); }
+  } else {
+    if (this.playwrightBrowser) {
+      try { await this.playwrightBrowser.close(); } catch (e) { console.warn('[mcpBrowserTools] _browserClose legacy close failed:', e.message); }
+    }
+    if (this.browserManager) {
+      try { await this.browserManager.closePlaywright(); } catch (e) { console.warn('[mcpBrowserTools] _browserClose browserManager close failed:', e.message); }
+    }
   }
-  if (this.browserManager) {
-    try { await this.browserManager.closePlaywright(); } catch (e) { console.warn('[mcpBrowserTools] _browserClose browserManager close failed:', e.message); }
-  }
-  console.log('[mcpBrowserTools] _browserClose DONE');
+  console.log(`[mcpBrowserTools] _browserClose DONE engine=${engine}`);
   return { success: true };
 }
 
@@ -420,7 +457,10 @@ async function _browserGetLinks(selector) {
 }
 
 async function _viewportBrowserSnapshot() {
-  console.log('[mcpBrowserTools] _viewportBrowserSnapshot START');
+  const engine = _browserEngineTag(this);
+  console.log(`[mcpBrowserTools] _viewportBrowserSnapshot START engine=${engine}`);
+  const ready = await _ensureBrowserReady(this, 'viewport_browser_snapshot');
+  if (!ready.success) return ready;
   const browser = this._getBrowser();
   if (!browser) {
     return { success: false, error: 'No browser available. Open the viewport browser or navigate first.' };

@@ -1899,6 +1899,21 @@ function SettingsPanel() {
           onChange={v => updateSetting('enableSubAgents', v)}
           hint="Allow model to spawn focused sub-agents using a fresh context window. Off by default — uses extra VRAM." />
         <div>
+          <label className="text-[11px] text-vsc-text-dim block mb-1">Agent browser engine</label>
+          <select
+            className="w-full text-[11px] bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
+            value={settings.browserEngine || 'chromium'}
+            onChange={e => updateSetting('browserEngine', e.target.value)}
+          >
+            <option value="chromium">Chromium (Playwright)</option>
+            <option value="tor">Tor Browser</option>
+          </select>
+          <p className="text-[10px] text-vsc-text-dim mt-1">Which browser engine agent browser_* tools use. .onion sites require Tor Browser. No path setup needed — Tor is auto-detected or downloaded on first use.</p>
+        </div>
+        {(settings.browserEngine || 'chromium') === 'tor' && (
+          <TorBrowserSettings settings={settings} updateSetting={updateSetting} />
+        )}
+        <div>
           <label className="text-[11px] text-vsc-text-dim block mb-1">Browser control</label>
           <select
             className="w-full text-[11px] bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
@@ -2310,6 +2325,90 @@ function VoiceSettings({ addNotification }) {
         <div>Cloud STT: {voiceStatus?.cloudAvailable ? 'OpenAI key configured' : 'Add OpenAI key in Cloud AI settings'}</div>
       </div>
     </SettingsSection>
+  );
+}
+
+function TorBrowserSettings({ settings, updateSetting }) {
+  const [status, setStatus] = useState(null);
+  const [checking, setChecking] = useState(false);
+
+  const refreshStatus = useCallback(async () => {
+    if (!window.electronAPI?.getTorBrowserStatus) return;
+    setChecking(true);
+    try {
+      const result = await window.electronAPI.getTorBrowserStatus();
+      setStatus(result);
+    } catch {
+      setStatus({ ready: false, error: 'Could not validate Tor Browser path' });
+    }
+    setChecking(false);
+  }, []);
+
+  useEffect(() => {
+    refreshStatus();
+  }, [settings.torBrowserPath, settings.geckodriverPath, refreshStatus]);
+
+  const pickTorPath = useCallback(async () => {
+    const picked = await window.electronAPI?.pickTorBrowserExe?.();
+    if (picked) {
+      updateSetting('torBrowserPath', picked);
+    }
+  }, [updateSetting]);
+
+  const statusLabel = status?.ready
+    ? status.source === 'discovered'
+      ? 'Ready (auto-detected)'
+      : status.source === 'downloaded'
+        ? 'Ready (bundled by guIDE)'
+        : 'Ready'
+    : status?.willAutoDownload
+      ? 'Ready — downloads on first browse'
+      : settings.torBrowserPath && status?.pathValid === false
+        ? 'Invalid path'
+        : status?.geckodriverReady === false
+          ? 'geckodriver missing'
+          : checking
+            ? 'Checking…'
+            : 'Not ready';
+
+  return (
+    <>
+      <div>
+        <label className="text-[11px] text-vsc-text-dim block mb-1">Tor Browser path (optional override)</label>
+        <div className="flex gap-1">
+          <input
+            type="text"
+            className="flex-1 text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
+            value={settings.torBrowserPath || ''}
+            onChange={e => updateSetting('torBrowserPath', e.target.value)}
+            placeholder="Leave empty — auto-detect or download"
+          />
+          <button type="button" className="btn btn-secondary text-[10px] px-2 shrink-0" onClick={pickTorPath}>
+            Browse…
+          </button>
+        </div>
+        <p className="text-[10px] text-vsc-text-dim mt-1">
+          guIDE launches its own Tor Browser when agents browse. Status:{' '}
+          <span className={status?.ready || status?.willAutoDownload ? 'text-vsc-success' : 'text-vsc-warning'}>{statusLabel}</span>
+          {status?.resolvedPath && !settings.torBrowserPath ? ` (${status.resolvedPath.split(/[/\\]/).slice(-3).join('/')})` : ''}
+          {status?.error && !status?.ready && !status?.willAutoDownload ? ` — ${status.error}` : ''}
+        </p>
+      </div>
+      <div>
+        <label className="text-[11px] text-vsc-text-dim block mb-1">geckodriver path (optional)</label>
+        <input
+          type="text"
+          className="w-full text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
+          value={settings.geckodriverPath || ''}
+          onChange={e => updateSetting('geckodriverPath', e.target.value)}
+          placeholder="Auto-download on first use"
+        />
+        <p className="text-[10px] text-vsc-text-dim mt-1">Advanced override. Leave empty to auto-download geckodriver 0.36.x.</p>
+      </div>
+      <SettingToggle label="Debug Tor browser" value={!!settings.debugTorBrowser}
+        onChange={v => updateSetting('debugTorBrowser', v)}
+        hint="Logs Marionette command traces to guide-main.log ([TorBrowserBackend])." />
+    </>
   );
 }
 

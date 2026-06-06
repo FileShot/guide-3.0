@@ -72,6 +72,7 @@ export default function BrowserPanel() {
   const browserReloadTick = useAppStore((s) => s.browserReloadTick);
   const browserPreviewResetTick = useAppStore((s) => s.browserPreviewResetTick);
   const browserControl = useAppStore((s) => s.settings.browserControl || 'auto');
+  const browserEngine = useAppStore((s) => s.settings.browserEngine || 'chromium');
   const openBrowserTab = useAppStore((s) => s.openBrowserTab);
 
   const [previewUrl, setPreviewUrl] = useState('');
@@ -533,6 +534,16 @@ export default function BrowserPanel() {
         <button type="button" className="p-1 text-vsc-text-dim hover:text-vsc-text rounded" title="Open in browser" onClick={openExternal}>
           <ExternalLink size={14} />
         </button>
+        <span
+          className={`text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0 ${
+            browserEngine === 'tor'
+              ? 'bg-purple-900/40 text-purple-300 border border-purple-700/40'
+              : 'bg-vsc-panel-border/20 text-vsc-text-dim border border-vsc-panel-border/30'
+          }`}
+          title={browserEngine === 'tor' ? 'Agent uses Tor Browser (geckodriver)' : 'Agent uses Chromium (Playwright)'}
+        >
+          {browserEngine === 'tor' ? 'Tor' : 'Chromium'}
+        </span>
       </div>
 
       {showLiveCanvas ? (
