@@ -9,6 +9,7 @@ const { resolveTorBrowserExecutable } = require('./torBrowserResolver');
 const {
   applyTorAutoConnectPrefs,
   ensureTorBootstrap,
+  isTorConnectionScreen,
   repairTorNetworkState,
   waitForTcpPort,
   writeTorProfileDefaults,
@@ -207,8 +208,7 @@ class TorBrowserBackend {
     if (!this._driver) return { success: false, error: 'Tor Browser not launched' };
     if (this._torBootstrapped && !force) {
       try {
-        const url = await this._driver.getCurrentUrl();
-        if (!url.includes('about:torconnect')) {
+        if (!(await isTorConnectionScreen(this._driver))) {
           await waitForTcpPort(TOR_SOCKS_HOST, TOR_SOCKS_PORT, 3000);
           return { success: true };
         }

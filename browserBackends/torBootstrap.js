@@ -12,9 +12,11 @@ const DEFAULT_BOOTSTRAP_TIMEOUT_MS = 120000;
 const GUIDE_TOR_DEFAULTS_MARKER = '// guIDE Tor defaults — managed by guIDE; do not edit this block';
 const GUIDE_TOR_DEFAULTS_END = '// end guIDE Tor defaults';
 
+const TOR_FAILURE_RE = /tor exited during startup|restart tor browser|could not connect to tor|still cannot connect|tor process exited|failed to establish a tor network connection/i;
+
 /**
- * Tor Browser prefs applied at launch and persisted in profile user.js.
- * security_slider: 1 = Safest, 2 = Safer, 4 = Standard.
+ * Tor prefs: auto-connect, Safest security. No bridge prefs — bridges cause crash loops
+ * for direct connections and are left entirely to the user via Tor settings.
  */
 const TOR_AUTO_CONNECT_PREFS = {
   'extensions.torlauncher.quickstart': true,
@@ -22,10 +24,7 @@ const TOR_AUTO_CONNECT_PREFS = {
   'extensions.torlauncher.prompt_at_startup': false,
   'browser.startup.homepage_override.mstone': 'ignore',
   'browser.security_level.security_slider': 1,
-  // Do not force bridges on — that crashes Tor for most direct connections.
-  // obfs4 is the default transport when bridges are enabled in Settings.
   'torbrowser.settings.bridges.enabled': false,
-  'torbrowser.settings.bridges.builtin_type': 'obfs4',
 };
 
 function _managedTorRoot(userDataPath) {
@@ -57,7 +56,6 @@ function resolveTorProfileDir(userDataPath, firefoxPath) {
   return preferred;
 }
 
-/** Persist prefs in Tor profile so first launch respects Safest + obfs4 before Marionette runs. */
 function writeTorProfileDefaults(userDataPath, firefoxPath) {
   const profileDir = resolveTorProfileDir(userDataPath, firefoxPath);
   if (!profileDir) return false;
@@ -101,7 +99,7 @@ function resolveTorDataDir(userDataPath, firefoxPath) {
   return candidates[0] || null;
 }
 
-/** Clear stale disconnect flags left when Tor crashes (DisableNetwork 1 in torrc). */
+/** Light repair: clear disconnect flag only. Does not delete auth cookies every launch. */
 function repairTorNetworkState(userDataPath, firefoxPath, { log } = {}) {
   const torDir = resolveTorDataDir(userDataPath, firefoxPath);
   if (!torDir) return false;
@@ -115,22 +113,40 @@ function repairTorNetworkState(userDataPath, firefoxPath, { log } = {}) {
       fs.writeFileSync(torrcPath, next, 'utf8');
       repaired = true;
       if (log) log('tor repair: cleared DisableNetwork in torrc');
-    }
-  }
-
-  for (const name of ['lock', 'control_auth_cookie']) {
-    const filePath = path.join(torDir, name);
-    if (!fs.existsSync(filePath)) continue;
-    try {
-      fs.unlinkSync(filePath);
-      repaired = true;
-      if (log) log(`tor repair: removed stale ${name}`);
-    } catch {
-      // best effort
+      const lockPath = path.join(torDir, 'lock');
+      if (fs.existsSync(lockPath)) {
+        try {
+          fs.unlinkSync(lockPath);
+          if (log) log('tor repair: removed stale lock');
+        } catch {
+          // best effort
+        }
+      }
     }
   }
 
   return repaired;
+}
+
+/** Heavy repair after repeated Tor daemon crashes — let Tor regenerate torrc/state. */
+function resetTorDaemonState(userDataPath, firefoxPath, { log } = {}) {
+  const torDir = resolveTorDataDir(userDataPath, firefoxPath);
+  if (!torDir) return false;
+
+  const resetFiles = ['torrc', 'state', 'lock', 'control_auth_cookie'];
+  let reset = false;
+  for (const name of resetFiles) {
+    const filePath = path.join(torDir, name);
+    if (!fs.existsSync(filePath)) continue;
+    try {
+      fs.unlinkSync(filePath);
+      reset = true;
+    } catch {
+      // best effort
+    }
+  }
+  if (reset && log) log('tor repair: reset tor daemon state (torrc/state/lock)');
+  return reset;
 }
 
 function applyTorAutoConnectPrefs(firefoxOptions) {
@@ -168,13 +184,17 @@ function _isTorConnectPage(url) {
   return typeof url === 'string' && url.includes('about:torconnect');
 }
 
-async function _pageIndicatesTorCrash(driver) {
+async function _pageText(driver) {
   try {
-    const text = await driver.executeScript(() => document.body?.innerText || '');
-    return /tor exited during startup|restart tor browser/i.test(text);
+    return await driver.executeScript(() => document.body?.innerText || '');
   } catch {
-    return false;
+    return '';
   }
+}
+
+async function _pageIndicatesTorFailure(driver) {
+  const text = await _pageText(driver);
+  return TOR_FAILURE_RE.test(text);
 }
 
 function _isProxyError(url) {
@@ -183,9 +203,9 @@ function _isProxyError(url) {
 
 async function _tryClickConnectButton(driver) {
   const selectors = [
+    By.css('button[name="connectButton"]'),
     By.css('#connectButton'),
     By.css('button[data-l10n-id="tor-connect-connect"]'),
-    By.xpath("//button[contains(translate(normalize-space(.), 'CONNECT', 'connect'), 'connect')]"),
   ];
   for (const sel of selectors) {
     try {
@@ -200,8 +220,8 @@ async function _tryClickConnectButton(driver) {
   }
   try {
     const clicked = await driver.executeScript(() => {
-      const buttons = Array.from(document.querySelectorAll('button'));
-      const btn = buttons.find((b) => /connect/i.test((b.textContent || '').trim()));
+      const buttons = Array.from(document.querySelectorAll('button[name="connectButton"], button#connectButton'));
+      const btn = buttons.find((b) => b.name === 'connectButton' || b.id === 'connectButton');
       if (btn) {
         btn.click();
         return true;
@@ -215,6 +235,21 @@ async function _tryClickConnectButton(driver) {
 }
 
 async function _tryClickRestartTorButton(driver) {
+  const selectors = [
+    By.css('button[name="restartButton"]'),
+    By.css('button[data-l10n-id="tor-connect-restart"]'),
+  ];
+  for (const sel of selectors) {
+    try {
+      const el = await driver.findElement(sel);
+      if (await el.isDisplayed()) {
+        await el.click();
+        return true;
+      }
+    } catch {
+      // try next
+    }
+  }
   try {
     const clicked = await driver.executeScript(() => {
       const buttons = Array.from(document.querySelectorAll('button'));
@@ -231,9 +266,18 @@ async function _tryClickRestartTorButton(driver) {
   }
 }
 
+async function _socksReady(timeoutMs) {
+  try {
+    await waitForTcpPort(TOR_SOCKS_HOST, TOR_SOCKS_PORT, timeoutMs);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Wait until Tor is bootstrapped: SOCKS port open and browser past connect screen.
- * Auto-clicks Connect on about:torconnect when quickstart prefs did not fire yet.
+ * Wait until Tor is bootstrapped: SOCKS port open and past connect/failure screens.
+ * Never uses bridges — clicks Connect / Restart only.
  */
 async function ensureTorBootstrap(driver, {
   timeoutMs = DEFAULT_BOOTSTRAP_TIMEOUT_MS,
@@ -242,8 +286,7 @@ async function ensureTorBootstrap(driver, {
   firefoxPath = null,
 } = {}) {
   const deadline = Date.now() + timeoutMs;
-  let clickedConnect = false;
-  let restartedTor = false;
+  let failureRecoveries = 0;
 
   while (Date.now() < deadline) {
     let url = '';
@@ -255,43 +298,48 @@ async function ensureTorBootstrap(driver, {
     }
 
     if (_isTorConnectPage(url)) {
-      const crashed = await _pageIndicatesTorCrash(driver);
-      if (crashed && !restartedTor) {
-        repairTorNetworkState(userDataPath, firefoxPath, { log });
-        const ok = await _tryClickRestartTorButton(driver);
-        restartedTor = ok;
-        clickedConnect = false;
-        if (ok && log) log('tor bootstrap: clicked Restart Tor Browser after crash');
+      const failed = await _pageIndicatesTorFailure(driver);
+      if (failed) {
+        failureRecoveries += 1;
+        if (failureRecoveries === 1) {
+          repairTorNetworkState(userDataPath, firefoxPath, { log });
+          const restarted = await _tryClickRestartTorButton(driver);
+          if (restarted && log) log('tor bootstrap: clicked Restart Tor Browser');
+          if (!restarted) {
+            const connected = await _tryClickConnectButton(driver);
+            if (connected && log) log('tor bootstrap: clicked Connect after failure screen');
+          }
+        } else if (failureRecoveries >= 2) {
+          resetTorDaemonState(userDataPath, firefoxPath, { log });
+          try {
+            await driver.get('about:torconnect');
+          } catch {}
+          await _sleep(2000);
+          await _tryClickConnectButton(driver);
+          if (log) log('tor bootstrap: reset tor daemon state and retried Connect');
+        }
         await _sleep(3000);
         continue;
       }
-      if (!clickedConnect) {
-        const ok = await _tryClickConnectButton(driver);
-        clickedConnect = ok;
-        if (ok && log) log('tor bootstrap: clicked Connect on about:torconnect');
-      }
-      await _sleep(2000);
+
+      const connected = await _tryClickConnectButton(driver);
+      if (connected && log) log('tor bootstrap: clicked Connect on about:torconnect');
+      await _sleep(2500);
       continue;
     }
 
-    try {
-      await waitForTcpPort(TOR_SOCKS_HOST, TOR_SOCKS_PORT, Math.min(8000, deadline - Date.now()));
-      if (!_isProxyError(url) && !_isTorConnectPage(url)) {
-        if (log) log('tor bootstrap: SOCKS ready');
-        return { success: true };
-      }
-    } catch {
-      // SOCKS not up yet — keep polling
+    const socksUp = await _socksReady(Math.min(5000, deadline - Date.now()));
+    if (socksUp && !_isProxyError(url)) {
+      if (log) log('tor bootstrap: SOCKS ready');
+      return { success: true };
     }
 
     if (_isProxyError(url)) {
-      if (!clickedConnect) {
-        try {
-          await driver.get('about:torconnect');
-          await _sleep(1500);
-        } catch {}
-        continue;
-      }
+      try {
+        await driver.get('about:torconnect');
+        await _sleep(1500);
+      } catch {}
+      continue;
     }
 
     await _sleep(1500);
@@ -299,8 +347,19 @@ async function ensureTorBootstrap(driver, {
 
   return {
     success: false,
-    error: 'Timed out waiting for Tor network connection. Click Connect in Tor Browser or check your network.',
+    error: 'Timed out waiting for Tor network connection. Try again or delete %APPDATA%\\guide-ide\\tor-browser\\Browser\\TorBrowser\\Data\\Tor',
   };
+}
+
+/** True when the current browser page shows a Tor connect/failure screen. */
+async function isTorConnectionScreen(driver) {
+  try {
+    const url = await driver.getCurrentUrl();
+    if (_isTorConnectPage(url)) return true;
+    return _pageIndicatesTorFailure(driver);
+  } catch {
+    return false;
+  }
 }
 
 module.exports = {
@@ -309,7 +368,9 @@ module.exports = {
   TOR_AUTO_CONNECT_PREFS,
   applyTorAutoConnectPrefs,
   ensureTorBootstrap,
+  isTorConnectionScreen,
   repairTorNetworkState,
+  resetTorDaemonState,
   resolveTorDataDir,
   resolveTorProfileDir,
   writeTorProfileDefaults,
