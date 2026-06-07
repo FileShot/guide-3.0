@@ -1,6 +1,6 @@
 {
   "name": "guide-ide",
-  "version": "0.4.12.3",
+  "version": "0.4.12.4",
   "description": "guIDE Local First IDE",
   "main": "electron-main.js",
   "scripts": {

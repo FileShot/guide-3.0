@@ -1135,6 +1135,7 @@ class MCPToolServer {
     }
 
     // Rate limit check
+    const rateResult = this._checkRateLimit(toolName);
     if (!rateResult.allowed) {
       return { success: false, error: `Rate limit: too many ${toolName} calls. Wait a moment and try again. (${rateResult.count}/${rateResult.max} in last ${Math.round(rateResult.window/1000)}s)` };
     }
