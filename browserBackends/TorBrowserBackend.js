@@ -6,7 +6,15 @@ const { buildSnapshotInPage } = require('./snapshotScript');
 const { extractRefNumber, resolveRef, isStaleRef, redactPathForLog } = require('./refUtils');
 const { resolveGeckodriver, validateTorBrowserPath, DEFAULT_GECKODRIVER_VERSION } = require('./geckodriverResolver');
 const { resolveTorBrowserExecutable } = require('./torBrowserResolver');
-const { applyTorAutoConnectPrefs, ensureTorBootstrap, writeTorProfileDefaults } = require('./torBootstrap');
+const {
+  applyTorAutoConnectPrefs,
+  ensureTorBootstrap,
+  repairTorNetworkState,
+  waitForTcpPort,
+  writeTorProfileDefaults,
+  TOR_SOCKS_HOST,
+  TOR_SOCKS_PORT,
+} = require('./torBootstrap');
 
 class TorBrowserBackend {
   constructor(options = {}) {
@@ -91,15 +99,25 @@ class TorBrowserBackend {
     if (this._driver) {
       try {
         await this._driver.getCurrentUrl();
-        console.log('[TorBrowserBackend] launch DONE: reusing existing session');
-        return { success: true, message: 'Already launched' };
+        const bootstrap = await this._ensureTorReady();
+        if (bootstrap.success) {
+          console.log('[TorBrowserBackend] launch DONE: reusing existing session');
+          return { success: true, message: 'Already launched' };
+        }
+        try { await this._driver.quit(); } catch {}
+        this._driver = null;
+        this._torBootstrapped = false;
       } catch {
         this._driver = null;
+        this._torBootstrapped = false;
       }
     }
 
     const t0 = Date.now();
     try {
+      repairTorNetworkState(this.userDataPath, pathCheck.normalizedPath, {
+        log: (msg) => console.log(`[TorBrowserBackend] ${msg}`),
+      });
       writeTorProfileDefaults(this.userDataPath, pathCheck.normalizedPath);
 
       const service = new firefox.ServiceBuilder(gecko.path);
@@ -187,11 +205,25 @@ class TorBrowserBackend {
 
   async _ensureTorReady(force = false) {
     if (!this._driver) return { success: false, error: 'Tor Browser not launched' };
-    if (this._torBootstrapped && !force) return { success: true };
+    if (this._torBootstrapped && !force) {
+      try {
+        const url = await this._driver.getCurrentUrl();
+        if (!url.includes('about:torconnect')) {
+          await waitForTcpPort(TOR_SOCKS_HOST, TOR_SOCKS_PORT, 3000);
+          return { success: true };
+        }
+      } catch {
+        // fall through to re-bootstrap
+      }
+      this._torBootstrapped = false;
+    }
     const bootstrap = await ensureTorBootstrap(this._driver, {
       log: (msg) => console.log(`[TorBrowserBackend] ${msg}`),
+      userDataPath: this.userDataPath,
+      firefoxPath: this._torBrowserPath,
     });
     if (bootstrap.success) this._torBootstrapped = true;
+    else this._torBootstrapped = false;
     return bootstrap;
   }
 
