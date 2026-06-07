@@ -154,8 +154,11 @@ function normalizeTabPath(filePath) {
 function syncStreamingFileToEditor(get, filePath, content, { op, oldText, newText, language, fileName, openIfMissing } = {}) {
   if (!filePath) return;
   const norm = normalizeTabPath(filePath);
+  const dismissed = get().dismissedStreamingTabPaths || [];
+  const autoOpen = get().settings?.autoOpenAgentFiles !== false;
+  const shouldOpen = openIfMissing && autoOpen && !dismissed.includes(norm);
   let tab = get().openTabs.find((t) => normalizeTabPath(t.path) === norm);
-  if (!tab && openIfMissing) {
+  if (!tab && shouldOpen) {
     get().openFile({
       path: filePath,
       name: fileName || filePath.split(/[\\/]/).pop(),
@@ -343,11 +346,25 @@ const useAppStore = create((set, get) => ({
 
   activeTabId: null,
 
+  /** Normalized paths user closed while agent is still streaming — skip auto-reopen. */
+  dismissedStreamingTabPaths: [],
+
+  /** Normalized paths with active file-content streaming — used to throttle LSP. */
+  streamingTabPaths: [],
+
 
 
   openFile: (fileInfo) => {
 
     const { openTabs } = get();
+
+    if (fileInfo.path) {
+      const norm = normalizeTabPath(fileInfo.path);
+      const dismissed = get().dismissedStreamingTabPaths || [];
+      if (dismissed.includes(norm)) {
+        set({ dismissedStreamingTabPaths: dismissed.filter((p) => p !== norm) });
+      }
+    }
 
     const existing = openTabs.find(t => t.path === fileInfo.path);
 
@@ -463,7 +480,21 @@ const useAppStore = create((set, get) => ({
 
   closeTab: (tabId) => {
 
-    const { openTabs, activeTabId } = get();
+    const { openTabs, activeTabId, streamingFileBlocks } = get();
+
+    const closing = openTabs.find(t => t.id === tabId);
+    if (closing?.path) {
+      const norm = normalizeTabPath(closing.path);
+      const isStreaming = streamingFileBlocks.some(
+        (b) => !b.complete && normalizeTabPath(b.filePath) === norm,
+      );
+      if (isStreaming) {
+        const dismissed = get().dismissedStreamingTabPaths || [];
+        if (!dismissed.includes(norm)) {
+          set({ dismissedStreamingTabPaths: [...dismissed, norm] });
+        }
+      }
+    }
 
     const idx = openTabs.findIndex(t => t.id === tabId);
 
@@ -1228,6 +1259,12 @@ const useAppStore = create((set, get) => ({
 
       // Block already exists — just update text/timer state, don't create new block or segment
 
+      const streamNorm = normalizeTabPath(filePath);
+      const streamPaths = store.streamingTabPaths || [];
+      const nextStreamPaths = streamNorm && !streamPaths.includes(streamNorm)
+        ? [...streamPaths, streamNorm]
+        : streamPaths;
+
       set({
 
         activeStreamingFileKey: normalizedKey,
@@ -1235,6 +1272,8 @@ const useAppStore = create((set, get) => ({
         chatStreamingText: currentText,
 
         streamingSegments: currentSegs,
+
+        streamingTabPaths: nextStreamPaths,
 
         _textTokenBuffer: null,
 
@@ -1270,6 +1309,12 @@ const useAppStore = create((set, get) => ({
 
     const newSegs = [...currentSegs, { type: 'file', index: newBlocks.length - 1 }];
 
+    const streamNorm = normalizeTabPath(filePath);
+    const streamPaths = store.streamingTabPaths || [];
+    const nextStreamPaths = streamNorm && !streamPaths.includes(streamNorm)
+      ? [...streamPaths, streamNorm]
+      : streamPaths;
+
     set({
 
       activeStreamingFileKey: normalizedKey,
@@ -1279,6 +1324,8 @@ const useAppStore = create((set, get) => ({
       streamingSegments: newSegs,
 
       chatStreamingText: currentText,
+
+      streamingTabPaths: nextStreamPaths,
 
       _textTokenBuffer: null,
 
@@ -1313,6 +1360,12 @@ const useAppStore = create((set, get) => ({
     const block = store.streamingFileBlocks[targetIdx];
     if (block.complete) return;
 
+    // Defense in depth: drop leaked tool-call JSON that escaped the stream filter.
+    if (/^\s*```json\s*\{[\s\S]*"tool"\s*:/.test(chunk)) {
+      console.warn('[appStore] appendFileContentToken: dropped leaked tool JSON chunk');
+      return;
+    }
+
     // Per-token flush for smooth file-content streaming (plan/file write blocks only).
     if (store._fileTokenTimer) {
       clearTimeout(store._fileTokenTimer);
@@ -1331,7 +1384,7 @@ const useAppStore = create((set, get) => ({
         newText: last.newText || last.content,
         language: last.language,
         fileName: last.fileName,
-        openIfMissing: true,
+        openIfMissing: false,
       });
     }
   },
@@ -1491,11 +1544,33 @@ const useAppStore = create((set, get) => ({
 
     }
 
+    if (payload?.incomplete) {
+      updated[targetIdx] = last;
+      set({
+        activeStreamingFileKey: targetKey,
+        streamingFileBlocks: updated,
+        _fileTokenBuffer: null,
+        _fileTokenTimer: null,
+      });
+      return;
+    }
+
     last.complete = true;
 
     updated[targetIdx] = last;
 
-    set({ activeStreamingFileKey: null, streamingFileBlocks: updated, _fileTokenBuffer: null, _fileTokenTimer: null });
+    const endNorm = normalizeTabPath(last.filePath);
+    const streamPaths = (store.streamingTabPaths || []).filter((p) => p !== endNorm);
+    const dismissed = (store.dismissedStreamingTabPaths || []).filter((p) => p !== endNorm);
+
+    set({
+      activeStreamingFileKey: null,
+      streamingFileBlocks: updated,
+      streamingTabPaths: streamPaths,
+      dismissedStreamingTabPaths: dismissed,
+      _fileTokenBuffer: null,
+      _fileTokenTimer: null,
+    });
 
   },
 
@@ -1533,7 +1608,16 @@ const useAppStore = create((set, get) => ({
 
     if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
 
-    set({ activeStreamingFileKey: null, streamingFileBlocks: [], streamingSegments: [], _fileTokenBuffer: null, _fileTokenTimer: null, _textTokenBuffer: null, _textTokenTimer: null });
+    set({
+      activeStreamingFileKey: null,
+      streamingFileBlocks: [],
+      streamingSegments: [],
+      streamingTabPaths: [],
+      _fileTokenBuffer: null,
+      _fileTokenTimer: null,
+      _textTokenBuffer: null,
+      _textTokenTimer: null,
+    });
 
   },
 
@@ -2499,6 +2583,8 @@ const useAppStore = create((set, get) => ({
       debugStreamDiag: false,
 
       autoLintFix: true,       // Plan F: auto-inject lint correction after file writes
+
+      autoOpenAgentFiles: true, // Auto-open Monaco tab when agent streams a new file
 
       enableSubAgents: true,  // Plan G: allow model to spawn isolated sub-agents
 

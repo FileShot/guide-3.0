@@ -745,6 +745,7 @@ class ChatEngine extends EventEmitter {
     this._templateSupportsThinking = false;
     this._thinkingCapable = false;
     this._recentlyWrittenFiles = new Map(); // filePath → content written in current chat() call
+    this._fileContentStreamActivePath = null;
     this._sessionId = 0; // increments on resetSession to detect stale tool results
     console.log('[ChatEngine] constructor DONE');
   }
@@ -1634,6 +1635,43 @@ class ChatEngine extends EventEmitter {
       let _sfVisibleChars = 0; // tracks chars forwarded to frontend (after filter removes tool JSON)
       let _sfFenceInThink = false; // fence that opened inside think mode
       let _sfEarlyFileStartEmitted = false;
+      let _sfContentContinuation = null;
+      const _sfContentEndCompleted = new Set();
+
+      const _sfSaveContentContinuation = () => {
+        if (!_sfContentFilePath) return;
+        _sfContentContinuation = {
+          filePath: _sfContentFilePath,
+          streamIsEdit: _sfStreamIsEdit,
+          oldText: _sfContentOldText,
+        };
+      };
+
+      const _sfRestoreContentContinuationAfterReset = () => {
+        const resume = _sfContentContinuation;
+        if (!resume?.filePath) return;
+        _sfContentFilePath = resume.filePath;
+        _sfStreamIsEdit = !!resume.streamIsEdit;
+        _sfContentOldText = resume.oldText || '';
+        _sfFileWriteDetected = true;
+        _sfContentStreamActive = true;
+        _sfContentDone = false;
+        _sfEarlyFileStartEmitted = true;
+        _sfContentContinuation = null;
+        this._fileContentStreamActivePath = resume.filePath;
+        console.log(`[ChatEngine] Resuming file-content stream for ${resume.filePath}`);
+      };
+
+      const _sfShouldAllowNewFileContentStart = (filePath) => {
+        if (_sfContentContinuation) return false;
+        const np = _normalizePath(filePath);
+        if (_sfContentEndCompleted.has(np)) return false;
+        return true;
+      };
+
+      const _sfMarkFileContentStreamActive = (filePath) => {
+        this._fileContentStreamActivePath = filePath || null;
+      };
 
       const _tryEarlyFileContentStart = (buf) => {
         if (_sfEarlyFileStartEmitted || !_sfFileWriteDetected || _sfContentDone || !onStreamEvent) return;
@@ -1643,6 +1681,7 @@ class ChatEngine extends EventEmitter {
         if (!filePath || !shouldStreamFileContentForAgent(options, filePath)) return;
         const np = _normalizePath(filePath);
         if (_sfStreamedFileWrites.has(np)) return;
+        if (!_sfShouldAllowNewFileContentStart(filePath)) return;
         _sfEarlyFileStartEmitted = true;
         _sfContentFilePath = filePath;
         if (_sfStreamIsEdit && !_sfContentOldText) {
@@ -1660,6 +1699,7 @@ class ChatEngine extends EventEmitter {
           oldText: _sfContentOldText || undefined,
         });
         _sfStreamedFileWrites.add(np);
+        _sfMarkFileContentStreamActive(filePath);
       };
 
       const _sfForward = (text) => {
@@ -1849,7 +1889,9 @@ class ChatEngine extends EventEmitter {
           // Check for <think> open or </think> close tag — buffer chars so the tag itself isn't forwarded to UI.
           // Plan A: matching </think> in normal mode silently consumes orphan close tags so they don't leak
           // to the visible chat stream when the model emits </think> without a preceding <think>.
-          if (_sfRawThinkTagsEnabled && (_sfThinkTagMatch.length > 0 || ch === '<')) {
+          // Skip think-tag matching during file-write fences so </html> etc. are not buffered/consumed.
+          if (!_sfContentStreamActive && !(_sfInFence && (_sfFileWriteDetected || _sfToolCallNotified))
+            && _sfRawThinkTagsEnabled && (_sfThinkTagMatch.length > 0 || ch === '<')) {
             _sfThinkTagMatch += ch;
             const OPEN_TAG = '<think>';
             const CLOSE_TAG = '</think>';
@@ -1994,6 +2036,8 @@ class ChatEngine extends EventEmitter {
                 }
                 if (onStreamEvent) {
                   onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
+                  _sfContentEndCompleted.add(_normalizePath(_sfContentFilePath));
+                  _sfMarkFileContentStreamActive(null);
                 }
               } else {
                 _sfContentBuf += ch;
@@ -2013,7 +2057,8 @@ class ChatEngine extends EventEmitter {
                   const oldM = _sfFenceBuf.match(RE_OLD_TEXT_CAPTURE);
                   if (oldM) _sfContentOldText = _jsonUnescape(oldM[1]);
                 }
-                if (shouldStreamFileContentForAgent(options, _sfContentFilePath)) {
+                if (shouldStreamFileContentForAgent(options, _sfContentFilePath)
+                  && _sfShouldAllowNewFileContentStart(_sfContentFilePath)) {
                   _sfContentStreamActive = true;
                   const fileName = _sfContentFilePath.split(/[\\/]/).pop() || _sfContentFilePath;
                   const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
@@ -2028,6 +2073,7 @@ class ChatEngine extends EventEmitter {
                     });
                   }
                   _sfStreamedFileWrites.add(_normalizePath(_sfContentFilePath));
+                  _sfMarkFileContentStreamActive(_sfContentFilePath);
                 } else {
                   _sfContentDone = true;
                 }
@@ -2213,6 +2259,8 @@ class ChatEngine extends EventEmitter {
               }
               if (onStreamEvent) {
                 onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
+                _sfContentEndCompleted.add(_normalizePath(_sfContentFilePath));
+                _sfMarkFileContentStreamActive(null);
               }
             } else {
               _sfContentBuf += ch;
@@ -2232,7 +2280,8 @@ class ChatEngine extends EventEmitter {
                 const oldM = _sfBuf.match(RE_OLD_TEXT_CAPTURE);
                 if (oldM) _sfContentOldText = _jsonUnescape(oldM[1]);
               }
-              if (shouldStreamFileContentForAgent(options, _sfContentFilePath)) {
+              if (shouldStreamFileContentForAgent(options, _sfContentFilePath)
+                && _sfShouldAllowNewFileContentStart(_sfContentFilePath)) {
                 _sfContentStreamActive = true;
                 const fileName = _sfContentFilePath.split(/[\\/]/).pop() || _sfContentFilePath;
                 const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
@@ -2247,6 +2296,7 @@ class ChatEngine extends EventEmitter {
                   });
                 }
                 _sfStreamedFileWrites.add(_normalizePath(_sfContentFilePath));
+                _sfMarkFileContentStreamActive(_sfContentFilePath);
               } else {
                 _sfContentDone = true;
               }
@@ -2708,27 +2758,26 @@ class ChatEngine extends EventEmitter {
       let _genStopReason = result.metadata?.stopReason;
       let _userAbortedGeneration = _genStopReason === 'abort' || _genStopReason === 'cancelled';
 
-      // maxTokens interrupt diagnostic: when maxTokens stops generation during native FC,
-      // the partial FC result is discarded by node-llama-cpp (result.functionCalls is undefined).
-      // Log + warn the user so the 15-minute silence scenario is visible.
-      if (_genStopReason === 'maxTokens' && _useNativeFunctions) {
-        console.warn(`[ChatEngine] maxTokens interrupted native FC generation — totalGenTokens=${totalGenTokens}, proseGenTokens=${genTokenCount}, partial FC result discarded by node-llama-cpp`);
+      // maxTokens interrupt diagnostic: when maxTokens stops generation mid tool-call / file stream.
+      if (_genStopReason === 'maxTokens') {
+        if (_useNativeFunctions) {
+          console.warn(`[ChatEngine] maxTokens interrupted native FC generation — totalGenTokens=${totalGenTokens}, proseGenTokens=${genTokenCount}, partial FC result discarded by node-llama-cpp`);
+        }
         if (onStreamEvent) {
           onStreamEvent('generation-warning', {
             message: 'Generation hit token limit during tool call — will continue',
             suggestion: 'The model will automatically continue generating to complete the tool call.',
           });
         }
-        // Fix C: Force-emit partial file content to UI when maxTokens interrupts streaming.
-        // Without this, the user sees nothing during the 5-minute invisible generation.
         if (_sfContentStreamActive && onStreamEvent) {
           if (_sfContentBuf) {
             onStreamEvent('file-content-token', _sfContentBuf);
             _sfContentBuf = '';
           }
           onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath, incomplete: true });
+          _sfSaveContentContinuation();
           _sfContentStreamActive = false;
-          console.log(`[ChatEngine] maxTokens FC interrupt: emitted partial file-content-end for ${_sfContentFilePath} (incomplete)`);
+          console.log(`[ChatEngine] maxTokens interrupt: emitted partial file-content-end for ${_sfContentFilePath} (incomplete)`);
         }
       }
 
@@ -2754,6 +2803,7 @@ class ChatEngine extends EventEmitter {
         _sfFenceStreamPlain = false; _sfFencePlainTick = 0;
         _sfNativeThinkActive = false;
         this._nativeThinkLogged = false;
+        _sfRestoreContentContinuationAfterReset();
         // NOTE: _sfVisibleChars is NOT reset — it tracks cumulative visible chars across rounds
 
         // Recalculate maxTokens for this round
@@ -2960,6 +3010,7 @@ class ChatEngine extends EventEmitter {
               _sfFenceStreamPlain = false; _sfFencePlainTick = 0;
               _sfNativeThinkActive = false;
               this._nativeThinkLogged = false;
+              _sfRestoreContentContinuationAfterReset();
 
               const _tlCtxUsed = this._sequence?.nextTokenIndex || 0;
               const _tlCtxAvail = contextSize - _tlCtxUsed;
@@ -4599,6 +4650,13 @@ class ChatEngine extends EventEmitter {
     const genRoom = contextSize - kvUsed;
     const needsShift = measured > maxTokensCount || genRoom < 1;
     if (!needsShift) return;
+
+    if (this._fileContentStreamActivePath && onStreamEvent) {
+      onStreamEvent('generation-warning', {
+        message: 'Condensing context during active file write — stream will continue',
+        suggestion: 'Older messages were summarized. File content streaming will resume.',
+      });
+    }
 
     console.log(`[ChatEngine] Context pre-flight: renderedTokens=${measured} budget=${maxTokensCount} kvUsed=${kvUsed}/${contextSize}`);
     const shifted = this._contextShiftStrategy({

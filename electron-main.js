@@ -1171,7 +1171,11 @@ ipcMain.handle('inject-user-message', (_e, payload) => {
 });
 
 // ─── File read helpers (binary preview) ─────────────────────────────
-const BINARY_PREVIEW_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'pdf']);
+const BINARY_PREVIEW_EXTENSIONS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'pdf',
+  'mp4', 'webm', 'mov', 'mkv', 'avi',
+  'mp3', 'wav', 'ogg', 'm4a', 'flac',
+]);
 
 function listListeningPorts() {
   const { execSync } = require('child_process');
@@ -1220,6 +1224,16 @@ function getMimeForExtension(ext) {
     bmp: 'image/bmp',
     ico: 'image/x-icon',
     pdf: 'application/pdf',
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    mov: 'video/quicktime',
+    mkv: 'video/x-matroska',
+    avi: 'video/x-msvideo',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    ogg: 'audio/ogg',
+    m4a: 'audio/mp4',
+    flac: 'audio/flac',
   };
   return map[e] || 'application/octet-stream';
 }

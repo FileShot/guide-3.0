@@ -25,7 +25,8 @@ import {
 } from '../lib/lspBridge';
 import {
   isPreviewable, getPreviewType,
-  HtmlPreview, MarkdownPreview, JsonPreview, CsvPreview, SvgPreview, ImagePreview, PdfPreview
+  HtmlPreview, MarkdownPreview, JsonPreview, CsvPreview, SvgPreview, ImagePreview, PdfPreview,
+  VideoPreview, AudioPreview,
 } from './EditorPreviews';
 import FileIcon from './FileIcon';
 import GuideLogo from './GuideLogo';
@@ -176,10 +177,17 @@ export default function EditorArea() {
   const [dragTabId, setDragTabId] = useState(null);
   const projectPath = useAppStore(s => s.projectPath);
   const debugSessionId = useAppStore(s => s.debugSessionId);
+  const streamingTabPaths = useAppStore(s => s.streamingTabPaths);
   const [symbolBreadcrumbs, setSymbolBreadcrumbs] = useState([]);
   const [cursorLine, setCursorLine] = useState(1);
 
   const activeTab = openTabs.find(t => t.id === activeTabId);
+
+  const isTabPathStreaming = useCallback((filePath) => {
+    if (!filePath) return false;
+    const norm = String(filePath).replace(/\\/g, '/').toLowerCase();
+    return (streamingTabPaths || []).includes(norm);
+  }, [streamingTabPaths]);
 
   // Sync breakpoints to debug session when session becomes active
   useEffect(() => {
@@ -198,26 +206,47 @@ export default function EditorArea() {
     req.catch(() => {});
   }, [debugSessionId, activeTab?.path]);
 
-  // LSP didOpen / didChange when active tab content changes
+  // LSP didOpen / didChange when active tab content changes (debounced during agent streaming)
   useEffect(() => {
     if (!activeTab?.path || activeTab.isBinary) return;
     const uri = pathToUri(activeTab.path);
     const lang = activeTab.language || 'plaintext';
-    const prev = lspVersionRef.current.get(activeTab.path) || 0;
+    const pathKey = activeTab.path;
+    const prev = lspVersionRef.current.get(pathKey) || 0;
     const ver = prev + 1;
-    lspVersionRef.current.set(activeTab.path, ver);
+    lspVersionRef.current.set(pathKey, ver);
+    const streaming = isTabPathStreaming(pathKey);
+
+    const flush = () => {
+      if (lspVersionRef.current.get(pathKey) !== ver) return;
+      const tab = useAppStore.getState().openTabs.find((t) => t.path === pathKey);
+      const text = tab?.content ?? activeTab.content ?? '';
+      if (prev === 0) {
+        notifyDidOpen({ uri, language: lang, text, version: ver }).catch(() => {});
+      } else {
+        notifyDidChange({ uri, text, version: ver }).catch(() => {});
+      }
+    };
+
     if (prev === 0) {
-      notifyDidOpen({ uri, language: lang, text: activeTab.content || '', version: ver }).catch(() => {});
-    } else {
-      notifyDidChange({ uri, text: activeTab.content || '', version: ver }).catch(() => {});
+      flush();
+      return;
     }
-  }, [activeTab?.path, activeTab?.content, activeTab?.language, activeTab?.isBinary]);
+    if (streaming) {
+      const timer = setTimeout(flush, 400);
+      return () => clearTimeout(timer);
+    }
+    flush();
+  }, [activeTab?.path, activeTab?.content, activeTab?.language, activeTab?.isBinary, isTabPathStreaming]);
 
   // Fetch LSP document symbols for breadcrumbs + outline
   useEffect(() => {
     if (!activeTab?.path || activeTab.isBinary) {
       documentSymbolsRef.current = [];
       setSymbolBreadcrumbs([]);
+      return;
+    }
+    if (isTabPathStreaming(activeTab.path)) {
       return;
     }
     let cancelled = false;
@@ -265,7 +294,7 @@ export default function EditorArea() {
         setSymbolOutline(symbols);
       });
     return () => { cancelled = true; };
-  }, [activeTab?.path, activeTab?.content, activeTab?.language, activeTab?.isBinary, projectPath, setSymbolOutline]);
+  }, [activeTab?.path, activeTab?.content, activeTab?.language, activeTab?.isBinary, projectPath, setSymbolOutline, isTabPathStreaming]);
 
   // Update symbol breadcrumbs when cursor moves
   useEffect(() => {
@@ -541,75 +570,82 @@ export default function EditorArea() {
   }
 
   const renderTabBar = (tabs, groupNum) => (
-    <div
-      className="flex h-tabbar bg-vsc-tab-border overflow-x-auto scrollbar-none no-select flex-shrink-0"
-      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }}
-      onDrop={(e) => {
-        e.preventDefault();
-        const tabId = e.dataTransfer.getData('text/tab-id') || dragTabId;
-        if (tabId) moveTabToEditorGroup(tabId, groupNum);
-        setDragTabId(null);
-      }}
-    >
-      {tabs.map(tab => {
-        const isHtml = tab.extension === 'html' || tab.extension === 'htm';
-        const isBrowserTab = tab.type === 'browser';
-        const isActive = tab.id === activeTabId;
-        return (
-          <div
-            key={tab.id}
-            draggable
-            className={`editor-tab ${isActive ? 'active' : ''}`}
-            onClick={() => { setActiveTab(tab.id); setActiveEditorGroup(groupNum); }}
-            onContextMenu={(e) => handleTabContextMenu(e, tab.id)}
-            onDragStart={(e) => {
-              e.dataTransfer.setData('text/tab-id', tab.id);
-              setDragTabId(tab.id);
-            }}
-            onDragEnd={() => setDragTabId(null)}
-          >
-            {isBrowserTab ? <Globe size={14} className="text-vsc-accent flex-shrink-0" /> : <FileIcon extension={tab.extension} size={14} />}
-            <span className="truncate text-vsc-sm">{tab.name}</span>
-            {tab.modified && <Circle size={8} className="text-vsc-text-bright fill-current flex-shrink-0" />}
-            {isHtml && (
-              <button
-                className="p-0.5 hover:bg-vsc-list-hover rounded text-vsc-success opacity-60 hover:opacity-100"
-                onClick={(e) => { e.stopPropagation(); closeDiff(); togglePreviewMode(tab.id); }}
-                title={previewMode[tab.id] ? 'Show code' : 'Preview in viewport'}
-              >
-                <Play size={12} />
+    <div className="flex h-tabbar bg-vsc-tab-border no-select flex-shrink-0">
+      <div
+        className="flex flex-1 min-w-0 overflow-x-auto scrollbar-none"
+        onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }}
+        onDrop={(e) => {
+          e.preventDefault();
+          const tabId = e.dataTransfer.getData('text/tab-id') || dragTabId;
+          if (tabId) moveTabToEditorGroup(tabId, groupNum);
+          setDragTabId(null);
+        }}
+      >
+        {tabs.map(tab => {
+          const isHtml = tab.extension === 'html' || tab.extension === 'htm';
+          const isBrowserTab = tab.type === 'browser';
+          const isActive = tab.id === activeTabId;
+          return (
+            <div
+              key={tab.id}
+              draggable
+              className={`editor-tab ${isActive ? 'active' : ''}`}
+              onClick={() => { setActiveTab(tab.id); setActiveEditorGroup(groupNum); }}
+              onContextMenu={(e) => handleTabContextMenu(e, tab.id)}
+              onDragStart={(e) => {
+                e.dataTransfer.setData('text/tab-id', tab.id);
+                setDragTabId(tab.id);
+              }}
+              onDragEnd={() => setDragTabId(null)}
+            >
+              {isBrowserTab ? <Globe size={14} className="text-vsc-accent flex-shrink-0" /> : <FileIcon extension={tab.extension} size={14} />}
+              <span className="truncate text-vsc-sm">{tab.name}</span>
+              {tab.modified && <Circle size={8} className="text-vsc-text-bright fill-current flex-shrink-0" />}
+              {isHtml && (
+                <button
+                  className="p-0.5 hover:bg-vsc-list-hover rounded text-vsc-success opacity-60 hover:opacity-100"
+                  onClick={(e) => { e.stopPropagation(); closeDiff(); togglePreviewMode(tab.id); }}
+                  title={previewMode[tab.id] ? 'Show code' : 'Preview in viewport'}
+                >
+                  <Play size={12} />
+                </button>
+              )}
+              <button className="close-btn" onClick={(e) => { e.stopPropagation(); handleCloseTab(tab.id); }}>
+                <X size={14} />
               </button>
-            )}
-            <button className="close-btn" onClick={(e) => { e.stopPropagation(); handleCloseTab(tab.id); }}>
-              <X size={14} />
-            </button>
-          </div>
-        );
-      })}
-      {tabs.length > 0 && (
-        <button
-          type="button"
-          className="flex items-center justify-center w-7 h-full text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover flex-shrink-0 border-l border-vsc-panel-border/30"
-          title="Tab actions"
-          onClick={(e) => {
-            e.stopPropagation();
-            const rect = e.currentTarget.getBoundingClientRect();
-            const tabId = tabs.some(t => t.id === activeTabId) ? activeTabId : tabs[0].id;
-            setTabContextMenu({ x: Math.max(8, rect.right - 200), y: rect.bottom + 2, tabId });
-          }}
-        >
-          <MoreHorizontal size={14} />
-        </button>
-      )}
-      {groupNum === 1 && (
-        <button
-          className="flex items-center px-2 text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover flex-shrink-0"
-          title={editorSplit ? 'Close split editor' : 'Split editor right'}
-          onClick={toggleEditorSplit}
-        >
-          <Columns size={14} />
-        </button>
-      )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex flex-shrink-0 items-stretch border-l border-vsc-panel-border/30 bg-vsc-tab-border z-10">
+        {(tabs.length > 0 || (groupNum === 1 && openTabs.length > 0)) && (
+          <button
+            type="button"
+            className="flex items-center justify-center w-7 h-full text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover"
+            title="Tab actions"
+            onClick={(e) => {
+              e.stopPropagation();
+              const rect = e.currentTarget.getBoundingClientRect();
+              const menuTabs = tabs.length > 0 ? tabs : openTabs;
+              const tabId = menuTabs.some(t => t.id === activeTabId) ? activeTabId : menuTabs[0]?.id;
+              if (!tabId) return;
+              setTabContextMenu({ x: Math.max(8, rect.right - 200), y: rect.bottom + 2, tabId });
+            }}
+          >
+            <MoreHorizontal size={14} />
+          </button>
+        )}
+        {groupNum === 1 && (
+          <button
+            type="button"
+            className="flex items-center px-2 text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover"
+            title={editorSplit ? 'Close split editor' : 'Split editor right'}
+            onClick={toggleEditorSplit}
+          >
+            <Columns size={14} />
+          </button>
+        )}
+      </div>
     </div>
   );
 
@@ -639,6 +675,8 @@ export default function EditorArea() {
         case 'svg': return <SvgPreview content={paneActiveTab.content} filePath={paneActiveTab.path} onToggleCode={toggle} />;
         case 'image': return <ImagePreview filePath={paneActiveTab.path} dataUrl={paneActiveTab.dataUrl} onToggleCode={toggle} />;
         case 'pdf': return <PdfPreview filePath={paneActiveTab.path} dataUrl={paneActiveTab.dataUrl} onToggleCode={toggle} />;
+        case 'video': return <VideoPreview filePath={paneActiveTab.path} dataUrl={paneActiveTab.dataUrl} onToggleCode={toggle} />;
+        case 'audio': return <AudioPreview filePath={paneActiveTab.path} dataUrl={paneActiveTab.dataUrl} onToggleCode={toggle} />;
         default: return null;
       }
     }
@@ -964,6 +1002,8 @@ export default function EditorArea() {
               case 'svg': return <SvgPreview content={activeTab.content} filePath={activeTab.path} onToggleCode={toggle} />;
               case 'image': return <ImagePreview filePath={activeTab.path} dataUrl={activeTab.dataUrl} onToggleCode={toggle} />;
               case 'pdf': return <PdfPreview filePath={activeTab.path} dataUrl={activeTab.dataUrl} onToggleCode={toggle} />;
+              case 'video': return <VideoPreview filePath={activeTab.path} dataUrl={activeTab.dataUrl} onToggleCode={toggle} />;
+              case 'audio': return <AudioPreview filePath={activeTab.path} dataUrl={activeTab.dataUrl} onToggleCode={toggle} />;
               default: return null;
             }
           })()

@@ -25,7 +25,7 @@ const TOOL_NAME_ALIASES = {
   fetch: 'fetch_webpage', fetch_url: 'fetch_webpage', get_page: 'fetch_webpage',
   // File
   read: 'read_file', cat: 'read_file', open: 'read_file', view: 'read_file',
-  write: 'write_file', create: 'write_file', save: 'write_file', create_file: 'write_file',
+  write: 'write_file', wrte_file: 'write_file', create: 'write_file', save: 'write_file', create_file: 'write_file',
   edit: 'edit_file', modify: 'edit_file', update: 'edit_file', patch: 'edit_file',
   append: 'append_to_file', add_to_file: 'append_to_file',
   delete: 'delete_file', remove: 'delete_file', rm: 'delete_file',

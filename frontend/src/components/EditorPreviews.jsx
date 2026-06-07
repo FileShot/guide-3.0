@@ -4,7 +4,7 @@
  * SVG (zoomable), Image, Binary.
  */
 import { useState, useRef, useMemo } from 'react';
-import { Play, Code2, ExternalLink, RefreshCw, Eye } from 'lucide-react';
+import { Play, Code2, ExternalLink, RefreshCw, Eye, Volume2, Film } from 'lucide-react';
 import { pathString, fileBaseName } from '../lib/pathString';
 
 function getFileName(filePath) {
@@ -20,7 +20,12 @@ function getFileDir(filePath) {
 const PREVIEW_EXTENSIONS = new Set([
   'html', 'htm', 'md', 'markdown', 'json', 'csv', 'tsv',
   'svg', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'pdf',
+  'mp4', 'webm', 'mov', 'mkv', 'avi',
+  'mp3', 'wav', 'ogg', 'm4a', 'flac',
 ]);
+
+const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'mkv', 'avi']);
+const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac']);
 
 export function isPreviewable(filePath) {
   const s = pathString(filePath);
@@ -42,6 +47,8 @@ export function getPreviewType(filePath) {
   if (ext === 'svg') return 'svg';
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico'].includes(ext)) return 'image';
   if (ext === 'pdf') return 'pdf';
+  if (VIDEO_EXTENSIONS.has(ext)) return 'video';
+  if (AUDIO_EXTENSIONS.has(ext)) return 'audio';
   return null;
 }
 
@@ -475,6 +482,68 @@ export function ImagePreview({ filePath, dataUrl, onToggleCode }) {
           />
           <p className="text-[11px] text-vsc-text-dim mt-3">{getFileName(filePath)}</p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Video Preview ───────────────────────────────────────
+
+export function VideoPreview({ filePath, dataUrl, onToggleCode }) {
+  const [error, setError] = useState(false);
+  const isDirectUrl = filePath?.startsWith('blob:') || filePath?.startsWith('data:');
+  const src = dataUrl || (isDirectUrl ? filePath : `file:///${filePath?.replace(/\\/g, '/')}`);
+
+  if (error) {
+    return (
+      <div className="h-full flex flex-col">
+        <PreviewToolbar icon={Film} iconColor="text-vsc-text-dim" label="Video" fileName={getFileName(filePath)} onToggleCode={onToggleCode} />
+        <div className="flex-1 flex items-center justify-center text-vsc-text-dim text-sm">Unable to play this video</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col">
+      <PreviewToolbar icon={Film} iconColor="text-purple-400" label="Video Preview" fileName={getFileName(filePath)} onToggleCode={onToggleCode} />
+      <div className="flex-1 min-h-0 flex items-center justify-center bg-black p-4">
+        <video
+          src={src}
+          controls
+          className="max-w-full max-h-full rounded shadow-lg"
+          onError={() => setError(true)}
+        >
+          Your browser does not support video playback.
+        </video>
+      </div>
+    </div>
+  );
+}
+
+// ─── Audio Preview ───────────────────────────────────────
+
+export function AudioPreview({ filePath, dataUrl, onToggleCode }) {
+  const [error, setError] = useState(false);
+  const isDirectUrl = filePath?.startsWith('blob:') || filePath?.startsWith('data:');
+  const src = dataUrl || (isDirectUrl ? filePath : `file:///${filePath?.replace(/\\/g, '/')}`);
+
+  if (error) {
+    return (
+      <div className="h-full flex flex-col">
+        <PreviewToolbar icon={Volume2} iconColor="text-vsc-text-dim" label="Audio" fileName={getFileName(filePath)} onToggleCode={onToggleCode} />
+        <div className="flex-1 flex items-center justify-center text-vsc-text-dim text-sm">Unable to play this audio file</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col">
+      <PreviewToolbar icon={Volume2} iconColor="text-cyan-400" label="Audio Preview" fileName={getFileName(filePath)} onToggleCode={onToggleCode} />
+      <div className="flex-1 flex flex-col items-center justify-center p-8 gap-4">
+        <Volume2 size={48} className="text-vsc-text-dim opacity-40" />
+        <audio src={src} controls className="w-full max-w-md" onError={() => setError(true)}>
+          Your browser does not support audio playback.
+        </audio>
       </div>
     </div>
   );

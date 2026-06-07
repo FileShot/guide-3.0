@@ -559,9 +559,12 @@ export default function App() {
         if (data?.filePath) {
 
           const normPath = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
-          let tab = s.openTabs.find(t => normPath(t.path) === normPath(data.filePath));
+          const fileNorm = normPath(data.filePath);
+          const dismissed = s.dismissedStreamingTabPaths || [];
+          const autoOpen = s.settings?.autoOpenAgentFiles !== false;
+          let tab = s.openTabs.find(t => normPath(t.path) === fileNorm);
 
-          if (!tab) {
+          if (!tab && autoOpen && !dismissed.includes(fileNorm)) {
             const fileName = data.filePath.split(/[\\/]/).pop() || data.filePath;
             s.openFile({
               path: data.filePath,
@@ -570,8 +573,10 @@ export default function App() {
               content: data.newContent || '',
               originalContent: data.originalContent != null ? data.originalContent : '',
             });
-            tab = useAppStore.getState().openTabs.find(t => normPath(t.path) === normPath(data.filePath));
-          } else if (data.originalContent != null) {
+            tab = useAppStore.getState().openTabs.find(t => normPath(t.path) === fileNorm);
+          } else if (!tab && (data.newContent != null || data.originalContent != null)) {
+            // Tab dismissed or auto-open off — skip opening; content still lands on disk.
+          } else if (tab && data.originalContent != null) {
             const newContent = data.newContent || '';
             const baseline = data.originalContent;
             useAppStore.setState({
@@ -582,7 +587,7 @@ export default function App() {
               ),
             });
             tab = useAppStore.getState().openTabs.find(t => t.id === tab.id);
-          } else {
+          } else if (tab) {
             // R51-Fix: Don't markTabSaved — keep the tab in a modified state
 
             // so dirty diff decorations (green/red gutter) show the AI's changes.
