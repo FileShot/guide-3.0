@@ -6,6 +6,7 @@ const { buildSnapshotInPage } = require('./snapshotScript');
 const { extractRefNumber, resolveRef, isStaleRef, redactPathForLog } = require('./refUtils');
 const { resolveGeckodriver, validateTorBrowserPath, DEFAULT_GECKODRIVER_VERSION } = require('./geckodriverResolver');
 const { resolveTorBrowserExecutable } = require('./torBrowserResolver');
+const { applyTorAutoConnectPrefs, ensureTorBootstrap, writeTorProfileDefaults } = require('./torBootstrap');
 
 class TorBrowserBackend {
   constructor(options = {}) {
@@ -22,6 +23,7 @@ class TorBrowserBackend {
     this._pollTimer = null;
     this._pollIntervalMs = 400;
     this._launchError = null;
+    this._torBootstrapped = false;
   }
 
   configure({ torBrowserPath, geckodriverPath, debugTorBrowser } = {}) {
@@ -98,11 +100,14 @@ class TorBrowserBackend {
 
     const t0 = Date.now();
     try {
+      writeTorProfileDefaults(this.userDataPath, pathCheck.normalizedPath);
+
       const service = new firefox.ServiceBuilder(gecko.path);
       const options = new firefox.Options();
       options.setBinary(pathCheck.normalizedPath);
       options.setPreference('browser.shell.checkDefaultBrowser', false);
       options.setPreference('dom.webnotifications.enabled', false);
+      applyTorAutoConnectPrefs(options);
 
       this._driver = await new Builder()
         .forBrowser('firefox')
@@ -112,6 +117,15 @@ class TorBrowserBackend {
 
       await this._driver.manage().setTimeouts({ pageLoad: 90000, script: 30000, implicit: 0 });
       await this._driver.manage().window().setRect({ width: 1280, height: 800 });
+
+      const bootstrap = await this._ensureTorReady();
+      if (!bootstrap.success) {
+        this._launchError = bootstrap.error;
+        try { await this._driver.quit(); } catch {}
+        this._driver = null;
+        console.warn(`[TorBrowserBackend] launch FAILED: ${bootstrap.error}`);
+        return { success: false, error: bootstrap.error, diagnosticHint: 'See guide-main.log for Tor bootstrap timeout' };
+      }
 
       console.log(`[TorBrowserBackend] launch DONE: tb=${redactPathForLog(pathCheck.normalizedPath)} geckodriver=${redactPathForLog(gecko.path)} ms=${Date.now() - t0}`);
       return { success: true };
@@ -171,16 +185,33 @@ class TorBrowserBackend {
     }
   }
 
+  async _ensureTorReady(force = false) {
+    if (!this._driver) return { success: false, error: 'Tor Browser not launched' };
+    if (this._torBootstrapped && !force) return { success: true };
+    const bootstrap = await ensureTorBootstrap(this._driver, {
+      log: (msg) => console.log(`[TorBrowserBackend] ${msg}`),
+    });
+    if (bootstrap.success) this._torBootstrapped = true;
+    return bootstrap;
+  }
+
   async _ensureDriver() {
     if (this._driver) {
       try {
         await this._driver.getCurrentUrl();
+        const bootstrap = await this._ensureTorReady();
+        if (!bootstrap.success) {
+          this._torBootstrapped = false;
+          return bootstrap;
+        }
         return { success: true };
       } catch {
         this._driver = null;
+        this._torBootstrapped = false;
       }
     }
-    return this.launch();
+    const launched = await this.launch();
+    return launched;
   }
 
   _formatSnapshotText(title, url, snapshotData) {
@@ -224,6 +255,9 @@ class TorBrowserBackend {
     if (!ready.success) return ready;
 
     try {
+      const bootstrap = await this._ensureTorReady();
+      if (!bootstrap.success) return bootstrap;
+
       await this._driver.get(url);
       try {
         await this._driver.wait(until.elementLocated(By.css('body')), 15000);
@@ -248,6 +282,26 @@ class TorBrowserBackend {
       }
       return { success: true, url: finalUrl, title };
     } catch (e) {
+      if (/proxyConnectFailure|proxy/i.test(e.message)) {
+        console.warn('[TorBrowserBackend] navigate: proxy error, retrying after Tor bootstrap');
+        this._torBootstrapped = false;
+        const retry = await this._ensureTorReady(true);
+        if (retry.success) {
+          try {
+            await this._driver.get(url);
+            const finalUrl = await this._driver.getCurrentUrl();
+            const title = await this._driver.getTitle();
+            this._startScreenshotPoll();
+            const snapshot = await this.getSnapshot();
+            return snapshot.success
+              ? { success: true, url: finalUrl, title, snapshot: snapshot.text }
+              : { success: true, url: finalUrl, title };
+          } catch (retryErr) {
+            console.error(`[TorBrowserBackend] navigate FAILED (retry): ${retryErr.message}`);
+            return { success: false, error: retryErr.message, diagnosticHint: 'See guide-main.log for [TorBrowserBackend] navigate FAILED' };
+          }
+        }
+      }
       console.error(`[TorBrowserBackend] navigate FAILED: ${e.message}`);
       return { success: false, error: e.message, diagnosticHint: 'See guide-main.log for [TorBrowserBackend] navigate FAILED' };
     }
@@ -302,6 +356,26 @@ class TorBrowserBackend {
       if (snapshot.success) base.snapshot = snapshot.text;
       return base;
     } catch (e) {
+      if (/proxyConnectFailure|proxy/i.test(e.message)) {
+        this._torBootstrapped = false;
+        const retry = await this._ensureTorReady(true);
+        if (retry.success) {
+          try {
+            const urlBefore = await this._driver.getCurrentUrl();
+            const el = await this._findElement(ref);
+            await el.click();
+            await new Promise((r) => setTimeout(r, 800));
+            const urlAfter = await this._driver.getCurrentUrl();
+            const snapshot = await this.getSnapshot();
+            return snapshot.success
+              ? { success: true, url: urlAfter, clicked: ref, navigated: urlAfter !== urlBefore, snapshot: snapshot.text }
+              : { success: true, url: urlAfter, clicked: ref, navigated: urlAfter !== urlBefore };
+          } catch (retryErr) {
+            console.error(`[TorBrowserBackend] click FAILED (retry): ref=${ref} ${retryErr.message}`);
+            return { success: false, error: retryErr.message };
+          }
+        }
+      }
       console.error(`[TorBrowserBackend] click FAILED: ref=${ref} ${e.message}`);
       return { success: false, error: e.message };
     }
@@ -508,6 +582,7 @@ class TorBrowserBackend {
       }
       this._driver = null;
     }
+    this._torBootstrapped = false;
     console.log('[TorBrowserBackend] teardown DONE');
     return { success: true };
   }

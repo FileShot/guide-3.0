@@ -101,9 +101,10 @@ class AutoUpdater extends EventEmitter {
       });
 
       console.log(`[AutoUpdater] ready variant=${this._installVariant} channel=${this._channel || 'default'}`);
-    } catch {
+    } catch (err) {
       this._available = false;
-      console.log('[AutoUpdater] electron-updater not available — updates disabled');
+      const msg = err?.message || String(err);
+      console.warn(`[AutoUpdater] init failed — updates disabled: ${msg}`);
     }
   }
 

@@ -7,6 +7,7 @@ const https = require('https');
 const { execFileSync, spawnSync } = require('child_process');
 const { validateTorBrowserPath } = require('./geckodriverResolver');
 const { redactPathForLog } = require('./refUtils');
+const { writeTorProfileDefaults } = require('./torBootstrap');
 
 /** Pin to a version compatible with geckodriver 0.36.x (Firefox ESR 128+) */
 const TOR_BROWSER_VERSION = '14.5.8';
@@ -200,6 +201,7 @@ function extractPortableWindowsSilent(portableExe, userDataPath) {
 
   const existing = discoverRealFirefoxInManagedRoot(userDataPath);
   if (existing) {
+    writeTorProfileDefaults(userDataPath, existing);
     console.log(`[TorBrowserBackend] tor install: using extracted ${redactPathForLog(existing)}`);
     return existing;
   }
@@ -240,6 +242,7 @@ function extractPortableWindowsSilent(portableExe, userDataPath) {
   if (!isRealFirefoxBinary(firefoxPath)) {
     throw new Error('Tor Browser install validation failed after silent extract');
   }
+  writeTorProfileDefaults(userDataPath, firefoxPath);
   console.log(`[TorBrowserBackend] tor install: silent NSIS extract DONE ${redactPathForLog(firefoxPath)}`);
   return firefoxPath;
 }
@@ -285,6 +288,7 @@ async function downloadTorBrowser(userDataPath) {
 
       const existing = discoverRealFirefoxInManagedRoot(userDataPath);
       if (existing) {
+        writeTorProfileDefaults(userDataPath, existing);
         console.log('[TorBrowserBackend] tor resolve: using extracted Browser/firefox.exe');
         return { success: true, path: existing, source: 'downloaded', version: TOR_BROWSER_VERSION };
       }
@@ -322,6 +326,7 @@ async function downloadTorBrowser(userDataPath) {
       return { success: false, error: 'Tor Browser downloaded but firefox binary not found after extract' };
     }
 
+    writeTorProfileDefaults(userDataPath, firefoxPath);
     console.log(`[TorBrowserBackend] tor resolve: download DONE ${redactPathForLog(firefoxPath)}`);
     return {
       success: true,
