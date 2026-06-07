@@ -101,7 +101,6 @@ class TorBrowserBackend {
       const service = new firefox.ServiceBuilder(gecko.path);
       const options = new firefox.Options();
       options.setBinary(pathCheck.normalizedPath);
-      options.addArguments('-marionette');
       options.setPreference('browser.shell.checkDefaultBrowser', false);
       options.setPreference('dom.webnotifications.enabled', false);
 

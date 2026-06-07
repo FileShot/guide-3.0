@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 const { validateTorBrowserPath } = require('./geckodriverResolver');
 const { redactPathForLog } = require('./refUtils');
 
@@ -33,18 +33,34 @@ function firefoxBinaryName() {
   return process.platform === 'win32' ? 'firefox.exe' : 'firefox';
 }
 
-function isTorFirefoxBinary(filePath) {
+/** Real firefox.exe is ~1–3 MiB; the portable installer copy is ~107 MiB. */
+const MAX_FIREFOX_BINARY_BYTES = 80 * 1024 * 1024;
+
+function isRealFirefoxBinary(filePath) {
   if (!filePath || !fs.existsSync(filePath)) return false;
   const base = path.basename(filePath).toLowerCase();
-  if (process.platform === 'win32') return base === 'firefox.exe';
-  if (process.platform === 'linux') return base === 'firefox' || base === 'firefox.real';
-  return base === 'firefox' || filePath.includes('Tor Browser.app');
+  if (process.platform === 'win32' && base !== 'firefox.exe') return false;
+  if (process.platform === 'linux' && base !== 'firefox' && base !== 'firefox.real') return false;
+  if (process.platform === 'darwin' && !filePath.includes('Firefox') && base !== 'firefox') return false;
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.size > MAX_FIREFOX_BINARY_BYTES) return false;
+    const browserDir = path.dirname(filePath);
+    return fs.existsSync(path.join(browserDir, 'application.ini'))
+      && fs.existsSync(path.join(browserDir, 'omni.ja'));
+  } catch {
+    return false;
+  }
+}
+
+function isTorFirefoxBinary(filePath) {
+  return isRealFirefoxBinary(filePath);
 }
 
 function findFirefoxInTree(rootDir, depth = 0) {
   if (!rootDir || depth > 8 || !fs.existsSync(rootDir)) return null;
   const direct = path.join(rootDir, 'Browser', firefoxBinaryName());
-  if (isTorFirefoxBinary(direct)) return direct;
+  if (isRealFirefoxBinary(direct)) return direct;
   const entries = fs.readdirSync(rootDir, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
@@ -54,6 +70,22 @@ function findFirefoxInTree(rootDir, depth = 0) {
   return null;
 }
 
+function discoverRealFirefoxInManagedRoot(userDataPath) {
+  const root = getManagedTorRoot(userDataPath);
+  if (!fs.existsSync(root)) return null;
+  return findFirefoxInTree(root);
+}
+
+function cleanupStaleWindowsInstall(userDataPath) {
+  if (process.platform !== 'win32') return;
+  const root = getManagedTorRoot(userDataPath);
+  const stale = path.join(root, 'Tor Browser', 'Browser', 'firefox.exe');
+  if (fs.existsSync(stale) && !isRealFirefoxBinary(stale)) {
+    console.warn('[TorBrowserBackend] tor install: removing stale installer copy at Tor Browser/Browser/firefox.exe');
+    try { fs.rmSync(path.join(root, 'Tor Browser'), { recursive: true, force: true }); } catch {}
+  }
+}
+
 function discoverTorBrowserPaths(userDataPath) {
   const candidates = [];
   const home = os.homedir();
@@ -61,6 +93,7 @@ function discoverTorBrowserPaths(userDataPath) {
 
   if (process.platform === 'win32') {
     candidates.push(
+      path.join(managedRoot, 'Browser', 'firefox.exe'),
       path.join(managedRoot, 'Tor Browser', 'Browser', 'firefox.exe'),
       path.join(home, 'Desktop', 'Tor Browser', 'Browser', 'firefox.exe'),
       path.join(home, 'Downloads', 'Tor Browser', 'Browser', 'firefox.exe'),
@@ -99,7 +132,12 @@ function discoverTorBrowserPaths(userDataPath) {
     const norm = path.normalize(candidate);
     if (seen.has(norm)) continue;
     seen.add(norm);
-    if (isTorFirefoxBinary(norm)) valid.push(norm);
+    if (isRealFirefoxBinary(norm)) valid.push(norm);
+  }
+
+  const managed = discoverRealFirefoxInManagedRoot(userDataPath);
+  if (managed && !seen.has(path.normalize(managed))) {
+    valid.unshift(managed);
   }
   return valid;
 }
@@ -153,31 +191,56 @@ function isValidWindowsPortableExe(filePath) {
 }
 
 /**
- * Tor Browser 14.x Windows portable is a single MZ executable (not a 7z archive).
- * geckodriver/Marionette expects the standard Tor layout: Tor Browser/Browser/firefox.exe.
- * First-run install copies the official portable exe into that layout under userData.
+ * Tor Browser 14.x Windows portable is an NSIS self-extractor — NOT a firefox binary.
+ * Silent extract with /S /D=<dir> unpacks Browser/firefox.exe for geckodriver/Marionette.
  */
-function installPortableWindowsLayout(portableExe, userDataPath) {
-  const browserDir = path.join(getManagedTorRoot(userDataPath), 'Tor Browser', 'Browser');
-  const firefoxPath = path.join(browserDir, 'firefox.exe');
-  const portableSize = fs.statSync(portableExe).size;
-  fs.mkdirSync(browserDir, { recursive: true });
-  if (fs.existsSync(firefoxPath)) {
-    try {
-      const existingSize = fs.statSync(firefoxPath).size;
-      if (existingSize === portableSize && isValidWindowsPortableExe(firefoxPath)) {
-        console.log('[TorBrowserBackend] tor install: Browser/firefox.exe already matches portable exe');
-        return firefoxPath;
-      }
-    } catch {}
-    try { fs.unlinkSync(firefoxPath); } catch {}
+function extractPortableWindowsSilent(portableExe, userDataPath) {
+  const root = getManagedTorRoot(userDataPath);
+  cleanupStaleWindowsInstall(userDataPath);
+
+  const existing = discoverRealFirefoxInManagedRoot(userDataPath);
+  if (existing) {
+    console.log(`[TorBrowserBackend] tor install: using extracted ${redactPathForLog(existing)}`);
+    return existing;
   }
-  fs.copyFileSync(portableExe, firefoxPath);
-  if (!isValidWindowsPortableExe(firefoxPath)) {
-    try { fs.unlinkSync(firefoxPath); } catch {}
-    throw new Error('Tor Browser install copy failed validation');
+
+  const staging = path.join(root, '_install');
+  fs.rmSync(staging, { recursive: true, force: true });
+  fs.mkdirSync(staging, { recursive: true });
+  const stagedInstaller = path.join(staging, 'tb-install.exe');
+  fs.copyFileSync(portableExe, stagedInstaller);
+
+  console.log('[TorBrowserBackend] tor install: silent NSIS extract START');
+  const result = spawnSync(stagedInstaller, ['/S', `/D=${staging}`], {
+    timeout: 180000,
+    windowsHide: true,
+    stdio: 'pipe',
+  });
+  if (result.error) {
+    throw new Error(`Tor Browser silent extract failed: ${result.error.message}`);
   }
-  console.log('[TorBrowserBackend] tor install: copied portable exe to Browser/firefox.exe');
+  if (result.status !== 0) {
+    throw new Error(`Tor Browser silent extract exit code ${result.status}`);
+  }
+
+  let firefoxPath = findFirefoxInTree(staging);
+  if (!firefoxPath) {
+    throw new Error('Tor Browser silent extract completed but firefox binary not found');
+  }
+
+  const canonicalBrowserDir = path.join(root, 'Browser');
+  if (path.dirname(firefoxPath) !== canonicalBrowserDir) {
+    fs.rmSync(canonicalBrowserDir, { recursive: true, force: true });
+    fs.cpSync(path.dirname(firefoxPath), canonicalBrowserDir, { recursive: true });
+    firefoxPath = path.join(canonicalBrowserDir, 'firefox.exe');
+  }
+
+  try { fs.rmSync(staging, { recursive: true, force: true }); } catch {}
+
+  if (!isRealFirefoxBinary(firefoxPath)) {
+    throw new Error('Tor Browser install validation failed after silent extract');
+  }
+  console.log(`[TorBrowserBackend] tor install: silent NSIS extract DONE ${redactPathForLog(firefoxPath)}`);
   return firefoxPath;
 }
 
@@ -218,19 +281,12 @@ async function downloadTorBrowser(userDataPath) {
     };
 
     if (platform === 'win32') {
-      const installed = path.join(root, 'Tor Browser', 'Browser', 'firefox.exe');
-      const cacheValid = isValidWindowsPortableExe(archivePath);
-      const installValid = isTorFirefoxBinary(installed)
-        && isValidWindowsPortableExe(installed)
-        && cacheValid
-        && fs.statSync(installed).size === fs.statSync(archivePath).size;
-      if (installValid) {
-        console.log('[TorBrowserBackend] tor resolve: using installed Browser/firefox.exe');
-        return { success: true, path: installed, source: 'downloaded', version: TOR_BROWSER_VERSION };
-      }
-      if (isTorFirefoxBinary(installed) && !installValid) {
-        console.warn('[TorBrowserBackend] tor resolve: stale Browser/firefox.exe — reinstalling from portable');
-        try { fs.unlinkSync(installed); } catch {}
+      cleanupStaleWindowsInstall(userDataPath);
+
+      const existing = discoverRealFirefoxInManagedRoot(userDataPath);
+      if (existing) {
+        console.log('[TorBrowserBackend] tor resolve: using extracted Browser/firefox.exe');
+        return { success: true, path: existing, source: 'downloaded', version: TOR_BROWSER_VERSION };
       }
 
       if (!isValidWindowsPortableExe(archivePath)) {
@@ -247,7 +303,7 @@ async function downloadTorBrowser(userDataPath) {
         return { success: false, error: 'Tor Browser download incomplete or corrupt — try again' };
       }
 
-      const firefoxPath = installPortableWindowsLayout(archivePath, userDataPath);
+      const firefoxPath = extractPortableWindowsSilent(archivePath, userDataPath);
       console.log(`[TorBrowserBackend] tor resolve: download DONE ${redactPathForLog(firefoxPath)}`);
       return { success: true, path: firefoxPath, source: 'downloaded', version: TOR_BROWSER_VERSION };
     }
@@ -294,14 +350,33 @@ let _downloadPromise = null;
 async function resolveTorBrowserExecutable({ configuredPath, userDataPath, autoDownload = true } = {}) {
   const manual = validateTorBrowserPath(configuredPath);
   if (manual.pathValid) {
-    console.log(`[TorBrowserBackend] tor resolve: configured ${redactPathForLog(manual.normalizedPath)}`);
-    return { success: true, path: manual.normalizedPath, source: 'configured', pathValid: true };
+    if (!isRealFirefoxBinary(manual.normalizedPath)) {
+      console.warn(`[TorBrowserBackend] tor resolve: configured path is not a real firefox binary: ${redactPathForLog(manual.normalizedPath)}`);
+    } else {
+      console.log(`[TorBrowserBackend] tor resolve: configured ${redactPathForLog(manual.normalizedPath)}`);
+      return { success: true, path: manual.normalizedPath, source: 'configured', pathValid: true };
+    }
   }
 
   const discovered = discoverTorBrowserPath(userDataPath);
   if (discovered) {
-    console.log(`[TorBrowserBackend] tor resolve: discovered ${redactPathForLog(discovered)}`);
-    return { success: true, path: discovered, source: 'discovered', pathValid: true };
+    const canonical = path.join(getManagedTorRoot(userDataPath), 'Browser', 'firefox.exe');
+    let resolved = discovered;
+    if (process.platform === 'win32'
+      && isRealFirefoxBinary(discovered)
+      && path.normalize(discovered) !== path.normalize(canonical)
+      && !isRealFirefoxBinary(canonical)) {
+      try {
+        fs.rmSync(path.dirname(canonical), { recursive: true, force: true });
+        fs.cpSync(path.dirname(discovered), path.dirname(canonical), { recursive: true });
+        resolved = canonical;
+        console.log(`[TorBrowserBackend] tor resolve: promoted extracted browser to ${redactPathForLog(canonical)}`);
+      } catch (e) {
+        console.warn(`[TorBrowserBackend] tor resolve: promote to canonical Browser/ failed: ${e.message}`);
+      }
+    }
+    console.log(`[TorBrowserBackend] tor resolve: discovered ${redactPathForLog(resolved)}`);
+    return { success: true, path: resolved, source: 'discovered', pathValid: true };
   }
 
   if (!autoDownload) {
@@ -325,6 +400,8 @@ module.exports = {
   TOR_BROWSER_VERSION,
   discoverTorBrowserPath,
   discoverTorBrowserPaths,
+  discoverRealFirefoxInManagedRoot,
+  isRealFirefoxBinary,
   resolveTorBrowserExecutable,
   getManagedTorRoot,
 };
