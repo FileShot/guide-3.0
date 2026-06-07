@@ -266,7 +266,12 @@ const useAppStore = create((set, get) => ({
 
     const prev = get().projectPath;
 
-    set({ projectPath: p, showWelcomeScreen: false });
+    set({
+      projectPath: p,
+      showWelcomeScreen: false,
+      workspaceRoots: p ? [p] : [],
+      workspaceRootTrees: {},
+    });
 
     if (p) get().addRecentFolder(p);
 

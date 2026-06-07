@@ -11,6 +11,7 @@ const {
   ensureTorBootstrap,
   isTorConnectionScreen,
   repairTorNetworkState,
+  resolveTorProfileDir,
   waitForTcpPort,
   writeTorProfileDefaults,
   TOR_SOCKS_HOST,
@@ -60,6 +61,58 @@ class TorBrowserBackend {
     }
     this._geckodriverPath = gecko.path;
     return gecko;
+  }
+
+  _buildFirefoxOptions(firefoxPath) {
+    const options = new firefox.Options();
+    options.setBinary(firefoxPath);
+    options.setPreference('browser.shell.checkDefaultBrowser', false);
+    options.setPreference('dom.webnotifications.enabled', false);
+    applyTorAutoConnectPrefs(options);
+    const profileDir = resolveTorProfileDir(this.userDataPath, firefoxPath);
+    if (profileDir) {
+      options.addArguments('-profile', profileDir);
+    }
+    return options;
+  }
+
+  async _relaunchTorBrowser() {
+    console.log('[TorBrowserBackend] relaunch START (Tor restart)');
+    this._stopScreenshotPoll();
+    if (this._driver) {
+      try { await this._driver.quit(); } catch {}
+    }
+    this._driver = null;
+    this._torBootstrapped = false;
+
+    const pathCheck = validateTorBrowserPath(this._torBrowserPath);
+    if (!pathCheck.pathValid) {
+      return { success: false, error: pathCheck.error || 'Tor Browser not available' };
+    }
+
+    repairTorNetworkState(this.userDataPath, pathCheck.normalizedPath, {
+      log: (msg) => console.log(`[TorBrowserBackend] ${msg}`),
+    });
+
+    const gecko = await this._resolveDriverBinary();
+    if (!gecko.success) return gecko;
+
+    try {
+      const service = new firefox.ServiceBuilder(this._geckodriverPath);
+      const options = this._buildFirefoxOptions(pathCheck.normalizedPath);
+      this._driver = await new Builder()
+        .forBrowser('firefox')
+        .setFirefoxOptions(options)
+        .setFirefoxService(service)
+        .build();
+      await this._driver.manage().setTimeouts({ pageLoad: 90000, script: 30000, implicit: 0 });
+      await this._driver.manage().window().setRect({ width: 1280, height: 800 });
+      return this._ensureTorReady(true);
+    } catch (e) {
+      this._driver = null;
+      console.error(`[TorBrowserBackend] relaunch FAILED: ${e.message}`);
+      return { success: false, error: e.message };
+    }
   }
 
   async launch() {
@@ -122,11 +175,7 @@ class TorBrowserBackend {
       writeTorProfileDefaults(this.userDataPath, pathCheck.normalizedPath);
 
       const service = new firefox.ServiceBuilder(gecko.path);
-      const options = new firefox.Options();
-      options.setBinary(pathCheck.normalizedPath);
-      options.setPreference('browser.shell.checkDefaultBrowser', false);
-      options.setPreference('dom.webnotifications.enabled', false);
-      applyTorAutoConnectPrefs(options);
+      const options = this._buildFirefoxOptions(pathCheck.normalizedPath);
 
       this._driver = await new Builder()
         .forBrowser('firefox')
@@ -208,20 +257,25 @@ class TorBrowserBackend {
     if (!this._driver) return { success: false, error: 'Tor Browser not launched' };
     if (this._torBootstrapped && !force) {
       try {
-        if (!(await isTorConnectionScreen(this._driver))) {
+        await this._driver.getCurrentUrl();
+        if (await isTorConnectionScreen(this._driver)) {
+          this._torBootstrapped = false;
+        } else {
           await waitForTcpPort(TOR_SOCKS_HOST, TOR_SOCKS_PORT, 3000);
           return { success: true };
         }
       } catch {
-        // fall through to re-bootstrap
+        this._torBootstrapped = false;
       }
-      this._torBootstrapped = false;
     }
     const bootstrap = await ensureTorBootstrap(this._driver, {
       log: (msg) => console.log(`[TorBrowserBackend] ${msg}`),
       userDataPath: this.userDataPath,
       firefoxPath: this._torBrowserPath,
     });
+    if (bootstrap.needsRelaunch) {
+      return this._relaunchTorBrowser();
+    }
     if (bootstrap.success) this._torBootstrapped = true;
     else this._torBootstrapped = false;
     return bootstrap;

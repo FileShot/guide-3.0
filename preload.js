@@ -6,7 +6,7 @@
  * Exposes the full API surface to the renderer via contextBridge.
  * All communication goes through Electron IPC — no HTTP, no WebSocket.
  */
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 // ─── Event listener helper ──────────────────────────────────────────
 // Registers an IPC event listener and returns a cleanup function.
@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cancelPendingQuestion: () => ipcRenderer.invoke('cancel-pending-question'),
   installExtensionFile: (buffer, fileName) => ipcRenderer.invoke('extension-install-file', { buffer, fileName }),
   showItemInFolder: (fullPath) => ipcRenderer.invoke('shell-show-item', fullPath),
+  getPathForFile: (file) => webUtils.getPathForFile(file),
   modelsAdd: () => ipcRenderer.invoke('dialog-models-add'),
   pickTorBrowserExe: () => ipcRenderer.invoke('dialog-tor-browser-exe'),
   getTorBrowserStatus: () => ipcRenderer.invoke('tor-browser-status'),

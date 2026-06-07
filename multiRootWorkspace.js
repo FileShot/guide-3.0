@@ -64,11 +64,11 @@ class MultiRootWorkspace {
   }
 
   syncWithProject(projectPath) {
-    if (projectPath && !this._roots.includes(projectPath)) {
-      this._roots.unshift(projectPath);
-      if (!this._primary) this._primary = projectPath;
-      this._save();
-    }
+    if (!projectPath) return;
+    const resolved = path.resolve(projectPath);
+    this._roots = [resolved];
+    this._primary = resolved;
+    this._save();
   }
 }
 

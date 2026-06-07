@@ -17,7 +17,7 @@
     "katex": "^0.16.44",
     "lucide-react": "^0.468.0",
     "mermaid": "^11.13.0",
-    "monaco-editor": "^0.52.0",
+    "pdfjs-dist": "^4.10.38",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^9.0.1",

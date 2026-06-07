@@ -8,12 +8,13 @@
  */
 'use strict';
 
-const { app, BrowserWindow, shell, ipcMain, dialog, safeStorage } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, dialog, safeStorage, protocol, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsP = require('fs').promises;
 const os = require('os');
 const http = require('http');
+const { pathToFileURL } = require('url');
 const { buildAppMenu } = require('./appMenu');
 const { AutoUpdater } = require('./autoUpdater');
 
@@ -21,6 +22,19 @@ const { AutoUpdater } = require('./autoUpdater');
 app.commandLine.appendSwitch('disable-gpu-sandbox');
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'guide-media',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      bypassCSP: true,
+    },
+  },
+]);
 
 let mainWindow = null;
 
@@ -1242,6 +1256,18 @@ function isBinaryPreviewExtension(ext) {
   return BINARY_PREVIEW_EXTENSIONS.has(String(ext || '').toLowerCase().replace(/^\./, ''));
 }
 
+const BINARY_READ_INLINE_MAX = 10 * 1024 * 1024;
+
+function isPathUnderWorkspaceRoots(absPath) {
+  const resolved = path.resolve(absPath);
+  const { roots } = multiRootWorkspace.getRoots();
+  const candidates = roots.length ? roots : (currentProjectPath ? [currentProjectPath] : []);
+  return candidates.some((root) => {
+    const r = path.resolve(root);
+    return resolved === r || resolved.startsWith(r + path.sep);
+  });
+}
+
 // ─── Generic API-fetch IPC handler ──────────────────────────────────
 // The frontend's fetch('/api/...') calls are intercepted and routed here.
 // This replaces the entire Express REST API from server/main.js.
@@ -1427,6 +1453,30 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       const items = await _readDirRecursive(dirPath, 0, 3);
       return { items, root: dirPath };
     }
+    if (p === '/api/files/import' && method === 'POST') {
+      const { sources, destDir } = body;
+      if (!Array.isArray(sources) || !destDir) {
+        return { _status: 400, error: 'sources (array) and destDir required' };
+      }
+      const destResolved = path.resolve(destDir);
+      if (!isPathUnderWorkspaceRoots(destResolved)) {
+        return { _status: 403, error: 'Destination not in workspace' };
+      }
+      fs.mkdirSync(destResolved, { recursive: true });
+      const copied = [];
+      for (const src of sources) {
+        if (!src || typeof src !== 'string') continue;
+        const srcResolved = path.resolve(src);
+        if (!fs.existsSync(srcResolved)) {
+          return { _status: 404, error: `Source not found: ${srcResolved}` };
+        }
+        const destPath = path.join(destResolved, path.basename(srcResolved));
+        fs.cpSync(srcResolved, destPath, { recursive: true, force: true });
+        copied.push(destPath);
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('files-changed');
+      return { success: true, copied };
+    }
     if (p === '/api/files/read' && method === 'GET') {
       const filePath = q.path;
       if (!filePath) return { _status: 400, error: 'path required' };
@@ -1435,8 +1485,12 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         const ext = path.extname(fullPath).slice(1);
         const name = path.basename(fullPath);
         if (isBinaryPreviewExtension(ext)) {
-          const buf = fs.readFileSync(fullPath);
+          const stat = fs.statSync(fullPath);
           const mimeType = getMimeForExtension(ext);
+          if (stat.size > BINARY_READ_INLINE_MAX) {
+            return { path: fullPath, extension: ext, name, binary: true, mimeType, lazy: true };
+          }
+          const buf = fs.readFileSync(fullPath);
           const dataUrl = `data:${mimeType};base64,${buf.toString('base64')}`;
           return { path: fullPath, extension: ext, name, binary: true, mimeType, dataUrl };
         }
@@ -2720,6 +2774,25 @@ debugService.on('debug-event', (data) => _send('debug-event', data));
 // ─── App lifecycle ───────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  protocol.handle('guide-media', (request) => {
+    try {
+      const u = new URL(request.url);
+      const filePath = u.searchParams.get('path');
+      if (!filePath) return new Response('Bad request', { status: 400 });
+      const resolved = path.resolve(decodeURIComponent(filePath));
+      if (!isPathUnderWorkspaceRoots(resolved)) {
+        return new Response('Forbidden', { status: 403 });
+      }
+      if (!fs.existsSync(resolved)) {
+        return new Response('Not found', { status: 404 });
+      }
+      return net.fetch(pathToFileURL(resolved).href);
+    } catch (err) {
+      console.warn('[Main] guide-media protocol error:', err.message);
+      return new Response('Error', { status: 500 });
+    }
+  });
+
   _configureBundledPlaywrightBrowsers();
 
   const { session } = require('electron');

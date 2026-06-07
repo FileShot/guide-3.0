@@ -13,19 +13,28 @@ const GUIDE_TOR_DEFAULTS_MARKER = '// guIDE Tor defaults — managed by guIDE; d
 const GUIDE_TOR_DEFAULTS_END = '// end guIDE Tor defaults';
 
 const TOR_FAILURE_RE = /tor exited during startup|restart tor browser|could not connect to tor|still cannot connect|tor process exited|failed to establish a tor network connection/i;
+const SECURITY_RESTART_RE = /restart needed to apply security settings|restart tor browser to apply/i;
 
 /**
- * Tor prefs: auto-connect, Safest security. No bridge prefs — bridges cause crash loops
- * for direct connections and are left entirely to the user via Tor settings.
+ * Tor prefs: auto-connect at launch. Security slider is profile-only (not runtime)
+ * so Tor does not show "restart needed to apply security settings" every session.
  */
-const TOR_AUTO_CONNECT_PREFS = {
+const TOR_RUNTIME_PREFS = {
   'extensions.torlauncher.quickstart': true,
   'extensions.torlauncher.start_tor': true,
   'extensions.torlauncher.prompt_at_startup': false,
   'browser.startup.homepage_override.mstone': 'ignore',
-  'browser.security_level.security_slider': 1,
   'torbrowser.settings.bridges.enabled': false,
 };
+
+/** Written to user.js once — includes Safest security level. */
+const TOR_PROFILE_PREFS = {
+  ...TOR_RUNTIME_PREFS,
+  'browser.security_level.security_slider': 1,
+};
+
+/** @deprecated use TOR_PROFILE_PREFS */
+const TOR_AUTO_CONNECT_PREFS = TOR_PROFILE_PREFS;
 
 function _managedTorRoot(userDataPath) {
   const base = userDataPath || path.join(process.env.APPDATA || os.homedir(), 'guide-ide');
@@ -61,7 +70,7 @@ function writeTorProfileDefaults(userDataPath, firefoxPath) {
   if (!profileDir) return false;
 
   const blockLines = [GUIDE_TOR_DEFAULTS_MARKER];
-  for (const [key, value] of Object.entries(TOR_AUTO_CONNECT_PREFS)) {
+  for (const [key, value] of Object.entries(TOR_PROFILE_PREFS)) {
     blockLines.push(`user_pref("${key}", ${_serializeUserPrefValue(value)});`);
   }
   blockLines.push(GUIDE_TOR_DEFAULTS_END);
@@ -150,7 +159,7 @@ function resetTorDaemonState(userDataPath, firefoxPath, { log } = {}) {
 }
 
 function applyTorAutoConnectPrefs(firefoxOptions) {
-  for (const [key, value] of Object.entries(TOR_AUTO_CONNECT_PREFS)) {
+  for (const [key, value] of Object.entries(TOR_RUNTIME_PREFS)) {
     firefoxOptions.setPreference(key, value);
   }
 }
@@ -195,6 +204,11 @@ async function _pageText(driver) {
 async function _pageIndicatesTorFailure(driver) {
   const text = await _pageText(driver);
   return TOR_FAILURE_RE.test(text);
+}
+
+async function _pageIndicatesSecurityRestart(driver) {
+  const text = await _pageText(driver);
+  return SECURITY_RESTART_RE.test(text);
 }
 
 function _isProxyError(url) {
@@ -293,8 +307,19 @@ async function ensureTorBootstrap(driver, {
     try {
       url = await driver.getCurrentUrl();
     } catch {
-      await _sleep(1000);
-      continue;
+      if (log) log('tor bootstrap: driver session lost');
+      return { success: false, needsRelaunch: true };
+    }
+
+    try {
+      if (await _pageIndicatesSecurityRestart(driver)) {
+        if (log) log('tor bootstrap: security settings restart required');
+        const restarted = await _tryClickRestartTorButton(driver);
+        if (restarted && log) log('tor bootstrap: clicked restart for security settings');
+        return { success: false, needsRelaunch: true };
+      }
+    } catch {
+      return { success: false, needsRelaunch: true };
     }
 
     if (_isTorConnectPage(url)) {
@@ -305,10 +330,9 @@ async function ensureTorBootstrap(driver, {
           repairTorNetworkState(userDataPath, firefoxPath, { log });
           const restarted = await _tryClickRestartTorButton(driver);
           if (restarted && log) log('tor bootstrap: clicked Restart Tor Browser');
-          if (!restarted) {
-            const connected = await _tryClickConnectButton(driver);
-            if (connected && log) log('tor bootstrap: clicked Connect after failure screen');
-          }
+          if (restarted) return { success: false, needsRelaunch: true };
+          const connected = await _tryClickConnectButton(driver);
+          if (connected && log) log('tor bootstrap: clicked Connect after failure screen');
         } else if (failureRecoveries >= 2) {
           resetTorDaemonState(userDataPath, firefoxPath, { log });
           try {

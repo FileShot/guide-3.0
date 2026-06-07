@@ -20,6 +20,7 @@ import SlideDown from './SlideDown';
 import FileContentBlock from './chat/FileContentBlock';
 import MentionPicker from './MentionPicker';
 import { blobToWav } from '../utils/audioToWav';
+import { openFileFromReadResponse } from '../utils/openFileFromRead';
 
 import { Virtuoso } from 'react-virtuoso';
 
@@ -3563,37 +3564,14 @@ export default function ChatPanel() {
                     <div key={f.path} className="flex items-center gap-1 text-[11px] rounded px-1 py-0.5 hover:bg-vsc-list-hover/50 group">
 
                       <span className="text-vsc-accent hover:underline truncate flex-1 cursor-pointer" onClick={async () => {
-
-                        console.log('[ChatPanel] Files-changed banner click:', f.path);
-
                         try {
-
                           const res = await window.fetch(`/api/files/read?path=${encodeURIComponent(f.path)}`);
-
-                          console.log('[ChatPanel] window.fetch response status:', res.status);
-
                           const data = await res.json();
-
-                          console.log('[ChatPanel] File content fetched, length:', data.content?.length);
-
-                          if (data.content !== undefined) {
-
-                            useAppStore.getState().openFile({ path: f.path, content: data.content });
-
-                          } else {
-
-                            useAppStore.getState().openFile({ path: f.path });
-
-                          }
-
+                          openFileFromReadResponse(data);
                         } catch (err) {
-
                           console.error('[ChatPanel] Failed to fetch file content:', err);
-
                           useAppStore.getState().openFile({ path: f.path });
-
                         }
-
                       }}>{f.name}</span>
 
                       {(f.linesAdded > 0) && <span className="text-vsc-success">+{f.linesAdded}</span>}

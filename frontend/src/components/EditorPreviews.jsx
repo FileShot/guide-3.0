@@ -3,9 +3,14 @@
  * HTML (live iframe), Markdown, JSON (collapsible tree), CSV/TSV (sortable table),
  * SVG (zoomable), Image, Binary.
  */
-import { useState, useRef, useMemo } from 'react';
-import { Play, Code2, ExternalLink, RefreshCw, Eye, Volume2, Film } from 'lucide-react';
+import { useState, useRef, useMemo, useEffect } from 'react';
+import { Play, Code2, ExternalLink, RefreshCw, Eye, Volume2, Film, ChevronLeft, ChevronRight } from 'lucide-react';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { pathString, fileBaseName } from '../lib/pathString';
+import { resolveMediaSrc } from '../lib/guideMedia';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 function getFileName(filePath) {
   return fileBaseName(filePath);
@@ -197,7 +202,7 @@ export function MarkdownPreview({ content, filePath, onToggleCode }) {
         <iframe
           srcDoc={mdToHtml}
           className="w-full h-full border-0"
-          sandbox="allow-same-origin"
+          sandbox="allow-scripts allow-same-origin"
           title="Markdown Preview"
         />
       </div>
@@ -451,9 +456,7 @@ export function SvgPreview({ content, filePath, onToggleCode }) {
 
 export function ImagePreview({ filePath, dataUrl, onToggleCode }) {
   const [error, setError] = useState(false);
-  // F7: blob: and data: URLs are already valid src attributes — don't prepend file:///
-  const isDirectUrl = filePath?.startsWith('blob:') || filePath?.startsWith('data:');
-  const src = dataUrl || (isDirectUrl ? filePath : `file:///${filePath?.replace(/\\/g, '/')}`);
+  const src = resolveMediaSrc(filePath, dataUrl);
 
   if (error) {
     return (
@@ -491,8 +494,7 @@ export function ImagePreview({ filePath, dataUrl, onToggleCode }) {
 
 export function VideoPreview({ filePath, dataUrl, onToggleCode }) {
   const [error, setError] = useState(false);
-  const isDirectUrl = filePath?.startsWith('blob:') || filePath?.startsWith('data:');
-  const src = dataUrl || (isDirectUrl ? filePath : `file:///${filePath?.replace(/\\/g, '/')}`);
+  const src = resolveMediaSrc(filePath, dataUrl);
 
   if (error) {
     return (
@@ -524,8 +526,7 @@ export function VideoPreview({ filePath, dataUrl, onToggleCode }) {
 
 export function AudioPreview({ filePath, dataUrl, onToggleCode }) {
   const [error, setError] = useState(false);
-  const isDirectUrl = filePath?.startsWith('blob:') || filePath?.startsWith('data:');
-  const src = dataUrl || (isDirectUrl ? filePath : `file:///${filePath?.replace(/\\/g, '/')}`);
+  const src = resolveMediaSrc(filePath, dataUrl);
 
   if (error) {
     return (
@@ -552,14 +553,106 @@ export function AudioPreview({ filePath, dataUrl, onToggleCode }) {
 // ─── PDF Preview ─────────────────────────────────────────
 
 export function PdfPreview({ filePath, dataUrl, onToggleCode }) {
-  const isDirectUrl = filePath?.startsWith('blob:') || filePath?.startsWith('data:');
-  const src = dataUrl || (isDirectUrl ? filePath : `file:///${filePath?.replace(/\\/g, '/')}`);
+  const canvasRef = useRef(null);
+  const pdfRef = useRef(null);
+  const [pageNum, setPageNum] = useState(1);
+  const [numPages, setNumPages] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const docUrl = useMemo(() => resolveMediaSrc(filePath, dataUrl), [filePath, dataUrl]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setPageNum(1);
+    setNumPages(0);
+    if (pdfRef.current) {
+      pdfRef.current.destroy?.();
+      pdfRef.current = null;
+    }
+    (async () => {
+      try {
+        const task = pdfjsLib.getDocument(docUrl);
+        const pdf = await task.promise;
+        if (cancelled) {
+          pdf.destroy();
+          return;
+        }
+        pdfRef.current = pdf;
+        setNumPages(pdf.numPages);
+      } catch (e) {
+        if (!cancelled) setError(e.message || 'Failed to load PDF');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (pdfRef.current) {
+        pdfRef.current.destroy?.();
+        pdfRef.current = null;
+      }
+    };
+  }, [docUrl]);
+
+  useEffect(() => {
+    const pdf = pdfRef.current;
+    const canvas = canvasRef.current;
+    if (!pdf || !canvas || loading || error) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const page = await pdf.getPage(pageNum);
+        if (cancelled) return;
+        const viewport = page.getViewport({ scale: 1.5 });
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        const ctx = canvas.getContext('2d');
+        await page.render({ canvasContext: ctx, viewport }).promise;
+      } catch (e) {
+        if (!cancelled) setError(e.message || 'Failed to render PDF page');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pageNum, loading, error, numPages]);
 
   return (
     <div className="h-full flex flex-col">
-      <PreviewToolbar icon={Eye} iconColor="text-red-400" label="PDF Preview" fileName={getFileName(filePath)} onToggleCode={onToggleCode} />
-      <div className="flex-1 min-h-0 overflow-auto scrollbar-thin">
-        <iframe src={src} className="w-full h-full min-h-[480px] border-0" title="PDF Preview" />
+      <PreviewToolbar icon={Eye} iconColor="text-red-400" label="PDF Preview" fileName={getFileName(filePath)} onToggleCode={onToggleCode}>
+        {numPages > 1 && (
+          <div className="flex items-center gap-1">
+            <button
+              className="p-0.5 text-vsc-text-dim hover:text-vsc-text disabled:opacity-30"
+              disabled={pageNum <= 1}
+              onClick={() => setPageNum((p) => Math.max(1, p - 1))}
+              title="Previous page"
+            >
+              <ChevronLeft size={14} />
+            </button>
+            <span className="text-[10px] text-vsc-text-dim min-w-[60px] text-center">
+              {pageNum} / {numPages}
+            </span>
+            <button
+              className="p-0.5 text-vsc-text-dim hover:text-vsc-text disabled:opacity-30"
+              disabled={pageNum >= numPages}
+              onClick={() => setPageNum((p) => Math.min(numPages, p + 1))}
+              title="Next page"
+            >
+              <ChevronRight size={14} />
+            </button>
+          </div>
+        )}
+      </PreviewToolbar>
+      <div className="flex-1 min-h-0 overflow-auto scrollbar-thin flex justify-center p-4 bg-[#525659]">
+        {loading && <div className="text-vsc-text-dim text-sm self-center">Loading PDF…</div>}
+        {error && (
+          <div className="text-center text-vsc-text-dim self-center">
+            <p className="text-sm mb-2">Failed to load PDF</p>
+            <p className="text-vsc-xs">{error}</p>
+          </div>
+        )}
+        {!loading && !error && <canvas ref={canvasRef} className="shadow-lg" />}
       </div>
     </div>
   );

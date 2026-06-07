@@ -25,6 +25,7 @@ import isPocket from '../lib/isPocket';
 import { pathString, fileBaseName } from '../lib/pathString';
 import { installUpdateNow, updateVersionLabel } from '../lib/updateStatus';
 import { uploadFilesToPath, downloadFileUrl, downloadFolderZipUrl, triggerDownload } from '../lib/pocketFiles';
+import { importFilesToPath, extractDropPaths } from '../lib/localFiles';
 
 export default function Sidebar() {
   const activeActivity = useAppStore(s => s.activeActivity);
@@ -226,9 +227,10 @@ function FileExplorer() {
   }, [projectPath]);
 
   const handleExplorerDragOver = useCallback((e) => {
-    if (!pocket || !projectPath) return;
+    if (!projectPath) return;
     if (Array.from(e.dataTransfer.types).includes('Files')) {
       e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
       setDropActive(true);
     }
   }, [pocket, projectPath]);
@@ -238,14 +240,20 @@ function FileExplorer() {
   }, []);
 
   const handleExplorerDrop = useCallback(async (e) => {
-    if (!pocket || !projectPath) return;
+    if (!projectPath) return;
     e.preventDefault();
     setDropActive(false);
     const files = e.dataTransfer.files;
     if (!files?.length) return;
     try {
-      await uploadFilesToPath(Array.from(files), projectPath);
-      addNotification({ type: 'info', message: `Uploaded ${files.length} file(s)` });
+      if (pocket) {
+        await uploadFilesToPath(Array.from(files), projectPath);
+      } else {
+        const sources = extractDropPaths(e.dataTransfer);
+        if (!sources.length) throw new Error('Could not read dropped file paths');
+        await importFilesToPath(sources, projectPath);
+      }
+      addNotification({ type: 'info', message: `Imported ${files.length} file(s)` });
       refreshTree();
     } catch (err) {
       addNotification({ type: 'error', message: err.message });
@@ -299,7 +307,7 @@ function FileExplorer() {
         >
           {dropActive && (
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-vsc-accent/10 pointer-events-none text-vsc-sm text-vsc-accent">
-              Drop files to upload
+              Drop files to import
             </div>
           )}
           <div className="sidebar-section-header shadow-[0_1px_0_rgba(255,255,255,0.02)_inset]">
@@ -558,7 +566,11 @@ function FileTreeItem({ item, depth }) {
     e.preventDefault();
     e.stopPropagation();
     if (item.type === 'directory') {
-      e.dataTransfer.dropEffect = 'move';
+      if (e.dataTransfer.files?.length > 0) {
+        e.dataTransfer.dropEffect = 'copy';
+      } else {
+        e.dataTransfer.dropEffect = 'move';
+      }
       setDragOver(true);
     }
   };
@@ -573,15 +585,29 @@ function FileTreeItem({ item, depth }) {
     e.stopPropagation();
     setDragOver(false);
 
-    if (isPocket() && e.dataTransfer.files?.length > 0) {
+    if (e.dataTransfer.files?.length > 0) {
       const destDir = item.type === 'directory' ? item.path : projectPath;
       if (!destDir) return;
-      uploadFilesToPath(Array.from(e.dataTransfer.files), destDir)
-        .then((d) => {
-          const n = d.uploaded?.length || e.dataTransfer.files.length;
-          addNotification({ type: 'info', message: `Uploaded ${n} file(s)` });
-        })
-        .catch(err => addNotification({ type: 'error', message: err.message }));
+      if (isPocket()) {
+        uploadFilesToPath(Array.from(e.dataTransfer.files), destDir)
+          .then((d) => {
+            const n = d.uploaded?.length || e.dataTransfer.files.length;
+            addNotification({ type: 'info', message: `Uploaded ${n} file(s)` });
+          })
+          .catch(err => addNotification({ type: 'error', message: err.message }));
+      } else {
+        const sources = extractDropPaths(e.dataTransfer);
+        if (!sources.length) {
+          addNotification({ type: 'error', message: 'Could not read dropped file paths' });
+          return;
+        }
+        importFilesToPath(sources, destDir)
+          .then((d) => {
+            const n = d.copied?.length || sources.length;
+            addNotification({ type: 'info', message: `Imported ${n} file(s)` });
+          })
+          .catch(err => addNotification({ type: 'error', message: err.message }));
+      }
       return;
     }
 
