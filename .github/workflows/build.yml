@@ -192,6 +192,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
+      - name: Ensure CUDA update feed
+        run: node scripts/ensure-update-feed.js --channel cuda --platform win --glob "guIDE-*-cuda-x64-setup.exe"
+
       - name: Upload artifact
         continue-on-error: true
         uses: actions/upload-artifact@v4
@@ -199,7 +202,7 @@ jobs:
           name: windows-cuda
           path: |
             dist-electron/guIDE-*-cuda-x64-setup.exe
-            dist-electron/latest-cuda.yml
+            dist-electron/cuda.yml
             dist-electron/*.blockmap
           retention-days: 30
 
@@ -306,6 +309,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Ensure CUDA update feed
+        run: node scripts/ensure-update-feed.js --channel cuda --platform linux --glob "guIDE-*-cuda-linux-x64.AppImage"
+
       - name: Upload artifact
         continue-on-error: true
         uses: actions/upload-artifact@v4
@@ -313,7 +319,7 @@ jobs:
           name: linux-cuda
           path: |
             dist-electron/guIDE-*-cuda-linux-x64.AppImage
-            dist-electron/latest-linux-cuda.yml
+            dist-electron/cuda-linux.yml
             dist-electron/*.blockmap
           retention-days: 30
 
