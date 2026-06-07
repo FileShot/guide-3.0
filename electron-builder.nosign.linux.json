@@ -32,6 +32,12 @@
     "!**/.git/**"
   ],
   "asar": false,
+  "extraResources": [
+    {
+      "from": "resources/install-variant-cpu.json",
+      "to": "install-variant.json"
+    }
+  ],
   "linux": {
     "icon": "build/icon.png",
     "target": [

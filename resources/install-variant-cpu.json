@@ -1,0 +1,5 @@
+{
+  "variant": "cpu",
+  "channel": "latest",
+  "gpuBackend": "vulkan-or-cpu"
+}

@@ -8,7 +8,12 @@
 'use strict';
 
 const EventEmitter = require('events');
-const { getInstallVariant, getUpdateChannel, getGithubFeedConfig } = require('./updateVariant');
+const {
+  getInstallVariant,
+  getUpdateChannel,
+  getGithubFeedConfig,
+  isUpdateArtifactCompatible,
+} = require('./updateVariant');
 
 class AutoUpdater extends EventEmitter {
   /**
@@ -58,6 +63,12 @@ class AutoUpdater extends EventEmitter {
       });
 
       autoUpdater.on('update-available', (info) => {
+        if (!isUpdateArtifactCompatible(info, this._installVariant)) {
+          const msg = `Refusing ${this._installVariant} install update: feed returned wrong variant artifact (${info?.version || 'unknown'}). Reinstall the matching installer from GitHub Releases.`;
+          console.warn(`[AutoUpdater] ${msg}`);
+          this._handleError(msg);
+          return;
+        }
         this._status = 'available';
         this._updateInfo = info;
         this._sendStatus();
@@ -89,6 +100,12 @@ class AutoUpdater extends EventEmitter {
       });
 
       autoUpdater.on('update-downloaded', (info) => {
+        if (!isUpdateArtifactCompatible(info, this._installVariant)) {
+          const msg = `Downloaded update does not match ${this._installVariant} install — not installing. Use the correct variant from GitHub Releases.`;
+          console.warn(`[AutoUpdater] ${msg}`);
+          this._handleError(msg);
+          return;
+        }
         this._status = 'downloaded';
         this._updateInfo = info;
         this._progress = null;

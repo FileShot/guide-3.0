@@ -30,6 +30,12 @@
     "!**/.git/**"
   ],
   "asar": false,
+  "extraResources": [
+    {
+      "from": "resources/install-variant-cuda.json",
+      "to": "install-variant.json"
+    }
+  ],
   "linux": {
     "icon": "build/icon.png",
     "target": [

@@ -59,6 +59,10 @@
   "asar": false,
   "extraResources": [
     {
+      "from": "resources/install-variant-cuda.json",
+      "to": "install-variant.json"
+    },
+    {
       "from": "playwright-browsers",
       "to": "playwright-browsers",
       "filter": ["**/*"]

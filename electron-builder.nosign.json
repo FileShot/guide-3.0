@@ -64,6 +64,10 @@
   "asar": false,
   "extraResources": [
     {
+      "from": "resources/install-variant-cpu.json",
+      "to": "install-variant.json"
+    },
+    {
       "from": "playwright-browsers",
       "to": "playwright-browsers",
       "filter": ["**/*"]
