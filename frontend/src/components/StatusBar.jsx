@@ -3,7 +3,8 @@
  * Uses theme CSS variables for full theme support.
  */
 import useAppStore from '../stores/appStore';
-import { GitBranch, AlertTriangle, AlertCircle, Cpu, Zap, HardDrive, Radio } from 'lucide-react';
+import { installUpdateNow, updateVersionLabel } from '../lib/updateStatus';
+import { GitBranch, AlertTriangle, AlertCircle, Cpu, Zap, HardDrive, Radio, Download } from 'lucide-react';
 import { useEffect, useState, useRef } from 'react';
 
 export default function StatusBar() {
@@ -47,6 +48,7 @@ export default function StatusBar() {
   const addNotification = useAppStore(s => s.addNotification);
   const vramWarning = useAppStore(s => s.vramWarning);
   const clearVramWarning = useAppStore(s => s.clearVramWarning);
+  const updateStatus = useAppStore(s => s.updateStatus);
 
   // Tokens per second tracking
   const [tokensPerSec, setTokensPerSec] = useState(0);
@@ -254,6 +256,23 @@ export default function StatusBar() {
     >
       {/* Left section — git/errors hidden before right-side GPU/context */}
       <div className="flex items-center flex-1 min-w-0 overflow-hidden">
+        {updateStatus?.status === 'downloaded' && (
+          <button
+            type="button"
+            className="statusbar-item shrink-0 text-vsc-accent font-medium hover:underline"
+            onClick={() => installUpdateNow()}
+            title="Restart guIDE to apply the update"
+          >
+            <Download size={12} className="mr-1" />
+            Restart to update (v{updateVersionLabel(updateStatus)})
+          </button>
+        )}
+        {updateStatus?.status === 'downloading' && (
+          <div className="statusbar-item shrink-0 text-vsc-text-dim" title="Downloading update in background">
+            Updating… {Math.round(updateStatus.progress?.percent || 0)}%
+          </div>
+        )}
+
         {projectPath && !hideLeftGit && (
           <div className="relative shrink-0" ref={branchMenuRef}>
             <button className="statusbar-item" onClick={toggleBranchMenu} title="Switch branch">

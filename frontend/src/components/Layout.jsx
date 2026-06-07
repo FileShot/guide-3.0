@@ -20,6 +20,7 @@
 import useAppStore from '../stores/appStore';
 import isPocket from '../lib/isPocket';
 import useMobileViewport from '../lib/useMobileViewport';
+import { normalizeUpdateStatus, updateVersionLabel } from '../lib/updateStatus';
 import PocketMobileLayout from './PocketMobileLayout';
 import TitleBar from './TitleBar';
 import ActivityBar from './ActivityBar';
@@ -28,7 +29,7 @@ import EditorArea from './EditorArea';
 import StatusBar from './StatusBar';
 import Notifications from './Notifications';
 import ComposerPanel from './ComposerPanel';
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect, useRef } from 'react';
 
 // Lazy-load heavy components that aren't needed on initial render
 const BottomPanel = lazy(() => import('./BottomPanel'));
@@ -59,6 +60,40 @@ function DesktopLayout() {
   const chatPanelWidth = useAppStore(s => s.chatPanelWidth);
   const commandPaletteOpen = useAppStore(s => s.commandPaletteOpen);
   const zoomLevel = useAppStore(s => s.zoomLevel);
+  const setUpdateStatus = useAppStore(s => s.setUpdateStatus);
+  const addNotification = useAppStore(s => s.addNotification);
+  const prevUpdateStatusRef = useRef(null);
+
+  useEffect(() => {
+    const hydrate = async () => {
+      try {
+        const status = window.electronAPI?.updater?.getStatus
+          ? await window.electronAPI.updater.getStatus()
+          : await fetch('/api/updater/status').then(r => r.json());
+        if (status) setUpdateStatus(status);
+      } catch {
+        // Updater unavailable in dev/web mode
+      }
+    };
+    hydrate();
+
+    if (!window.electronAPI?.updater?.onStatus) return undefined;
+
+    return window.electronAPI.updater.onStatus((payload) => {
+      const normalized = normalizeUpdateStatus(payload);
+      const prev = prevUpdateStatusRef.current;
+      setUpdateStatus(payload);
+      if (normalized?.status === 'available' && prev?.status !== 'available') {
+        addNotification({
+          type: 'info',
+          title: 'Update available',
+          message: `v${updateVersionLabel(normalized)} — downloading in background`,
+          duration: 5000,
+        });
+      }
+      prevUpdateStatusRef.current = normalized;
+    });
+  }, [setUpdateStatus, addNotification]);
 
   return (
     <div

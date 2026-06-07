@@ -1,24 +1,19 @@
 /**
- * guIDE 2.0 — Auto-Updater
+ * guIDE — Auto-Updater
  *
  * Wraps electron-updater for automatic update checking, downloading,
  * and installation. Falls back gracefully when electron-updater is
  * not installed (dev mode, web-only mode).
- *
- * Usage:
- *   const updater = new AutoUpdater(mainWindow);
- *   updater.checkForUpdates();
- *   updater.registerIPC();      // Electron IPC handlers
- *   updater.registerRoutes(app); // Express API for web UI fallback
  */
 'use strict';
 
 const EventEmitter = require('events');
+const { getInstallVariant, getUpdateChannel, getGithubFeedConfig } = require('./updateVariant');
 
 class AutoUpdater extends EventEmitter {
   /**
    * @param {Electron.BrowserWindow | null} mainWindow
-   * @param {{ feedUrl?: string, autoDownload?: boolean, autoInstallOnAppQuit?: boolean }} opts
+   * @param {{ feedUrl?: object, autoDownload?: boolean, autoInstallOnAppQuit?: boolean, channel?: string|null }} opts
    */
   constructor(mainWindow, opts) {
     super();
@@ -31,6 +26,9 @@ class AutoUpdater extends EventEmitter {
     this._error = null;
     this._periodicTimer = null;
     this._periodicHours = 0;
+    this._autoDownload = opts.autoDownload !== undefined ? opts.autoDownload : true;
+    this._channel = opts.channel !== undefined ? opts.channel : getUpdateChannel();
+    this._installVariant = getInstallVariant();
 
     this._init(opts || {});
   }
@@ -41,41 +39,45 @@ class AutoUpdater extends EventEmitter {
       this._autoUpdater = autoUpdater;
       this._available = true;
 
-      // Configure
-      autoUpdater.autoDownload = opts.autoDownload !== undefined ? opts.autoDownload : false;
-      autoUpdater.autoInstallOnAppQuit = opts.autoInstallOnAppQuit !== undefined ? opts.autoInstallOnAppQuit : true;
+      autoUpdater.autoDownload = this._autoDownload;
+      autoUpdater.autoInstallOnAppQuit = opts.autoInstallOnAppQuit !== undefined ? opts.autoInstallOnAppQuit : false;
       autoUpdater.allowDowngrade = false;
 
-      if (opts.feedUrl) {
-        autoUpdater.setFeedURL(opts.feedUrl);
+      if (this._channel) {
+        autoUpdater.channel = this._channel;
       }
 
-      // Wire events
+      const feed = opts.feedUrl || getGithubFeedConfig();
+      autoUpdater.setFeedURL(feed);
+
       autoUpdater.on('checking-for-update', () => {
         this._status = 'checking';
-        this._sendToRenderer('update-status', { status: 'checking' });
+        this._error = null;
+        this._sendStatus();
         this.emit('checking');
       });
 
       autoUpdater.on('update-available', (info) => {
         this._status = 'available';
         this._updateInfo = info;
-        this._sendToRenderer('update-status', { status: 'available', info });
+        this._sendStatus();
         this.emit('available', info);
+        if (this._autoDownload) {
+          this.downloadUpdate();
+        }
       });
 
       autoUpdater.on('update-not-available', (info) => {
         this._status = 'idle';
-        this._updateInfo = null;
-        this._sendToRenderer('update-status', { status: 'up-to-date', info });
+        this._updateInfo = info;
+        this._sendStatus({ status: 'up-to-date' });
         this.emit('up-to-date', info);
       });
 
       autoUpdater.on('download-progress', (progress) => {
         this._status = 'downloading';
         this._progress = progress;
-        this._sendToRenderer('update-status', {
-          status: 'downloading',
+        this._sendStatus({
           progress: {
             percent: Math.round(progress.percent),
             transferred: progress.transferred,
@@ -90,22 +92,46 @@ class AutoUpdater extends EventEmitter {
         this._status = 'downloaded';
         this._updateInfo = info;
         this._progress = null;
-        this._sendToRenderer('update-status', { status: 'downloaded', info });
+        this._sendStatus();
         this.emit('downloaded', info);
       });
 
       autoUpdater.on('error', (err) => {
-        this._status = 'error';
-        this._error = err.message;
-        this._sendToRenderer('update-status', { status: 'error', error: err.message });
-        this.emit('error', err);
+        this._handleError(err?.message || String(err));
       });
 
+      console.log(`[AutoUpdater] ready variant=${this._installVariant} channel=${this._channel || 'default'}`);
     } catch {
-      // electron-updater not installed (dev mode or web-only)
       this._available = false;
       console.log('[AutoUpdater] electron-updater not available — updates disabled');
     }
+  }
+
+  _handleError(message) {
+    this._status = 'error';
+    this._error = message;
+    this._sendStatus({ error: message });
+    this.emit('error', new Error(message));
+  }
+
+  _sendStatus(overrides = {}) {
+    const payload = {
+      status: overrides.status || this._status,
+      info: overrides.info !== undefined ? overrides.info : this._updateInfo,
+      progress: overrides.progress !== undefined ? overrides.progress : (
+        this._progress ? {
+          percent: Math.round(this._progress.percent),
+          transferred: this._progress.transferred,
+          total: this._progress.total,
+          bytesPerSecond: this._progress.bytesPerSecond,
+        } : null
+      ),
+      error: overrides.error !== undefined ? overrides.error : this._error,
+      available: this._available,
+      channel: this._channel,
+      installVariant: this._installVariant,
+    };
+    this._sendToRenderer('update-status', payload);
   }
 
   _sendToRenderer(channel, data) {
@@ -122,8 +148,7 @@ class AutoUpdater extends EventEmitter {
   checkForUpdates() {
     if (!this._available || !this._autoUpdater) return;
     this._autoUpdater.checkForUpdates().catch((err) => {
-      this._status = 'error';
-      this._error = err.message;
+      this._handleError(err.message);
     });
   }
 
@@ -131,8 +156,7 @@ class AutoUpdater extends EventEmitter {
   downloadUpdate() {
     if (!this._available || !this._autoUpdater) return;
     this._autoUpdater.downloadUpdate().catch((err) => {
-      this._status = 'error';
-      this._error = err.message;
+      this._handleError(err.message);
     });
   }
 
@@ -148,18 +172,22 @@ class AutoUpdater extends EventEmitter {
       available: this._available,
       status: this._status,
       updateInfo: this._updateInfo,
-      progress: this._progress,
+      progress: this._progress ? {
+        percent: Math.round(this._progress.percent),
+        transferred: this._progress.transferred,
+        total: this._progress.total,
+        bytesPerSecond: this._progress.bytesPerSecond,
+      } : null,
       error: this._error,
       periodicCheckHours: this._periodicHours,
+      channel: this._channel,
+      installVariant: this._installVariant,
     };
   }
 
   /**
    * Schedule a periodic background check.
-   * Setting hours <= 0 cancels any existing schedule. Calling with a new positive
-   * value replaces the existing schedule. The check is fire-and-forget; status
-   * still flows through the same renderer events as a manual checkForUpdates().
-   * @param {number} hours - check interval in hours. 0 disables. Values below 1 are clamped to 1.
+   * @param {number} hours - check interval in hours. 0 disables.
    */
   startPeriodicCheck(hours) {
     this.stopPeriodicCheck();
@@ -174,14 +202,13 @@ class AutoUpdater extends EventEmitter {
       try { this.checkForUpdates(); }
       catch (e) { console.warn('[AutoUpdater] periodic check failed:', e.message); }
     }, intervalMs);
-    // Allow the Node process to exit even if this timer is alive.
     if (this._periodicTimer && typeof this._periodicTimer.unref === 'function') {
       this._periodicTimer.unref();
     }
     console.log(`[AutoUpdater] periodic check scheduled every ${this._periodicHours}h`);
   }
 
-  /** Cancel the periodic background check. No-op if none is scheduled. */
+  /** Cancel the periodic background check. */
   stopPeriodicCheck() {
     if (this._periodicTimer) {
       clearInterval(this._periodicTimer);
@@ -213,31 +240,6 @@ class AutoUpdater extends EventEmitter {
 
     ipcMain.handle('updater-status', () => {
       return this.getStatus();
-    });
-  }
-
-  /**
-   * Register Express API routes (fallback for web UI when not running in Electron).
-   * @param {import('express').Application} app
-   */
-  registerRoutes(app) {
-    app.get('/api/updater/status', (req, res) => {
-      res.json(this.getStatus());
-    });
-
-    app.post('/api/updater/check', (req, res) => {
-      this.checkForUpdates();
-      res.json({ triggered: true, status: this._status });
-    });
-
-    app.post('/api/updater/download', (req, res) => {
-      this.downloadUpdate();
-      res.json({ triggered: true });
-    });
-
-    app.post('/api/updater/install', (req, res) => {
-      this.quitAndInstall();
-      res.json({ triggered: true });
     });
   }
 }

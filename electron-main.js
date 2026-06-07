@@ -2721,11 +2721,11 @@ app.whenReady().then(async () => {
   createWindow();
   buildAppMenu(mainWindow);
 
-  // Auto-updater with real Electron IPC.
-  // Manual check is fired once 5 seconds after startup. Periodic background checking
-  // is opt-in via settingsManager.autoUpdateCheckHours (0 = off, default). Users
-  // change the cadence from Settings; the listener below reschedules immediately.
-  autoUpdater = new AutoUpdater(mainWindow, { autoDownload: false });
+  // Auto-updater: checks on startup, auto-downloads, footer prompts restart when ready.
+  autoUpdater = new AutoUpdater(mainWindow, {
+    autoDownload: true,
+    autoInstallOnAppQuit: false,
+  });
   autoUpdater.registerIPC(ipcMain);
   setTimeout(() => autoUpdater.checkForUpdates(), 5000);
   const _initialAutoUpdateHours = Number(settingsManager.get('autoUpdateCheckHours')) || 0;

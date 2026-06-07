@@ -23,6 +23,7 @@
  */
 
 import { create } from 'zustand';
+import { normalizeUpdateStatus } from '../lib/updateStatus';
 
 function _uiLog(msg) {
   try { window.electronAPI?.uiLog?.(String(msg)); } catch (_) {}
@@ -2404,6 +2405,14 @@ const useAppStore = create((set, get) => ({
     set({ notifications: notifications.filter(n => n.id !== id) });
 
   },
+
+
+
+  // ─── App updates (electron-updater) ───────────────────
+
+  updateStatus: null,
+
+  setUpdateStatus: (payload) => set({ updateStatus: normalizeUpdateStatus(payload) }),
 
 
 

@@ -23,6 +23,7 @@ import {
 import { openFileFromReadResponse } from '../utils/openFileFromRead';
 import isPocket from '../lib/isPocket';
 import { pathString, fileBaseName } from '../lib/pathString';
+import { installUpdateNow, updateVersionLabel } from '../lib/updateStatus';
 import { uploadFilesToPath, downloadFileUrl, downloadFolderZipUrl, triggerDownload } from '../lib/pocketFiles';
 
 export default function Sidebar() {
@@ -1483,58 +1484,61 @@ function CloudProviderSettings() {
   );
 }
 
-// Auto-update settings — exposes the existing AutoUpdater (electron-updater wrapper).
-// Periodic checking is opt-in. The user picks a cadence (off / hourly / daily / weekly)
-// and the backend listens for the change to schedule or cancel its setInterval.
-// A manual "Check now" button always works regardless of the periodic setting.
+// Auto-update settings — uses global updateStatus from Layout subscription.
 function UpdatesSettings({ settings, updateSetting }) {
   const addNotification = useAppStore(s => s.addNotification);
-  const [status, setStatus] = useState(null);
+  const updateStatus = useAppStore(s => s.updateStatus);
+  const setUpdateStatus = useAppStore(s => s.setUpdateStatus);
   const [busy, setBusy] = useState(false);
-  const cadence = Number(settings.autoUpdateCheckHours) || 0;
+  const cadence = Number(settings.autoUpdateCheckHours ?? 24);
 
   const refreshStatus = useCallback(() => {
-    fetch('/api/updater/status').then(r => r.json()).then(setStatus).catch(() => {});
-  }, []);
+    const p = window.electronAPI?.updater?.getStatus
+      ? window.electronAPI.updater.getStatus()
+      : fetch('/api/updater/status').then(r => r.json());
+    Promise.resolve(p).then(s => { if (s) setUpdateStatus(s); }).catch(() => {});
+  }, [setUpdateStatus]);
 
   useEffect(() => {
-    refreshStatus();
-    const id = setInterval(refreshStatus, 30000);
+    if (!updateStatus) refreshStatus();
+    const id = setInterval(refreshStatus, 60000);
     return () => clearInterval(id);
-  }, [refreshStatus]);
+  }, [refreshStatus, updateStatus]);
 
   const checkNow = () => {
     setBusy(true);
-    fetch('/api/updater/check', { method: 'POST' })
-      .then(r => r.json())
+    const p = window.electronAPI?.updater?.check
+      ? window.electronAPI.updater.check()
+      : fetch('/api/updater/check', { method: 'POST' }).then(r => r.json());
+    Promise.resolve(p)
       .then(() => { addNotification({ type: 'info', message: 'Checking for updates…', duration: 2000 }); setTimeout(refreshStatus, 1500); })
       .catch(e => addNotification({ type: 'error', message: e.message }))
       .finally(() => setBusy(false));
   };
 
-  const downloadNow = () => {
-    fetch('/api/updater/download', { method: 'POST' })
-      .then(() => addNotification({ type: 'info', message: 'Download started', duration: 2000 }))
-      .catch(e => addNotification({ type: 'error', message: e.message }));
-  };
-
   const installNow = () => {
-    fetch('/api/updater/install', { method: 'POST' })
+    Promise.resolve(installUpdateNow())
       .catch(e => addNotification({ type: 'error', message: e.message }));
   };
 
+  const status = updateStatus;
   const statusLabel =
     status?.available === false ? 'Updater unavailable (dev/web mode)'
       : status?.status === 'checking' ? 'Checking…'
-        : status?.status === 'available' ? `Update available: v${status?.updateInfo?.version || '?'}`
+        : status?.status === 'available' ? `Update available: v${updateVersionLabel(status)} — downloading…`
           : status?.status === 'downloading' ? `Downloading… ${Math.round(status?.progress?.percent || 0)}%`
-            : status?.status === 'downloaded' ? `Downloaded v${status?.updateInfo?.version || '?'} — ready to install`
+            : status?.status === 'downloaded' ? `Downloaded v${updateVersionLabel(status)} — restart to install`
               : status?.status === 'error' ? `Error: ${status?.error || 'unknown'}`
                 : 'Up to date';
 
   return (
     <SettingsSection title="Updates" icon={<Download size={13} />}>
       <div className="text-[11px] text-vsc-text-dim mb-2">{statusLabel}</div>
+      {status?.installVariant && (
+        <div className="text-[10px] text-vsc-text-dim mb-2">
+          Install variant: {status.installVariant}{status.channel ? ` (${status.channel} channel)` : ''}
+        </div>
+      )}
 
       <div className="mb-3">
         <label className="text-[11px] text-vsc-text-dim block mb-1">Automatic check cadence</label>
@@ -1550,7 +1554,7 @@ function UpdatesSettings({ settings, updateSetting }) {
           <option value="168">Every week</option>
         </select>
         <div className="text-[10px] text-vsc-text-dim mt-0.5">
-          Off by default. Periodic checks only run when the app is open. The check itself is a small HTTP request to the release feed; no data leaves your machine other than your version.
+          Checks daily by default while the app is open. The check is a small HTTP request to the release feed; no data leaves your machine other than your version.
         </div>
       </div>
 
@@ -1562,14 +1566,6 @@ function UpdatesSettings({ settings, updateSetting }) {
         >
           Check now
         </button>
-        {status?.status === 'available' && (
-          <button
-            className="btn btn-primary px-2.5 py-1"
-            onClick={downloadNow}
-          >
-            Download
-          </button>
-        )}
         {status?.status === 'downloaded' && (
           <button
             className="btn btn-primary px-2.5 py-1"
