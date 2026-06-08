@@ -95,6 +95,38 @@ function _decodeFenceContentEscape(ch) {
 // Pre-compiled regex patterns for the streaming tool call filter.
 // These are tested on line boundaries only — never on every character.
 const RE_FENCE_HEADER = /^```\s*(\w*)\r?\n/;
+/** Languages streamed as markdown code fences to chat (not buffered as tool JSON). */
+const SF_PLAIN_FENCE_LANGS = new Set([
+  'html', 'htm', 'css', 'scss', 'sass', 'less', 'js', 'javascript', 'jsx', 'mjs', 'cjs',
+  'ts', 'tsx', 'vue', 'svelte', 'md', 'markdown', 'py', 'python', 'bash', 'sh', 'shell',
+  'yaml', 'yml', 'xml', 'svg', 'go', 'rust', 'rs', 'java', 'cpp', 'c', 'h', 'cs', 'php',
+  'rb', 'swift', 'kt', 'sql', 'jsonl',
+]);
+
+function _sfPlainFenceLang(fenceBuf) {
+  const m = String(fenceBuf || '').match(/^```\s*(\w*)/i);
+  return (m?.[1] || '').toLowerCase();
+}
+
+function _sfIsPlainMarkdownFence(fenceBuf) {
+  return SF_PLAIN_FENCE_LANGS.has(_sfPlainFenceLang(fenceBuf));
+}
+
+/** Keep fence markers; append closing ``` when generation ended mid-fence. */
+function _sfPreparePlainFenceFlushPayload(fenceBuf) {
+  if (!fenceBuf) return '';
+  let payload = fenceBuf;
+  const openMatch = payload.match(/^(`{3,})\s*(\w*)/);
+  if (openMatch) {
+    const tickLen = openMatch[1].length;
+    const trimmed = payload.trimEnd();
+    const closeRe = new RegExp('\\n`{' + tickLen + ',}\\s*$');
+    if (!closeRe.test(trimmed)) {
+      payload = trimmed + '\n' + '`'.repeat(tickLen);
+    }
+  }
+  return payload;
+}
 // Tightened: only match tool-call schema, not arbitrary JSON with "tool" or "name" keys
 const RE_TOOL_KEY = /"tool"\s*:\s*"[a-zA-Z0-9_]+"/;          // {"tool":"write_file"} or {"tool":"vscode_askQuestions"} — requires string value
 const RE_NAME_KEY = /"name"\s*:\s*"[a-zA-Z0-9_]+(?:_[a-zA-Z0-9_]+)*"/; // {"name":"read_file"} or mixed-case
@@ -1868,17 +1900,19 @@ class ChatEngine extends EventEmitter {
           _sfContentStreamActive = false;
         }
         if (_sfFenceBuf) {
+          const isPlainMarkdownFence = _sfIsPlainMarkdownFence(_sfFenceBuf);
           // Flush-guard: if the fence buffer contains tool-call JSON, discard it.
-          // This happens when generation stops mid-fence (maxTokens hit) — the closing
-          // ``` was never emitted, so the fence buffer still has the full tool JSON.
-          const _isToolCall = _sfFenceBufferLooksLikeToolJson(_sfFenceBuf);
+          // Plain markdown fences (```html, ```css, …) are never tool JSON — route to chat.
+          const _isToolCall = !isPlainMarkdownFence && _sfFenceBufferLooksLikeToolJson(_sfFenceBuf);
           if (_isToolCall) {
             console.log(`[ChatEngine] _sfFlushFence: discarding tool-call JSON (${_sfFenceBuf.length} chars)`);
             const _fpM = _sfFenceBuf.match(RE_FILE_PATH);
             if (_fpM && _fpM[1]) _sfProsedFileWrites.add(_normalizePath(_fpM[1]));
           } else {
-            const cleaned = _sfFenceBuf.replace(/^```[a-z0-9]*\s*\n?/i, '');
-            if (cleaned.length > 0) _sfForward(cleaned);
+            const payload = isPlainMarkdownFence
+              ? _sfPreparePlainFenceFlushPayload(_sfFenceBuf)
+              : _sfFenceBuf.replace(/^```[a-z0-9]*\s*\n?/i, '');
+            if (payload.length > 0) _sfForward(payload);
           }
           _sfFenceBuf = '';
         }
@@ -1895,6 +1929,20 @@ class ChatEngine extends EventEmitter {
         _sfInThink = false;     // ensure think-state never bleeds into the next generation
         _sfThinkBuf = '';
         _sfFenceInThink = false;
+      };
+
+      /** Forward any prose in fullResponse that never reached onToken during streaming. */
+      const _sfCatchUpVisibleProse = () => {
+        _sfFlush();
+        _sfFlushFence();
+        const cleanTarget = stripToolCallText(fullResponse);
+        if (cleanTarget.length > _sfVisibleChars) {
+          const delta = cleanTarget.slice(_sfVisibleChars);
+          if (delta) {
+            console.log(`[ChatEngine] Prose stream catch-up: ${_sfVisibleChars} → ${cleanTarget.length} visible chars (${delta.length} forwarded)`);
+            _sfForward(delta);
+          }
+        }
       };
 
       const _sfProcessChunk = (chunk) => {
@@ -2076,15 +2124,17 @@ class ChatEngine extends EventEmitter {
               const hm = _sfFenceBuf.match(RE_FENCE_HEADER);
               const lang = (hm[1] || '').toLowerCase();
               const afterHeader = _sfFenceBuf.slice(hm[0].length);
-              const PLAIN_LANGS = new Set([
-                'html', 'htm', 'css', 'scss', 'sass', 'less', 'js', 'javascript', 'jsx', 'mjs', 'cjs',
-                'ts', 'tsx', 'vue', 'svelte', 'md', 'markdown', 'py', 'python', 'bash', 'sh', 'shell',
-                'yaml', 'yml', 'xml', 'svg', 'go', 'rust', 'rs', 'java', 'cpp', 'c', 'h', 'cs', 'php',
-                'rb', 'swift', 'kt', 'sql', 'jsonl',
-              ]);
+              const PLAIN_LANGS = SF_PLAIN_FENCE_LANGS;
               const looksLikeTool = _sfFenceBufferLooksLikeToolJson(afterHeader.slice(0, 8000))
                 || _sfIsToolLikeJson(afterHeader.slice(0, 6000));
-              if (PLAIN_LANGS.has(lang) && !looksLikeTool) {
+              if (PLAIN_LANGS.has(lang)) {
+                // Plain markdown fences always stream to chat — body may contain `"tool":` strings.
+                _sfFenceStreamPlain = true;
+                _sfForward(_sfFenceBuf);
+                _sfFenceBuf = '';
+                continue;
+              }
+              if (!looksLikeTool) {
                 _sfFenceStreamPlain = true;
                 _sfForward(_sfFenceBuf);
                 _sfFenceBuf = '';
@@ -3820,7 +3870,7 @@ class ChatEngine extends EventEmitter {
           _sfContentFilePath = '';
           _sfUnicodeCount = 0;
           _sfUnicodeChars = '';
-          _sfVisibleChars = 0;
+          // Keep cumulative visible count across tool-loop continuations (matches seamless continuation).
           _sfInThink = false;
           _sfThinkBuf = '';
           _sfThinkTagMatch = '';
@@ -4029,6 +4079,7 @@ class ChatEngine extends EventEmitter {
         });
       }
 
+      _sfCatchUpVisibleProse();
       visibleResponse = stripToolCallText(fullResponse);
       console.log(`[ChatEngine] chat() returning: textLen=${visibleResponse.length}, stopReason=${stopReason}, toolCalls=${totalToolCalls}`);
       if (onComplete) onComplete(fullResponse);
@@ -5406,4 +5457,6 @@ module.exports = {
   buildCloudSystemPrompt,
   buildAgentSystemPromptLayers,
   _sanitizeFileSnippetText,
+  _sfPreparePlainFenceFlushPayload,
+  _sfIsPlainMarkdownFence,
 };

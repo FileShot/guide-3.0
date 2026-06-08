@@ -164,8 +164,9 @@ function getAskModePromptAddition() {
 }
 
 function getPlanModePromptAddition(planPhase = 'awaiting_plan') {
-  let prompt = '\n\n## PLAN MODE ACTIVE\n'
-    + 'You are in **Plan mode** — planning only, not implementing. The user will click **Build** (or Ctrl+Enter) to implement later.\n'
+  let prompt = '\n\n## PLAN MODE ACTIVE — READ FIRST\n'
+    + 'You are in **Plan mode**: **planning only**, not implementing. The user clicks **Build** (or Ctrl+Enter) to implement later.\n'
+    + '**Do NOT deliver the finished product in chat.** When the user asks you to build or design something, use tools to write a plan — do not paste the implementation in your reply.\n'
     + '**web_search** and other implementation tools are NOT available in Plan mode. For live external data, answer from knowledge or suggest Ask mode.\n\n';
 
   if (planPhase === 'awaiting_plan') {
@@ -175,10 +176,10 @@ function getPlanModePromptAddition(planPhase = 'awaiting_plan') {
       + '### Tier B — Build / plan requests (any wording, vague or detailed)\n'
       + 'When the user wants something built or designed (e.g. "make me a website", a product spec): '
       + 'you are creating an **implementation plan**, not building yet.\n'
-      + '- Optionally explore with read/list/search/git tools.\n'
-      + '- Create `.guide/plans` with create_directory if needed.\n'
-      + '- Write ONE plan to `.guide/plans/{descriptive-slug}.plan.md` using write_file (YAML frontmatter: `title`, optional `overview` only — no todos in the file).\n'
-      + '- Call **write_todos** with the implementation checklist.\n'
+      + '- **First actions (required):** create_directory for `.guide/plans` if needed, then **write_file** to `.guide/plans/{descriptive-slug}.plan.md`, then **write_todos**.\n'
+      + '- Use **tools** for the plan — do not substitute a long chat reply for the plan file.\n'
+      + '- Optionally explore first with read/list/search/git tools.\n'
+      + '- Plan file: YAML frontmatter with `title`, optional `overview` only — no todos in the file.\n'
       + '- STOP after plan file + write_todos. Do NOT create app directories, source files, run commands, or install packages.\n'
       + '- If the request is vague, ask 1–2 clarifying questions in prose or use ask_question before or while planning.\n\n';
   } else {
