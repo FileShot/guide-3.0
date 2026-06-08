@@ -287,6 +287,11 @@ export default function ToolCallCard({ toolCall, count }) {
     const rem = sec % 60;
     const timeStr = min > 0 ? `${min}m ${rem}s` : `${sec}s`;
     const kb = Math.max(1, Math.round((generatingProgress?.fenceChars ?? 0) / 1024));
+    const filePath = generatingProgress?.filePath || params?.filePath || params?.path;
+    const fileName = filePath ? filePath.split(/[\\/]/).pop() : null;
+    if (functionName === 'write_file' && fileName && (generatingProgress?.fenceChars ?? 0) > 0) {
+      return `Writing ${fileName}… (${kb}KB generated, ${timeStr})`;
+    }
     return `Generating large tool payload… (${timeStr}, ${kb}KB)`;
   };
   const formatSlowCommand = () => {
@@ -297,10 +302,19 @@ export default function ToolCallCard({ toolCall, count }) {
     const timeStr = min > 0 ? `${min}m ${rem}s` : `${sec}s`;
     return `Command still running… (${timeStr})`;
   };
+  const earlyWriteLabel = () => {
+    const filePath = generatingProgress?.filePath || params?.filePath || params?.path;
+    const fileName = filePath ? filePath.split(/[\\/]/).pop() : null;
+    if (functionName === 'write_file' && fileName) {
+      const kb = Math.max(1, Math.round((generatingProgress?.fenceChars ?? 0) / 1024));
+      return kb > 0 ? `Writing ${fileName}… (${kb}KB)` : `Writing ${fileName}…`;
+    }
+    return `Generating ${functionName}...`;
+  };
   const lineText = isGenerating
     ? (generatingProgress && (generatingProgress.elapsedMs ?? 0) >= 30000
       ? formatGeneratingProgress()
-      : `Generating ${functionName}...`)
+      : earlyWriteLabel())
     : (isPending && commandSlowProgress
       ? formatSlowCommand()
       : (detail ? `${verb} • ${detail}${countSuffix}` : `${verb}${countSuffix}`));

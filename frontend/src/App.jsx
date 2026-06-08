@@ -417,7 +417,11 @@ export default function App() {
 
             fenceChars: data?.fenceChars ?? 0,
 
+            filePath: data?.filePath,
+
           },
+
+          params: data?.filePath ? { filePath: data.filePath } : {},
 
         });
 

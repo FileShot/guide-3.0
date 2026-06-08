@@ -115,6 +115,41 @@ function _sfFenceBufferLooksLikeToolJson(buf) {
   return false;
 }
 
+/** Sanitize user message / digest text that embeds truncated editor file snippets. */
+function _sanitizeFileSnippetText(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text.replace(
+    /\[Current file:\s*([^\]]+)\]\n[\s\S]*/,
+    (_match, filePath) => `Current file: ${String(filePath).trim()} (snippet only — full content on disk; use read_file for complete file)`,
+  );
+}
+
+/**
+ * One-line hint after tool batches when todos exist but update_todo was not called.
+ * @param {Array<{id:number,text?:string,status?:string}>} activeTodos
+ * @param {string[]} executedTools
+ * @param {number} consecutiveWithoutUpdate
+ */
+function buildTodoProgressHint(activeTodos, executedTools, consecutiveWithoutUpdate = 0) {
+  if (!Array.isArray(activeTodos) || activeTodos.length === 0) return '';
+  const tools = Array.isArray(executedTools) ? executedTools : [];
+  if (tools.some((t) => t === 'update_todo' || t === 'write_todos')) return '';
+  const open = activeTodos.filter((t) => t.status === 'pending' || t.status === 'in-progress');
+  if (open.length === 0) return '';
+  const pending = open.filter((t) => t.status === 'pending').length;
+  const inProgress = open.filter((t) => t.status === 'in-progress').length;
+  const counts = [
+    pending > 0 ? `${pending} pending` : '',
+    inProgress > 0 ? `${inProgress} in-progress` : '',
+  ].filter(Boolean).join(', ');
+  const idList = open.map((t) => `id ${t.id}: ${(t.text || '').slice(0, 60)}`).join('; ');
+  let hint = `[System: Active todo list (${counts}). If you finished a step, call update_todo with that id and status "done" before starting the next tool. Items: ${idList}.]`;
+  if (consecutiveWithoutUpdate >= 3) {
+    hint += ' [Reminder: several tools ran without update_todo — mark finished steps done so the todo list stays accurate.]';
+  }
+  return `${hint}\n\n`;
+}
+
 function _sfExtractGeneratingToolName(buf) {
   const standard = buf.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
   if (standard) return standard[1];
@@ -688,9 +723,9 @@ When you receive an image description from the vision system, treat it as what y
 For multi-step work, you may use planning tools from ## Tools when they fit the task. For simple requests, act directly without unnecessary planning overhead.
 
 ## File locations
-- Application source (HTML, CSS, JS, etc.) belongs in the **project root** (visible in the file explorer), never under `.guide/`.
-- `.guide/plans/*.plan.md` is for implementation **plan documents** only — not source code or assets.
-- `.guide/` is guIDE metadata (hidden from the explorer); users cannot see files written there.
+- Application source (HTML, CSS, JS, etc.) belongs in the **project root** (visible in the file explorer), never under .guide/.
+- .guide/plans/*.plan.md is for implementation **plan documents** only — not source code or assets.
+- .guide/ is guIDE metadata (hidden from the explorer); users cannot see files written there.
 
 ## Todo List Discipline
 Use write_todos only for multi-step builds — skip it for simple one-shot tasks. If you called write_todos, call update_todo when you start each todo item (status: 'in-progress') and when you finish it (status: 'done'). The user sees the todo list in real time.
@@ -762,6 +797,7 @@ class ChatEngine extends EventEmitter {
     this._fileContentStreamActivePath = null;
     this._sessionId = 0; // increments on resetSession to detect stale tool results
     this._activeChatPromise = null; // serializes concurrent chat() calls on singleton engine
+    this._consecutiveToolsWithoutTodoUpdate = 0;
     console.log('[ChatEngine] constructor DONE');
   }
 
@@ -1146,6 +1182,13 @@ class ChatEngine extends EventEmitter {
       // Diagnostic: verify context creation
       const actualCtxSize = this._context?.contextSize;
       console.log(`[ChatEngine] Context created: ctx=${actualCtxSize}, gpuLayers=${actualGpuLayers}, flashAttn=${s.gpuPreference !== 'cpu'}, batchSize=${batchSize}, threads=${threadCount}, swaFullCache=${swaFullCache}, kvCacheType=${kvCacheType || 'default'}, requestedSize=${computedCtxSize}`);
+      const loadVramBal = s.vramBalance || 'balanced';
+      const loadPresetNote = loadVramBal === 'speed'
+        ? ' — Speed preset maximizes GPU layers; context is whatever fits remaining VRAM'
+        : '';
+      console.log(
+        `[ChatEngine] Load budget: preset=${loadVramBal}, gpuLayers=${actualGpuLayers}/${totalLayersForCtx}, ctx=${actualCtxSize}, kvBpt=${kvBytesPerToken || 0}, vramFreeAfterLoad=${(vramFreeAfterModel / 1e9).toFixed(2)}GB${loadPresetNote}`,
+      );
 
       // Graceful context degradation: log exact reason and suggest action
       const ctxDegradation = actualCtxSize < desiredMax * 0.8;
@@ -1186,6 +1229,8 @@ class ChatEngine extends EventEmitter {
         gpuMode: s.gpuPreference === 'cpu' ? false : 'auto',
         vramFreeAfterLoadGB: Number((vramFreeAfterModel / 1e9).toFixed(2)),
         contextPctOfCap: desiredMax > 0 ? Math.round((actualCtx / desiredMax) * 100) : undefined,
+        vramBalance: loadVramBal,
+        totalLayers: totalLayersForCtx,
       };
 
       // ─── Three-Tier Model Profile Resolution ───
@@ -1406,6 +1451,7 @@ class ChatEngine extends EventEmitter {
       const attachments = Array.isArray(options.attachments) ? options.attachments : [];
       let effectiveUserMessage = String(userMessage ?? '');
       this._recentlyWrittenFiles.clear(); // reset per chat() call
+      this._consecutiveToolsWithoutTodoUpdate = 0;
       this._toolRoundCount = 0;
       console.log(`[ChatEngine] ═══ USER MESSAGE ═══ "${String(userMessage)}"`);
       if (attachments.length > 0) {
@@ -1725,7 +1771,9 @@ class ChatEngine extends EventEmitter {
       };
 
       const _tryEarlyFileContentStart = (buf) => {
-        if (_sfEarlyFileStartEmitted || !_sfFileWriteDetected || _sfContentDone || !onStreamEvent) return;
+        const fileToolLikely = _sfFileWriteDetected
+          || (RE_FILE_STREAM_TOOLS.test(buf) && RE_FILE_PATH.test(buf) && _sfIsToolLikeJson(buf));
+        if (_sfEarlyFileStartEmitted || !fileToolLikely || _sfContentDone || !onStreamEvent) return;
         const fpM = buf.match(RE_FILE_PATH);
         if (!fpM) return;
         const filePath = _jsonUnescape(fpM[1]);
@@ -2145,10 +2193,12 @@ class ChatEngine extends EventEmitter {
               const _progressNow = Date.now();
               if (_progressNow - _sfLastToolProgressAt >= 5000) {
                 _sfLastToolProgressAt = _progressNow;
+                const _fpProg = _sfFenceBuf.match(RE_FILE_PATH);
                 onStreamEvent('tool-generating-progress', {
                   tool: _sfExtractGeneratingToolName(_sfFenceBuf),
                   elapsedMs: _progressNow - _sfToolGeneratingStart,
                   fenceChars: _sfFenceBuf.length,
+                  filePath: _fpProg ? _jsonUnescape(_fpProg[1]) : undefined,
                 });
               }
             }
@@ -2159,7 +2209,7 @@ class ChatEngine extends EventEmitter {
                 _sfStreamIsEdit = RE_FILE_EDIT_TOOLS.test(_sfFenceBuf);
               }
             }
-            if (_sfFileWriteDetected && !_sfContentDone) {
+            if (!_sfContentDone && (_sfFileWriteDetected || (RE_FILE_STREAM_TOOLS.test(_sfFenceBuf) && RE_FILE_PATH.test(_sfFenceBuf)))) {
               _tryEarlyFileContentStart(_sfFenceBuf);
             }
 
@@ -3429,6 +3479,26 @@ class ChatEngine extends EventEmitter {
                 injectResult += '\n[Reminder: Call update_todo(id, "in-progress") when starting each step and update_todo(id, "done") when finishing — required for live todo list progress.]';
               }
             }
+            if (call.tool === 'read_file' && toolResult?.success !== false) {
+              const fp = toolResult.path || call.params?.filePath || call.params?.path || '';
+              const totalLines = toolResult.totalLines;
+              const contentLen = typeof toolResult.content === 'string' ? toolResult.content.length : 0;
+              const sizeKb = contentLen > 0 ? Math.round(contentLen / 1024) : null;
+              const meta = [
+                'read_file: success',
+                fp ? `path=${fp}` : '',
+                totalLines != null ? `totalLines=${totalLines}` : '',
+                sizeKb != null ? `size=~${sizeKb}KB` : '',
+              ].filter(Boolean).join(', ');
+              injectResult = `${meta} — full file returned.\n${injectResult}`;
+            }
+            if (call.tool === 'write_file' && toolResult?.success !== false) {
+              const writtenPath = call.params?.filePath || call.params?.path || toolResult?.path || '';
+              if (writtenPath && this._recentlyWrittenFiles.has(writtenPath)) {
+                const fileName = writtenPath.split(/[\\/]/).pop() || writtenPath;
+                injectResult += `\n[Note: write_file succeeded for ${fileName}. File is on disk; avoid full rewrite — use edit_file for tweaks.]`;
+              }
+            }
 
             toolResultLines.push(`${call.tool}: ${injectResult}`);
 
@@ -3571,7 +3641,22 @@ class ChatEngine extends EventEmitter {
 
           let todoListPrefix = '';
           const activeTodos = typeof options.getActiveTodos === 'function' ? options.getActiveTodos() : [];
-          if (Array.isArray(activeTodos) && activeTodos.length > 0 && activeTodos.some((t) => t.status === 'in-progress')) {
+          const executedToolNames = skipToolExecution ? [] : parsedCalls.map((c) => c.tool);
+          if (!skipToolExecution) {
+            if (executedToolNames.some((t) => t === 'update_todo' || t === 'write_todos')) {
+              this._consecutiveToolsWithoutTodoUpdate = 0;
+            } else if (executedToolNames.length > 0 && Array.isArray(activeTodos) && activeTodos.length > 0) {
+              this._consecutiveToolsWithoutTodoUpdate = (this._consecutiveToolsWithoutTodoUpdate || 0) + 1;
+            }
+          }
+          const todoProgressHint = buildTodoProgressHint(
+            activeTodos,
+            executedToolNames,
+            this._consecutiveToolsWithoutTodoUpdate || 0,
+          );
+          if (todoProgressHint) {
+            todoListPrefix = todoProgressHint;
+          } else if (Array.isArray(activeTodos) && activeTodos.length > 0) {
             todoListPrefix = '[Active todo list: mark completed items with update_todo(id, "done").]\n\n';
           }
 
@@ -4566,7 +4651,12 @@ class ChatEngine extends EventEmitter {
       const toolName = toolLine.slice(0, colon).trim();
       const body = toolLine.slice(colon + 1).trim();
       let parsed = null;
-      try { parsed = JSON.parse(body); } catch { parsed = null; }
+      const jsonStart = body.indexOf('{');
+      if (jsonStart >= 0) {
+        try { parsed = JSON.parse(body.slice(jsonStart)); } catch { parsed = null; }
+      } else {
+        try { parsed = JSON.parse(body); } catch { parsed = null; }
+      }
 
       if (/^browser_/.test(toolName)) {
         const url = parsed?.url || (body.match(/URL[=:]\s*(\S+)/i) || [])[1] || '';
@@ -4592,7 +4682,19 @@ class ChatEngine extends EventEmitter {
       }
       if (/^write_file|edit_file|append_to_file|read_file$/.test(toolName)) {
         const fp = parsed?.filePath || parsed?.path || (body.match(/"(?:filePath|path)"\s*:\s*"([^"]+)"/) || [])[1];
-        if (fp) _pushDone(`${toolName}: ${fp}`);
+        if (!fp) {
+          if (toolName === 'write_file' || toolName === 'read_file') _pushDone(toolName);
+          return;
+        }
+        if (toolName === 'write_file') {
+          _pushDone(`write_file: ${fp} (completed on disk — do not rewrite unless user asked for changes)`);
+        } else if (toolName === 'read_file') {
+          const totalLines = parsed?.totalLines
+            ?? (() => { const m = body.match(/totalLines=(\d+)/); return m ? Number(m[1]) : null; })();
+          _pushDone(`read_file: ${fp}${totalLines != null ? ` (${totalLines} lines on disk)` : ' (full file on disk)'}`);
+        } else {
+          _pushDone(`${toolName}: ${fp}`);
+        }
         return;
       }
       if (toolName === 'write_todos' || toolName === 'update_todo') {
@@ -4617,7 +4719,7 @@ class ChatEngine extends EventEmitter {
           continue;
         }
         if (!/^\[System:/i.test(text) && userSnippets.length < 3) {
-          userSnippets.push(text.slice(0, 500));
+          userSnippets.push(_sanitizeFileSnippetText(text).slice(0, 500));
         }
         continue;
       }
@@ -4634,7 +4736,8 @@ class ChatEngine extends EventEmitter {
     }
 
     const sections = [];
-    if (taskHint) sections.push(`TASK:\n${taskHint.slice(0, 400)}`);
+    const sanitizedHint = taskHint ? _sanitizeFileSnippetText(taskHint) : '';
+    if (sanitizedHint) sections.push(`TASK:\n${sanitizedHint.slice(0, 400)}`);
     else if (userSnippets[0]) sections.push(`TASK:\n${userSnippets[0].slice(0, 400)}`);
     if (done.size) sections.push(`DONE:\n${[...done].slice(0, 20).join('\n')}`);
     if (lastUrl || browserLines.length) {
@@ -5297,8 +5400,10 @@ function buildAgentSystemPromptLayers({
 module.exports = {
   ChatEngine,
   buildEngineLoadSettings,
+  buildTodoProgressHint,
   computeUnifiedVramBudget,
   SYSTEM_PROMPT,
   buildCloudSystemPrompt,
   buildAgentSystemPromptLayers,
+  _sanitizeFileSnippetText,
 };

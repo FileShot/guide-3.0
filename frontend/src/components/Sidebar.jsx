@@ -2205,8 +2205,16 @@ function SettingsPanel() {
               {modelInfo.contextSizeRequested === 'auto' && modelInfo.contextSizeCap != null && (
                 <span> (auto, cap {Number(modelInfo.contextSizeCap).toLocaleString()})</span>
               )}
-              {modelInfo.gpuLayers > 0 && ` | GPU: ${modelInfo.gpuLayers} layers`}
+              {modelInfo.gpuLayers > 0 && ` | GPU: ${modelInfo.gpuLayers}${modelInfo.totalLayers ? `/${modelInfo.totalLayers}` : ''} layers`}
+              {modelInfo.vramBalance === 'speed' && modelInfo.gpuLayers > 0 && (
+                <span> — Speed preset: tight VRAM fit</span>
+              )}
             </div>
+            {modelInfo.vramBalance === 'speed' && modelInfo.gpuLayers > 0 && modelInfo.totalLayers && (
+              <div className="text-vsc-text-dim mt-0.5 text-[10px]">
+                Speed preset uses {modelInfo.gpuLayers}/{modelInfo.totalLayers} GPU layers and {modelInfo.contextSize?.toLocaleString()} context — maximizes layers; context is whatever fits remaining VRAM on your GPU.
+              </div>
+            )}
             {modelInfo.contextSizeRequested === 'auto' && (modelInfo.contextHardwareCap != null || modelInfo.contextTrainMax != null) && (
               <div className="text-vsc-text-dim mt-0.5 text-[10px]">
                 {modelInfo.contextHardwareCap != null && (
