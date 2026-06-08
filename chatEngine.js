@@ -351,12 +351,16 @@ function computeUnifiedVramBudget({
   });
   const targetSteps = buildContextTargetSteps(autoTarget, minContext);
 
-  // Speed: v0.3.87 layer-dominant scoring (unchanged behavior for speed mode).
+  // Speed: maximize gpuLayers; layer search uses minimum context budget so VRAM goes to weights.
   if (mode === 'speed') {
     let bestPartial = null;
     let bestCpuOnly = null;
     for (let gpuLayers = totalLayers; gpuLayers >= 0; gpuLayers--) {
-      const fit = computeLayerVramFit({ ...fitParams, gpuLayers });
+      const fit = computeLayerVramFit({
+        ...fitParams,
+        gpuLayers,
+        desiredMaxContext: minContext,
+      });
       if (!fit) continue;
       if (gpuLayers > 0) {
         const score = gpuLayers * 1_000_000 + fit.contextSize;
@@ -371,9 +375,14 @@ function computeUnifiedVramBudget({
       }
     }
     if (bestPartial) {
+      const finalFit = computeLayerVramFit({
+        ...fitParams,
+        gpuLayers: bestPartial.gpuLayers,
+        desiredMaxContext,
+      });
       return {
         gpuLayers: bestPartial.gpuLayers,
-        contextSize: bestPartial.contextSize,
+        contextSize: finalFit?.contextSize ?? bestPartial.contextSize,
         budgetMeta: { mode, autoTarget, targetUsed: null },
       };
     }
@@ -5237,6 +5246,7 @@ function buildAgentSystemPromptLayers({
 module.exports = {
   ChatEngine,
   buildEngineLoadSettings,
+  computeUnifiedVramBudget,
   SYSTEM_PROMPT,
   buildCloudSystemPrompt,
   buildAgentSystemPromptLayers,

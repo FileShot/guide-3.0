@@ -2,7 +2,7 @@
  * Sidebar — Renders the active sidebar panel based on ActivityBar selection.
  * Panels: Explorer (file tree), Search, Git, Settings
  */
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, createContext, useContext } from 'react';
 import useAppStore from '../stores/appStore';
 import { useTheme, themeList } from './ThemeProvider';
 import AccountPanel from './AccountPanel';
@@ -1558,7 +1558,7 @@ function UpdatesSettings({ settings, updateSetting }) {
                 : 'Up to date';
 
   return (
-    <SettingsSection title="Updates" icon={<Download size={13} />}>
+    <SettingsSection title="Updates" icon={<Download size={13} />} keywords="updates auto update download release restart install">
       <div className="text-[11px] text-vsc-text-dim mb-2">{statusLabel}</div>
       {status?.installVariant && (
         <div className="text-[10px] text-vsc-text-dim mb-2">
@@ -1702,7 +1702,10 @@ function SettingsPanel() {
     };
   }, []);
 
+  const [settingsSearch, setSettingsSearch] = useState('');
+
   return (
+    <SettingsSearchContext.Provider value={settingsSearch}>
     <div className="flex flex-col h-full overflow-y-auto scrollbar-thin">
       {/* Header with Reset */}
       <div className="sidebar-header justify-between">
@@ -1744,8 +1747,24 @@ function SettingsPanel() {
         )}
       </div>
 
+      <div className="px-3 py-2 border-b border-vsc-panel-border/25 sticky top-0 z-10 bg-vsc-sidebar/95 backdrop-blur-sm">
+        <div className="relative">
+          <SearchIcon size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-vsc-text-dim pointer-events-none" />
+          <input
+            type="search"
+            value={settingsSearch}
+            onChange={(e) => setSettingsSearch(e.target.value)}
+            placeholder="Search settings…"
+            className="w-full pl-7 pr-2 py-1.5 text-[11px] rounded bg-vsc-input border border-vsc-input-border text-vsc-text placeholder:text-vsc-text-dim focus:outline-none focus:border-vsc-accent/50"
+          />
+        </div>
+        {settingsSearch.trim() && (
+          <div className="text-[10px] text-vsc-text-dim mt-1">Matching sections expand automatically</div>
+        )}
+      </div>
+
       {/* Theme */}
-      <SettingsSection title="Theme" icon={<Palette size={13} />}>
+      <SettingsSection title="Theme" icon={<Palette size={13} />} keywords="theme color appearance dark light">
         <div className="space-y-0.5">
           {themeList.map(t => (
             <button
@@ -1776,7 +1795,7 @@ function SettingsPanel() {
       </SettingsSection>
 
       {/* LLM / Inference */}
-      <SettingsSection title="LLM / Inference" icon={<Cpu size={13} />} defaultOpen>
+      <SettingsSection title="LLM / Inference" icon={<Cpu size={13} />} defaultOpen keywords="llm inference temperature context size max response tokens top p k repeat penalty seed">
         <SettingSlider label="Temperature" value={settings.temperature} min={0} max={2} step={0.05}
           onChange={v => updateSetting('temperature', v)} tooltip="Lower = more focused, higher = more creative" />
         <SettingNumberField label="Max Response Tokens" value={settings.maxResponseTokens}
@@ -1800,7 +1819,7 @@ function SettingsPanel() {
       </SettingsSection>
 
       {/* Thinking & Reasoning */}
-      <SettingsSection title="Thinking & Reasoning" icon={<Brain size={13} />}>
+      <SettingsSection title="Thinking & Reasoning" icon={<Brain size={13} />} keywords="thinking reasoning effort budget mode wrapper">
         <div className="mb-3">
           <label className="text-[11px] text-vsc-text-dim block mb-1.5">Reasoning Effort</label>
           <div className="flex gap-1">
@@ -1862,7 +1881,7 @@ function SettingsPanel() {
       </SettingsSection>
 
       {/* Agentic Behavior */}
-      <SettingsSection title="Agentic Behavior" icon={<Zap size={13} />}>
+      <SettingsSection title="Agentic Behavior" icon={<Zap size={13} />} keywords="agent iterations timeout thinking tools native function calling grammar debug stream summarizer lint sub-agents browser tor onion geckodriver marionette">
         <SettingSlider label="Max Iterations" value={settings.maxIterations} min={1} max={100} step={1}
           onChange={v => updateSetting('maxIterations', v)}
           tooltip="Maximum tool-call iterations per task"
@@ -1951,7 +1970,7 @@ function SettingsPanel() {
       </SettingsSection>
 
       {/* Command Execution Policy */}
-      <SettingsSection title="Command Execution" icon={<Shield size={13} />}>
+      <SettingsSection title="Command Execution" icon={<Shield size={13} />} keywords="command execution shell powershell cmd policy allow deny list turbo auto">
         <div>
           <label className="text-[11px] text-vsc-text-dim block mb-1">Default Shell (Windows)</label>
           <select
@@ -2008,7 +2027,7 @@ function SettingsPanel() {
       </SettingsSection>
 
       {/* System Prompt */}
-      <SettingsSection title="System Prompt" icon={<Type size={13} />}>
+      <SettingsSection title="System Prompt" icon={<Type size={13} />} keywords="system prompt custom instructions">
         <div>
           <div className="flex items-center justify-between mb-1">
             <label className="text-[11px] text-vsc-text-dim">AI Identity & Behavior</label>
@@ -2038,7 +2057,7 @@ function SettingsPanel() {
       </SettingsSection>
 
       {/* Guide Instructions */}
-      <SettingsSection title="Guide Instructions" icon={<FileCode size={13} />}>
+      <SettingsSection title="Guide Instructions" icon={<FileCode size={13} />} keywords="guide instructions rules skills">
         <div>
           <label className="text-[11px] text-vsc-text-dim block mb-1">Instruction File Path</label>
           <input value={settings.guideInstructionsPath}
@@ -2058,7 +2077,7 @@ function SettingsPanel() {
       </SettingsSection>
 
       {/* Hardware */}
-      <SettingsSection title="Hardware" icon={<Monitor size={13} />}>
+      <SettingsSection title="Hardware" icon={<Monitor size={13} />} keywords="hardware gpu layers vram balance speed balanced context kv cache quantization preference constrained cpu cuda">
         <div className="mb-3">
           <label className="text-[11px] text-vsc-text-dim block mb-1">GPU Mode</label>
           <div className="flex gap-1">
@@ -2076,7 +2095,7 @@ function SettingsPanel() {
         <div>
           <SettingNumberField label="GPU Layers" value={settings.gpuLayers}
             min={-1} max={200} step={1} onChange={v => updateSettingWithReload('gpuLayers', v)}
-            hint="-1 = auto. More layers = faster but more VRAM" />
+            hint="-1 = auto (uses VRAM Balance preset). Set to your model's total layer count for max GPU speed; manual value overrides preset layer logic." />
           <div className="text-[10px] text-yellow-400/80 mt-0.5">Requires model reload to apply</div>
         </div>
         <div className="mb-3">
@@ -2096,7 +2115,9 @@ function SettingsPanel() {
               >{opt.l}</button>
             ))}
           </div>
-          <div className="text-[10px] text-vsc-text-dim mt-1">Balanced: max GPU layers with usable context. Speed: max layers (legacy). Context: prefer longest window.</div>
+          <div className="text-[10px] text-vsc-text-dim mt-1">
+            Speed: maximizes GPU layers; context is whatever fits in remaining VRAM. Balanced: best layers while meeting context targets. Context: prioritizes longest window; may use fewer GPU layers. KV-on-RAM with max GPU layers is not supported — use CPU mode or lower KV quant (Q4) for more context.
+          </div>
         </div>
         <SettingToggle label="Require Min Context for GPU" value={settings.requireMinContextForGpu}
           onChange={v => updateSettingWithReload('requireMinContextForGpu', v)}
@@ -2122,7 +2143,7 @@ function SettingsPanel() {
               >{opt.l}</button>
             ))}
           </div>
-          <div className="text-[10px] text-vsc-text-dim mt-1">Lower quantization = more context fits in memory. Affects KV cache only, not model weights.</div>
+          <div className="text-[10px] text-vsc-text-dim mt-1">Lower quantization = more context in same VRAM; Q8 is the recommended default. Affects KV cache only, not model weights.</div>
         </div>
       </SettingsSection>
 
@@ -2130,7 +2151,7 @@ function SettingsPanel() {
       <LspLanguagesSettings addNotification={addNotification} />
       <VoiceSettings addNotification={addNotification} />
 
-      <SettingsSection title="Editor" icon={<FileCode size={13} />}>
+      <SettingsSection title="Editor" icon={<FileCode size={13} />} keywords="editor font size family tab word wrap line numbers minimap bracket format">
         <SettingSlider label="Font Size" value={settings.fontSize} min={8} max={32} step={1}
           onChange={v => updateSetting('fontSize', v)} format={v => String(Math.round(v))} />
         <div className="mb-2">
@@ -2175,7 +2196,7 @@ function SettingsPanel() {
       <CloudProviderSettings />
 
       {/* Model Selection */}
-      <SettingsSection title="AI Model" icon={<Cpu size={13} />}>
+      <SettingsSection title="AI Model" icon={<Cpu size={13} />} keywords="ai model gguf load scan local">
         {modelInfo ? (
           <div className="bg-vsc-bg rounded p-2 text-vsc-xs">
             <div className="text-vsc-text-bright font-medium truncate">{modelInfo.name}</div>
@@ -2232,37 +2253,67 @@ function SettingsPanel() {
       </SettingsSection>
 
       {/* Tool Toggles */}
-      <SettingsSection title="Tools" icon={<Wrench size={13} />} defaultOpen={false}>
+      <SettingsSection title="Tools" icon={<Wrench size={13} />} defaultOpen={false} keywords="tools enable disable read write file browser terminal">
         <ToolToggles />
       </SettingsSection>
 
       {/* MCP Servers */}
-      <SettingsSection title="MCP Servers" icon={<Server size={13} />} defaultOpen={false}>
+      <SettingsSection title="MCP Servers" icon={<Server size={13} />} defaultOpen={false} keywords="mcp servers model context protocol">
         <MCPConfigPanel />
       </SettingsSection>
 
       {/* Keyboard Shortcuts */}
-      <SettingsSection title="Keyboard Shortcuts" icon={<Keyboard size={13} />} defaultOpen={false}>
+      <SettingsSection title="Keyboard Shortcuts" icon={<Keyboard size={13} />} defaultOpen={false} keywords="keyboard shortcuts hotkeys keybindings">
         <KeyboardShortcuts />
       </SettingsSection>
     </div>
+    </SettingsSearchContext.Provider>
   );
 }
 
 // Collapsible settings section
-function SettingsSection({ title, icon, defaultOpen = false, children }) {
+const SettingsSearchContext = createContext('');
+
+function settingsTextMatches(query, ...parts) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  const haystack = parts.filter(Boolean).join(' ').toLowerCase();
+  return haystack.includes(q);
+}
+
+function SettingSearchWrap({ label, hint, tooltip, children }) {
+  const searchQuery = useContext(SettingsSearchContext);
+  const q = searchQuery.trim().toLowerCase();
+  const match = !q || settingsTextMatches(q, label, hint, tooltip);
+  if (!match) return null;
+  const highlight = q && settingsTextMatches(q, label, hint, tooltip);
+  return (
+    <div className={highlight ? 'rounded-md ring-1 ring-vsc-accent/30 bg-vsc-accent/5 -mx-1 px-1' : undefined}>
+      {children}
+    </div>
+  );
+}
+
+function SettingsSection({ title, icon, defaultOpen = false, keywords = '', children }) {
+  const searchQuery = useContext(SettingsSearchContext);
+  const q = searchQuery.trim().toLowerCase();
+  const sectionMatch = settingsTextMatches(q, title, keywords);
   const [open, setOpen] = useState(defaultOpen);
+  const forceOpen = !!q && sectionMatch;
+
+  if (q && !sectionMatch) return null;
+
   return (
     <div className="border-b border-vsc-panel-border/25">
       <button
         className="w-full flex items-center gap-2 py-2.5 px-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim hover:bg-vsc-list-hover transition-colors"
         onClick={() => setOpen(v => !v)}
       >
-        <ChevronRight size={12} className={`transition-transform flex-shrink-0 ${open ? 'rotate-90' : ''}`} />
+        <ChevronRight size={12} className={`transition-transform flex-shrink-0 ${(forceOpen || open) ? 'rotate-90' : ''}`} />
         {icon}
         {title}
       </button>
-      <SlideDown isOpen={open}>
+      <SlideDown isOpen={forceOpen || open}>
         <div className="px-3 pb-3 space-y-3">{children}</div>
       </SlideDown>
     </div>
@@ -2458,6 +2509,7 @@ function SettingToggle({ label, value, onChange, hint }) {
 // Number input field setting
 function SettingNumberField({ label, value, min, max, step, onChange, hint }) {
   return (
+    <SettingSearchWrap label={label} hint={hint}>
     <div className="mb-2">
       <div className="flex items-center justify-between mb-0.5">
         <label className="text-[11px] text-vsc-text-dim">{label}</label>
@@ -2470,6 +2522,7 @@ function SettingNumberField({ label, value, min, max, step, onChange, hint }) {
       </div>
       {hint && <div className="text-[10px] text-vsc-text-dim">{hint}</div>}
     </div>
+    </SettingSearchWrap>
   );
 }
 

@@ -34,6 +34,7 @@ class TorBrowserBackend {
     this._pollIntervalMs = 400;
     this._launchError = null;
     this._torBootstrapped = false;
+    this._relaunchAttempts = 0;
   }
 
   configure({ torBrowserPath, geckodriverPath, debugTorBrowser } = {}) {
@@ -77,7 +78,15 @@ class TorBrowserBackend {
   }
 
   async _relaunchTorBrowser() {
-    console.log('[TorBrowserBackend] relaunch START (Tor restart)');
+    this._relaunchAttempts += 1;
+    if (this._relaunchAttempts > 2) {
+      console.warn('[TorBrowserBackend] relaunch budget exhausted');
+      return {
+        success: false,
+        error: 'Tor Browser restart loop — try closing guIDE or delete %APPDATA%\\guide-ide\\tor-browser\\Browser\\TorBrowser\\Data\\Tor',
+      };
+    }
+    console.log(`[TorBrowserBackend] relaunch START (attempt ${this._relaunchAttempts}/2)`);
     this._stopScreenshotPoll();
     if (this._driver) {
       try { await this._driver.quit(); } catch {}
@@ -93,6 +102,7 @@ class TorBrowserBackend {
     repairTorNetworkState(this.userDataPath, pathCheck.normalizedPath, {
       log: (msg) => console.log(`[TorBrowserBackend] ${msg}`),
     });
+    writeTorProfileDefaults(this.userDataPath, pathCheck.normalizedPath, { force: this._relaunchAttempts === 1 });
 
     const gecko = await this._resolveDriverBinary();
     if (!gecko.success) return gecko;
@@ -169,6 +179,7 @@ class TorBrowserBackend {
 
     const t0 = Date.now();
     try {
+      this._relaunchAttempts = 0;
       repairTorNetworkState(this.userDataPath, pathCheck.normalizedPath, {
         log: (msg) => console.log(`[TorBrowserBackend] ${msg}`),
       });
@@ -274,10 +285,16 @@ class TorBrowserBackend {
       firefoxPath: this._torBrowserPath,
     });
     if (bootstrap.needsRelaunch) {
-      return this._relaunchTorBrowser();
+      const relaunch = await this._relaunchTorBrowser();
+      if (relaunch.success) this._relaunchAttempts = 0;
+      return relaunch;
     }
-    if (bootstrap.success) this._torBootstrapped = true;
-    else this._torBootstrapped = false;
+    if (bootstrap.success) {
+      this._torBootstrapped = true;
+      this._relaunchAttempts = 0;
+    } else {
+      this._torBootstrapped = false;
+    }
     return bootstrap;
   }
 

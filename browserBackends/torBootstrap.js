@@ -11,13 +11,14 @@ const TOR_SOCKS_PORT = 9150;
 const DEFAULT_BOOTSTRAP_TIMEOUT_MS = 120000;
 const GUIDE_TOR_DEFAULTS_MARKER = '// guIDE Tor defaults — managed by guIDE; do not edit this block';
 const GUIDE_TOR_DEFAULTS_END = '// end guIDE Tor defaults';
+const GUIDE_TOR_DEFAULTS_VERSION = 2;
+const GUIDE_TOR_VERSION_LINE = `// guIDE Tor defaults version: ${GUIDE_TOR_DEFAULTS_VERSION}`;
 
 const TOR_FAILURE_RE = /tor exited during startup|restart tor browser|could not connect to tor|still cannot connect|tor process exited|failed to establish a tor network connection/i;
-const SECURITY_RESTART_RE = /restart needed to apply security settings|restart tor browser to apply/i;
+const SECURITY_RESTART_RE = /restart needed to apply security settings|security settings.*restart/i;
 
 /**
- * Tor prefs: auto-connect at launch. Security slider is profile-only (not runtime)
- * so Tor does not show "restart needed to apply security settings" every session.
+ * Tor prefs: auto-connect at launch only. Security level is user-controlled in Tor UI.
  */
 const TOR_RUNTIME_PREFS = {
   'extensions.torlauncher.quickstart': true,
@@ -27,11 +28,8 @@ const TOR_RUNTIME_PREFS = {
   'torbrowser.settings.bridges.enabled': false,
 };
 
-/** Written to user.js once — includes Safest security level. */
-const TOR_PROFILE_PREFS = {
-  ...TOR_RUNTIME_PREFS,
-  'browser.security_level.security_slider': 1,
-};
+/** Written to user.js once — auto-connect only (no security_slider). */
+const TOR_PROFILE_PREFS = { ...TOR_RUNTIME_PREFS };
 
 /** @deprecated use TOR_PROFILE_PREFS */
 const TOR_AUTO_CONNECT_PREFS = TOR_PROFILE_PREFS;
@@ -65,17 +63,24 @@ function resolveTorProfileDir(userDataPath, firefoxPath) {
   return preferred;
 }
 
-function writeTorProfileDefaults(userDataPath, firefoxPath) {
-  const profileDir = resolveTorProfileDir(userDataPath, firefoxPath);
-  if (!profileDir) return false;
-
-  const blockLines = [GUIDE_TOR_DEFAULTS_MARKER];
+function _buildTorProfileBlock() {
+  const blockLines = [GUIDE_TOR_DEFAULTS_MARKER, GUIDE_TOR_VERSION_LINE];
   for (const [key, value] of Object.entries(TOR_PROFILE_PREFS)) {
     blockLines.push(`user_pref("${key}", ${_serializeUserPrefValue(value)});`);
   }
   blockLines.push(GUIDE_TOR_DEFAULTS_END);
-  const block = `${blockLines.join('\n')}\n`;
+  return `${blockLines.join('\n')}\n`;
+}
 
+function _stripLegacySecuritySliderFromBlock(text) {
+  return text.replace(/^\s*user_pref\("browser\.security_level\.security_slider"[^\n]*\n?/gm, '');
+}
+
+function writeTorProfileDefaults(userDataPath, firefoxPath, { force = false } = {}) {
+  const profileDir = resolveTorProfileDir(userDataPath, firefoxPath);
+  if (!profileDir) return false;
+
+  const block = _buildTorProfileBlock();
   const userJsPath = path.join(profileDir, 'user.js');
   let existing = '';
   try {
@@ -86,9 +91,25 @@ function writeTorProfileDefaults(userDataPath, firefoxPath) {
 
   const startIdx = existing.indexOf(GUIDE_TOR_DEFAULTS_MARKER);
   const endIdx = existing.indexOf(GUIDE_TOR_DEFAULTS_END);
-  const next = startIdx >= 0 && endIdx >= 0
-    ? `${existing.slice(0, startIdx)}${block}${existing.slice(endIdx + GUIDE_TOR_DEFAULTS_END.length).replace(/^\r?\n/, '')}`
-    : `${existing ? `${existing.trimEnd()}\n\n` : ''}${block}`;
+  const hasManagedBlock = startIdx >= 0 && endIdx >= 0;
+  const managedSlice = hasManagedBlock
+    ? existing.slice(startIdx, endIdx + GUIDE_TOR_DEFAULTS_END.length)
+    : '';
+  const hasCurrentVersion = managedSlice.includes(GUIDE_TOR_VERSION_LINE)
+    && !/browser\.security_level\.security_slider/.test(managedSlice);
+
+  if (!force && hasManagedBlock && hasCurrentVersion) {
+    return true;
+  }
+
+  let next;
+  if (hasManagedBlock) {
+    const cleanedOutside = `${existing.slice(0, startIdx)}${existing.slice(endIdx + GUIDE_TOR_DEFAULTS_END.length).replace(/^\r?\n/, '')}`;
+    next = `${cleanedOutside.trimEnd() ? `${cleanedOutside.trimEnd()}\n\n` : ''}${block}`;
+  } else {
+    const cleanedExisting = _stripLegacySecuritySliderFromBlock(existing);
+    next = `${cleanedExisting.trimEnd() ? `${cleanedExisting.trimEnd()}\n\n` : ''}${block}`;
+  }
 
   fs.mkdirSync(profileDir, { recursive: true });
   fs.writeFileSync(userJsPath, next, 'utf8');
@@ -302,6 +323,13 @@ async function ensureTorBootstrap(driver, {
   const deadline = Date.now() + timeoutMs;
   let failureRecoveries = 0;
 
+  try {
+    await driver.get('about:torconnect');
+    await _sleep(1500);
+  } catch {
+    // best effort initial navigation
+  }
+
   while (Date.now() < deadline) {
     let url = '';
     try {
@@ -313,9 +341,7 @@ async function ensureTorBootstrap(driver, {
 
     try {
       if (await _pageIndicatesSecurityRestart(driver)) {
-        if (log) log('tor bootstrap: security settings restart required');
-        const restarted = await _tryClickRestartTorButton(driver);
-        if (restarted && log) log('tor bootstrap: clicked restart for security settings');
+        if (log) log('tor bootstrap: security settings restart required — relaunching Selenium session');
         return { success: false, needsRelaunch: true };
       }
     } catch {
@@ -329,7 +355,7 @@ async function ensureTorBootstrap(driver, {
         if (failureRecoveries === 1) {
           repairTorNetworkState(userDataPath, firefoxPath, { log });
           const restarted = await _tryClickRestartTorButton(driver);
-          if (restarted && log) log('tor bootstrap: clicked Restart Tor Browser');
+          if (restarted && log) log('tor bootstrap: clicked Restart Tor Browser on failure screen');
           if (restarted) return { success: false, needsRelaunch: true };
           const connected = await _tryClickConnectButton(driver);
           if (connected && log) log('tor bootstrap: clicked Connect after failure screen');
@@ -364,6 +390,14 @@ async function ensureTorBootstrap(driver, {
         await _sleep(1500);
       } catch {}
       continue;
+    }
+
+    try {
+      await driver.get('about:torconnect');
+      await _sleep(1500);
+      await _tryClickConnectButton(driver);
+    } catch {
+      // continue loop
     }
 
     await _sleep(1500);
