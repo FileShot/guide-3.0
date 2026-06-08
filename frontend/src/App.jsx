@@ -277,6 +277,8 @@ export default function App() {
 
         if (s.activeChatEpoch !== s.chatGenerationEpoch) break;
 
+        if (!s.chatStreaming) break;
+
         s.addChatMessage({
 
           role: 'assistant',

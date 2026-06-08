@@ -687,6 +687,11 @@ When you receive an image description from the vision system, treat it as what y
 ## Planning
 For multi-step work, you may use planning tools from ## Tools when they fit the task. For simple requests, act directly without unnecessary planning overhead.
 
+## File locations
+- Application source (HTML, CSS, JS, etc.) belongs in the **project root** (visible in the file explorer), never under `.guide/`.
+- `.guide/plans/*.plan.md` is for implementation **plan documents** only — not source code or assets.
+- `.guide/` is guIDE metadata (hidden from the explorer); users cannot see files written there.
+
 ## Todo List Discipline
 Use write_todos only for multi-step builds — skip it for simple one-shot tasks. If you called write_todos, call update_todo when you start each todo item (status: 'in-progress') and when you finish it (status: 'done'). The user sees the todo list in real time.
 
@@ -756,7 +761,30 @@ class ChatEngine extends EventEmitter {
     this._recentlyWrittenFiles = new Map(); // filePath → content written in current chat() call
     this._fileContentStreamActivePath = null;
     this._sessionId = 0; // increments on resetSession to detect stale tool results
+    this._activeChatPromise = null; // serializes concurrent chat() calls on singleton engine
     console.log('[ChatEngine] constructor DONE');
+  }
+
+  /**
+   * Wait until the in-flight chat() finishes (e.g. after cancelGeneration).
+   * Swallows errors from cancelled turns.
+   */
+  async waitForIdle({ timeoutMs = 5000 } = {}) {
+    if (!this._activeChatPromise) return;
+    console.log('[ChatEngine] waitForIdle: awaiting active chat');
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('waitForIdle timeout')), timeoutMs);
+    });
+    try {
+      await Promise.race([this._activeChatPromise, timeout]);
+    } catch (err) {
+      if (err?.message === 'waitForIdle timeout') {
+        console.warn(`[ChatEngine] waitForIdle: timed out after ${timeoutMs}ms`);
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async waitForReady() {
@@ -1349,6 +1377,20 @@ class ChatEngine extends EventEmitter {
   }
 
   async chat(userMessage, options = {}) {
+    if (this._activeChatPromise) {
+      console.log('[ChatEngine] chat() awaiting prior in-flight generation');
+      try { await this._activeChatPromise; } catch (_) { /* prior turn may have failed or been cancelled */ }
+    }
+    const run = this._chatUnserialized(userMessage, options);
+    this._activeChatPromise = run;
+    try {
+      return await run;
+    } finally {
+      if (this._activeChatPromise === run) this._activeChatPromise = null;
+    }
+  }
+
+  async _chatUnserialized(userMessage, options = {}) {
     if (this._loadState === 'loading' || this._loadState === 'disposing') {
       throw new Error('Model is loading — please wait a moment and try again.');
     }
@@ -3908,18 +3950,27 @@ class ChatEngine extends EventEmitter {
       _chatStopReason = stopReason;
       return { text: visibleResponse, stopReason, toolCallCount: totalToolCalls };
     } catch (err) {
-      console.error(`[ChatEngine] chat() CATCH: ${err.name}: ${err.message}`);
-      if (err.name === 'AbortError' || this._abortController?.signal?.aborted) {
+      const errName = err?.name ?? 'Error';
+      const errMsg = String(err?.message ?? err ?? '');
+      console.error(`[ChatEngine] chat() CATCH: ${errName}: ${errMsg || '(no message)'}`);
+      const isAbort =
+        err?.name === 'AbortError' ||
+        this._cancelRequested ||
+        this._abortController?.signal?.aborted ||
+        /eval has failed|checkpoint max position mismatch|inconsistent sequence positions/i.test(errMsg) ||
+        (!errMsg && (this._cancelRequested || this._abortController?.signal?.aborted));
+      if (isAbort) {
         console.log('[ChatEngine] chat() returning cancelled');
         _chatStopReason = 'cancelled';
         return { text: stripToolCallText(fullResponse), stopReason: 'cancelled', toolCallCount: totalToolCalls };
       }
-      const isContextFull = /context shift strategy|did not return a history that fits|context size is too small/i.test(err.message || '');
+      const isContextFull = /context shift strategy|did not return a history that fits|context size is too small/i.test(errMsg);
+      const displayMsg = errMsg || 'Unknown generation error';
       if (onStreamEvent) {
         onStreamEvent('generation-error', {
           message: isContextFull
             ? 'Context full — start a new session or reduce tool-heavy steps'
-            : `Generation failed: ${err.message}`,
+            : `Generation failed: ${displayMsg}`,
           suggestion: isContextFull
             ? 'The conversation and tool results exceeded the model context window even after compression. Start a new session or open a smaller project task.'
             : 'Try again, start a new session, or check the backend log for details.',
@@ -5039,7 +5090,7 @@ class ChatEngine extends EventEmitter {
     const toolLines = Object.entries(functions).map(([name, def]) => {
       return `- ${name}: ${def.description || 'No description'}`;
     });
-    const prompt = `\n\nYou have access to the following tools:\n${toolLines.join('\n')}\n\nTOOL USAGE RULES:\n- When the user asks you to create, write, edit, read, or delete files in their project, you MUST use the appropriate file tool (write_file, read_file, edit_file, append_to_file, delete_file). Do NOT output file contents inline.\n- When the user asks to change, update, fix, or tweak an existing file (already created or read this session), use edit_file or replace_in_file on that path — not write_file to a new path unless they asked for a new file or full rewrite.\n- When the user asks you to find, search, or look for something in their code, use grep_search or find_files.\n- When the user asks to list or explore project structure, use list_directory.\n- When the user asks to run a command, script, or install something, use run_command.\n- When the user asks to search the web or look something up online, use web_search then immediately fetch_webpage on the first and second ranked result URLs in the same continuation before answering (if only one hit, fetch that URL). Do not ask the user whether to fetch. Do not list the project directory in the same tool round as web_search/fetch_webpage unless the user asked about the project.\n- For large project rules (>~2KB), use write_file to .guide/rules/<name>.md instead of embedding the full document in save_rule JSON.\n- When the user asks a general question, wants an explanation, or asks you to review code you already have, respond with text directly.\n- You can chain tools: use read_file to see existing code, then edit_file to modify it, then run_command to test it.\n- Always prefer tools over inline code when the user wants changes to their actual project files.`;
+    const prompt = `\n\nYou have access to the following tools:\n${toolLines.join('\n')}\n\nTOOL USAGE RULES:\n- When the user asks you to create, write, edit, read, or delete files in their project, you MUST use the appropriate file tool (write_file, read_file, edit_file, append_to_file, delete_file). Do NOT output file contents inline.\n- When the user asks to change, update, fix, or tweak an existing file (already created or read this session), use edit_file or replace_in_file on that path — not write_file to a new path unless they asked for a new file or full rewrite.\n- When the user asks you to find, search, or look for something in their code, use grep_search or find_files.\n- When the user asks to list or explore project structure, use list_directory.\n- When the user asks to run a command, script, or install something, use run_command.\n- When the user asks to search the web or look something up online, use web_search then immediately fetch_webpage on the first and second ranked result URLs in the same continuation before answering (if only one hit, fetch that URL). Do not ask the user whether to fetch. Do not list the project directory in the same tool round as web_search/fetch_webpage unless the user asked about the project.\n- For large project rules (>~2KB), use write_file to .guide/rules/<name>.md instead of embedding the full document in save_rule JSON.\n- NEVER write_file or edit_file application source under .guide/ (e.g. not .guide/plans/index.html). Use project-root paths like index.html, src/..., or public/... — .guide/plans is for *.plan.md plan files only.\n- When the user asks a general question, wants an explanation, or asks you to review code you already have, respond with text directly.\n- You can chain tools: use read_file to see existing code, then edit_file to modify it, then run_command to test it.\n- Always prefer tools over inline code when the user wants changes to their actual project files.`;
     console.log(`[ChatEngine] _buildToolPrompt: built ${prompt.length} chars`);
     return prompt;
   }

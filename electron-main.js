@@ -967,17 +967,19 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     _send('llm-stream-end', null);
     return { text: result.text, toolCallCount: result.toolCallCount, checkpoint: snapshot ? { turnId: snapshot.turnId, timestamp: snapshot.timestamp, fileCount: snapshot.files.length } : null };
   } catch (err) {
-    console.error(`[electron-main] ai-chat local ERROR: ${err.message}`);
+    const errMsg = String(err?.message ?? err ?? 'Unknown generation error');
+    console.error(`[electron-main] ai-chat local ERROR: ${errMsg}`);
     // Reset checkpoint state on error to prevent stale captures
     mcpToolServer.startTurn(null);
     _send('llm-stream-end', null);
-    return { error: err.message };
+    return { error: errMsg };
   }
 });
 
 // Plan B: Revert backend context to match a truncated frontend message array.
 // Called by pencil-edit submit and checkpoint-restore in ChatPanel.jsx.
-ipcMain.handle('revert-context', (_e, messages) => {
+ipcMain.handle('revert-context', async (_e, messages) => {
+  await llmEngine.waitForIdle({ timeoutMs: 5000 });
   llmEngine.revertContext(Array.isArray(messages) ? messages : []);
   return { success: true };
 });
@@ -1148,6 +1150,7 @@ ipcMain.handle('cancel-generation', async () => {
   ctx.agenticCancelled = true;
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
+  await llmEngine.waitForIdle({ timeoutMs: 5000 });
   _send('llm-stream-end', null);
   return { success: true };
 });
@@ -1158,6 +1161,7 @@ ipcMain.handle('agent-pause', async () => {
   ctx.agenticCancelled = true;
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
+  await llmEngine.waitForIdle({ timeoutMs: 5000 });
   _send('llm-stream-end', null);
   return { success: true };
 });
@@ -1168,6 +1172,7 @@ ipcMain.handle('force-send-queued', async () => {
   ctx.agenticCancelled = true;
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
+  await llmEngine.waitForIdle({ timeoutMs: 5000 });
   _send('llm-stream-end', null);
   return { success: true };
 });

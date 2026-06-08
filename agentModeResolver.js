@@ -10,6 +10,13 @@ const PLAN_MODE_ALLOWED_TOOLS = new Set([
 
 const PLAN_FILE_PATH_RE = /\.guide[/\\]plans[/\\].+\.plan\.md$/i;
 const PLAN_PLANS_DIR_RE = /\.guide[/\\]plans\/?$/i;
+const GUIDE_RULES_FILE_RE = /\.guide[/\\]rules[/\\].+\.md$/i;
+const GUIDE_RULES_DIR_RE = /\.guide[/\\]rules\/?$/i;
+const GUIDE_SCRATCH_RE = /^\.guide-scratch(\/|$)/i;
+
+const GUIDE_PATH_MUTATING_TOOLS = new Set([
+  'write_file', 'edit_file', 'append_to_file', 'replace_in_file', 'delete_file',
+]);
 
 function normalizePathSlashes(filePath) {
   return String(filePath || '').replace(/\\/g, '/');
@@ -21,6 +28,73 @@ function isPlanFilePath(filePath) {
 
 function isPlansDirectoryPath(dirPath) {
   return PLAN_PLANS_DIR_RE.test(normalizePathSlashes(dirPath).replace(/\/+$/, ''));
+}
+
+function isGuideRulesDirectoryPath(dirPath) {
+  return GUIDE_RULES_DIR_RE.test(normalizePathSlashes(dirPath).replace(/\/+$/, ''));
+}
+
+function isGuideRulesFilePath(filePath) {
+  return GUIDE_RULES_FILE_RE.test(normalizePathSlashes(filePath));
+}
+
+function isGuideScratchPath(filePath) {
+  const norm = normalizePathSlashes(filePath);
+  return GUIDE_SCRATCH_RE.test(norm) || /\.guide-scratch(\/|$)/i.test(norm);
+}
+
+function pathContainsGuideMetadata(filePath) {
+  return /\.guide[/\\]/i.test(normalizePathSlashes(filePath));
+}
+
+function isAllowedGuideMetadataWritePath(filePath) {
+  if (isGuideScratchPath(filePath)) return true;
+  if (isPlanFilePath(filePath)) return true;
+  if (isGuideRulesFilePath(filePath)) return true;
+  return false;
+}
+
+function extractGuideGatePath(toolName, params) {
+  if (toolName === 'create_directory') {
+    return String(params?.path || params?.directory || params?.dir || '');
+  }
+  return String(
+    params?.filePath || params?.path || params?.oldPath || params?.newPath
+    || params?.source || params?.destination || '',
+  );
+}
+
+/**
+ * Block writes/edits under .guide/ except plan docs and rules (all agent modes).
+ */
+function checkGuideMetadataPathGate(toolName, params) {
+  if (toolName === 'create_directory') {
+    const dp = extractGuideGatePath(toolName, params);
+    const norm = normalizePathSlashes(dp).replace(/\/+$/, '');
+    if (!norm.startsWith('.guide') && !/\.guide[/\\]/i.test(norm)) return { allowed: true };
+    if (isPlansDirectoryPath(dp) || isGuideRulesDirectoryPath(dp)) return { allowed: true };
+    return {
+      allowed: false,
+      error: `create_directory blocked for "${dp}". Only .guide/plans and .guide/rules are allowed under .guide/.`,
+    };
+  }
+
+  if (!GUIDE_PATH_MUTATING_TOOLS.has(toolName)) return { allowed: true };
+
+  const fp = extractGuideGatePath(toolName, params);
+  if (!fp) return { allowed: true };
+  if (!pathContainsGuideMetadata(fp) && !isGuideScratchPath(fp)) return { allowed: true };
+  if (isAllowedGuideMetadataWritePath(fp)) return { allowed: true };
+
+  const basename = path.basename(normalizePathSlashes(fp));
+  const display = normalizePathSlashes(fp).replace(/^.*\.guide[/\\]/, '.guide/');
+  return {
+    allowed: false,
+    error: `${toolName} blocked: "${display}" is under .guide/ (hidden from the file explorer). `
+      + `Write application source to the project root instead, e.g. "${basename}". `
+      + 'Only .guide/plans/*.plan.md and .guide/rules/*.md are for guIDE metadata.',
+    guidePathBlocked: true,
+  };
 }
 
 /** Plan workflow phase — artifact/state based, not user-message heuristics. */
@@ -124,7 +198,8 @@ function getPlanModePromptAddition(planPhase = 'awaiting_plan') {
 function getBuildingPhasePromptAddition() {
   return '\n\n## BUILD PHASE\n'
     + 'Implement the approved plan in the PROJECT ROOT (the opened workspace folder).\n'
-    + 'NEVER create application source under `.guide/` — that directory is guIDE metadata only (`.guide/plans/`, checkpoints).\n\n'
+    + 'NEVER create application source under `.guide/` — that directory is guIDE metadata only.\n'
+    + '`.guide/plans/` holds `*.plan.md` plan documents only — not HTML, CSS, JS, or other implementation files.\n\n'
     + '### Todo list discipline (multi-step builds only)\n'
     + 'For multi-step builds, call **write_todos** first with the full todo list.\n'
     + 'If you called **write_todos**, call **update_todo** as you work:\n'
@@ -320,6 +395,7 @@ module.exports = {
   filterToolDefinitions,
   resolveAgentMode,
   checkPlanModeToolGate,
+  checkGuideMetadataPathGate,
   getAskModePromptAddition,
   getPlanModePromptAddition,
   getBuildingPhasePromptAddition,

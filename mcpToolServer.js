@@ -1104,11 +1104,16 @@ class MCPToolServer {
     const startTime = Date.now();
     let result;
 
-    const { checkPlanModeToolGate, isPlanFilePath, parsePlanFileContent, relativePlanPath } = require('./agentModeResolver');
+    const { checkPlanModeToolGate, checkGuideMetadataPathGate, isPlanFilePath, parsePlanFileContent, relativePlanPath } = require('./agentModeResolver');
     const planGate = checkPlanModeToolGate(toolName, params, this._agentContext);
     if (!planGate.allowed) {
       console.log(`[MCPToolServer] Plan mode gate blocked: ${toolName}`);
       return { success: false, error: planGate.error, planModeBlocked: true };
+    }
+    const guideGate = checkGuideMetadataPathGate(toolName, params);
+    if (!guideGate.allowed) {
+      console.log(`[MCPToolServer] Guide metadata path gate blocked: ${toolName}`);
+      return { success: false, error: guideGate.error, guidePathBlocked: true };
     }
 
     // Reject disabled tools. We intentionally report this as "does not exist"
