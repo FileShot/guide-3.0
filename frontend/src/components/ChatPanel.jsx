@@ -2031,10 +2031,12 @@ export default function ChatPanel() {
       {
 
         const _backendProse = await stripToolProseViaApi(result?.text || '');
+        const _backendTrim = _backendProse.trim();
+        const _messageTrim = messageContent.trim();
 
-        if (_backendProse.trim() && _backendProse.trim().length > messageContent.trim().length) {
+        if (_backendTrim.length > _messageTrim.length) {
 
-          console.warn(`[ChatPanel] R53-Fix: IPC lag detected — segments=${messageContent.trim().length} chars, backend=${_backendProse.trim().length} chars. Correcting.`);
+          console.warn(`[ChatPanel] R53-Fix: IPC lag detected — segments=${_messageTrim.length} chars, backend=${_backendTrim.length} chars. Correcting.`);
 
           const textSegIndices = [];
 
@@ -2059,6 +2061,42 @@ export default function ChatPanel() {
             const lastIdx = textSegIndices[textSegIndices.length - 1];
 
             messageSegments[lastIdx] = { ...messageSegments[lastIdx], content: correctedLastProse };
+
+          } else {
+
+            messageSegments.push({ type: 'text', content: _backendProse });
+
+          }
+
+          messageContent = _backendProse;
+
+        } else if (_messageTrim.length > _backendTrim.length) {
+
+          console.warn(`[ChatPanel] R53-Shrink: streamed prose longer than backend — segments=${_messageTrim.length} chars, backend=${_backendTrim.length} chars. Replacing with backend stripped text.`);
+
+          const textSegIndices = messageSegments
+            .map((seg, i) => (seg.type === 'text' ? i : -1))
+            .filter((i) => i >= 0);
+
+          if (textSegIndices.length > 0) {
+
+            messageSegments[textSegIndices[0]] = {
+              ...messageSegments[textSegIndices[0]],
+              content: _backendProse,
+            };
+
+            for (let _j = 1; _j < textSegIndices.length; _j++) {
+
+              messageSegments[textSegIndices[_j]] = {
+                ...messageSegments[textSegIndices[_j]],
+                content: '',
+              };
+
+            }
+
+          } else if (!_backendProse) {
+
+            messageSegments.length = 0;
 
           } else {
 

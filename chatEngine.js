@@ -111,6 +111,31 @@ function _sfIsPlainMarkdownFence(fenceBuf) {
   return SF_PLAIN_FENCE_LANGS.has(_sfPlainFenceLang(fenceBuf));
 }
 
+/** Fence languages that must buffer until close — never stream tool JSON to prose. */
+const SF_TOOL_FENCE_LANGS = new Set(['json', 'tool', 'tool_call', 'text', 'plaintext']);
+
+function _sfIsToolFenceLang(lang) {
+  const l = (lang || '').toLowerCase();
+  if (l === '') return true;
+  return SF_TOOL_FENCE_LANGS.has(l);
+}
+
+/**
+ * Whether a fence buffer at header detection should stream to prose chat.
+ * Used by the stream filter and regression tests.
+ */
+function _sfFenceHeaderShouldStreamPlain(fenceBuf) {
+  if (!RE_FENCE_HEADER.test(fenceBuf)) return false;
+  const hm = fenceBuf.match(RE_FENCE_HEADER);
+  const lang = (hm[1] || '').toLowerCase();
+  const afterHeader = fenceBuf.slice(hm[0].length);
+  if (_sfIsToolFenceLang(lang)) return false;
+  if (SF_PLAIN_FENCE_LANGS.has(lang)) return true;
+  const looksLikeToolBody = _sfFenceBufferLooksLikeToolJson(afterHeader.slice(0, 8000))
+    || _sfIsToolLikeJson(afterHeader.slice(0, 6000));
+  return !looksLikeToolBody;
+}
+
 /** Keep fence markers; append closing ``` when generation ended mid-fence. */
 function _sfPreparePlainFenceFlushPayload(fenceBuf) {
   if (!fenceBuf) return '';
@@ -141,7 +166,7 @@ function _sfIsToolLikeJson(buf) {
 function _sfFenceBufferLooksLikeToolJson(buf) {
   if (!buf) return false;
   if (_sfIsToolLikeJson(buf)) return true;
-  if (/^```(?:json|tool|tool_call)?/i.test(buf.trimStart())) return true;
+  if (/^```(?:json|tool|tool_call)\s/i.test(buf.trimStart())) return true;
   if (/"tool"\s*:\s*"/.test(buf)) return true;
   return false;
 }
@@ -2046,31 +2071,13 @@ class ChatEngine extends EventEmitter {
             _sfFenceBuf += ch;
 
             if (!_sfFenceStreamPlain && !_sfFileWriteDetected && !_sfContentStreamActive && RE_FENCE_HEADER.test(_sfFenceBuf)) {
-              const hm = _sfFenceBuf.match(RE_FENCE_HEADER);
-              const lang = (hm[1] || '').toLowerCase();
-              const afterHeader = _sfFenceBuf.slice(hm[0].length);
-              const PLAIN_LANGS = SF_PLAIN_FENCE_LANGS;
-              const looksLikeTool = _sfFenceBufferLooksLikeToolJson(afterHeader.slice(0, 8000))
-                || _sfIsToolLikeJson(afterHeader.slice(0, 6000));
-              if (PLAIN_LANGS.has(lang)) {
-                // Plain markdown fences always stream to chat — body may contain `"tool":` strings.
+              if (_sfFenceHeaderShouldStreamPlain(_sfFenceBuf)) {
                 _sfFenceStreamPlain = true;
                 _sfForward(_sfFenceBuf);
                 _sfFenceBuf = '';
                 continue;
               }
-              if (!looksLikeTool) {
-                _sfFenceStreamPlain = true;
-                _sfForward(_sfFenceBuf);
-                _sfFenceBuf = '';
-                continue;
-              }
-              if (lang === 'json' || lang === '' || lang === 'text' || lang === 'plaintext' || lang === 'tool' || lang === 'tool_call') {
-                // Always buffer JSON/tool fences until close — never stream tool JSON to prose.
-                if (looksLikeTool || lang === 'json' || lang === 'tool' || lang === 'tool_call') {
-                  /* keep buffering — tool JSON fence */
-                }
-              }
+              // Tool-fence languages (json/tool/…) or tool-shaped body — keep buffering until close.
             }
 
             // Real-time content streaming from WITHIN a fenced tool call.
@@ -5358,4 +5365,6 @@ module.exports = {
   _sanitizeFileSnippetText,
   _sfPreparePlainFenceFlushPayload,
   _sfIsPlainMarkdownFence,
+  _sfFenceHeaderShouldStreamPlain,
+  _sfFenceBufferLooksLikeToolJson,
 };
