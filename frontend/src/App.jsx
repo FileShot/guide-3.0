@@ -775,11 +775,12 @@ export default function App() {
         break;
 
       case 'media-assets-progress':
-        if (data?.phase === 'start') {
-          s.addNotification({
-            type: 'info',
-            message: `Preparing bundled media file: ${data.file || data.asset}`,
-          });
+        if (data?.phase === 'assemble') {
+          s.addNotification({ type: 'info', message: 'Setting up image & video generation…' });
+        } else if (data?.phase === 'profile-ready') {
+          s.addNotification({ type: 'info', message: 'Image & video generation ready' });
+        } else if (data?.phase === 'error') {
+          s.addNotification({ type: 'error', message: `Media setup failed: ${data.error}` });
         }
         break;
 

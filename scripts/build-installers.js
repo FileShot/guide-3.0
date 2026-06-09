@@ -168,6 +168,23 @@ async function main() {
     throw new Error('fetch-media-assets.js failed — cannot bundle media aux models');
   }
 
+  log('Splitting large media assets for NSIS (<2GB per file)…');
+  const splitMedia = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'split-large-assets.js')], {
+    cwd: ROOT,
+    stdio: 'inherit',
+  });
+  if (splitMedia.status !== 0) {
+    throw new Error('split-large-assets.js failed');
+  }
+
+  const verifyMedia = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'verify-media-assets.js')], {
+    cwd: ROOT,
+    stdio: 'inherit',
+  });
+  if (verifyMedia.status !== 0) {
+    throw new Error('verify-media-assets.js failed — bundled media incomplete');
+  }
+
   // ── CUDA installer ──────────────────────────────────────────────────────────
   if (buildCuda) {
     log('═══════════════════════════════════════');

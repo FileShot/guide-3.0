@@ -1,7 +1,6 @@
 'use strict';
 
 const fs = require('fs');
-const fsp = require('fs').promises;
 const path = require('path');
 const https = require('https');
 const {
@@ -68,6 +67,47 @@ class MediaAssetsManager {
       ? path.join(this.resourcesPath, 'media-assets')
       : path.join(this.rootDir, 'resources', 'media-assets');
     this._cacheDir = path.join(this.userDataPath, 'media-assets');
+    this._inflight = new Map();
+    if (!fs.existsSync(this._bundledDir)) {
+      console.warn(`[MediaAssets] Bundled dir missing: ${this._bundledDir}`);
+    } else {
+      console.log(`[MediaAssets] Bundled dir: ${this._bundledDir}`);
+    }
+  }
+
+  _hasBundled(relPath) {
+    const b = path.join(this._bundledDir, relPath);
+    return fs.existsSync(b) || fs.existsSync(`${b}.parts.json`);
+  }
+
+  _reassembleFromParts(srcBase, destPath) {
+    return new Promise((resolve, reject) => {
+      const metaPath = `${srcBase}.parts.json`;
+      if (!fs.existsSync(metaPath)) return reject(new Error(`missing parts meta for ${srcBase}`));
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      fs.mkdirSync(path.dirname(destPath), { recursive: true });
+      if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
+      const out = fs.createWriteStream(destPath);
+      let i = 0;
+      const writeNext = () => {
+        if (i >= meta.chunks) {
+          out.end(() => resolve(destPath));
+          return;
+        }
+        const chunkPath = `${srcBase}.part${String(i).padStart(3, '0')}`;
+        if (!fs.existsSync(chunkPath)) {
+          out.destroy();
+          reject(new Error(`missing chunk ${chunkPath}`));
+          return;
+        }
+        const inp = fs.createReadStream(chunkPath);
+        inp.on('error', reject);
+        inp.on('end', () => { i++; writeNext(); });
+        inp.pipe(out, { end: false });
+      };
+      out.on('error', reject);
+      writeNext();
+    });
   }
 
   _assetPath(relPath) {
@@ -78,8 +118,31 @@ class MediaAssetsManager {
     return null;
   }
 
-  _destPath(relPath) {
-    return path.join(this._cacheDir, relPath);
+  async materializeAsset(relPath, onProgress) {
+    const existing = this._assetPath(relPath);
+    if (existing) return existing;
+    const bundled = path.join(this._bundledDir, relPath);
+    const dest = path.join(this._cacheDir, relPath);
+    if (fs.existsSync(`${bundled}.parts.json`)) {
+      if (onProgress) onProgress({ phase: 'assemble', file: path.basename(relPath) });
+      console.log(`[MediaAssets] Assembling ${relPath} from installer chunks…`);
+      await this._reassembleFromParts(bundled, dest);
+      console.log(`[MediaAssets] Ready ${relPath}`);
+      if (onProgress) onProgress({ phase: 'done', file: path.basename(relPath) });
+      return dest;
+    }
+    return null;
+  }
+
+  async materializeProfile(profileId, onProgress) {
+    if (this._inflight.has(`mat:${profileId}`)) return this._inflight.get(`mat:${profileId}`);
+    const job = (async () => {
+      for (const asset of listAssetsForProfile(profileId)) {
+        await this.materializeAsset(asset.relPath, onProgress);
+      }
+    })().finally(() => this._inflight.delete(`mat:${profileId}`));
+    this._inflight.set(`mat:${profileId}`, job);
+    return job;
   }
 
   getProfileStatus(profileId) {
@@ -87,10 +150,11 @@ class MediaAssetsManager {
     if (!profile) return { profileId, ready: false, assets: [] };
     const assets = profile.assets.map((asset) => {
       const resolved = this._assetPath(asset.relPath);
+      const bundled = this._hasBundled(asset.relPath);
       return {
         id: asset.id,
         relPath: asset.relPath,
-        ready: !!resolved,
+        ready: !!resolved || bundled,
         path: resolved,
         bytes: asset.bytes,
       };
@@ -115,9 +179,6 @@ class MediaAssetsManager {
       if (byId[assetId]) aux[key] = byId[assetId];
     }
     if (aux.llm) aux.clip = aux.llm;
-    if (aux.tae) aux.tae = aux.tae;
-    if (aux.vae) aux.vae = aux.vae;
-    if (aux.t5) aux.t5 = aux.t5;
     return { profileId, ...aux };
   }
 
@@ -128,24 +189,37 @@ class MediaAssetsManager {
     return this.resolveAux(arch, modelType);
   }
 
+  ensureForModelBackground(arch, modelType, onProgress) {
+    const profileId = archToMediaProfile(arch, modelType);
+    if (!profileId) return Promise.resolve(this.resolveAux(arch, modelType));
+    if (this._inflight.has(profileId)) return this._inflight.get(profileId);
+    const job = this.ensureForModel(arch, modelType, onProgress)
+      .finally(() => this._inflight.delete(profileId));
+    this._inflight.set(profileId, job);
+    return job;
+  }
+
   async ensureProfile(profileId, onProgress) {
     const progress = onProgress || this.onProgress;
+    await this.materializeProfile(profileId, progress);
     for (const asset of listAssetsForProfile(profileId)) {
       if (this._assetPath(asset.relPath)) continue;
-      const dest = this._destPath(asset.relPath);
-      if (fs.existsSync(dest)) continue;
-      if (progress) progress({ phase: 'start', asset: asset.id, file: path.basename(asset.relPath) });
+      const dest = path.join(this._cacheDir, asset.relPath);
+      const sizeMb = asset.bytes ? Math.round(asset.bytes / 1e6) : '?';
+      console.log(`[MediaAssets] Downloading ${asset.relPath} (~${sizeMb}MB)`);
+      if (progress) progress({ phase: 'start', asset: asset.id, file: path.basename(asset.relPath), total: asset.bytes || 0 });
+      let lastLogPct = -1;
       await downloadFile(asset.url, dest, {
         expectedBytes: asset.bytes || undefined,
-        onProgress: progress
-          ? ({ received, total, file }) => progress({
-            phase: 'download',
-            asset: asset.id,
-            file,
-            received,
-            total: total || asset.bytes || 0,
-          })
-          : undefined,
+        onProgress: ({ received, total, file }) => {
+          const t = total || asset.bytes || 0;
+          const pct = t > 0 ? Math.floor((received / t) * 100) : 0;
+          if (pct >= lastLogPct + 10) {
+            lastLogPct = pct;
+            console.log(`[MediaAssets] ${file}: ${pct}%`);
+          }
+          if (progress) progress({ phase: 'download', asset: asset.id, file, received, total: t });
+        },
       });
       if (progress) progress({ phase: 'done', asset: asset.id, file: path.basename(asset.relPath) });
     }

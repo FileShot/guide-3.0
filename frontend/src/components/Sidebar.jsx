@@ -1638,7 +1638,7 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
   return (
     <SettingsSection title="Media Generation" icon={<ImageIcon size={13} />} keywords="media image video flux wan vae clip t5 stable diffusion sd.cpp">
       <div className="text-[10px] text-vsc-text-dim mb-2">
-        Your diffusion/video GGUF is the main model. VAE and text encoders are bundled with guIDE — load a media GGUF and type a prompt.
+        Load any supported image or video GGUF, then type a prompt. Encoders ship with guIDE.
       </div>
       {activeMediaModel?.modelPath ? (
         <div className="text-[11px] mb-2 text-vsc-text">
@@ -1657,16 +1657,10 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
         </span>
       </div>
       {assetsStatus && (
-        <div className="mb-2 p-2 rounded bg-vsc-bg/60 border border-vsc-panel-border/20 text-[10px]">
-          <div className="text-vsc-text-dim mb-1">Bundled assets ({assetsStatus.label})</div>
-          {assetsStatus.assets?.map(a => (
-            <div key={a.id} className={a.ready ? 'text-vsc-success' : 'text-vsc-warning'}>
-              {a.ready ? '✓' : '…'} {a.relPath.split('/').pop()}
-            </div>
-          ))}
-          {!assetsStatus.ready && (
-            <div className="text-vsc-warning mt-1">Preparing on first use — may download once if not in installer.</div>
-          )}
+        <div className="mb-2 text-[10px]">
+          <span className={assetsStatus.ready ? 'text-vsc-success' : 'text-vsc-warning'}>
+            {assetsStatus.ready ? 'Image & video generation: ready' : 'Setting up image & video generation…'}
+          </span>
         </div>
       )}
       <button

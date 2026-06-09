@@ -1375,16 +1375,23 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
             console.log('[MediaEngine] unloaded LLM — media-only mode');
           }
           const status = await mediaEngine.load(modelPath);
-          await mediaAssetsManager.ensureForModel(
-            status.ggufArchitecture,
-            ggufType,
-            (p) => _send('media-assets-progress', p),
-          );
           settingsManager.set('lastImageModelPath', modelPath);
           const profileId = archToMediaProfile(status.ggufArchitecture, ggufType);
           const assetsReady = profileId ? mediaAssetsManager.getProfileStatus(profileId).ready : true;
           const info = { ...status, modelType: ggufType, path: modelPath, assetsReady, assetsProfile: profileId };
           _send('media-model-loaded', info);
+          if (profileId && !mediaAssetsManager.getProfileStatus(profileId).assets.every((a) => a.path)) {
+            mediaAssetsManager.ensureForModelBackground(
+              status.ggufArchitecture,
+              ggufType,
+              (p) => _send('media-assets-progress', p),
+            ).then(() => {
+              _send('media-assets-progress', { phase: 'profile-ready', profileId, ready: true });
+            }).catch((e) => {
+              console.error(`[MediaAssets] Setup failed: ${e.message}`);
+              _send('media-assets-progress', { phase: 'error', profileId, error: e.message });
+            });
+          }
           console.log(`[MediaEngine] loaded arch=${status.ggufArchitecture} type=${ggufType}`);
           return { success: true, modelInfo: info, media: true };
         } catch (e) {
@@ -3010,20 +3017,23 @@ app.whenReady().then(async () => {
     const lastImagePath = settingsManager.get('lastImageModelPath');
     const lastMediaEntry = lastImagePath && models.find((m) => m.path === lastImagePath);
     if (lastMediaEntry && (lastMediaEntry.modelType === 'diffusion' || lastMediaEntry.modelType === 'video')) {
-      mediaEngine.load(lastImagePath).then(async (status) => {
-        await mediaAssetsManager.ensureForModel(
-          status.ggufArchitecture,
-          lastMediaEntry.modelType,
-          (p) => _send('media-assets-progress', p),
-        );
+      mediaEngine.load(lastImagePath).then((status) => {
         const profileId = archToMediaProfile(status.ggufArchitecture, lastMediaEntry.modelType);
+        const assetsReady = profileId ? mediaAssetsManager.getProfileStatus(profileId).ready : true;
         _send('media-model-loaded', {
           ...status,
           modelType: lastMediaEntry.modelType,
           path: lastImagePath,
-          assetsReady: profileId ? mediaAssetsManager.getProfileStatus(profileId).ready : true,
+          assetsReady,
           assetsProfile: profileId,
         });
+        if (profileId && !assetsReady) {
+          mediaAssetsManager.ensureForModelBackground(
+            status.ggufArchitecture,
+            lastMediaEntry.modelType,
+            (p) => _send('media-assets-progress', p),
+          ).catch((e) => console.warn(`[MediaAssets] Restore download failed: ${e.message}`));
+        }
         console.log(`[Main] Restored media-only model: ${path.basename(lastImagePath)} arch=${status.ggufArchitecture}`);
       }).catch((e) => console.warn(`[Main] Media model restore failed: ${e.message}`));
       return;
