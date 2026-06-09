@@ -436,6 +436,8 @@ function StreamingHeader() {
 
   const modelLoaded = useAppStore(s => s.modelLoaded);
 
+  const activeMediaModel = useAppStore(s => s.activeMediaModel);
+
   const connected = useAppStore(s => s.connected);
 
   const cloudProvider = useAppStore(s => s.cloudProvider);
@@ -448,7 +450,7 @@ function StreamingHeader() {
 
     <>
 
-      {!modelLoaded && connected && !cloudProvider && (
+      {!modelLoaded && !activeMediaModel?.modelPath && connected && !cloudProvider && (
 
         <div className="m-3 p-3 bg-vsc-sidebar rounded-lg border border-vsc-warning/20 text-vsc-sm">
 
@@ -456,7 +458,7 @@ function StreamingHeader() {
 
           <div className="text-vsc-text-dim text-vsc-xs">
 
-            Load a GGUF model from the Settings panel to start chatting.
+            Load a GGUF model from the model picker to start chatting or generating media.
 
           </div>
 
@@ -522,9 +524,10 @@ async function loadMediaModelFromPicker(modelPath, addNotification) {
     const data = await res.json();
     if (data.success && data.media && data.modelInfo) {
       useAppStore.getState().setActiveMediaModel(data.modelInfo);
+      useAppStore.getState().setModelState({ modelLoaded: false, modelLoading: false, modelInfo: null });
       addNotification?.({
         type: 'info',
-        message: `Media model loaded (${data.modelInfo.ggufArchitecture || data.modelInfo.modelType})`,
+        message: `Media model loaded (${data.modelInfo.ggufArchitecture || data.modelInfo.modelType}) — type a prompt to generate`,
       });
       return true;
     }
@@ -536,10 +539,13 @@ async function loadMediaModelFromPicker(modelPath, addNotification) {
   }
 }
 
-async function runMediaCommand(prompt, mediaType = 'image') {
+async function runMediaCommand(prompt, mediaType = 'image', { natural = false } = {}) {
   if (!prompt?.trim()) return;
   useAppStore.getState().ensureChatSessionId();
-  useAppStore.getState().addChatMessage({ role: 'user', content: `/${mediaType === 'video' ? 'video' : 'image'} ${prompt}` });
+  useAppStore.getState().addChatMessage({
+    role: 'user',
+    content: natural ? prompt.trim() : `/${mediaType === 'video' ? 'video' : 'image'} ${prompt}`,
+  });
   const assistantIdx = useAppStore.getState().addChatMessage({
     role: 'assistant',
     content: '',
@@ -906,6 +912,8 @@ export default function ChatPanel() {
   const modelInfo = useAppStore(s => s.modelInfo);
 
   const modelLoaded = useAppStore(s => s.modelLoaded);
+
+  const activeMediaModel = useAppStore(s => s.activeMediaModel);
 
   const projectPath = useAppStore(s => s.projectPath);
 
@@ -1599,6 +1607,15 @@ export default function ChatPanel() {
       const prompt = text.replace(/^\/video\s+/i, '').trim();
       if (!prompt) return;
       await runMediaCommand(prompt, 'video');
+      return;
+    }
+    if (
+      mediaModel?.modelPath
+      && (mediaModel.modelType === 'diffusion' || mediaModel.modelType === 'video')
+      && !/^\s*\//.test(text)
+    ) {
+      const mediaType = mediaModel.modelType === 'video' ? 'video' : 'image';
+      await runMediaCommand(text.trim(), mediaType, { natural: true });
       return;
     }
 
@@ -2813,11 +2830,15 @@ export default function ChatPanel() {
 
     ? (GUIDE_CLOUD_PROVIDERS.has(cloudProvider) ? 'guIDE Cloud AI' : cloudProvider.charAt(0).toUpperCase() + cloudProvider.slice(1))
 
-    : modelInfo
+    : activeMediaModel?.modelPath
 
-      ? (modelInfo.name || modelInfo.family || '').split('/').pop().slice(0, 10)
+      ? `${activeMediaModel.modelType === 'video' ? 'Video' : 'Image'}: ${activeMediaModel.modelPath.split(/[/\\]/).pop().slice(0, 14)}`
 
-      : 'No Model';
+      : modelInfo
+
+        ? (modelInfo.name || modelInfo.family || '').split('/').pop().slice(0, 10)
+
+        : 'No Model';
 
 
 
@@ -4250,7 +4271,11 @@ export default function ChatPanel() {
 
               className="w-full bg-transparent border-none outline-none text-vsc-base text-vsc-text resize-none placeholder:text-vsc-text-dim"
 
-              placeholder={chatStreaming ? 'Type to queue a message...' : (modelLoaded ? 'Ask anything... (@ files, @docs for docs)' : 'Load a model to start...')}
+              placeholder={chatStreaming ? 'Type to queue a message...' : (
+                activeMediaModel?.modelPath
+                  ? (activeMediaModel.modelType === 'video' ? 'Describe a video (e.g. cat dancing)...' : 'Describe an image (e.g. sunset over mountains)...')
+                  : (modelLoaded ? 'Ask anything... (@ files, @docs for docs)' : 'Load a model to start...')
+              )}
 
               value={input}
 

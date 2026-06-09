@@ -216,8 +216,8 @@ ipcMain.handle('dialog-models-add', async () => {
 });
 
 ipcMain.handle('dialog-media-aux', async (_e, { kind } = {}) => {
-  const filters = kind === 'vae'
-    ? [{ name: 'VAE', extensions: ['safetensors'] }]
+  const filters = kind === 'vae' || kind === 'tae'
+    ? [{ name: kind === 'tae' ? 'TAE (tiny VAE)' : 'VAE', extensions: ['safetensors'] }]
     : kind === 't5'
       ? [{ name: 'T5 / Text Encoder', extensions: ['gguf', 'safetensors'] }]
       : [{ name: 'CLIP / LLM Encoder', extensions: ['gguf', 'safetensors'] }];
@@ -272,6 +272,8 @@ const { MCPToolServer } = require('./mcpToolServer');
 const { MCPClient } = require('./mcpClient');
 const { ModelManager } = require('./modelManager');
 const { MediaEngine } = require('./mediaEngine');
+const { MediaAssetsManager } = require('./mediaAssetsManager');
+const { archToMediaProfile } = require('./mediaAssetsCatalog');
 const { readGgufMetadata, detectModelTypeFromGguf } = require('./modelDetection');
 const { MemoryStore } = require('./memoryStore');
 const { LongTermMemory } = require('./longTermMemory');
@@ -363,12 +365,20 @@ const memoryStore = new MemoryStore();
 const longTermMemory = new LongTermMemory();
 const rulesManager = new RulesManager();
 const modelManager = new ModelManager(modelsBasePath);
+const mediaAssetsManager = new MediaAssetsManager({
+  userDataPath,
+  rootDir: ROOT_DIR,
+  resourcesPath: app.isPackaged ? process.resourcesPath : null,
+  onProgress: (p) => _send('media-assets-progress', p),
+});
 const mediaEngine = new MediaEngine({
   userDataPath,
   rootDir: ROOT_DIR,
   getSettings: () => settingsManager.getAll(),
   isPackaged: app.isPackaged,
   resourcesPath: process.resourcesPath,
+  assetsManager: mediaAssetsManager,
+  onAssetsProgress: (p) => _send('media-assets-progress', p),
 });
 const sessionStore = new SessionStore(path.join(userDataPath, 'sessions'));
 const cloudLLM = new CloudLLMService();
@@ -597,7 +607,13 @@ async function runWithMediaVramPolicy(fn) {
   try {
     return await fn();
   } finally {
-    if (unloadedLlm && settings.reloadLlmAfterMedia !== false && lastPath && fs.existsSync(lastPath)) {
+    if (
+      unloadedLlm
+      && settings.reloadLlmAfterMedia !== false
+      && lastPath
+      && fs.existsSync(lastPath)
+      && !mediaEngine.modelPath
+    ) {
       applyModelRuntimeDefaults(lastPath);
       llmEngine.initialize(lastPath, buildEngineLoadSettings(settingsManager.getAll()))
         .then(() => { if (llmEngine.modelInfo) _send('model-loaded', llmEngine.modelInfo); })
@@ -1352,9 +1368,22 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       const ggufType = meta ? detectModelTypeFromGguf(meta) : 'unknown';
       if (ggufType === 'diffusion' || ggufType === 'video') {
         try {
+          if (llmEngine.isReady) {
+            try { llmEngine.cancelGeneration('media-load'); } catch (_) {}
+            await llmEngine.dispose();
+            _send('model-unloaded', {});
+            console.log('[MediaEngine] unloaded LLM — media-only mode');
+          }
           const status = await mediaEngine.load(modelPath);
+          await mediaAssetsManager.ensureForModel(
+            status.ggufArchitecture,
+            ggufType,
+            (p) => _send('media-assets-progress', p),
+          );
           settingsManager.set('lastImageModelPath', modelPath);
-          const info = { ...status, modelType: ggufType, path: modelPath };
+          const profileId = archToMediaProfile(status.ggufArchitecture, ggufType);
+          const assetsReady = profileId ? mediaAssetsManager.getProfileStatus(profileId).ready : true;
+          const info = { ...status, modelType: ggufType, path: modelPath, assetsReady, assetsProfile: profileId };
           _send('media-model-loaded', info);
           console.log(`[MediaEngine] loaded arch=${status.ggufArchitecture} type=${ggufType}`);
           return { success: true, modelInfo: info, media: true };
@@ -1370,6 +1399,12 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
             ? `Unknown GGUF architecture "${arch}" — cannot load as LLM or media model`
             : 'Could not read GGUF metadata — cannot determine model type',
         };
+      }
+      if (mediaEngine.modelPath) {
+        await mediaEngine.unload();
+        settingsManager.set('lastImageModelPath', null);
+        _send('media-model-unloaded', {});
+        console.log('[MediaEngine] unloaded media model — LLM load');
       }
       cloudLLM.activeProvider = null;
       cloudLLM.activeModel = null;
@@ -1392,9 +1427,15 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/media/generate' && method === 'POST') {
       const { prompt, width, height, steps, seed, videoFrames, messageId, mediaType } = body || {};
       _send('media-generating', { prompt, messageId, mediaType });
+      const { queryGpuVramMB, resolveMediaMemoryFlags } = require('./mediaEngine');
+      const settings = settingsManager.getAll();
+      const vramMB = queryGpuVramMB();
+      const memoryFlags = resolveMediaMemoryFlags(settings, vramMB);
+      if (memoryFlags.offloadToCpu) {
+        console.log(`[MediaEngine] low-VRAM policy vram=${vramMB}MB offload=${memoryFlags.offloadToCpu} vaeCpu=${memoryFlags.vaeOnCpu} t5Cpu=${memoryFlags.clipOnCpu}`);
+      }
       const result = await runWithMediaVramPolicy(() => mediaEngine.generate(prompt, {
-        width, height, steps, seed, videoFrames,
-        offloadToCpu: settingsManager.get('gpuPreference') === 'cpu',
+        width, height, steps, seed, videoFrames, vramMB, memoryFlags,
       }));
       if (result.success) {
         const b64 = result.videoBase64 || result.imageBase64;
@@ -1412,7 +1453,20 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       return result;
     }
     if (p === '/api/media/status' && method === 'GET') {
-      return mediaEngine.getStatus();
+      const st = mediaEngine.getStatus();
+      const profileId = st.ggufArchitecture
+        ? archToMediaProfile(st.ggufArchitecture, st.modelType)
+        : null;
+      return {
+        ...st,
+        assetsProfile: profileId,
+        assetsReady: profileId ? mediaAssetsManager.getProfileStatus(profileId).ready : null,
+      };
+    }
+    if (p === '/api/media/assets/status' && method === 'GET') {
+      const profileId = archToMediaProfile(q.arch, q.modelType);
+      if (!profileId) return { ready: false, profiles: [] };
+      return mediaAssetsManager.getProfileStatus(profileId);
     }
     if (p === '/api/models/unload' && method === 'POST') {
       await llmEngine.dispose();
@@ -2954,11 +3008,25 @@ app.whenReady().then(async () => {
       return;
     }
     const lastImagePath = settingsManager.get('lastImageModelPath');
-    if (lastImagePath && models.find((m) => m.path === lastImagePath)) {
-      mediaEngine.load(lastImagePath).then((status) => {
-        _send('media-model-loaded', { ...status, path: lastImagePath });
-        console.log(`[Main] Restored media model: ${path.basename(lastImagePath)} arch=${status.ggufArchitecture}`);
+    const lastMediaEntry = lastImagePath && models.find((m) => m.path === lastImagePath);
+    if (lastMediaEntry && (lastMediaEntry.modelType === 'diffusion' || lastMediaEntry.modelType === 'video')) {
+      mediaEngine.load(lastImagePath).then(async (status) => {
+        await mediaAssetsManager.ensureForModel(
+          status.ggufArchitecture,
+          lastMediaEntry.modelType,
+          (p) => _send('media-assets-progress', p),
+        );
+        const profileId = archToMediaProfile(status.ggufArchitecture, lastMediaEntry.modelType);
+        _send('media-model-loaded', {
+          ...status,
+          modelType: lastMediaEntry.modelType,
+          path: lastImagePath,
+          assetsReady: profileId ? mediaAssetsManager.getProfileStatus(profileId).ready : true,
+          assetsProfile: profileId,
+        });
+        console.log(`[Main] Restored media-only model: ${path.basename(lastImagePath)} arch=${status.ggufArchitecture}`);
       }).catch((e) => console.warn(`[Main] Media model restore failed: ${e.message}`));
+      return;
     }
     if (!llmEngine.isReady && models.length > 0) {
       const lastPath = settingsManager.get('lastModelPath');

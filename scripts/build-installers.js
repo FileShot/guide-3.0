@@ -158,6 +158,16 @@ async function main() {
     throw new Error('fetch-sd-cpp.js failed — cannot bundle media inference');
   }
 
+  log('Fetching bundled media assets (VAE, encoders)...');
+  const fetchMedia = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'fetch-media-assets.js')], {
+    cwd: ROOT,
+    stdio: 'inherit',
+    env: { ...process.env, HF_TOKEN: process.env.HF_TOKEN || process.env.HUGGING_FACE_HUB_TOKEN || '' },
+  });
+  if (fetchMedia.status !== 0) {
+    throw new Error('fetch-media-assets.js failed — cannot bundle media aux models');
+  }
+
   // ── CUDA installer ──────────────────────────────────────────────────────────
   if (buildCuda) {
     log('═══════════════════════════════════════');

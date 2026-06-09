@@ -97,8 +97,10 @@ const SETTINGS_DEFAULTS = {
   lastModelPath: null,
   lastImageModelPath: null,
   mediaVaePath: null,
+  mediaTaePath: null,
   mediaClipPath: null,
   mediaT5Path: null,
+  mediaOffloadPolicy: 'auto', // auto | max | off — maps to sd.cpp CPU offload flags (not llama gpuLayers)
   unloadLlmForMedia: true,
   reloadLlmAfterMedia: true,
   lastProjectPath: null,

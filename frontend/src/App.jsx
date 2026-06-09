@@ -107,7 +107,10 @@ export default function App() {
 
         fetch('/api/media/status').then(r => r.json()).then(st => {
 
-          if (st?.loaded) s.setActiveMediaModel(st);
+          if (st?.loaded) {
+            s.setActiveMediaModel(st);
+            s.setModelState({ modelLoaded: false, modelLoading: false, modelInfo: null });
+          }
 
         }).catch(() => {});
 
@@ -759,12 +762,26 @@ export default function App() {
 
       case 'media-model-loaded': {
         s.setActiveMediaModel(data);
+        s.setModelState({ modelLoaded: false, modelLoading: false, modelInfo: null });
         s.addNotification({
           type: 'info',
-          message: `Media model loaded (${data?.ggufArchitecture || data?.modelType || 'diffusion'})`,
+          message: `Media model loaded (${data?.ggufArchitecture || data?.modelType || 'diffusion'}) — chat generates ${data?.modelType === 'video' ? 'video' : 'images'}`,
         });
         break;
       }
+
+      case 'media-model-unloaded':
+        s.setActiveMediaModel(null);
+        break;
+
+      case 'media-assets-progress':
+        if (data?.phase === 'start') {
+          s.addNotification({
+            type: 'info',
+            message: `Preparing bundled media file: ${data.file || data.asset}`,
+          });
+        }
+        break;
 
       case 'media-generating':
         s.applyMediaGenerating(data);
@@ -780,6 +797,7 @@ export default function App() {
 
       case 'model-loaded': {
 
+        s.setActiveMediaModel(null);
         s.setModelState({ modelLoaded: true, modelLoading: false, modelInfo: data });
 
         if (data?.runtimeThinkingMode != null) {
@@ -1247,6 +1265,10 @@ export default function App() {
       api.onModelsUpdated?.((d) => handleEvent('models-updated', d)),
 
       api.onMediaModelLoaded?.((d) => handleEvent('media-model-loaded', d)),
+
+      api.onMediaModelUnloaded?.((d) => handleEvent('media-model-unloaded', d)),
+
+      api.onMediaAssetsProgress?.((d) => handleEvent('media-assets-progress', d)),
 
       api.onMediaGenerating?.((d) => handleEvent('media-generating', d)),
 

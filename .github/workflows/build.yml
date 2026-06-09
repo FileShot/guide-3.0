@@ -96,6 +96,11 @@ jobs:
       - name: Bundle stable-diffusion.cpp (Windows CPU)
         run: node scripts/fetch-sd-cpp.js
 
+      - name: Bundle media assets (VAE, encoders)
+        run: node scripts/fetch-media-assets.js
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)
         working-directory: frontend
@@ -174,6 +179,11 @@ jobs:
 
       - name: Bundle stable-diffusion.cpp (Windows CUDA)
         run: node scripts/fetch-sd-cpp.js
+
+      - name: Bundle media assets (VAE, encoders)
+        run: node scripts/fetch-media-assets.js
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)

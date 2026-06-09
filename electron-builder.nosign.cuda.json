@@ -76,6 +76,11 @@
       "from": "resources/sd-cpp/win-x64-cuda",
       "to": "sd-cpp",
       "filter": ["**/*"]
+    },
+    {
+      "from": "resources/media-assets",
+      "to": "media-assets",
+      "filter": ["**/*"]
     }
   ],
   "mac": {

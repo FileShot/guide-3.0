@@ -29,7 +29,7 @@ From the directory containing `sd.exe` and its DLLs:
   --video-frames 33
 ```
 
-Add `--offload-to-cpu` if VRAM is tight (8GB GPUs).
+guIDE auto-applies sd.cpp low-VRAM flags on ≤8GB GPUs (`--offload-to-cpu`, `--vae-on-cpu`, `--clip-on-cpu`, `--diffusion-fa`). On ≤6GB, use **TAE** (`taew2_2.safetensors` via Settings → Media) instead of the full Wan VAE.
 
 ## Pass criteria
 

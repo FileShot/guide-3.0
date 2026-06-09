@@ -1608,12 +1608,27 @@ function UpdatesSettings({ settings, updateSetting }) {
 function MediaSettings({ settings, updateSetting, addNotification }) {
   const activeMediaModel = useAppStore(s => s.activeMediaModel);
   const [sdStatus, setSdStatus] = useState(null);
+  const [assetsStatus, setAssetsStatus] = useState(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const refreshSdStatus = useCallback(() => {
     fetch('/api/media/status').then(r => r.json()).then(setSdStatus).catch(() => setSdStatus(null));
   }, []);
 
-  useEffect(() => { refreshSdStatus(); }, [activeMediaModel, refreshSdStatus]);
+  const refreshAssetsStatus = useCallback(() => {
+    const arch = activeMediaModel?.ggufArchitecture;
+    const modelType = activeMediaModel?.modelType;
+    if (!arch) {
+      setAssetsStatus(null);
+      return;
+    }
+    fetch(`/api/media/assets/status?arch=${encodeURIComponent(arch)}&modelType=${encodeURIComponent(modelType || '')}`)
+      .then(r => r.json())
+      .then(setAssetsStatus)
+      .catch(() => setAssetsStatus(null));
+  }, [activeMediaModel]);
+
+  useEffect(() => { refreshSdStatus(); refreshAssetsStatus(); }, [activeMediaModel, refreshSdStatus, refreshAssetsStatus]);
 
   const pickAux = useCallback(async (kind, settingKey) => {
     const picked = await window.electronAPI?.pickMediaAuxFile?.(kind);
@@ -1623,8 +1638,7 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
   return (
     <SettingsSection title="Media Generation" icon={<ImageIcon size={13} />} keywords="media image video flux wan vae clip t5 stable diffusion sd.cpp">
       <div className="text-[10px] text-vsc-text-dim mb-2">
-        Flux and Wan models need auxiliary files beyond the diffusion GGUF. See{' '}
-        <a className="text-vsc-accent hover:underline" href="https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/wan.md" onClick={e => { e.preventDefault(); window.electronAPI?.openExternal?.('https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/wan.md'); }}>sd.cpp docs</a>.
+        Your diffusion/video GGUF is the main model. VAE and text encoders are bundled with guIDE — load a media GGUF and type a prompt.
       </div>
       {activeMediaModel?.modelPath ? (
         <div className="text-[11px] mb-2 text-vsc-text">
@@ -1642,10 +1656,31 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
           {sdStatus?.sdBinaryFound ? 'found' : 'missing — run node scripts/fetch-sd-cpp.js'}
         </span>
       </div>
-      {[
-        { kind: 'vae', key: 'mediaVaePath', label: 'VAE (.safetensors)' },
-        { kind: 'clip', key: 'mediaClipPath', label: 'CLIP / LLM encoder (Flux)' },
-        { kind: 't5', key: 'mediaT5Path', label: 'T5 encoder (Wan video)' },
+      {assetsStatus && (
+        <div className="mb-2 p-2 rounded bg-vsc-bg/60 border border-vsc-panel-border/20 text-[10px]">
+          <div className="text-vsc-text-dim mb-1">Bundled assets ({assetsStatus.label})</div>
+          {assetsStatus.assets?.map(a => (
+            <div key={a.id} className={a.ready ? 'text-vsc-success' : 'text-vsc-warning'}>
+              {a.ready ? '✓' : '…'} {a.relPath.split('/').pop()}
+            </div>
+          ))}
+          {!assetsStatus.ready && (
+            <div className="text-vsc-warning mt-1">Preparing on first use — may download once if not in installer.</div>
+          )}
+        </div>
+      )}
+      <button
+        type="button"
+        className="text-[10px] text-vsc-accent hover:underline mb-2"
+        onClick={() => setShowAdvanced(v => !v)}
+      >
+        {showAdvanced ? 'Hide' : 'Show'} advanced path overrides
+      </button>
+      {showAdvanced && [
+        { kind: 'vae', key: 'mediaVaePath', label: 'VAE override' },
+        { kind: 'tae', key: 'mediaTaePath', label: 'TAE override (Wan)' },
+        { kind: 'clip', key: 'mediaClipPath', label: 'Text encoder override' },
+        { kind: 't5', key: 'mediaT5Path', label: 'T5 override (Wan)' },
       ].map(({ kind, key, label }) => (
         <div key={key} className="mb-2">
           <label className="text-[11px] text-vsc-text-dim block mb-1">{label}</label>
@@ -1655,12 +1690,38 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
               className="flex-1 text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
               value={settings[key] || ''}
               onChange={e => updateSetting(key, e.target.value)}
-              placeholder="Path to auxiliary model file"
+              placeholder="Leave empty to use bundled assets"
             />
             <button type="button" className="btn btn-secondary text-[10px] px-2 shrink-0" onClick={() => pickAux(kind, key)}>Browse…</button>
           </div>
         </div>
       ))}
+      <div className="mb-2">
+        <label className="text-[11px] text-vsc-text-dim block mb-1">Media VRAM policy</label>
+        <div className="flex gap-1">
+          {[
+            { v: 'auto', label: 'Auto' },
+            { v: 'max', label: 'Max save' },
+            { v: 'off', label: 'GPU only' },
+          ].map(opt => (
+            <button
+              key={opt.v}
+              type="button"
+              className={`flex-1 text-[10px] py-1 rounded border ${
+                (settings.mediaOffloadPolicy || 'auto') === opt.v
+                  ? 'border-vsc-accent/60 bg-vsc-accent/15 text-vsc-text-bright'
+                  : 'border-vsc-panel-border/25 text-vsc-text-dim hover:bg-vsc-list-hover'
+              }`}
+              onClick={() => updateSetting('mediaOffloadPolicy', opt.v)}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <div className="text-[10px] text-vsc-text-dim mt-1">
+          Auto: offload weights to RAM on ≤8GB GPUs (sd.cpp — not the same as LLM layer slider).
+        </div>
+      </div>
       <SettingToggle label="Unload LLM for media generation" value={settings.unloadLlmForMedia !== false}
         onChange={v => updateSetting('unloadLlmForMedia', v)}
         hint="Frees VRAM before image/video generation on GPUs with limited memory (recommended under 12GB)." />
@@ -1673,6 +1734,7 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
 
 function SettingsPanel() {
   const modelInfo = useAppStore(s => s.modelInfo);
+  const activeMediaModel = useAppStore(s => s.activeMediaModel);
   const availableModels = useAppStore(s => s.availableModels);
   const modelLoading = useAppStore(s => s.modelLoading);
   const addNotification = useAppStore(s => s.addNotification);
@@ -2294,6 +2356,13 @@ function SettingsPanel() {
                 )}
               </div>
             )}
+          </div>
+        ) : activeMediaModel?.modelPath ? (
+          <div className="bg-vsc-bg rounded p-2 text-vsc-xs">
+            <div className="text-vsc-text-bright font-medium truncate">
+              {activeMediaModel.modelType === 'video' ? 'Video' : 'Image'}: {activeMediaModel.modelPath.split(/[/\\]/).pop()}
+            </div>
+            <div className="text-vsc-text-dim mt-1">Type a prompt in chat to generate</div>
           </div>
         ) : (
           <div className="text-vsc-xs text-vsc-text-dim">No model loaded</div>
