@@ -252,18 +252,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      - name: Ensure CUDA update feed
-        run: node scripts/ensure-update-feed.js --channel cuda --platform win --glob "guIDE-*-cuda-x64-setup.exe"
-
       - name: Upload artifact
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: windows-cuda
           path: |
-            dist-electron/guIDE-*-cuda-x64-setup.exe
-            dist-electron/cuda.yml
-            dist-electron/*.blockmap
+            dist-electron/guIDE-*-cuda-x64.zip
           retention-days: 30
 
   # ─── Linux CPU ──────────────────────────────────────────────
