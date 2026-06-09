@@ -175,16 +175,19 @@ class MediaEngine {
 
   _getAuxPaths() {
     const s = this.getSettings();
-    const pick = (settingKey) => {
+    const bundled = this.assetsManager?.resolveAux(this.ggufArchitecture, this.modelType) || {};
+    const pick = (settingKey, bundledKey) => {
       const custom = s[settingKey];
-      return custom && fs.existsSync(custom) ? custom : null;
+      if (custom && fs.existsSync(custom)) return custom;
+      const cached = bundled[bundledKey];
+      return cached && fs.existsSync(cached) ? cached : null;
     };
-    const llm = pick('mediaClipPath');
+    const llm = pick('mediaClipPath', 'llm');
     return {
-      vae: pick('mediaVaePath'),
-      tae: pick('mediaTaePath'),
+      vae: pick('mediaVaePath', 'vae'),
+      tae: pick('mediaTaePath', 'tae'),
       clip: llm,
-      t5: pick('mediaT5Path'),
+      t5: pick('mediaT5Path', 't5'),
       llm,
     };
   }
@@ -288,6 +291,18 @@ class MediaEngine {
     }
     if (this._generating) {
       return { success: false, error: 'Generation already in progress' };
+    }
+
+    if (this.assetsManager) {
+      try {
+        await this.assetsManager.ensureForModel(
+          this.ggufArchitecture,
+          this.modelType,
+          this.onAssetsProgress,
+        );
+      } catch (e) {
+        return { success: false, error: `Could not prepare generation: ${e.message}` };
+      }
     }
 
     const sdBin = this._resolveSdBinary();
