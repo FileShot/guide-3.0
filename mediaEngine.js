@@ -69,16 +69,21 @@ class MediaEngine {
       this._sdBinaryPath = process.env.GUIDE_SD_CPP_PATH;
       return this._sdBinaryPath;
     }
-    const devBin = path.join(this.rootDir, 'bin', process.platform === 'win32' ? 'sd.exe' : 'sd');
-    if (fs.existsSync(devBin)) {
-      this._sdBinaryPath = devBin;
-      return this._sdBinaryPath;
+    const binDir = path.join(this.rootDir, 'bin');
+    for (const name of [process.platform === 'win32' ? 'sd.exe' : 'sd', 'sd-cli.exe']) {
+      const devBin = path.join(binDir, name);
+      if (fs.existsSync(devBin)) {
+        this._sdBinaryPath = devBin;
+        return this._sdBinaryPath;
+      }
     }
     if (this.isPackaged && this.resourcesPath) {
-      const bundled = path.join(this.resourcesPath, 'sd-cpp', 'sd.exe');
-      if (fs.existsSync(bundled)) {
-        this._sdBinaryPath = bundled;
-        return this._sdBinaryPath;
+      for (const name of ['sd.exe', 'sd-cli.exe']) {
+        const bundled = path.join(this.resourcesPath, 'sd-cpp', name);
+        if (fs.existsSync(bundled)) {
+          this._sdBinaryPath = bundled;
+          return this._sdBinaryPath;
+        }
       }
     }
     return null;

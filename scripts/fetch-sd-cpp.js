@@ -48,22 +48,31 @@ function fetchJson(url) {
   });
 }
 
-function downloadFile(url, dest) {
+function downloadFile(url, dest, expectedSize) {
   return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
-    https.get(url, { headers: { 'User-Agent': 'guide-ide-fetch' } }, (res) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'guide-ide-fetch' } }, (res) => {
       if (res.statusCode === 302 || res.statusCode === 301) {
-        file.close();
-        fs.unlinkSync(dest);
-        return downloadFile(res.headers.location, dest).then(resolve, reject);
+        return downloadFile(res.headers.location, dest, expectedSize).then(resolve, reject);
       }
       if (res.statusCode !== 200) {
-        file.close();
         return reject(new Error(`HTTP ${res.statusCode} for ${url}`));
       }
+      const file = fs.createWriteStream(dest);
       res.pipe(file);
-      file.on('finish', () => { file.close(resolve); });
-    }).on('error', reject);
+      file.on('finish', () => {
+        file.close(() => {
+          const got = fs.statSync(dest).size;
+          if (expectedSize && got !== expectedSize) {
+            fs.unlinkSync(dest);
+            reject(new Error(`Download size mismatch for ${path.basename(dest)}: got ${got} expected ${expectedSize}`));
+            return;
+          }
+          resolve();
+        });
+      });
+      file.on('error', reject);
+    });
+    req.on('error', reject);
   });
 }
 
@@ -79,13 +88,13 @@ function extractZip(zipPath, outDir) {
   }
 }
 
-function findSdExe(dir) {
+function findSdBinary(dir) {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const e of entries) {
     const full = path.join(dir, e.name);
-    if (e.isFile() && /^sd\.exe$/i.test(e.name)) return full;
+    if (e.isFile() && /^sd(?:-cli)?\.exe$/i.test(e.name)) return full;
     if (e.isDirectory()) {
-      const found = findSdExe(full);
+      const found = findSdBinary(full);
       if (found) return found;
     }
   }
@@ -93,14 +102,19 @@ function findSdExe(dir) {
 }
 
 function flattenToOut(extractRoot, outDir) {
-  const sdExe = findSdExe(extractRoot);
-  if (!sdExe) throw new Error(`sd.exe not found under ${extractRoot}`);
-  const binDir = path.dirname(sdExe);
+  const sdBinary = findSdBinary(extractRoot);
+  if (!sdBinary) throw new Error(`sd-cli.exe / sd.exe not found under ${extractRoot}`);
+  const binDir = path.dirname(sdBinary);
   fs.mkdirSync(outDir, { recursive: true });
   for (const name of fs.readdirSync(binDir)) {
     const src = path.join(binDir, name);
     const dest = path.join(outDir, name);
     if (fs.statSync(src).isFile()) fs.copyFileSync(src, dest);
+  }
+  const sdCli = path.join(outDir, 'sd-cli.exe');
+  const sdExe = path.join(outDir, 'sd.exe');
+  if (!fs.existsSync(sdExe) && fs.existsSync(sdCli)) {
+    fs.copyFileSync(sdCli, sdExe);
   }
 }
 
@@ -122,7 +136,7 @@ async function main() {
     const zipPath = path.join(tmp, asset.name);
     if (!fs.existsSync(zipPath)) {
       log(`Downloading ${asset.name} (${Math.round(asset.size / 1e6)}MB)...`);
-      await downloadFile(asset.browser_download_url, zipPath);
+      await downloadFile(asset.browser_download_url, zipPath, asset.size);
     }
     const extractDir = path.join(tmp, `extract-${variant.name}`);
     if (fs.existsSync(extractDir)) fs.rmSync(extractDir, { recursive: true, force: true });
