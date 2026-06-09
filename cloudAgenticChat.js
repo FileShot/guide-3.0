@@ -67,9 +67,10 @@ async function runCloudAgenticChat({
   const allDefs = mcpToolServer.getToolDefinitions();
   const filteredDefs = filterToolDefinitions(allDefs, mode.allowedTools);
 
-  let toolPrompt = mode.toolsActive ? mcpToolServer.getToolPromptForTools(filteredDefs) : '';
+  const toolPromptOpts = { planning: mode.planning };
+  let toolPrompt = mode.toolsActive ? mcpToolServer.getToolPromptForTools(filteredDefs, toolPromptOpts) : '';
   const compactToolParts = mode.toolsActive
-    ? mcpToolServer.getCompactToolHint('default', { toolDefs: filteredDefs })
+    ? mcpToolServer.getCompactToolHint('default', { toolDefs: filteredDefs, planning: mode.planning })
     : [];
   let compactToolPrompt = compactToolParts.join('');
 
@@ -81,6 +82,7 @@ async function runCloudAgenticChat({
 
   let systemPrompt = buildCloudSystemPrompt({
     userSystemPrompt: settings.systemPrompt,
+    baseSystemPrompt: mode.baseSystemPrompt,
     customInstructions: settings.customInstructions,
     toolPrompt,
   });

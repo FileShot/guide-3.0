@@ -16,9 +16,8 @@ const {
   filterPlanModeToolCalls,
   isPlanFilePath,
   resolvePlanPhase,
-  getAskModePromptAddition,
-  getPlanModePromptAddition,
-  getBuildingPhasePromptAddition,
+  resolveAgentMode,
+  getAgentSystemPrompt,
 } = require('./agentModeResolver');
 
 /** Base max chars of each tool result injected into chat history.
@@ -725,78 +724,8 @@ function createThinkingOpenJinjaWrapper(JinjaTemplateChatWrapper, LlamaText) {
   };
 }
 
-// Agent identity prompt — behavior and grounding only; tool format/catalog live in getToolPrompt()
-const SYSTEM_PROMPT = `You are guIDE, an AI assistant embedded in a general-purpose IDE. You help users with software projects: reading and writing code, running commands, searching the web, using the browser, and answering questions.
-
-## How to respond
-- If the user's message is conversational (greetings, thanks, clarifying questions, opinions) and needs no action, reply in plain prose only. Do not call tools.
-- If the user asks you to do something you cannot do with text alone — create or change files, run commands, search the project or web, use the browser, inspect git state, etc. — use the appropriate tool from the ## Tools section below.
-- You have real tools. When action is required, use them. Do not say you cannot access files, the terminal, or the network when a tool can perform the task.
-- Put explanations and reasoning in **prose**. Put actions in **tool calls** (the system runs tools and shows results in tool cards). Do not paste raw tool-call JSON in your visible reply.
-
-## Clarification (before you guess)
-- When requirements are ambiguous, multiple approaches are valid, or you need facts only the user has (credentials, which account, API keys, destructive confirmation, missing env values): call **ask_question** with an **options** array of {label, description} objects before proceeding.
-- Do not invent usernames, passwords, tokens, or one-time codes. Do not assume values from unrelated documents or prior chats.
-- For simple chat, prose is fine. When the user's answer determines the next tool call, prefer **ask_question** over guessing.
-
-## Tools (required reading)
-Tool definitions, call format, parameter schemas, and examples are in the ## Tools section appended below this message. Follow that section exactly for tool names, parameter names, and JSON format. Do not invent tool names or parameter names.
-
-After calling a tool, wait for the result before continuing. Never output fabricated tool results or blocks labeled [Tool Results] or [System: Tool Results] — the system injects real results.
-
-## Grounding
-- Base answers on tool results, file contents, and user-provided context — not assumptions.
-- If a tool fails, read the error, adjust, and retry once with corrected parameters; then explain or use ask_question if blocked.
-
-## Images
-When you receive an image description from the vision system, treat it as what you observed. Do not use read_file on image files to "see" them.
-
-## Planning
-For multi-step work, you may use planning tools from ## Tools when they fit the task. For simple requests, act directly without unnecessary planning overhead.
-
-## File locations
-- Application source (HTML, CSS, JS, etc.) belongs in the **project root** (visible in the file explorer), never under .guide/.
-- .guide/plans/*.plan.md is for implementation **plan documents** only — not source code or assets.
-- .guide/ is guIDE metadata (hidden from the explorer); users cannot see files written there.
-
-## Todo List Discipline
-Use write_todos only for multi-step builds — skip it for simple one-shot tasks. If you called write_todos, call update_todo when you start each todo item (status: 'in-progress') and when you finish it (status: 'done'). The user sees the todo list in real time.
-
-## Browser and authentication flows
-- Call browser_navigate first (returns a snapshot). After browser_type, browser_click, or any action that changes the page, call browser_snapshot before the next browser_click so [ref=N] numbers match the current DOM. Do not reuse stale refs. Prefer elements marked [SUBMIT] for login/forms.
-- Read the snapshot: if the page reports an incorrect username, a password field is missing, or 2FA/phone verification appears, stop cycling clicks. Use **ask_question** or prose to get what you need from the user.
-- Never type passwords from memory. The user provides secrets when needed.
-
-## Session memory
-When older turns were condensed, a brief progress summary may appear in context. Never mention context limits, rotation, or compression to the user. Continue the current task immediately using that summary and the next required tool call.
-
-## Cloud response style (cloud models only)
-When this block is present you are guIDE Cloud AI: keep answers concise — short paragraphs, minimal preamble, no filler. Still use tools whenever the task requires real actions in the project.
-
-## Only call a tool when required. Never call a tool when plain prose is sufficient.
-
-Examples of when to call tools:
-
-Pattern — user wants to create or write a file:
-Call write_file with the target path and the full file content. Do not output the content as a markdown code block.
-
-Pattern — user asks to edit or modify an existing file:
-Use edit_file or replace_in_file on that file path. Call read_file first if you need the current content. Do NOT use write_file to create a new file or a renamed copy (e.g. file-v2.html) unless the user explicitly asked for a new file or a full rewrite from scratch.
-
-Pattern — user asks to run a command, script, or terminal operation:
-Call run_terminal_command with the command string. Do not describe what the command would do — run it.
-
-Pattern — user asks to search the web, find current information, or look up something online:
-Call web_search with a rephrased query. Do not generate an answer from memory if the information may be outdated.
-
-Pattern — user asks to open, navigate, or interact with a website or browser:
-Follow the Browser and authentication flows section above.
-
-Pattern — user wants to find files in the project, list a directory, or search codebase:
-Call list_directory, search_codebase, or find_files as appropriate. Do not guess at file contents.
-
-Pattern — user asks a conversational question or makes a greeting:
-Reply in prose only. Do not call any tool.`;
+// Default session system entry — agent mode; per-request chat() uses resolveAgentMode().baseSystemPrompt
+const SYSTEM_PROMPT = getAgentSystemPrompt();
 
 class ChatEngine extends EventEmitter {
   constructor() {
@@ -1554,16 +1483,23 @@ class ChatEngine extends EventEmitter {
     // Same architecture as Windsurf Cascade: Rules → Memories → Editor → RAG → Tools → History
     // Each layer is appended in order so the model sees them in priority sequence.
     const contextTokens = this._context?.contextSize || 8192;
-    let basePrompt = systemPrompt || SYSTEM_PROMPT;
+    const resolvedMode = resolveAgentMode({
+      askOnly: options.askOnly,
+      planMode: options.planMode,
+      chatMode: options.chatMode,
+      agentPhase: options.agentPhase,
+      toolsEnabled: options.toolsEnabled !== false,
+      planReady: !!options.planReady,
+      planFileExists: !!options.planFileExists,
+    });
+    let basePrompt = systemPrompt || resolvedMode.baseSystemPrompt;
 
-    // Layer 1: System prompt (identity, behavior rules, tool calling format)
-    // (already set above as basePrompt)
-
-    // Thinking: Qwen 3.5 models are reasoning models that emit thinking natively via the
-    // chat wrapper segment handling. Do NOT force thinking via prompt instructions - it
-    // interferes with the native segment API and can cause premature EOG stops.
-    // The raw-text detection in _sfProcessChunk still routes any thinking content to
-    // llm-thinking-token events when the model does produce it.
+    // Layer 1: Mode-specific system prompt (agent / plan / ask base — not shared)
+    if (resolvedMode.systemPromptAdditions) {
+      basePrompt += resolvedMode.systemPromptAdditions;
+    }
+    const _modeLabel = resolvedMode.askOnly ? 'ask' : resolvedMode.planning ? 'plan' : resolvedMode.building ? 'build' : 'agent';
+    console.log(`[ChatEngine] Prompt base: mode=${_modeLabel}, planPhase=${resolvedMode.planPhase || 'n/a'}, baseChars=${resolvedMode.baseSystemPrompt.length}`);
 
     // Layer 2–3: Project rules, environment, editor context (shared with cloud via buildAgentSystemPromptLayers)
     basePrompt += buildAgentSystemPromptLayers({
@@ -1576,23 +1512,12 @@ class ChatEngine extends EventEmitter {
     if (customInstructions && customInstructions.trim()) {
       basePrompt += `\n\n## Custom Instructions\n${customInstructions.trim()}`;
     }
-    // Mode overrides: inject behavioral instructions before tool prompt
-    if (options.agentPhase === 'building') {
-      basePrompt += getBuildingPhasePromptAddition();
-      console.log('[ChatEngine] Build phase — implement in project root, not .guide/');
-    } else if (options.planMode && options.agentPhase !== 'building') {
-      const planPhase = resolvePlanPhase({
-        planMode: true,
-        agentPhase: options.agentPhase,
-        planReady: !!options.planReady,
-        planFileExists: !!options.planFileExists,
-      });
-      basePrompt += getPlanModePromptAddition(planPhase || 'awaiting_plan');
-      console.log(`[ChatEngine] Plan mode — planPhase=${planPhase}`);
-    }
-    if (options.askOnly) {
-      basePrompt += getAskModePromptAddition();
+    if (resolvedMode.askOnly) {
       console.log('[ChatEngine] Ask mode — tool prompt suppressed, model responds conversationally');
+    } else if (resolvedMode.building) {
+      console.log('[ChatEngine] Build phase — implement in project root, not .guide/');
+    } else if (resolvedMode.planning) {
+      console.log(`[ChatEngine] Plan mode — planPhase=${resolvedMode.planPhase}`);
     }
 
     // Layer 4: Tool prompt (available tools and their descriptions)
@@ -3267,19 +3192,6 @@ class ChatEngine extends EventEmitter {
 
         console.log(`[ChatEngine] Tool loop ENTER: ${parsedCalls.length} parsed call(s), repairRetry=${repairRetryPending}`);
         let planArtifactThisTurn = false;
-        let planAutoContinuePending = false;
-        do {
-          if (planAutoContinuePending) {
-            options._planAutoContinued = true;
-            console.log('[ChatEngine] Plan auto-continue — no plan artifacts in awaiting_plan');
-            this._chatHistory.push({
-              type: 'user',
-              text: '[System: Plan mode — continue planning. Use create_directory for .guide/plans if needed, write_file to .guide/plans/{slug}.plan.md, then call write_todos.]',
-            });
-            repairRetryPending = true;
-            parsedCalls = [];
-            planAutoContinuePending = false;
-          }
         while (parsedCalls.length > 0 || repairRetryPending) {
           const skipToolExecution = repairRetryPending;
           if (repairRetryPending) {
@@ -3992,20 +3904,6 @@ class ChatEngine extends EventEmitter {
           }
 
         }
-          planAutoContinuePending = (
-            !options._planAutoContinued
-            && options.planMode
-            && options.agentPhase !== 'building'
-            && resolvePlanPhase({
-              planMode: true,
-              agentPhase: options.agentPhase,
-              planReady: !!options.planReady,
-              planFileExists: !!options.planFileExists,
-            }) === 'awaiting_plan'
-            && !planArtifactThisTurn
-            && !isCancelled()
-          );
-        } while (planAutoContinuePending);
         } // end prose JSON fallback path
 
       } else if (executeToolFn && _userAbortedGeneration) {
@@ -4018,6 +3916,8 @@ class ChatEngine extends EventEmitter {
         this._chatHistory = result.lastEvaluation.cleanHistory;
       }
       const stopReason = result.metadata?.stopReason || 'natural';
+
+      _sfCatchUpVisibleProse();
 
       if (_sfNativeThinkActive && _sfVisibleChars === 0 && _sfNativeThinkChars > 0) {
         console.warn(`[ChatEngine] Thought-segment trap: ${_sfNativeThinkChars} chars in thought, 0 in visible chat — check Mode C + native FC interaction`);
@@ -4079,7 +3979,6 @@ class ChatEngine extends EventEmitter {
         });
       }
 
-      _sfCatchUpVisibleProse();
       visibleResponse = stripToolCallText(fullResponse);
       console.log(`[ChatEngine] chat() returning: textLen=${visibleResponse.length}, stopReason=${stopReason}, toolCalls=${totalToolCalls}`);
       if (onComplete) onComplete(fullResponse);
@@ -5355,8 +5254,8 @@ ChatEngine.DEFAULT_ENABLED_TOOLS = new Set([
 ]);
 
 /** Same identity + tools as local; cloud path appends CLOUD_STYLE only when tools are enabled. */
-function buildCloudSystemPrompt({ userSystemPrompt, customInstructions, toolPrompt }) {
-  let text = (userSystemPrompt && String(userSystemPrompt).trim()) || SYSTEM_PROMPT;
+function buildCloudSystemPrompt({ userSystemPrompt, baseSystemPrompt, customInstructions, toolPrompt }) {
+  let text = (userSystemPrompt && String(userSystemPrompt).trim()) || baseSystemPrompt || SYSTEM_PROMPT;
   if (customInstructions && String(customInstructions).trim()) {
     text += `\n\n${String(customInstructions).trim()}`;
   }

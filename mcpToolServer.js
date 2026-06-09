@@ -4625,8 +4625,8 @@ class MCPToolServer {
     return this._toolPromptCache;
   }
 
-  getToolPromptForTools(toolDefs) {
-    return this._buildToolPrompt(Array.isArray(toolDefs) ? toolDefs : []);
+  getToolPromptForTools(toolDefs, options = {}) {
+    return this._buildToolPrompt(Array.isArray(toolDefs) ? toolDefs : [], options);
   }
 
   getCompactToolHint(taskType, options) {
@@ -4639,15 +4639,23 @@ class MCPToolServer {
     for (const tool of tools) toolMap[tool.name] = tool;
 
     const parts = [];
+    const planning = !!(options && options.planning);
 
     // Part 0: Format header with concrete example — teaches the model the EXACT
-    // JSON format for calling tools. The example uses read_file (generic) so it
-    // is not tailored to any specific use case.
+    // JSON format for calling tools.
     let header = '## Tools\n';
     header += 'To call a tool, output a ```json block:\n```json\n{"tool":"<name>","params":{...}}\n```\n';
-    header += 'Examples:\n```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
-    header += '```json\n{"tool":"edit_file","params":{"filePath":"src/app.js","oldText":"const x = 1","newText":"const x = 2"}}\n```\n';
-    header += '```json\n{"tool":"list_directory","params":{"dirPath":"."}}\n```\n\n';
+    if (planning) {
+      header += 'Plan mode examples (build requests):\n';
+      header += '```json\n{"tool":"create_directory","params":{"path":".guide/plans"}}\n```\n';
+      header += '```json\n{"tool":"write_file","params":{"filePath":".guide/plans/my-feature.plan.md","content":"---\\ntitle: My Feature\\noverview: ...\\n---\\n\\n## Summary\\n..."}}\n```\n';
+      header += '```json\n{"tool":"write_todos","params":{"todos":[{"id":"1","content":"First step","status":"pending"}]}}\n```\n';
+      header += '```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n\n';
+    } else {
+      header += 'Examples:\n```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
+      header += '```json\n{"tool":"edit_file","params":{"filePath":"src/app.js","oldText":"const x = 1","newText":"const x = 2"}}\n```\n';
+      header += '```json\n{"tool":"list_directory","params":{"dirPath":"."}}\n```\n\n';
+    }
     if (this.projectPath) {
       header += `Project: ${this.projectPath}\n\n`;
     }
@@ -4709,13 +4717,20 @@ class MCPToolServer {
 
     // Rules section — last priority
     let rules = '### Rules\n';
-    rules += '- Use write_file to create new files, append_to_file to add to existing files\n';
-    rules += '- For edits: read_file first, then edit_file with exact oldText\n';
-    rules += '- For large files: write_file for first section, then append_to_file for remaining sections\n';
-    rules += '- Web: after web_search, in the same continuation, call fetch_webpage on the first and second ranked result URLs before answering (or each returned URL if fewer than two). Do not ask the user to confirm fetching. Do not call list_directory in the same tool round as web_search/fetch_webpage unless the user asked about the project\n';
-    rules += '- Browser workflow: browser_navigate (auto-returns snapshot) → interact using [ref=N] IDs with browser_click/browser_type (auto-return snapshot after action). Use viewport_browser_snapshot when the user asks about the page open in the viewport browser.\n';
-    rules += '- If browser_navigate fails, retry it or use fetch_webpage. Do NOT launch chrome.exe, firefox.exe, Tor Browser, or debug Playwright/geckodriver via run_command.\n';
-    rules += '- After write_todos: call update_todo(in-progress) when starting each step and update_todo(done) when finishing — never leave 0/N checked during implementation.\n';
+    if (planning) {
+      rules += '- Build/plan requests: create_directory(.guide/plans) → write_file(.guide/plans/{slug}.plan.md) → write_todos — then STOP\n';
+      rules += '- write_file and edit_file ONLY for `.guide/plans/*.plan.md` during planning\n';
+      rules += '- Do not paste implementation source in chat — put the plan in the plan file\n';
+      rules += '- update_todo: text changes only until the user clicks Build\n';
+    } else {
+      rules += '- Use write_file to create new files, append_to_file to add to existing files\n';
+      rules += '- For edits: read_file first, then edit_file with exact oldText\n';
+      rules += '- For large files: write_file for first section, then append_to_file for remaining sections\n';
+      rules += '- Web: after web_search, in the same continuation, call fetch_webpage on the first and second ranked result URLs before answering (or each returned URL if fewer than two). Do not ask the user to confirm fetching. Do not call list_directory in the same tool round as web_search/fetch_webpage unless the user asked about the project\n';
+      rules += '- Browser workflow: browser_navigate (auto-returns snapshot) → interact using [ref=N] IDs with browser_click/browser_type (auto-return snapshot after action). Use viewport_browser_snapshot when the user asks about the page open in the viewport browser.\n';
+      rules += '- If browser_navigate fails, retry it or use fetch_webpage. Do NOT launch chrome.exe, firefox.exe, Tor Browser, or debug Playwright/geckodriver via run_command.\n';
+      rules += '- After write_todos: call update_todo(in-progress) when starting each step and update_todo(done) when finishing — never leave 0/N checked during implementation.\n';
+    }
     parts.push(rules);
 
     // header + Browser + Core Files + Terminal = tier-0 (always inject in Agent mode)
@@ -4762,16 +4777,25 @@ class MCPToolServer {
     return this._buildToolPrompt(filtered);
   }
 
-  _buildToolPrompt(tools) {
+  _buildToolPrompt(tools, options = {}) {
+    const planning = !!options.planning;
     let prompt = '## Tools\nCall tools with one ```json fenced block per action:\n```json\n{"tool":"tool_name","params":{"param":"value"}}\n```\n';
     prompt += 'Examples (use exact parameter names shown in each tool listing below):\n';
-    prompt += '```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
-    prompt += '```json\n{"tool":"write_file","params":{"filePath":"index.html","content":"<html><body>Hello</body></html>"}}\n```\n';
-    prompt += '```json\n{"tool":"edit_file","params":{"filePath":"src/app.js","oldText":"const x = 1","newText":"const x = 2"}}\n```\n';
-    prompt += '```json\n{"tool":"list_directory","params":{"dirPath":"."}}\n```\n';
-    prompt += 'You HAVE the tools listed below — use them. Do not say you cannot access files, the terminal, or the network when a tool can perform the task.\n';
-    prompt += 'Do not output full file content as chat prose — use write_file, edit_file, or append_to_file.\n';
-    prompt += 'Do not give manual step-by-step instructions when a tool can perform the action.\n';
+    if (planning) {
+      prompt += '```json\n{"tool":"create_directory","params":{"path":".guide/plans"}}\n```\n';
+      prompt += '```json\n{"tool":"write_file","params":{"filePath":".guide/plans/my-feature.plan.md","content":"---\\ntitle: My Feature\\noverview: ...\\n---\\n\\n## Summary\\n..."}}\n```\n';
+      prompt += '```json\n{"tool":"write_todos","params":{"todos":[{"id":"1","content":"First step","status":"pending"}]}}\n```\n';
+      prompt += '```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
+      prompt += 'Plan mode: write_file and edit_file ONLY for `.guide/plans/*.plan.md`. Do not create application source files until Build.\n';
+    } else {
+      prompt += '```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
+      prompt += '```json\n{"tool":"write_file","params":{"filePath":"index.html","content":"<html><body>Hello</body></html>"}}\n```\n';
+      prompt += '```json\n{"tool":"edit_file","params":{"filePath":"src/app.js","oldText":"const x = 1","newText":"const x = 2"}}\n```\n';
+      prompt += '```json\n{"tool":"list_directory","params":{"dirPath":"."}}\n```\n';
+      prompt += 'You HAVE the tools listed below — use them. Do not say you cannot access files, the terminal, or the network when a tool can perform the task.\n';
+      prompt += 'Do not output full file content as chat prose — use write_file, edit_file, or append_to_file.\n';
+      prompt += 'Do not give manual step-by-step instructions when a tool can perform the action.\n';
+    }
     prompt += '\n### Tool-call formatting\n';
     prompt += 'Each tool call is ONE ```json block with ONE JSON object. All arguments go under `params`. Use plain double quotes. To perform N actions, emit N separate blocks.\n';
     prompt += '```json\n{"tool":"create_directory","params":{"path":"src"}}\n```\n';
@@ -4834,7 +4858,20 @@ class MCPToolServer {
       prompt += '\n';
     }
 
-    prompt += `### Common patterns
+    if (planning) {
+      prompt += `### Plan workflow
+- **New build request**: create_directory(.guide/plans) → write_file(.guide/plans/{slug}.plan.md) → write_todos → short prose summary only
+- **Explore first** (optional): read_file, list_directory, grep_search, search_codebase, git_status
+- **Revise plan**: edit_file or write_file on existing .guide/plans/*.plan.md only
+
+### Rules
+- Use tool results as ground truth; do not fabricate tool output
+- If a tool fails, read the error and retry once with corrected parameters
+- Do not output implementation source in chat — write the plan to the plan file
+- Do not run terminal commands, browser, or web tools in Plan mode
+`;
+    } else {
+      prompt += `### Common patterns
 - **Web lookup**: web_search → fetch_webpage for top result URL(s) → answer from fetched text in the same continuation
 - **Project files**: read_file (known path), grep_search or search_codebase (unknown location), list_directory (folder listing)
 - **Edit existing file**: read_file → edit_file with exact oldText/newText from the file
@@ -4848,6 +4885,7 @@ class MCPToolServer {
 - If a tool fails, read the error and retry once with corrected parameters
 - Do not output substantive file content as chat prose — use file tools
 `;
+    }
     return prompt;
   }
 

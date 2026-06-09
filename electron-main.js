@@ -625,9 +625,10 @@ function buildAgentModeTooling(mcpToolServer, settings, enableSubAgents) {
   mcpToolServer.setAgentContext({ planMode: mode.planMode, agentPhase: mode.agentPhase });
   const allDefs = mcpToolServer.getToolDefinitions();
   const filteredDefs = filterToolDefinitions(allDefs, mode.allowedTools);
-  let toolPrompt = mode.toolsActive ? mcpToolServer.getToolPromptForTools(filteredDefs) : '';
+  const toolPromptOpts = { planning: mode.planning };
+  let toolPrompt = mode.toolsActive ? mcpToolServer.getToolPromptForTools(filteredDefs, toolPromptOpts) : '';
   const compactToolParts = mode.toolsActive
-    ? mcpToolServer.getCompactToolHint('default', { toolDefs: filteredDefs })
+    ? mcpToolServer.getCompactToolHint('default', { toolDefs: filteredDefs, planning: mode.planning })
     : [];
   let compactToolPrompt = compactToolParts.join('');
   if (enableSubAgents && toolPrompt) {
