@@ -9,10 +9,11 @@ const {
   listAssetsForProfile,
 } = require('./mediaAssetsCatalog');
 
-function githubHeaders() {
+function downloadHeaders(url) {
   const headers = { 'User-Agent': 'guIDE-media-assets' };
-  if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
-  if (process.env.HF_TOKEN) headers.Authorization = `Bearer ${process.env.HF_TOKEN}`;
+  if (process.env.HF_TOKEN && /huggingface\.co/i.test(url)) {
+    headers.Authorization = `Bearer ${process.env.HF_TOKEN}`;
+  }
   return headers;
 }
 
@@ -22,7 +23,7 @@ function downloadFile(url, dest, { onProgress, expectedBytes } = {}) {
     const tmp = `${dest}.part`;
     const file = fs.createWriteStream(tmp);
     const req = (u) => {
-      https.get(u, { headers: githubHeaders() }, (res) => {
+      https.get(u, { headers: downloadHeaders(u) }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           file.close();
           fs.unlink(tmp, () => {});

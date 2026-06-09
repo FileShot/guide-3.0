@@ -96,6 +96,12 @@ jobs:
       - name: Bundle stable-diffusion.cpp (Windows CPU)
         run: node scripts/fetch-sd-cpp.js
 
+      - name: Cache media assets
+        uses: actions/cache@v4
+        with:
+          path: resources/media-assets
+          key: media-assets-v2-${{ hashFiles('mediaAssetsCatalog.js') }}
+
       - name: Bundle media assets (VAE, encoders)
         run: node scripts/fetch-media-assets.js
         env:
@@ -189,6 +195,12 @@ jobs:
 
       - name: Bundle stable-diffusion.cpp (Windows CUDA)
         run: node scripts/fetch-sd-cpp.js
+
+      - name: Cache media assets
+        uses: actions/cache@v4
+        with:
+          path: resources/media-assets
+          key: media-assets-v2-${{ hashFiles('mediaAssetsCatalog.js') }}
 
       - name: Bundle media assets (VAE, encoders)
         run: node scripts/fetch-media-assets.js
