@@ -202,6 +202,10 @@ const useAppStore = create((set, get) => ({
 
   availableModels: [],
 
+  activeMediaModel: null,
+
+  setActiveMediaModel: (activeMediaModel) => set({ activeMediaModel }),
+
   setModelState: (state) => {
 
     set(state);
@@ -317,6 +321,7 @@ const useAppStore = create((set, get) => ({
       streamingFileBlocks: [],
       streamingSegments: [],
       streamingToolCalls: [],
+      streamingMediaItems: [],
       messageQueue: [],
       todos: [],
       _fileTokenBuffer: null,
@@ -608,6 +613,20 @@ const useAppStore = create((set, get) => ({
 
   activeChatEpoch: null,
 
+  chatSessionId: null,
+
+  pendingFreshChatSession: false,
+
+  markPendingFreshChatSession: () => set({ pendingFreshChatSession: true, chatSessionId: null }),
+
+  ensureChatSessionId: () => {
+    const s = get();
+    if (!s.pendingFreshChatSession && s.chatSessionId) return s.chatSessionId;
+    const id = `s-${Date.now()}`;
+    set({ chatSessionId: id, pendingFreshChatSession: false });
+    return id;
+  },
+
   bumpChatGenerationEpoch: () => set((s) => ({
     chatGenerationEpoch: s.chatGenerationEpoch + 1,
     activeChatEpoch: null,
@@ -647,11 +666,119 @@ const useAppStore = create((set, get) => ({
 
   streamingToolCalls: [],    // [{functionName, params, status, startTime, result, duration}]
 
+  streamingMediaItems: [],   // [{status, prompt, src, mimeType, mediaType}]
+
   viewportNavigateUrl: null,
 
   setViewportNavigateUrl: (url) => set({ viewportNavigateUrl: url }),
 
   clearViewportNavigateUrl: () => set({ viewportNavigateUrl: null }),
+
+  applyMediaGenerating: (data) => {
+    const { prompt, messageId, mediaType = 'image' } = data || {};
+    const store = get();
+    if (messageId) {
+      const msgs = [...store.chatMessages];
+      const idx = msgs.findIndex((m) => m.id === messageId);
+      if (idx >= 0) {
+        msgs[idx] = { ...msgs[idx], mediaItems: [{ status: 'generating', prompt, mediaType }] };
+        set({ chatMessages: msgs });
+        persistProjectChatMessages(store.projectPath, msgs);
+      }
+      return;
+    }
+    if (store.chatStreaming) {
+      const segs = [...store.streamingSegments];
+      const mediaItems = [...store.streamingMediaItems];
+      const mediaIndex = mediaItems.length;
+      mediaItems.push({ status: 'generating', prompt, mediaType });
+      segs.push({ type: 'media', mediaIndex });
+      set({ streamingSegments: segs, streamingMediaItems: mediaItems });
+      return;
+    }
+    const msgs = [...store.chatMessages];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'assistant') {
+        msgs[i] = { ...msgs[i], mediaItems: [{ status: 'generating', prompt, mediaType }] };
+        set({ chatMessages: msgs });
+        persistProjectChatMessages(store.projectPath, msgs);
+        break;
+      }
+    }
+  },
+
+  applyMediaComplete: (data) => {
+    const { prompt, messageId, dataUrl, mimeType, mediaType = 'image' } = data || {};
+    const item = { status: 'complete', prompt, src: dataUrl, mimeType, mediaType };
+    const store = get();
+    if (messageId) {
+      const msgs = [...store.chatMessages];
+      const idx = msgs.findIndex((m) => m.id === messageId);
+      if (idx >= 0) {
+        msgs[idx] = {
+          ...msgs[idx],
+          mediaItems: [item],
+          content: msgs[idx].content || `Generated ${mediaType} for: ${prompt}`,
+        };
+        set({ chatMessages: msgs });
+        persistProjectChatMessages(store.projectPath, msgs);
+      }
+      return;
+    }
+    if (store.chatStreaming && store.streamingMediaItems.length > 0) {
+      const mediaItems = [...store.streamingMediaItems];
+      const lastIdx = mediaItems.length - 1;
+      if (mediaItems[lastIdx]?.status === 'generating') {
+        mediaItems[lastIdx] = item;
+        set({ streamingMediaItems: mediaItems });
+      }
+      return;
+    }
+    const msgs = [...store.chatMessages];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'assistant') {
+        msgs[i] = {
+          ...msgs[i],
+          mediaItems: [item],
+          content: msgs[i].content || `Generated ${mediaType} for: ${prompt}`,
+        };
+        set({ chatMessages: msgs });
+        persistProjectChatMessages(store.projectPath, msgs);
+        break;
+      }
+    }
+  },
+
+  applyMediaError: (data) => {
+    const { prompt, messageId, error } = data || {};
+    const store = get();
+    if (messageId) {
+      const msgs = [...store.chatMessages];
+      const idx = msgs.findIndex((m) => m.id === messageId);
+      if (idx >= 0) {
+        msgs[idx] = { ...msgs[idx], content: error || 'Media generation failed', isError: true, mediaItems: [] };
+        set({ chatMessages: msgs });
+        persistProjectChatMessages(store.projectPath, msgs);
+      }
+      return;
+    }
+    if (store.chatStreaming && store.streamingMediaItems.length > 0) {
+      const mediaItems = [...store.streamingMediaItems];
+      const lastIdx = mediaItems.length - 1;
+      mediaItems[lastIdx] = { ...mediaItems[lastIdx], status: 'error', error };
+      set({ streamingMediaItems: mediaItems });
+      return;
+    }
+    const msgs = [...store.chatMessages];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'assistant') {
+        msgs[i] = { ...msgs[i], content: error || 'Media generation failed', isError: true, mediaItems: [] };
+        set({ chatMessages: msgs });
+        persistProjectChatMessages(store.projectPath, msgs);
+        break;
+      }
+    }
+  },
 
   browserPreviewResetTick: 0,
 
@@ -773,6 +900,7 @@ const useAppStore = create((set, get) => ({
       streamingSegments: [],
       streamingFileBlocks: [],
       streamingToolCalls: [],
+      streamingMediaItems: [],
       activeStreamingFileKey: null,
       _textTokenBuffer: null,
       _textTokenTimer: null,
@@ -864,6 +992,7 @@ const useAppStore = create((set, get) => ({
       chatGeneratingTool: null,
       streamingSegments: [],
       streamingToolCalls: [],
+      streamingMediaItems: [],
       streamingFileBlocks: [],
       activeStreamingFileKey: null,
       _textTokenBuffer: null,
@@ -1694,6 +1823,8 @@ const useAppStore = create((set, get) => ({
 
       streamingToolCalls: [],
 
+      streamingMediaItems: [],
+
       messageQueue: [],
 
       todos: [],
@@ -1726,6 +1857,7 @@ const useAppStore = create((set, get) => ({
       streamingFileBlocks: [],
       streamingSegments: [],
       streamingToolCalls: [],
+      streamingMediaItems: [],
       _fileTokenBuffer: null,
       _fileTokenTimer: null,
       _textTokenBuffer: null,

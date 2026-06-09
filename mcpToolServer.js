@@ -879,9 +879,9 @@ class MCPToolServer {
       // ── Planning / TODO Tools ──
       {
         name: 'write_todos',
-        description: 'Create a todo list for multi-step builds only (skip for simple one-shot tasks). After write_todos, call update_todo for each item — in-progress when you start, done when you finish. Example done: {"tool":"update_todo","params":{"id":1,"status":"done"}}',
+        description: 'Create a todo list for multi-step builds only (skip for simple one-shot tasks). After write_todos, call update_todo for each item — in-progress when you start, done when you finish. Example: {"tool":"write_todos","params":{"items":["Step one","Step two"]}} or {"items":[{"text":"Step one","status":"pending"}]}. Example done: {"tool":"update_todo","params":{"id":1,"status":"done"}}',
         parameters: {
-          items: { type: 'array', description: 'Array of todo strings or {text,status} objects', required: true },
+          items: { type: 'array', description: 'Array of todo strings or {text,status} objects (title/description aliases accepted)', required: true },
         },
       },
       {
@@ -2813,12 +2813,23 @@ class MCPToolServer {
     if (!prompt) return { success: false, error: 'No prompt provided' };
     if (!this.imageGen) return { success: false, error: 'Image generation service not available' };
     try {
+      if (this._send) this._send('media-generating', { prompt, mediaType: 'image', fromTool: true });
       const result = await this.imageGen.generate(prompt.substring(0, 2000), {
         width: width || 1024,
         height: height || 1024,
       });
       if (!result.success) {
+        if (this._send) this._send('media-error', { prompt, error: result.error, fromTool: true });
         return { success: false, error: result.error || 'Image generation failed' };
+      }
+      if (this._send && result.imageBase64) {
+        this._send('media-complete', {
+          prompt,
+          mimeType: result.mimeType || 'image/png',
+          mediaType: result.mediaType || 'image',
+          dataUrl: `data:${result.mimeType || 'image/png'};base64,${result.imageBase64}`,
+          fromTool: true,
+        });
       }
       if (savePath) {
         const fullPath = path.isAbsolute(savePath) ? savePath : path.join(this.projectPath || '', savePath);
@@ -3673,7 +3684,10 @@ class MCPToolServer {
         text = item.trim();
         status = 'pending';
       } else if (item && typeof item === 'object') {
-        text = (item.text || item.content || '').toString().trim();
+        const title = (item.title || '').toString().trim();
+        const desc = (item.description || '').toString().trim();
+        const base = (item.text || item.content || title).toString().trim();
+        text = desc ? (base ? `${base}: ${desc}` : desc) : base;
         status = ['pending', 'in-progress', 'done'].includes(item.status) ? item.status : 'pending';
       } else {
         continue;
@@ -3692,6 +3706,14 @@ class MCPToolServer {
       created[0].status = 'in-progress';
       const stored = this._todos.find(t => t.id === created[0].id);
       if (stored) stored.status = 'in-progress';
+    }
+    if (created.length === 0) {
+      return {
+        success: false,
+        error: 'No valid todo items after normalization. Each item needs text (string) or {text,status}. Aliases title/description/content are accepted. Example: {"items":["Step one","Step two"]}',
+        created: [],
+        allTodos: [],
+      };
     }
     if (this.onTodoUpdate) this.onTodoUpdate([...this._todos]);
     return { success: true, created, allTodos: [...this._todos] };
@@ -4649,7 +4671,7 @@ class MCPToolServer {
       header += 'Plan mode examples (build requests):\n';
       header += '```json\n{"tool":"create_directory","params":{"path":".guide/plans"}}\n```\n';
       header += '```json\n{"tool":"write_file","params":{"filePath":".guide/plans/my-feature.plan.md","content":"---\\ntitle: My Feature\\noverview: ...\\n---\\n\\n## Summary\\n..."}}\n```\n';
-      header += '```json\n{"tool":"write_todos","params":{"todos":[{"id":"1","content":"First step","status":"pending"}]}}\n```\n';
+      header += '```json\n{"tool":"write_todos","params":{"items":[{"text":"First step","status":"pending"}]}}\n```\n';
       header += '```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n\n';
     } else {
       header += 'Examples:\n```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
@@ -4784,7 +4806,7 @@ class MCPToolServer {
     if (planning) {
       prompt += '```json\n{"tool":"create_directory","params":{"path":".guide/plans"}}\n```\n';
       prompt += '```json\n{"tool":"write_file","params":{"filePath":".guide/plans/my-feature.plan.md","content":"---\\ntitle: My Feature\\noverview: ...\\n---\\n\\n## Summary\\n..."}}\n```\n';
-      prompt += '```json\n{"tool":"write_todos","params":{"todos":[{"id":"1","content":"First step","status":"pending"}]}}\n```\n';
+      prompt += '```json\n{"tool":"write_todos","params":{"items":[{"text":"First step","status":"pending"}]}}\n```\n';
       prompt += '```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
       prompt += 'Plan mode: write_file and edit_file ONLY for `.guide/plans/*.plan.md`. Do not create application source files until Build.\n';
     } else {

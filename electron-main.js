@@ -215,6 +215,21 @@ ipcMain.handle('dialog-models-add', async () => {
   }
 });
 
+ipcMain.handle('dialog-media-aux', async (_e, { kind } = {}) => {
+  const filters = kind === 'vae'
+    ? [{ name: 'VAE', extensions: ['safetensors'] }]
+    : kind === 't5'
+      ? [{ name: 'T5 / Text Encoder', extensions: ['gguf', 'safetensors'] }]
+      : [{ name: 'CLIP / LLM Encoder', extensions: ['gguf', 'safetensors'] }];
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    title: 'Select auxiliary model file',
+    filters: [...filters, { name: 'All Files', extensions: ['*'] }],
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  return result.filePaths[0];
+});
+
 ipcMain.handle('shell-show-item', (_event, fullPath) => {
   if (typeof fullPath === 'string' && fullPath.length > 0) {
     shell.showItemInFolder(fullPath);
@@ -256,6 +271,8 @@ function applyModelRuntimeDefaults(modelPath) {
 const { MCPToolServer } = require('./mcpToolServer');
 const { MCPClient } = require('./mcpClient');
 const { ModelManager } = require('./modelManager');
+const { MediaEngine } = require('./mediaEngine');
+const { readGgufMetadata, detectModelTypeFromGguf } = require('./modelDetection');
 const { MemoryStore } = require('./memoryStore');
 const { LongTermMemory } = require('./longTermMemory');
 const { RulesManager } = require('./rulesManager');
@@ -346,6 +363,13 @@ const memoryStore = new MemoryStore();
 const longTermMemory = new LongTermMemory();
 const rulesManager = new RulesManager();
 const modelManager = new ModelManager(modelsBasePath);
+const mediaEngine = new MediaEngine({
+  userDataPath,
+  rootDir: ROOT_DIR,
+  getSettings: () => settingsManager.getAll(),
+  isPackaged: app.isPackaged,
+  resourcesPath: process.resourcesPath,
+});
 const sessionStore = new SessionStore(path.join(userDataPath, 'sessions'));
 const cloudLLM = new CloudLLMService();
 const modelDownloader = new ModelDownloader(path.join(ROOT_DIR, 'models'));
@@ -414,6 +438,7 @@ mcpToolServer.setBrowserManager(browserManager);
 mcpToolServer.setBrowserRouter(browserRouter);
 mcpToolServer.setGitManager(gitManager);
 mcpToolServer.rulesManager = rulesManager;
+mcpToolServer.setImageGen(mediaEngine);
 mcpToolServer.onTodoUpdate = (todos) => _send('todo-update', todos);
 mcpToolServer.onAskQuestion = (questionData) => {
   return new Promise((resolve) => {
@@ -558,6 +583,28 @@ function _send(event, data) {
   // Drop silently during shutdown — window destroyed is expected, not an error.
 }
 mcpToolServer._send = _send;
+
+async function runWithMediaVramPolicy(fn) {
+  const settings = settingsManager.getAll();
+  let unloadedLlm = false;
+  const lastPath = settings.lastModelPath;
+  if (settings.unloadLlmForMedia !== false && llmEngine.isReady) {
+    try { llmEngine.cancelGeneration('media-gen'); } catch (_) {}
+    await llmEngine.dispose();
+    unloadedLlm = true;
+    _send('model-unloaded', {});
+  }
+  try {
+    return await fn();
+  } finally {
+    if (unloadedLlm && settings.reloadLlmAfterMedia !== false && lastPath && fs.existsSync(lastPath)) {
+      applyModelRuntimeDefaults(lastPath);
+      llmEngine.initialize(lastPath, buildEngineLoadSettings(settingsManager.getAll()))
+        .then(() => { if (llmEngine.modelInfo) _send('model-loaded', llmEngine.modelInfo); })
+        .catch((e) => console.warn(`[Media] LLM reload after media failed: ${e.message}`));
+    }
+  }
+}
 
 // Forward main-process console output to renderer Output panel (IPC event pattern)
 const _origConsoleLog = console.log.bind(console);
@@ -1301,6 +1348,29 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/models/load' && method === 'POST') {
       const { modelPath } = body;
       if (!modelPath) return { _status: 400, error: 'modelPath required' };
+      const meta = await readGgufMetadata(modelPath);
+      const ggufType = meta ? detectModelTypeFromGguf(meta) : 'unknown';
+      if (ggufType === 'diffusion' || ggufType === 'video') {
+        try {
+          const status = await mediaEngine.load(modelPath);
+          settingsManager.set('lastImageModelPath', modelPath);
+          const info = { ...status, modelType: ggufType, path: modelPath };
+          _send('media-model-loaded', info);
+          console.log(`[MediaEngine] loaded arch=${status.ggufArchitecture} type=${ggufType}`);
+          return { success: true, modelInfo: info, media: true };
+        } catch (e) {
+          return { _status: 400, error: e.message };
+        }
+      }
+      if (ggufType === 'unknown') {
+        const arch = meta?.general?.architecture || '(missing)';
+        return {
+          _status: 400,
+          error: meta
+            ? `Unknown GGUF architecture "${arch}" — cannot load as LLM or media model`
+            : 'Could not read GGUF metadata — cannot determine model type',
+        };
+      }
       cloudLLM.activeProvider = null;
       cloudLLM.activeModel = null;
       settingsManager.set('lastCloudProvider', null);
@@ -1318,6 +1388,31 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       console.log(`[Settings] model-load DONE path=${modelPath} thinkingMode=${settingsManager.get('thinkingMode')}`);
       console.log(`[api-fetch] DONE POST /api/models/load ms=${Date.now() - _apiT0}`);
       return { success: true, modelInfo: info };
+    }
+    if (p === '/api/media/generate' && method === 'POST') {
+      const { prompt, width, height, steps, seed, videoFrames, messageId, mediaType } = body || {};
+      _send('media-generating', { prompt, messageId, mediaType });
+      const result = await runWithMediaVramPolicy(() => mediaEngine.generate(prompt, {
+        width, height, steps, seed, videoFrames,
+        offloadToCpu: settingsManager.get('gpuPreference') === 'cpu',
+      }));
+      if (result.success) {
+        const b64 = result.videoBase64 || result.imageBase64;
+        _send('media-complete', {
+          prompt,
+          messageId,
+          mimeType: result.mimeType,
+          mediaType: result.mediaType || 'image',
+          path: result.path,
+          dataUrl: `data:${result.mimeType};base64,${b64}`,
+        });
+      } else {
+        _send('media-error', { prompt, messageId, error: result.error, missing: result.missing });
+      }
+      return result;
+    }
+    if (p === '/api/media/status' && method === 'GET') {
+      return mediaEngine.getStatus();
     }
     if (p === '/api/models/unload' && method === 'POST') {
       await llmEngine.dispose();
@@ -1510,11 +1605,17 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       }
     }
     if (p === '/api/files/write' && method === 'POST') {
-      const { filePath, content, formatOnSave: doFormat } = body;
+      const { filePath, content, formatOnSave: doFormat, encoding } = body;
       if (!filePath) return { _status: 400, error: 'filePath required' };
       const fullPath = path.isAbsolute(filePath) ? filePath : path.join(currentProjectPath || '', filePath);
       let finalContent = content || '';
       let formatResult = null;
+      if (encoding === 'base64') {
+        fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+        fs.writeFileSync(fullPath, Buffer.from(finalContent, 'base64'));
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('files-changed');
+        return { success: true, path: fullPath, binary: true };
+      }
       if (doFormat !== false && settingsManager.get('formatOnSave') !== false) {
         formatResult = await formatOnSave({
           content: finalContent,
@@ -2851,6 +2952,13 @@ app.whenReady().then(async () => {
       cloudLLM.activeModel = settingsManager.get('lastCloudModel') || null;
       console.log(`[Main] Skipping local auto-load — last session used cloud (${lastCloud})`);
       return;
+    }
+    const lastImagePath = settingsManager.get('lastImageModelPath');
+    if (lastImagePath && models.find((m) => m.path === lastImagePath)) {
+      mediaEngine.load(lastImagePath).then((status) => {
+        _send('media-model-loaded', { ...status, path: lastImagePath });
+        console.log(`[Main] Restored media model: ${path.basename(lastImagePath)} arch=${status.ggufArchitecture}`);
+      }).catch((e) => console.warn(`[Main] Media model restore failed: ${e.message}`));
     }
     if (!llmEngine.isReady && models.length > 0) {
       const lastPath = settingsManager.get('lastModelPath');

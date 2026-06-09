@@ -35,6 +35,9 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Run unit tests
+        run: npm test
+
       - id: version
         shell: bash
         run: |
@@ -89,6 +92,9 @@ jobs:
         env:
           WHISPER_PLATFORM: win32
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bundle stable-diffusion.cpp (Windows CPU)
+        run: node scripts/fetch-sd-cpp.js
 
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)
@@ -165,6 +171,9 @@ jobs:
         env:
           WHISPER_PLATFORM: win32
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bundle stable-diffusion.cpp (Windows CUDA)
+        run: node scripts/fetch-sd-cpp.js
 
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)

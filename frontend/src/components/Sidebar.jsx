@@ -18,7 +18,7 @@ import {
   Save, RotateCcw, Zap, Scale, Brain, Cpu, Monitor, Type,
   FolderOpen, ExternalLink, Play,
   Package, Star, Download, Upload,
-  Pause, SkipForward, ArrowDownRight, ArrowUpRight, Square, Bug, AlertTriangle, Eye, Shield, Mic
+  Pause, SkipForward, ArrowDownRight, ArrowUpRight, Square, Bug, AlertTriangle, Eye, Shield, Mic, ImageIcon
 } from 'lucide-react';
 import { openFileFromReadResponse } from '../utils/openFileFromRead';
 import isPocket from '../lib/isPocket';
@@ -1605,6 +1605,72 @@ function UpdatesSettings({ settings, updateSetting }) {
   );
 }
 
+function MediaSettings({ settings, updateSetting, addNotification }) {
+  const activeMediaModel = useAppStore(s => s.activeMediaModel);
+  const [sdStatus, setSdStatus] = useState(null);
+
+  const refreshSdStatus = useCallback(() => {
+    fetch('/api/media/status').then(r => r.json()).then(setSdStatus).catch(() => setSdStatus(null));
+  }, []);
+
+  useEffect(() => { refreshSdStatus(); }, [activeMediaModel, refreshSdStatus]);
+
+  const pickAux = useCallback(async (kind, settingKey) => {
+    const picked = await window.electronAPI?.pickMediaAuxFile?.(kind);
+    if (picked) updateSetting(settingKey, picked);
+  }, [updateSetting]);
+
+  return (
+    <SettingsSection title="Media Generation" icon={<ImageIcon size={13} />} keywords="media image video flux wan vae clip t5 stable diffusion sd.cpp">
+      <div className="text-[10px] text-vsc-text-dim mb-2">
+        Flux and Wan models need auxiliary files beyond the diffusion GGUF. See{' '}
+        <a className="text-vsc-accent hover:underline" href="https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/wan.md" onClick={e => { e.preventDefault(); window.electronAPI?.openExternal?.('https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/wan.md'); }}>sd.cpp docs</a>.
+      </div>
+      {activeMediaModel?.modelPath ? (
+        <div className="text-[11px] mb-2 text-vsc-text">
+          Loaded: <span className="font-mono text-purple-300">{activeMediaModel.modelPath.split(/[/\\]/).pop()}</span>
+          {activeMediaModel.ggufArchitecture && (
+            <span className="ml-1 text-vsc-text-dim">({activeMediaModel.ggufArchitecture})</span>
+          )}
+        </div>
+      ) : (
+        <div className="text-[11px] mb-2 text-vsc-text-dim">No media model loaded — pick a diffusion/video GGUF from the model menu.</div>
+      )}
+      <div className="mb-2">
+        <span className="text-[11px] text-vsc-text-dim">Bundled sd.exe: </span>
+        <span className={sdStatus?.sdBinaryFound ? 'text-vsc-success text-[11px]' : 'text-vsc-warning text-[11px]'}>
+          {sdStatus?.sdBinaryFound ? 'found' : 'missing — run node scripts/fetch-sd-cpp.js'}
+        </span>
+      </div>
+      {[
+        { kind: 'vae', key: 'mediaVaePath', label: 'VAE (.safetensors)' },
+        { kind: 'clip', key: 'mediaClipPath', label: 'CLIP / LLM encoder (Flux)' },
+        { kind: 't5', key: 'mediaT5Path', label: 'T5 encoder (Wan video)' },
+      ].map(({ kind, key, label }) => (
+        <div key={key} className="mb-2">
+          <label className="text-[11px] text-vsc-text-dim block mb-1">{label}</label>
+          <div className="flex gap-1">
+            <input
+              type="text"
+              className="flex-1 text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
+              value={settings[key] || ''}
+              onChange={e => updateSetting(key, e.target.value)}
+              placeholder="Path to auxiliary model file"
+            />
+            <button type="button" className="btn btn-secondary text-[10px] px-2 shrink-0" onClick={() => pickAux(kind, key)}>Browse…</button>
+          </div>
+        </div>
+      ))}
+      <SettingToggle label="Unload LLM for media generation" value={settings.unloadLlmForMedia !== false}
+        onChange={v => updateSetting('unloadLlmForMedia', v)}
+        hint="Frees VRAM before image/video generation on GPUs with limited memory (recommended under 12GB)." />
+      <SettingToggle label="Reload LLM after media" value={settings.reloadLlmAfterMedia !== false}
+        onChange={v => updateSetting('reloadLlmAfterMedia', v)}
+        hint="Restore the last chat model after media generation completes." />
+    </SettingsSection>
+  );
+}
+
 function SettingsPanel() {
   const modelInfo = useAppStore(s => s.modelInfo);
   const availableModels = useAppStore(s => s.availableModels);
@@ -2146,6 +2212,8 @@ function SettingsPanel() {
           <div className="text-[10px] text-vsc-text-dim mt-1">Lower quantization = more context in same VRAM; Q8 is the recommended default. Affects KV cache only, not model weights.</div>
         </div>
       </SettingsSection>
+
+      <MediaSettings settings={settings} updateSetting={updateSetting} addNotification={addNotification} />
 
       {/* Editor */}
       <LspLanguagesSettings addNotification={addNotification} />

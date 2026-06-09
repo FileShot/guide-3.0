@@ -149,6 +149,15 @@ async function main() {
   ensureDir(DIST_DIR);
   const outputs = [];
 
+  log('Fetching stable-diffusion.cpp binaries...');
+  const fetchSd = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'fetch-sd-cpp.js')], {
+    cwd: ROOT,
+    stdio: 'inherit',
+  });
+  if (fetchSd.status !== 0) {
+    throw new Error('fetch-sd-cpp.js failed — cannot bundle media inference');
+  }
+
   // ── CUDA installer ──────────────────────────────────────────────────────────
   if (buildCuda) {
     log('═══════════════════════════════════════');

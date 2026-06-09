@@ -8,10 +8,11 @@ import Sidebar from './Sidebar';
 import EditorArea from './EditorArea';
 import Notifications from './Notifications';
 import ComposerPanel from './ComposerPanel';
-import { Files, MessageSquare, Terminal, Settings, X, ChevronLeft } from 'lucide-react';
+import { Files, MessageSquare, Terminal, Settings, Globe, X, ChevronLeft } from 'lucide-react';
 
 const BottomPanel = lazy(() => import('./BottomPanel'));
 const ChatPanel = lazy(() => import('./ChatPanel'));
+const BrowserPanel = lazy(() => import('./BrowserPanel'));
 const CommandPalette = lazy(() => import('./CommandPalette'));
 
 const LazyFallback = () => (
@@ -118,6 +119,7 @@ function MobileToolbar({ onFiles, onSettings, mobileMode, onModeChange }) {
       </button>
       {modeBtn('chat', 'Chat', MessageSquare)}
       {modeBtn('terminal', 'Terminal', Terminal)}
+      {modeBtn('browser', 'Browser', Globe)}
       <button
         type="button"
         className={`pocket-mobile-toolbar-btn ${settingsActive ? 'active' : ''}`}
@@ -180,6 +182,14 @@ export default function PocketMobileLayout() {
   const closeDrawer = () => useAppStore.setState({ sidebarVisible: false });
   const drawerTitle = activeActivity === 'settings' ? 'Settings' : 'Explorer';
 
+  const handleModeChange = (mode) => {
+    setMobileMode(mode);
+    if (mode === 'browser') {
+      closeDrawer();
+      useAppStore.getState().openBrowserTab();
+    }
+  };
+
   const editorFlex = splitRatio;
   const bottomFlex = 1 - splitRatio;
 
@@ -189,7 +199,7 @@ export default function PocketMobileLayout() {
         onFiles={openExplorer}
         onSettings={openSettings}
         mobileMode={mobileMode}
-        onModeChange={setMobileMode}
+        onModeChange={handleModeChange}
       />
       <div ref={mainRef} className="flex-1 flex flex-col min-h-0 relative overflow-hidden">
         <div className="min-h-0 overflow-hidden flex flex-col" style={{ flex: `${editorFlex} 1 0%` }}>
@@ -199,7 +209,13 @@ export default function PocketMobileLayout() {
         <SplitHandle onStart={startSplitDrag} />
         <div className="min-h-0 overflow-hidden flex flex-col border-t border-vsc-panel-border/40" style={{ flex: `${bottomFlex} 1 0%` }}>
           <Suspense fallback={<LazyFallback />}>
-            {mobileMode === 'terminal' ? <BottomPanel /> : <ChatPanel />}
+            {mobileMode === 'terminal' ? (
+              <BottomPanel />
+            ) : mobileMode === 'browser' ? (
+              <BrowserPanel />
+            ) : (
+              <ChatPanel />
+            )}
           </Suspense>
         </div>
         <div className={`pocket-mobile-drawer ${sidebarVisible ? 'pocket-mobile-drawer-open' : ''}`} aria-hidden={!sidebarVisible}>

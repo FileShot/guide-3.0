@@ -18,6 +18,7 @@ import ToolCallCard from './chat/ToolCallCard';
 import SlideDown from './SlideDown';
 
 import FileContentBlock from './chat/FileContentBlock';
+import MediaBlock from './chat/MediaBlock';
 import MentionPicker from './MentionPicker';
 import { blobToWav } from '../utils/audioToWav';
 import { openFileFromReadResponse } from '../utils/openFileFromRead';
@@ -61,6 +62,36 @@ function quotaErrorFlags(errorText, result = {}) {
   const needsAccount =
     result.needsAccount != null ? !!result.needsAccount : usageLimit ? true : undefined;
   return { usageLimit, needsAccount };
+}
+
+/** Persist chat to guide-chat-sessions (sync; used before New Chat wipe). */
+function saveChatSessionToHistory(messages, projectPath) {
+  if (!messages?.length) return null;
+  try {
+    const userMsg = messages.find((m) => m.role === 'user');
+    const title = userMsg?.content?.slice(0, 60) || 'Chat session';
+    const store = useAppStore.getState();
+    const sessionId = store.chatSessionId || messages[0]?.id || `s-${Date.now()}`;
+    const raw = localStorage.getItem('guide-chat-sessions');
+    const existing = raw ? JSON.parse(raw) : [];
+    const filtered = existing.filter((s) => s.id !== sessionId);
+    const sameProject = filtered.filter((s) => s.projectPath === (projectPath || null));
+    const otherProjects = filtered.filter((s) => s.projectPath !== (projectPath || null));
+    const planSnapshot = store.planSession ? { ...store.planSession } : null;
+    const updatedSame = [{
+      id: sessionId,
+      title,
+      messages,
+      timestamp: Date.now(),
+      projectPath: projectPath || null,
+      planSession: planSnapshot,
+    }, ...sameProject].slice(0, 10);
+    const updated = [...updatedSame, ...otherProjects];
+    localStorage.setItem('guide-chat-sessions', JSON.stringify(updated));
+    return updated;
+  } catch (_) {
+    return null;
+  }
 }
 
 const FILE_WRITE_TOOL_NAMES = new Set(['write_file', 'create_file', 'append_to_file']);
@@ -457,6 +488,55 @@ function StreamingHeader() {
 
 
 
+async function saveMediaToProject(item) {
+  const projectPath = useAppStore.getState().projectPath;
+  if (!projectPath || !item?.src) return;
+  const isVideo = item.mediaType === 'video';
+  const ext = isVideo ? 'mp4' : 'png';
+  const relPath = `generated/${Date.now()}.${ext}`;
+  const base64 = item.src.includes(',') ? item.src.split(',')[1] : item.src;
+  try {
+    const res = await fetch('/api/files/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath: relPath, content: base64, encoding: 'base64', formatOnSave: false }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      useAppStore.getState().addNotification?.({ type: 'info', message: `Saved to ${relPath}` });
+    } else {
+      useAppStore.getState().addNotification?.({ type: 'error', message: data.error || 'Save failed' });
+    }
+  } catch (e) {
+    useAppStore.getState().addNotification?.({ type: 'error', message: e.message || 'Save failed' });
+  }
+}
+
+async function runMediaCommand(prompt, mediaType = 'image') {
+  if (!prompt?.trim()) return;
+  useAppStore.getState().ensureChatSessionId();
+  useAppStore.getState().addChatMessage({ role: 'user', content: `/${mediaType === 'video' ? 'video' : 'image'} ${prompt}` });
+  const assistantIdx = useAppStore.getState().addChatMessage({
+    role: 'assistant',
+    content: '',
+    mediaItems: [{ status: 'generating', prompt, mediaType }],
+  });
+  const msgId = useAppStore.getState().chatMessages[assistantIdx]?.id;
+  try {
+    const res = await fetch('/api/media/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, messageId: msgId, mediaType }),
+    });
+    const data = await res.json();
+    if (!data.success && msgId) {
+      useAppStore.getState().applyMediaError({ messageId: msgId, prompt, error: data.error });
+    }
+  } catch (e) {
+    if (msgId) useAppStore.getState().applyMediaError({ messageId: msgId, prompt, error: e.message });
+  }
+}
+
 // R44-Fix-2: Stable Footer component — defined at module level so Virtuoso
 
 // receives a stable function reference. Reads state from store directly,
@@ -484,6 +564,7 @@ function StreamingFooter() {
   const chatIteration = useAppStore(s => s.chatIteration);
 
   const streamingSegments = useAppStore(s => s.streamingSegments);
+  const streamingMediaItems = useAppStore(s => s.streamingMediaItems);
 
   const streamingFileBlocks = useAppStore(s => s.streamingFileBlocks);
 
@@ -680,6 +761,40 @@ function StreamingFooter() {
 
         }
 
+        if (seg.type === 'media') {
+          const item = streamingMediaItems[seg.mediaIndex];
+          if (!item) return null;
+          if (item.status === 'generating') {
+            return (
+              <div key={`seg-media-${seg.mediaIndex}`} className="my-2 text-sm text-vsc-fg-dim flex items-center gap-2">
+                <Loader size={14} className="animate-spin" />
+                Generating {item.mediaType === 'video' ? 'video' : 'image'}…
+              </div>
+            );
+          }
+          if (item.status === 'error') {
+            return (
+              <div key={`seg-media-${seg.mediaIndex}`} className="my-2 text-sm text-red-400">
+                {item.error || 'Media generation failed'}
+              </div>
+            );
+          }
+          if (item.src) {
+            return (
+              <MediaBlock
+                key={`seg-media-${seg.mediaIndex}`}
+                src={item.src}
+                mimeType={item.mimeType}
+                prompt={item.prompt}
+                mediaType={item.mediaType || 'image'}
+                onRetry={item.prompt ? () => runMediaCommand(item.prompt, item.mediaType || 'image') : undefined}
+                onSaveToProject={item.src ? () => saveMediaToProject(item) : undefined}
+              />
+            );
+          }
+          return null;
+        }
+
         if (seg.type === 'tool') {
 
           const tc = streamingToolCalls[seg.toolIndex];
@@ -750,6 +865,8 @@ export default function ChatPanel() {
 
   const chatMessages = useAppStore(s => s.chatMessages);
 
+  const chatGenerationEpoch = useAppStore(s => s.chatGenerationEpoch);
+
   const chatStreaming = useAppStore(s => s.chatStreaming);
 
   const chatStreamingText = useAppStore(s => s.chatStreamingText);
@@ -807,6 +924,7 @@ export default function ChatPanel() {
   const streamingFileBlocks = useAppStore(s => s.streamingFileBlocks);
 
   const streamingSegments = useAppStore(s => s.streamingSegments);
+  const streamingMediaItems = useAppStore(s => s.streamingMediaItems);
 
   const streamingToolCalls = useAppStore(s => s.streamingToolCalls);
 
@@ -889,6 +1007,8 @@ export default function ChatPanel() {
 
   const sessionSaveTimerRef = useRef(null);
 
+  const clearInProgressRef = useRef(false);
+
   const historyMenuRef = useRef(null);
 
   const historyPopoverRef = useRef(null);
@@ -955,43 +1075,9 @@ export default function ChatPanel() {
 
     sessionSaveTimerRef.current = setTimeout(() => {
 
-      try {
+      const updated = saveChatSessionToHistory(chatMessages, projectPath);
 
-        const userMsg = chatMessages.find(m => m.role === 'user');
-
-        const title = userMsg?.content?.slice(0, 60) || 'Chat session';
-
-        const sessionId = chatMessages[0]?.id || `s-${Date.now()}`;
-
-        const raw = localStorage.getItem('guide-chat-sessions');
-
-        const existing = raw ? JSON.parse(raw) : [];
-
-        // Replace existing session with same first message id, or prepend
-
-        const filtered = existing.filter(s => s.id !== sessionId);
-
-        const sameProject = filtered.filter(s => s.projectPath === (projectPath || null));
-
-        const otherProjects = filtered.filter(s => s.projectPath !== (projectPath || null));
-
-        const planSnapshot = useAppStore.getState().planSession;
-        const updatedSame = [{
-          id: sessionId,
-          title,
-          messages: chatMessages,
-          timestamp: Date.now(),
-          projectPath: projectPath || null,
-          planSession: planSnapshot ? { ...planSnapshot } : null,
-        }, ...sameProject].slice(0, 10);
-
-        const updated = [...updatedSame, ...otherProjects];
-
-        localStorage.setItem('guide-chat-sessions', JSON.stringify(updated));
-
-        setSavedSessions(updated);
-
-      } catch (_) {}
+      if (updated) setSavedSessions(updated);
 
     }, 3000);
 
@@ -1476,6 +1562,22 @@ export default function ChatPanel() {
 
     if (!text) return;
 
+    useAppStore.getState().ensureChatSessionId();
+
+    const mediaModel = useAppStore.getState().activeMediaModel;
+    if (mediaModel?.modelPath && /^\/(image|img)\s+/i.test(text)) {
+      const prompt = text.replace(/^\/(image|img)\s+/i, '').trim();
+      if (!prompt) return;
+      await runMediaCommand(prompt, 'image');
+      return;
+    }
+    if (mediaModel?.modelPath && /^\/video\s+/i.test(text)) {
+      const prompt = text.replace(/^\/video\s+/i, '').trim();
+      if (!prompt) return;
+      await runMediaCommand(prompt, 'video');
+      return;
+    }
+
     const effectiveChatMode = overrideChatMode || chatMode;
     const effectivePlanMode = overridePlanMode !== undefined ? overridePlanMode : effectiveChatMode === 'plan';
     const effectiveAgentPhase = agentPhase || (effectivePlanMode ? 'planning' : 'agent');
@@ -1888,6 +1990,8 @@ export default function ChatPanel() {
 
       const messageFileBlocks = [];
 
+      const messageMediaItems = [];
+
 
 
       if (segments.length > 0) {
@@ -1947,6 +2051,12 @@ export default function ChatPanel() {
 
             messageSegments.push({ type: 'tool', toolIndex: seg.toolIndex });
 
+          } else if (seg.type === 'media') {
+            const mediaItem = state.streamingMediaItems[seg.mediaIndex];
+            if (mediaItem?.src) {
+              messageSegments.push({ type: 'media', mediaIndex: messageMediaItems.length });
+              messageMediaItems.push(mediaItem);
+            }
           }
 
         }
@@ -2197,6 +2307,8 @@ export default function ChatPanel() {
           segments: messageSegments.length > 0 ? messageSegments : undefined,
 
           fileBlocks: messageFileBlocks.length > 0 ? messageFileBlocks : undefined,
+
+          mediaItems: messageMediaItems.length > 0 ? messageMediaItems : undefined,
 
           toolCalls: hasToolCalls ? finalToolCalls : undefined,
 
@@ -2567,43 +2679,71 @@ export default function ChatPanel() {
 
   const handleClear = useCallback(async () => {
 
+    if (clearInProgressRef.current) return;
+
+    clearInProgressRef.current = true;
+
     try {
 
-      if (useAppStore.getState().chatStreaming) {
+      const store = useAppStore.getState();
 
-        if (window.electronAPI?.agentPause) {
+      try {
 
-          await window.electronAPI.agentPause();
+        if (store.chatStreaming) {
 
-        } else {
+          if (window.electronAPI?.agentPause) {
 
-          await (await import('../api/websocket')).invoke('agent-pause');
+            await window.electronAPI.agentPause();
+
+          } else {
+
+            await (await import('../api/websocket')).invoke('agent-pause');
+
+          }
 
         }
 
+      } catch (_) {}
+
+      store.resetChatStreamingUI();
+
+      const msgs = store.chatMessages;
+
+      if (msgs.length > 0) {
+
+        const updated = saveChatSessionToHistory(msgs, projectPath);
+
+        if (updated) setSavedSessions(updated);
+
       }
 
-    } catch (_) {}
+      persistCurrentConversationPlan();
 
-    useAppStore.getState().bumpChatGenerationEpoch();
+      store.markPendingFreshChatSession();
 
-    window.electronAPI?.cancelPendingQuestion?.();
+      store.bumpChatGenerationEpoch();
 
-    persistCurrentConversationPlan();
+      window.electronAPI?.cancelPendingQuestion?.();
 
-    clearChat();
+      clearChat();
 
-    setActiveConversationId('current');
+      setActiveConversationId('current');
 
-    try {
+      try {
 
-      await fetch('/api/session/clear', { method: 'POST' });
+        await fetch('/api/session/clear', { method: 'POST' });
 
-      await window.electronAPI?.revertContext?.([]);
+        await window.electronAPI?.revertContext?.([]);
 
-    } catch (_) {}
+      } catch (_) {}
 
-  }, [clearChat, persistCurrentConversationPlan]);
+    } finally {
+
+      clearInProgressRef.current = false;
+
+    }
+
+  }, [clearChat, persistCurrentConversationPlan, projectPath]);
 
 
 
@@ -3020,11 +3160,17 @@ export default function ChatPanel() {
 
         <Virtuoso
 
+          key={chatGenerationEpoch}
+
           ref={virtuosoRef}
 
           data={chatMessages}
 
           computeItemKey={(_idx, msg) => String(msg.insertionSeq ?? msg.id ?? _idx)}
+
+          increaseViewportBy={{ top: 600, bottom: 800 }}
+
+          defaultItemHeight={120}
 
           followOutput="auto"
 
@@ -3195,6 +3341,25 @@ export default function ChatPanel() {
 
                       <>
 
+                      {Array.isArray(msg.mediaItems) && msg.mediaItems.length > 0 && msg.mediaItems.map((item, mi) => (
+                        item.status === 'generating' ? (
+                          <div key={`media-${mi}`} className="my-2 text-sm text-vsc-fg-dim flex items-center gap-2">
+                            <Loader size={14} className="animate-spin" />
+                            Generating image…
+                          </div>
+                        ) : item.src ? (
+                          <MediaBlock
+                            key={`media-${mi}`}
+                            src={item.src}
+                            mimeType={item.mimeType}
+                            prompt={item.prompt}
+                            mediaType={item.mediaType || 'image'}
+                            onRetry={item.prompt ? () => runMediaCommand(item.prompt, item.mediaType || 'image') : undefined}
+                            onSaveToProject={() => saveMediaToProject(item)}
+                          />
+                        ) : null
+                      ))}
+
                       {/* R35-L4: Use segments + FileContentBlock for file blocks when available */}
 
                       {msg.segments && (msg.fileBlocks || msg.toolCalls || msg.segments.some(s => s.type === 'thinking')) ? (
@@ -3228,6 +3393,22 @@ export default function ChatPanel() {
 
                             return renderFileBlock(block, `file-${i}`);
 
+                          }
+
+                          if (seg.type === 'media') {
+                            const item = msg.mediaItems?.[seg.mediaIndex];
+                            if (!item?.src) return null;
+                            return (
+                              <MediaBlock
+                                key={`media-seg-${i}`}
+                                src={item.src}
+                                mimeType={item.mimeType}
+                                prompt={item.prompt}
+                                mediaType={item.mediaType || 'image'}
+                                onRetry={item.prompt ? () => runMediaCommand(item.prompt, item.mediaType || 'image') : undefined}
+                                onSaveToProject={() => saveMediaToProject(item)}
+                              />
+                            );
                           }
 
                           if (seg.type === 'tool') {
@@ -4750,6 +4931,8 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
   const addNotification = useAppStore(s => s.addNotification);
 
+  const activeMediaModel = useAppStore(s => s.activeMediaModel);
+
   const modelLoading = useAppStore(s => s.modelLoading);
 
   const modelLoadProgress = useAppStore(s => s.modelLoadProgress);
@@ -4997,6 +5180,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
   const llmModels = (models || []).filter(m => m.modelType === 'llm' || !m.modelType);
 
   const diffusionModels = (models || []).filter(m => m.modelType === 'diffusion');
+  const videoModels = (models || []).filter(m => m.modelType === 'video');
 
   const filtered = searchFilter
 
@@ -6319,7 +6503,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                   className={`w-full text-left px-2 py-1.5 text-[11px] hover:bg-purple-900/20 flex items-center gap-2 ${
 
-                    currentModel?.activeImageModelPath === m.path ? 'bg-purple-900/20' : ''
+                    activeMediaModel?.modelPath === m.path ? 'bg-purple-900/20' : ''
 
                   }`}
 
@@ -6365,7 +6549,40 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
           )}
 
-
+          {videoModels.length > 0 && (
+            <>
+              <div className="px-2 py-1 text-[10px] text-pink-400 tracking-wider bg-vsc-sidebar/80 border-b border-vsc-panel-border/15 border-t flex items-center gap-1">
+                <ImageIcon size={10} /> Video Models
+              </div>
+              {videoModels.map(m => (
+                <button
+                  key={m.path}
+                  className={`w-full text-left px-2 py-1.5 text-[11px] hover:bg-pink-900/20 flex items-center gap-2 ${
+                    activeMediaModel?.modelPath === m.path ? 'bg-pink-900/20' : ''
+                  }`}
+                  onClick={() => {
+                    setCloudProvider(null);
+                    setCloudModel(null);
+                    fetch('/api/models/load', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ modelPath: m.path }),
+                    });
+                    onClose();
+                  }}
+                >
+                  <ImageIcon size={11} className="flex-shrink-0 text-pink-400" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-vsc-text flex items-center gap-1">
+                      {m.name}
+                      <span className="text-[9px] px-1 rounded bg-pink-900/40 text-pink-300">video</span>
+                    </div>
+                    <div className="text-[10px] text-vsc-text-dim">{m.sizeFormatted}{m.ggufArchitecture && <> &bull; {m.ggufArchitecture}</>}</div>
+                  </div>
+                </button>
+              ))}
+            </>
+          )}
 
           {/* Add Model Files + Rescan */}
 

@@ -1,5 +1,8 @@
 'use strict';
 
+const { getGenerationProfile } = require('./generationProfiles');
+const { detectFamilyFromArch } = require('./modelDetection');
+
 // ─── Tier Boundaries ───
 const TIER_BOUNDARIES = {
   tiny:   { min: 0,  max: 1 },
@@ -60,15 +63,10 @@ const BASE_DEFAULTS = {
   },
 };
 
-// ─── Family Profiles ───
+// ─── Family Profiles (context/prompt/generation tiers only — sampling in generationProfiles.js) ───
 const FAMILY_PROFILES = {
   qwen: {
-    // Official Qwen 3.5/3.6 recommended settings from https://unsloth.ai/docs/models/qwen3.5
-    // Thinking mode (default): temp=0.6, topP=0.95, topK=20, repeatPenalty=1.0, presencePenalty=0
-    // Instruct (non-thinking): temp=0.7, topP=0.8, topK=20, repeatPenalty=1.0, presencePenalty=1.5
     base: {
-      sampling: { temperature: 0.6, topP: 0.95, topK: 20, repeatPenalty: 1.0, presencePenalty: 0 },
-      samplingInstruct: { temperature: 0.7, topP: 0.8, topK: 20, repeatPenalty: 1.0, presencePenalty: 1.5 },
       thinkTokens: { mode: 'budget', budget: 2048 },
     },
     tiny: {
@@ -503,28 +501,54 @@ function deepMerge(target, source) {
 }
 
 // ─── Profile Resolution ───
-function getModelProfile(family, paramSize) {
+/**
+ * Resolve model profile by GGUF architecture string (preferred) or legacy family name.
+ * @param {string} ggufArchOrFamily - metadata.general.architecture (e.g. qwen35) or family fallback
+ * @param {number} paramSize - parameter count in billions
+ * @param {{ agentMode?: boolean }} [options]
+ */
+function getModelProfile(ggufArchOrFamily, paramSize, options = {}) {
   const tier = getSizeTier(paramSize);
-  const familyDef = FAMILY_PROFILES[family];
+  const arch = (ggufArchOrFamily || '').toLowerCase();
+  const family = detectFamilyFromArch(arch) || (FAMILY_PROFILES[arch] ? arch : null);
+  const familyDef = family ? FAMILY_PROFILES[family] : null;
 
-  // Merge order: BASE_DEFAULTS → family.base → family[tier]
-  // Unknown families get BASE_DEFAULTS directly (neutral, hardware-computed defaults)
-  // rather than FAMILY_PROFILES.llama which imposes llama-specific sampling on every unknown model.
-  let profile;
-  if (familyDef) {
-    profile = deepMerge(BASE_DEFAULTS, familyDef.base || {});
-    if (familyDef[tier]) {
-      profile = deepMerge(profile, familyDef[tier]);
+  const genProfile = getGenerationProfile(arch);
+  let profile = { ...BASE_DEFAULTS };
+
+  if (genProfile) {
+    profile = deepMerge(profile, genProfile);
+    if (options.agentMode && genProfile.samplingCoding) {
+      profile.sampling = deepMerge(profile.sampling || {}, genProfile.samplingCoding);
     }
-  } else {
-    profile = { ...BASE_DEFAULTS };
+  } else if (familyDef) {
+    profile = deepMerge(profile, familyDef.base || {});
+    console.warn(`[modelProfiles] No GENERATION_PROFILES entry for arch="${arch}" — using legacy family bucket "${family}"`);
+  }
+
+  // Size-tier overrides: context, prompt, generation limits only (not sampling)
+  if (familyDef?.[tier]) {
+    const tierPatch = { ...familyDef[tier] };
+    delete tierPatch.sampling;
+    delete tierPatch.samplingInstruct;
+    delete tierPatch.samplingCoding;
+    profile = deepMerge(profile, tierPatch);
+  } else if (familyDef?.base) {
+    const basePatch = { ...familyDef.base };
+    delete basePatch.sampling;
+    delete basePatch.samplingInstruct;
+    delete basePatch.samplingCoding;
+    if (!genProfile) profile = deepMerge(profile, basePatch);
   }
 
   profile._meta = {
+    arch: arch || 'unknown',
     family: family || 'unknown',
     paramSize: paramSize || 0,
     tier,
-    profileSource: familyDef ? family : 'base-defaults (no vendor profile)',
+    profileSource: genProfile?._meta?.source || (familyDef ? `legacy:${family}` : 'base-defaults'),
+    source: genProfile?._meta?.source || null,
+    vendorDocSection: genProfile?._meta?.vendorDocSection || null,
   };
 
   return profile;

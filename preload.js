@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPathForFile: (file) => webUtils.getPathForFile(file),
   modelsAdd: () => ipcRenderer.invoke('dialog-models-add'),
   pickTorBrowserExe: () => ipcRenderer.invoke('dialog-tor-browser-exe'),
+  pickMediaAuxFile: (kind) => ipcRenderer.invoke('dialog-media-aux', { kind }),
   getTorBrowserStatus: () => ipcRenderer.invoke('tor-browser-status'),
   openExternal: (url) => ipcRenderer.invoke('shell-open-external', url),
   showOpenDialog: () => ipcRenderer.invoke('dialog-open-folder'),
@@ -158,6 +159,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onModelLoading:      (cb) => _on('model-loading', cb),
   onModelError:        (cb) => _on('model-error', cb),
   onModelsUpdated:     (cb) => _on('models-updated', cb),
+  onMediaModelLoaded: (cb) => _on('media-model-loaded', cb),
+  onMediaGenerating:  (cb) => _on('media-generating', cb),
+  onMediaComplete:    (cb) => _on('media-complete', cb),
+  onMediaError:       (cb) => _on('media-error', cb),
 
   // Project events
   onProjectOpened:     (cb) => _on('project-opened', cb),

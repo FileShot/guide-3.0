@@ -11,7 +11,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const { EventEmitter } = require('events');
-const { detectModelType } = require('./modelDetection');
+const { detectModelType, readGgufMetadata, detectModelTypeFromGguf } = require('./modelDetection');
 const log = require('./logger');
 
 class ModelManager extends EventEmitter {
@@ -68,6 +68,9 @@ class ModelManager extends EventEmitter {
         if (this.availableModels.find(m => m.path === fullPath)) continue;
         try {
           const stats = await fs.stat(fullPath);
+          const meta = await readGgufMetadata(fullPath);
+          const ggufArchitecture = meta?.general?.architecture || null;
+          const modelType = meta ? detectModelTypeFromGguf(meta) : 'unknown';
           this.availableModels.push({
             name: entry.name.replace('.gguf', ''),
             fileName: entry.name,
@@ -77,7 +80,8 @@ class ModelManager extends EventEmitter {
             modified: stats.mtime,
             directory: dirPath,
             details: _parseModelName(entry.name),
-            modelType: detectModelType(fullPath),
+            modelType,
+            ggufArchitecture,
           });
         } catch {}
       }
@@ -94,6 +98,9 @@ class ModelManager extends EventEmitter {
     try {
       const stats = await fs.stat(filePath);
       const fileName = path.basename(filePath);
+      const meta = await readGgufMetadata(filePath);
+      const ggufArchitecture = meta?.general?.architecture || null;
+      const modelType = meta ? detectModelTypeFromGguf(meta) : 'unknown';
       const info = {
         name: fileName.replace('.gguf', ''),
         fileName,
@@ -104,7 +111,8 @@ class ModelManager extends EventEmitter {
         directory: path.dirname(filePath),
         isCustom: true,
         details: _parseModelName(fileName),
-        modelType: detectModelType(filePath),
+        modelType,
+        ggufArchitecture,
       };
       this.availableModels.push(info);
       return info;

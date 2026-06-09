@@ -246,7 +246,7 @@ function getPlanSystemPrompt() {
     + 'When the user wants something built (e.g. "make me a website"):\n'
     + '```json\n{"tool":"create_directory","params":{"path":".guide/plans"}}\n```\n'
     + '```json\n{"tool":"write_file","params":{"filePath":".guide/plans/community-website.plan.md","content":"---\\ntitle: Community Website\\noverview: Professional site for the community\\n---\\n\\n## Summary\\n...\\n\\n## Approach\\n...\\n\\n## Key files\\n- index.html in project root\\n"}}\n```\n'
-    + '```json\n{"tool":"write_todos","params":{"todos":[{"id":"1","content":"Scaffold HTML structure","status":"pending"},{"id":"2","content":"Add styles and layout","status":"pending"}]}}\n```\n'
+    + '```json\n{"tool":"write_todos","params":{"items":[{"text":"Scaffold HTML structure","status":"pending"},{"text":"Add styles and layout","status":"pending"}]}}\n```\n'
     + 'Then STOP. Do not create app source files, run commands, or install packages.\n\n'
     + '## Plan file format\n'
     + '- Path: `.guide/plans/{descriptive-slug}.plan.md`\n'

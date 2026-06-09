@@ -95,6 +95,12 @@ const SETTINGS_DEFAULTS = {
   autoUpdateCheckHours: 24,
   // UI State
   lastModelPath: null,
+  lastImageModelPath: null,
+  mediaVaePath: null,
+  mediaClipPath: null,
+  mediaT5Path: null,
+  unloadLlmForMedia: true,
+  reloadLlmAfterMedia: true,
   lastProjectPath: null,
   sidebarWidth: 260,
   panelHeight: 200,

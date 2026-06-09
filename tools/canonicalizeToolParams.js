@@ -425,6 +425,27 @@ function normalizeFsParams(toolName, params) {
     }
   }
 
+  if (toolName === 'write_todos') {
+    if (!Array.isArray(normalized.items) && Array.isArray(normalized.todos)) {
+      normalized.items = normalized.todos;
+      delete normalized.todos;
+    }
+    if (Array.isArray(normalized.items)) {
+      normalized.items = normalized.items.map((item) => {
+        if (typeof item === 'string') return item;
+        if (!item || typeof item !== 'object') return item;
+        const text = (item.text || item.content || item.title || '').toString().trim();
+        const desc = (item.description || '').toString().trim();
+        const combined = desc ? (text ? `${text}: ${desc}` : desc) : text;
+        const out = { ...item, text: combined };
+        delete out.content;
+        delete out.title;
+        delete out.description;
+        return out;
+      });
+    }
+  }
+
   if (toolName === 'search_in_file') {
     if (normalized.filePath == null) {
       if (typeof normalized.path === 'string') {

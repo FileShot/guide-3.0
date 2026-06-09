@@ -719,9 +719,11 @@ export default function App() {
             const next = {
               ...cur,
               ...(typeof samp.temperature === 'number' ? { temperature: samp.temperature, _defaultTemperature: samp.temperature } : {}),
-              ...(typeof samp.topP === 'number' ? { topP: samp.topP } : {}),
-              ...(typeof samp.topK === 'number' ? { topK: samp.topK } : {}),
+              ...(typeof samp.topP === 'number' ? { topP: samp.topP, _defaultTopP: samp.topP } : {}),
+              ...(typeof samp.topK === 'number' ? { topK: samp.topK, _defaultTopK: samp.topK } : {}),
               ...(typeof samp.repeatPenalty === 'number' ? { repeatPenalty: samp.repeatPenalty, _defaultRepeatPenalty: samp.repeatPenalty } : {}),
+              ...(typeof samp.presencePenalty === 'number' ? { presencePenalty: samp.presencePenalty, _defaultPresencePenalty: samp.presencePenalty } : {}),
+              ...(typeof samp.frequencyPenalty === 'number' ? { frequencyPenalty: samp.frequencyPenalty, _defaultFrequencyPenalty: samp.frequencyPenalty } : {}),
             };
             try { localStorage.setItem('guIDE-settings', JSON.stringify(next)); } catch (_) {}
             useAppStore.setState({ settings: next, settingsSkipDebounceUntil: Date.now() + 2000 });
@@ -749,6 +751,27 @@ export default function App() {
 
       }
 
+      case 'media-model-loaded': {
+        s.setActiveMediaModel(data);
+        s.addNotification({
+          type: 'info',
+          message: `Media model loaded (${data?.ggufArchitecture || data?.modelType || 'diffusion'})`,
+        });
+        break;
+      }
+
+      case 'media-generating':
+        s.applyMediaGenerating(data);
+        break;
+
+      case 'media-complete':
+        s.applyMediaComplete(data);
+        break;
+
+      case 'media-error':
+        s.applyMediaError(data);
+        break;
+
       case 'model-loaded': {
 
         s.setModelState({ modelLoaded: true, modelLoading: false, modelInfo: data });
@@ -772,9 +795,11 @@ export default function App() {
           const next = {
             ...cur,
             ...(typeof samp.temperature === 'number' ? { temperature: samp.temperature, _defaultTemperature: samp.temperature } : {}),
-            ...(typeof samp.topP === 'number' ? { topP: samp.topP } : {}),
-            ...(typeof samp.topK === 'number' ? { topK: samp.topK } : {}),
+            ...(typeof samp.topP === 'number' ? { topP: samp.topP, _defaultTopP: samp.topP } : {}),
+            ...(typeof samp.topK === 'number' ? { topK: samp.topK, _defaultTopK: samp.topK } : {}),
             ...(typeof samp.repeatPenalty === 'number' ? { repeatPenalty: samp.repeatPenalty, _defaultRepeatPenalty: samp.repeatPenalty } : {}),
+            ...(typeof samp.presencePenalty === 'number' ? { presencePenalty: samp.presencePenalty, _defaultPresencePenalty: samp.presencePenalty } : {}),
+            ...(typeof samp.frequencyPenalty === 'number' ? { frequencyPenalty: samp.frequencyPenalty, _defaultFrequencyPenalty: samp.frequencyPenalty } : {}),
           };
           try { localStorage.setItem('guIDE-settings', JSON.stringify(next)); } catch (_) {}
           useAppStore.setState({
@@ -1214,6 +1239,14 @@ export default function App() {
       api.onModelError?.((d) => handleEvent('model-error', d)),
 
       api.onModelsUpdated?.((d) => handleEvent('models-updated', d)),
+
+      api.onMediaModelLoaded?.((d) => handleEvent('media-model-loaded', d)),
+
+      api.onMediaGenerating?.((d) => handleEvent('media-generating', d)),
+
+      api.onMediaComplete?.((d) => handleEvent('media-complete', d)),
+
+      api.onMediaError?.((d) => handleEvent('media-error', d)),
 
       api.onProjectOpened?.((d) => handleEvent('project-opened', d)),
 

@@ -1248,7 +1248,7 @@ class ChatEngine extends EventEmitter {
       const _fileFamily = detectFamily(modelPath);
       const _detectedFamily = _archFamily || _fileFamily;
       const _detectedSizeB = paramCount ? paramCount / 1e9 : detectParamSize(modelPath);
-      this._modelProfile = getModelProfile(_detectedFamily, _detectedSizeB);
+      this._modelProfile = getModelProfile(ggufArchString || _detectedFamily, _detectedSizeB);
 
       // Merge Tier 1 auto-detection into the profile.
       // Template wins when it declares enable_thinking but profile says none.
@@ -1337,7 +1337,7 @@ class ChatEngine extends EventEmitter {
       this.modelInfo.sizeB = _detectedSizeB;
       this.modelInfo.tier = this._modelProfile._meta.tier;
       this.modelInfo.sampling = this._modelProfile.sampling;
-      console.log(`[ChatEngine] P3: Model profile resolved — family=${_detectedFamily} (arch=${ggufArchString || 'n/a'} → ${_archFamily || 'fallback'}, file=${_fileFamily}), sizeB=${_detectedSizeB.toFixed(2)}, tier=${this._modelProfile._meta.tier}, sampling=${JSON.stringify(this._modelProfile.sampling)}`);
+      console.log(`[ChatEngine] P3: Model profile resolved — arch=${ggufArchString || 'n/a'}, family=${_detectedFamily}, source=${this._modelProfile._meta.source || this._modelProfile._meta.profileSource}, sizeB=${_detectedSizeB.toFixed(2)}, tier=${this._modelProfile._meta.tier}, sampling=${JSON.stringify(this._modelProfile.sampling)}`);
 
       this.currentModelPath = modelPath;
       this.isReady = true;
@@ -2464,9 +2464,13 @@ class ChatEngine extends EventEmitter {
       // Qwen models get presencePenalty=1.5 in instruct mode (preventing loops) and
       // presencePenalty=0 in thinking mode (per official vendor recommendations).
       const _thinkingActive = thinkBudget > 0 && profileThinkMode !== 'none';
-      const _samplingProfile = (!_thinkingActive && this._modelProfile?.samplingInstruct)
+      let _samplingProfile = (!_thinkingActive && this._modelProfile?.samplingInstruct)
         ? this._modelProfile.samplingInstruct
         : this._modelProfile?.sampling;
+      const _agentToolLoop = _toolsEnabled && !options.askOnly;
+      if (_agentToolLoop && _thinkingActive && this._modelProfile?.samplingCoding) {
+        _samplingProfile = { ..._samplingProfile, ...this._modelProfile.samplingCoding };
+      }
       const genOptions = {
         signal: this._abortController.signal,
         stopOnAbortSignal: true,

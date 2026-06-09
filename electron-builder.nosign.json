@@ -76,6 +76,11 @@
       "from": "resources/whisper",
       "to": "whisper",
       "filter": ["**/*"]
+    },
+    {
+      "from": "resources/sd-cpp/win-x64-cpu",
+      "to": "sd-cpp",
+      "filter": ["**/*"]
     }
   ],
   "mac": {
