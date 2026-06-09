@@ -11,7 +11,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const { EventEmitter } = require('events');
-const { detectModelType, readGgufMetadata, detectModelTypeFromGguf } = require('./modelDetection');
+const { detectModelType, readGgufMetadata, detectModelTypeFromGguf, clearGgufMetadataCache } = require('./modelDetection');
 const log = require('./logger');
 
 class ModelManager extends EventEmitter {
@@ -45,6 +45,7 @@ class ModelManager extends EventEmitter {
   /* ── Scanning ──────────────────────────────────────────────────── */
 
   async scanModels() {
+    clearGgufMetadataCache();
     this.availableModels = [];
     await this._scanDir(this.modelsDir);
     await this._scanDir(this.appPath, false); // root for backward compat

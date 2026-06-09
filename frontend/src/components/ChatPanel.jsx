@@ -512,6 +512,30 @@ async function saveMediaToProject(item) {
   }
 }
 
+async function loadMediaModelFromPicker(modelPath, addNotification) {
+  try {
+    const res = await fetch('/api/models/load', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelPath }),
+    });
+    const data = await res.json();
+    if (data.success && data.media && data.modelInfo) {
+      useAppStore.getState().setActiveMediaModel(data.modelInfo);
+      addNotification?.({
+        type: 'info',
+        message: `Media model loaded (${data.modelInfo.ggufArchitecture || data.modelInfo.modelType})`,
+      });
+      return true;
+    }
+    addNotification?.({ type: 'error', message: data.error || 'Failed to load media model' });
+    return false;
+  } catch (e) {
+    addNotification?.({ type: 'error', message: e.message || 'Failed to load media model' });
+    return false;
+  }
+}
+
 async function runMediaCommand(prompt, mediaType = 'image') {
   if (!prompt?.trim()) return;
   useAppStore.getState().ensureChatSessionId();
@@ -5181,6 +5205,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
   const diffusionModels = (models || []).filter(m => m.modelType === 'diffusion');
   const videoModels = (models || []).filter(m => m.modelType === 'video');
+  const unknownMediaModels = (models || []).filter(m => m.modelType === 'unknown');
 
   const filtered = searchFilter
 
@@ -6507,23 +6532,13 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                   }`}
 
-                  onClick={() => {
+                  onClick={async () => {
 
                     setCloudProvider(null);
 
                     setCloudModel(null);
 
-                    // Switch image model via API
-
-                    fetch('/api/models/load', {
-
-                      method: 'POST',
-
-                      headers: { 'Content-Type': 'application/json' },
-
-                      body: JSON.stringify({ modelPath: m.path }),
-
-                    });
+                    await loadMediaModelFromPicker(m.path, addNotification);
 
                     onClose();
 
@@ -6549,6 +6564,34 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
           )}
 
+          {unknownMediaModels.length > 0 && (
+            <>
+              <div className="px-2 py-1 text-[10px] text-amber-400 tracking-wider bg-vsc-sidebar/80 border-b border-vsc-panel-border/15 border-t flex items-center gap-1">
+                <ImageIcon size={10} /> Unrecognized GGUF
+              </div>
+              {unknownMediaModels.map(m => (
+                <button
+                  key={m.path}
+                  className="w-full text-left px-2 py-1.5 text-[11px] hover:bg-amber-900/20 flex items-center gap-2"
+                  onClick={async () => {
+                    setCloudProvider(null);
+                    setCloudModel(null);
+                    await loadMediaModelFromPicker(m.path, addNotification);
+                    onClose();
+                  }}
+                >
+                  <ImageIcon size={11} className="flex-shrink-0 text-amber-400" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-vsc-text">{m.name}</div>
+                    <div className="text-[10px] text-vsc-text-dim">
+                      arch={m.ggufArchitecture || '?'} — try load or report arch
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </>
+          )}
+
           {videoModels.length > 0 && (
             <>
               <div className="px-2 py-1 text-[10px] text-pink-400 tracking-wider bg-vsc-sidebar/80 border-b border-vsc-panel-border/15 border-t flex items-center gap-1">
@@ -6560,14 +6603,10 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
                   className={`w-full text-left px-2 py-1.5 text-[11px] hover:bg-pink-900/20 flex items-center gap-2 ${
                     activeMediaModel?.modelPath === m.path ? 'bg-pink-900/20' : ''
                   }`}
-                  onClick={() => {
+                  onClick={async () => {
                     setCloudProvider(null);
                     setCloudModel(null);
-                    fetch('/api/models/load', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ modelPath: m.path }),
-                    });
+                    await loadMediaModelFromPicker(m.path, addNotification);
                     onClose();
                   }}
                 >

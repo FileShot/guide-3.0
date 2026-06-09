@@ -105,6 +105,12 @@ export default function App() {
 
         }).catch(() => {});
 
+        fetch('/api/media/status').then(r => r.json()).then(st => {
+
+          if (st?.loaded) s.setActiveMediaModel(st);
+
+        }).catch(() => {});
+
         fetch('/api/project/current').then(r => r.json()).then(d => {
 
           const pocketWeb = window.__POCKET__ || isPocket();

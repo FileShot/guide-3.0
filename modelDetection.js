@@ -35,8 +35,12 @@ const GGUF_ARCH_TO_FAMILY = {
 
 /** GGUF general.architecture values for diffusion/image models */
 const DIFFUSION_ARCHITECTURES = new Set([
-  'flux', 'sd', 'sd2', 'sd2.5', 'sd3', 'stable-diffusion', 'stable_diffusion',
+  'flux', 'flux2', 'sd', 'sd2', 'sd2.5', 'sd3', 'stable-diffusion', 'stable_diffusion',
   'sdxl', 'vae', 'controlnet', 'unet',
+  // Lumina / Z-Image and related image diffusion arches
+  'lumina', 'lumina2', 'lumina-mgpt', 'z-image', 'zimage',
+  'pixart', 'pixart-alpha', 'pixart-sigma', 'aura', 'kolors', 'sana', 'chroma', 'chroma-radiance',
+  'dit', 'hidream', 'omnigen', 'qwen-image',
 ]);
 
 /** Video generation architectures (extend when confirmed from real GGUF files) */

@@ -11,6 +11,7 @@ assert.strictEqual(detectModelTypeFromGguf({ general: { architecture: 'flux' } }
 assert.strictEqual(detectModelTypeFromGguf({ general: { architecture: 'sd3' } }), 'diffusion');
 assert.strictEqual(detectModelTypeFromGguf({ general: { architecture: 'qwen35' } }), 'llm');
 assert.strictEqual(detectModelTypeFromGguf({ general: { architecture: 'wan' } }), 'video');
+assert.strictEqual(detectModelTypeFromGguf({ general: { architecture: 'lumina2' } }), 'diffusion');
 assert.strictEqual(detectModelTypeFromGguf({ general: { architecture: 'cogvideox' } }), 'video');
 assert(DIFFUSION_ARCHITECTURES.has('flux'));
 assert(VIDEO_ARCHITECTURES.has('wan'));

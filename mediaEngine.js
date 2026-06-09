@@ -7,6 +7,7 @@ const { spawn } = require('child_process');
 const { readGgufMetadata, detectModelTypeFromGguf } = require('./modelDetection');
 
 const FLUX_ARCHS = new Set(['flux', 'flux2', 'chroma', 'chroma-radiance']);
+const LUMINA_ARCHS = new Set(['lumina', 'lumina2', 'lumina-mgpt', 'z-image', 'zimage']);
 const SD_ARCHS = new Set(['sd', 'sd2', 'sd2.5', 'sd3', 'stable-diffusion', 'stable_diffusion', 'unet']);
 const WAN_ARCHS = new Set(['wan', 'wan2']);
 
@@ -107,7 +108,7 @@ class MediaEngine {
   _validateAux(arch, aux, isVideo) {
     const missing = [];
     const a = (arch || '').toLowerCase();
-    if (FLUX_ARCHS.has(a) || SD_ARCHS.has(a) || WAN_ARCHS.has(a) || a.startsWith('wan')) {
+    if (FLUX_ARCHS.has(a) || LUMINA_ARCHS.has(a) || a.startsWith('lumina') || SD_ARCHS.has(a) || WAN_ARCHS.has(a) || a.startsWith('wan')) {
       if (!aux.vae || !fs.existsSync(aux.vae)) missing.push('VAE (mediaVaePath) — .safetensors file required');
     }
     if (FLUX_ARCHS.has(a)) {
@@ -142,6 +143,19 @@ class MediaEngine {
       args.push('--video-frames', String(opts.videoFrames || 33));
       if (opts.offloadToCpu) args.push('--offload-to-cpu');
       return { args, isVideo: true, missing: this._validateAux(arch, aux, true) };
+    }
+
+    if (LUMINA_ARCHS.has(arch) || arch.startsWith('lumina') || arch.includes('z-image') || arch.includes('zimage')) {
+      args.push('--diffusion-model', opts.model);
+      if (aux.vae) args.push('--vae', aux.vae);
+      args.push('-p', opts.prompt);
+      args.push('-o', opts.output);
+      args.push('-W', String(opts.width));
+      args.push('-H', String(opts.height));
+      args.push('--steps', String(opts.steps));
+      args.push('-s', String(opts.seed));
+      if (opts.offloadToCpu) args.push('--offload-to-cpu');
+      return { args, isVideo: false, missing: this._validateAux(arch, aux, false) };
     }
 
     if (FLUX_ARCHS.has(arch) || arch.includes('flux')) {
