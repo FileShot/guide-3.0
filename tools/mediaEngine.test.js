@@ -132,7 +132,7 @@ function testLuminaNeedsLlm() {
   console.log('PASS lumina llm args');
 }
 
-function testMissingAuxReported() {
+function testGgufOnlyNoBundledAuxRequired() {
   const e = makeEngine({});
   e.modelPath = '/tmp/flux.gguf';
   e.ggufArchitecture = 'flux';
@@ -146,8 +146,9 @@ function testMissingAuxReported() {
     seed: 1,
     output: '/tmp/out.png',
   });
-  assert.ok(built.missing.length > 0);
-  console.log('PASS missing aux detection');
+  assert.strictEqual(built.missing.length, 0);
+  assert.ok(built.args.includes('--diffusion-model'));
+  console.log('PASS gguf-only no bundled aux required');
 }
 
 testFluxArgsNeedVae();
@@ -155,5 +156,5 @@ testWanVideoArgs();
 testLowVramAutoOffload();
 testWanTaeInsteadOfVae();
 testLuminaNeedsLlm();
-testMissingAuxReported();
+testGgufOnlyNoBundledAuxRequired();
 console.log('mediaEngine.test.js: all passed');

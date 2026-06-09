@@ -96,24 +96,6 @@ jobs:
       - name: Bundle stable-diffusion.cpp (Windows CPU)
         run: node scripts/fetch-sd-cpp.js
 
-      - name: Cache media assets
-        uses: actions/cache@v4
-        with:
-          path: resources/media-assets
-          key: media-assets-v2-${{ hashFiles('mediaAssetsCatalog.js') }}
-
-      - name: Bundle media assets (VAE, encoders)
-        timeout-minutes: 90
-        run: node scripts/fetch-media-assets.js
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-
-      - name: Split large media assets for NSIS
-        run: node scripts/split-large-assets.js
-
-      - name: Verify bundled media assets
-        run: node scripts/verify-media-assets.js
-
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)
         working-directory: frontend
@@ -133,10 +115,6 @@ jobs:
         run: npx playwright install chromium
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/playwright-browsers
-
-      - name: List media-assets payload
-        shell: pwsh
-        run: Get-ChildItem resources/media-assets -Recurse | Select-Object FullName, Length
 
       - name: Prune llama backends (CPU package)
         run: node scripts/prune-llama-backends.js --cpu
@@ -200,24 +178,6 @@ jobs:
       - name: Bundle stable-diffusion.cpp (Windows CUDA)
         run: node scripts/fetch-sd-cpp.js
 
-      - name: Cache media assets
-        uses: actions/cache@v4
-        with:
-          path: resources/media-assets
-          key: media-assets-v2-${{ hashFiles('mediaAssetsCatalog.js') }}
-
-      - name: Bundle media assets (VAE, encoders)
-        timeout-minutes: 90
-        run: node scripts/fetch-media-assets.js
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-
-      - name: Split large media assets for NSIS
-        run: node scripts/split-large-assets.js
-
-      - name: Verify bundled media assets
-        run: node scripts/verify-media-assets.js
-
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)
         working-directory: frontend
@@ -238,10 +198,6 @@ jobs:
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/playwright-browsers
 
-      - name: List media-assets payload
-        shell: pwsh
-        run: Get-ChildItem resources/media-assets -Recurse | Select-Object FullName, Length
-
       - name: Prune llama backends (CUDA package)
         run: node scripts/prune-llama-backends.js --cuda
 
@@ -252,13 +208,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
+      - name: Ensure CUDA update feed
+        run: node scripts/ensure-update-feed.js --channel cuda --platform win --glob "guIDE-*-cuda-x64-setup.exe"
+
       - name: Upload artifact
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: windows-cuda
           path: |
-            dist-electron/guIDE-*-cuda-x64.zip
+            dist-electron/guIDE-*-cuda-x64-setup.exe
+            dist-electron/cuda.yml
+            dist-electron/*.blockmap
           retention-days: 30
 
   # ─── Linux CPU ──────────────────────────────────────────────

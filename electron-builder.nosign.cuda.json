@@ -33,21 +33,32 @@
   "win": {
     "icon": "build/icon.ico",
     "sign": false,
-    "artifactName": "guIDE-${version}-cuda-x64.${ext}",
     "target": [
       {
-        "target": "zip",
+        "target": "nsis",
         "arch": ["x64"]
       }
     ]
   },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "guIDE",
+    "installerIcon": "build/icon.ico",
+    "uninstallerIcon": "build/icon.ico",
+    "include": "build/installer.nsh",
+    "installerSidebar": "build/installerSidebar.bmp",
+    "installerHeader": "build/installerHeader.bmp",
+    "uninstallerSidebar": "build/installerSidebar.bmp",
+    "license": "LICENSE",
+    "displayLanguageSelector": false,
+    "runAfterFinish": true,
+    "artifactName": "guIDE-${version}-cuda-x64-setup.${ext}"
+  },
   "asar": false,
-  "extraFiles": [
-    {
-      "from": "scripts/Install-guIDE-CUDA.ps1",
-      "to": "Install guIDE.ps1"
-    }
-  ],
   "extraResources": [
     {
       "from": "resources/install-variant-cuda.json",
@@ -66,11 +77,6 @@
     {
       "from": "resources/sd-cpp/win-x64-cuda",
       "to": "sd-cpp",
-      "filter": ["**/*"]
-    },
-    {
-      "from": "resources/media-assets",
-      "to": "media-assets",
       "filter": ["**/*"]
     }
   ],

@@ -1608,27 +1608,13 @@ function UpdatesSettings({ settings, updateSetting }) {
 function MediaSettings({ settings, updateSetting, addNotification }) {
   const activeMediaModel = useAppStore(s => s.activeMediaModel);
   const [sdStatus, setSdStatus] = useState(null);
-  const [assetsStatus, setAssetsStatus] = useState(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const refreshSdStatus = useCallback(() => {
     fetch('/api/media/status').then(r => r.json()).then(setSdStatus).catch(() => setSdStatus(null));
   }, []);
 
-  const refreshAssetsStatus = useCallback(() => {
-    const arch = activeMediaModel?.ggufArchitecture;
-    const modelType = activeMediaModel?.modelType;
-    if (!arch) {
-      setAssetsStatus(null);
-      return;
-    }
-    fetch(`/api/media/assets/status?arch=${encodeURIComponent(arch)}&modelType=${encodeURIComponent(modelType || '')}`)
-      .then(r => r.json())
-      .then(setAssetsStatus)
-      .catch(() => setAssetsStatus(null));
-  }, [activeMediaModel]);
-
-  useEffect(() => { refreshSdStatus(); refreshAssetsStatus(); }, [activeMediaModel, refreshSdStatus, refreshAssetsStatus]);
+  useEffect(() => { refreshSdStatus(); }, [activeMediaModel, refreshSdStatus]);
 
   const pickAux = useCallback(async (kind, settingKey) => {
     const picked = await window.electronAPI?.pickMediaAuxFile?.(kind);
@@ -1638,7 +1624,7 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
   return (
     <SettingsSection title="Media Generation" icon={<ImageIcon size={13} />} keywords="media image video flux wan vae clip t5 stable diffusion sd.cpp">
       <div className="text-[10px] text-vsc-text-dim mb-2">
-        Load any supported image or video GGUF, then type a prompt. Encoders ship with guIDE.
+        Load any supported image or video GGUF, then type a prompt in chat.
       </div>
       {activeMediaModel?.modelPath ? (
         <div className="text-[11px] mb-2 text-vsc-text">
@@ -1656,13 +1642,6 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
           {sdStatus?.sdBinaryFound ? 'found' : 'missing — run node scripts/fetch-sd-cpp.js'}
         </span>
       </div>
-      {assetsStatus && (
-        <div className="mb-2 text-[10px]">
-          <span className={assetsStatus.ready ? 'text-vsc-success' : 'text-vsc-warning'}>
-            {assetsStatus.ready ? 'Image & video generation: ready' : 'Setting up image & video generation…'}
-          </span>
-        </div>
-      )}
       <button
         type="button"
         className="text-[10px] text-vsc-accent hover:underline mb-2"

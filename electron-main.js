@@ -272,8 +272,6 @@ const { MCPToolServer } = require('./mcpToolServer');
 const { MCPClient } = require('./mcpClient');
 const { ModelManager } = require('./modelManager');
 const { MediaEngine } = require('./mediaEngine');
-const { MediaAssetsManager } = require('./mediaAssetsManager');
-const { archToMediaProfile } = require('./mediaAssetsCatalog');
 const { readGgufMetadata, detectModelTypeFromGguf } = require('./modelDetection');
 const { MemoryStore } = require('./memoryStore');
 const { LongTermMemory } = require('./longTermMemory');
@@ -365,20 +363,12 @@ const memoryStore = new MemoryStore();
 const longTermMemory = new LongTermMemory();
 const rulesManager = new RulesManager();
 const modelManager = new ModelManager(modelsBasePath);
-const mediaAssetsManager = new MediaAssetsManager({
-  userDataPath,
-  rootDir: ROOT_DIR,
-  resourcesPath: app.isPackaged ? process.resourcesPath : null,
-  onProgress: (p) => _send('media-assets-progress', p),
-});
 const mediaEngine = new MediaEngine({
   userDataPath,
   rootDir: ROOT_DIR,
   getSettings: () => settingsManager.getAll(),
   isPackaged: app.isPackaged,
   resourcesPath: process.resourcesPath,
-  assetsManager: mediaAssetsManager,
-  onAssetsProgress: (p) => _send('media-assets-progress', p),
 });
 const sessionStore = new SessionStore(path.join(userDataPath, 'sessions'));
 const cloudLLM = new CloudLLMService();
@@ -1376,22 +1366,8 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
           }
           const status = await mediaEngine.load(modelPath);
           settingsManager.set('lastImageModelPath', modelPath);
-          const profileId = archToMediaProfile(status.ggufArchitecture, ggufType);
-          const assetsReady = profileId ? mediaAssetsManager.getProfileStatus(profileId).ready : true;
-          const info = { ...status, modelType: ggufType, path: modelPath, assetsReady, assetsProfile: profileId };
+          const info = { ...status, modelType: ggufType, path: modelPath };
           _send('media-model-loaded', info);
-          if (profileId && !mediaAssetsManager.getProfileStatus(profileId).assets.every((a) => a.path)) {
-            mediaAssetsManager.ensureForModelBackground(
-              status.ggufArchitecture,
-              ggufType,
-              (p) => _send('media-assets-progress', p),
-            ).then(() => {
-              _send('media-assets-progress', { phase: 'profile-ready', profileId, ready: true });
-            }).catch((e) => {
-              console.error(`[MediaAssets] Setup failed: ${e.message}`);
-              _send('media-assets-progress', { phase: 'error', profileId, error: e.message });
-            });
-          }
           console.log(`[MediaEngine] loaded arch=${status.ggufArchitecture} type=${ggufType}`);
           return { success: true, modelInfo: info, media: true };
         } catch (e) {
@@ -1460,20 +1436,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       return result;
     }
     if (p === '/api/media/status' && method === 'GET') {
-      const st = mediaEngine.getStatus();
-      const profileId = st.ggufArchitecture
-        ? archToMediaProfile(st.ggufArchitecture, st.modelType)
-        : null;
-      return {
-        ...st,
-        assetsProfile: profileId,
-        assetsReady: profileId ? mediaAssetsManager.getProfileStatus(profileId).ready : null,
-      };
-    }
-    if (p === '/api/media/assets/status' && method === 'GET') {
-      const profileId = archToMediaProfile(q.arch, q.modelType);
-      if (!profileId) return { ready: false, profiles: [] };
-      return mediaAssetsManager.getProfileStatus(profileId);
+      return mediaEngine.getStatus();
     }
     if (p === '/api/models/unload' && method === 'POST') {
       await llmEngine.dispose();
@@ -3018,22 +2981,11 @@ app.whenReady().then(async () => {
     const lastMediaEntry = lastImagePath && models.find((m) => m.path === lastImagePath);
     if (lastMediaEntry && (lastMediaEntry.modelType === 'diffusion' || lastMediaEntry.modelType === 'video')) {
       mediaEngine.load(lastImagePath).then((status) => {
-        const profileId = archToMediaProfile(status.ggufArchitecture, lastMediaEntry.modelType);
-        const assetsReady = profileId ? mediaAssetsManager.getProfileStatus(profileId).ready : true;
         _send('media-model-loaded', {
           ...status,
           modelType: lastMediaEntry.modelType,
           path: lastImagePath,
-          assetsReady,
-          assetsProfile: profileId,
         });
-        if (profileId && !assetsReady) {
-          mediaAssetsManager.ensureForModelBackground(
-            status.ggufArchitecture,
-            lastMediaEntry.modelType,
-            (p) => _send('media-assets-progress', p),
-          ).catch((e) => console.warn(`[MediaAssets] Restore download failed: ${e.message}`));
-        }
         console.log(`[Main] Restored media-only model: ${path.basename(lastImagePath)} arch=${status.ggufArchitecture}`);
       }).catch((e) => console.warn(`[Main] Media model restore failed: ${e.message}`));
       return;

@@ -83,11 +83,6 @@
       "from": "resources/sd-cpp/win-x64-cpu",
       "to": "sd-cpp",
       "filter": ["**/*"]
-    },
-    {
-      "from": "resources/media-assets",
-      "to": "media-assets",
-      "filter": ["**/*"]
     }
   ],
   "mac": {

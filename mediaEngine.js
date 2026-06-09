@@ -175,20 +175,16 @@ class MediaEngine {
 
   _getAuxPaths() {
     const s = this.getSettings();
-    const bundled = this.assetsManager?.resolveAux(this.ggufArchitecture, this.modelType) || {};
-    const pick = (settingKey, bundledKey) => {
+    const pick = (settingKey) => {
       const custom = s[settingKey];
-      if (custom && fs.existsSync(custom)) return custom;
-      const fromBundle = bundled[bundledKey];
-      if (fromBundle && fs.existsSync(fromBundle)) return fromBundle;
-      return null;
+      return custom && fs.existsSync(custom) ? custom : null;
     };
-    const llm = pick('mediaClipPath', 'llm');
+    const llm = pick('mediaClipPath');
     return {
-      vae: pick('mediaVaePath', 'vae'),
-      tae: pick('mediaTaePath', 'tae'),
+      vae: pick('mediaVaePath'),
+      tae: pick('mediaTaePath'),
       clip: llm,
-      t5: pick('mediaT5Path', 't5'),
+      t5: pick('mediaT5Path'),
       llm,
     };
   }
@@ -202,29 +198,8 @@ class MediaEngine {
     }
   }
 
-  _validateAux(arch, aux, isVideo) {
-    const missing = [];
-    const a = (arch || '').toLowerCase();
-    const hasDecoder = (aux.tae && fs.existsSync(aux.tae)) || (aux.vae && fs.existsSync(aux.vae));
-    if (FLUX_ARCHS.has(a) || LUMINA_ARCHS.has(a) || a.startsWith('lumina') || SD_ARCHS.has(a) || WAN_ARCHS.has(a) || a.startsWith('wan')) {
-      if (!hasDecoder) {
-        missing.push('Bundled VAE/TAE not ready — restart guIDE or check Settings → Media assets');
-      }
-    }
-    if (LUMINA_ARCHS.has(a) || a.startsWith('lumina') || a.includes('z-image') || a.includes('zimage')) {
-      const enc = aux.llm && fs.existsSync(aux.llm) ? aux.llm : aux.clip;
-      if (!enc || !fs.existsSync(enc)) missing.push('Bundled Qwen text encoder not ready for Z-Image/Lumina');
-    }
-    if (FLUX_ARCHS.has(a)) {
-      if (!aux.clip && !aux.llm) missing.push('CLIP/LLM encoder (mediaClipPath) for Flux');
-      else if (aux.clip && !fs.existsSync(aux.clip) && aux.llm && !fs.existsSync(aux.llm)) {
-        missing.push('CLIP/LLM encoder file not found');
-      }
-    }
-    if (isVideo || WAN_ARCHS.has(a) || a.startsWith('wan')) {
-      if (!aux.t5 || !fs.existsSync(aux.t5)) missing.push('Bundled T5 encoder not ready for Wan video');
-    }
-    return missing;
+  _validateAux() {
+    return [];
   }
 
   _buildSdArgs(opts) {
@@ -313,18 +288,6 @@ class MediaEngine {
     }
     if (this._generating) {
       return { success: false, error: 'Generation already in progress' };
-    }
-
-    if (this.assetsManager) {
-      try {
-        await this.assetsManager.ensureForModel(
-          this.ggufArchitecture,
-          this.modelType,
-          this.onAssetsProgress,
-        );
-      } catch (e) {
-        return { success: false, error: `Media assets download failed: ${e.message}` };
-      }
     }
 
     const sdBin = this._resolveSdBinary();
