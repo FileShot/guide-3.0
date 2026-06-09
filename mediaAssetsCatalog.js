@@ -9,6 +9,10 @@ const LUMINA_ARCHS = new Set(['lumina', 'lumina2', 'lumina-mgpt', 'z-image', 'zi
 const FLUX_ARCHS = new Set(['flux', 'flux2', 'chroma', 'chroma-radiance']);
 const WAN_ARCHS = new Set(['wan', 'wan2']);
 
+/** Open repack — no license gate (not black-forest-labs/FLUX.1-schnell). */
+const OPEN_AE_VAE_URL =
+  'https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors';
+
 /** @type {Record<string, { id: string, relPath: string, url: string, bytes: number }[]>} */
 const MEDIA_ASSET_PROFILES = {
   'lumina-image': {
@@ -17,8 +21,8 @@ const MEDIA_ASSET_PROFILES = {
       {
         id: 'flux-ae-vae',
         relPath: 'image/ae.safetensors',
-        url: 'https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/ae.safetensors',
-        bytes: 335_644_682,
+        url: OPEN_AE_VAE_URL,
+        bytes: 335_304_388,
       },
       {
         id: 'qwen3-4b-llm',
@@ -53,8 +57,8 @@ const MEDIA_ASSET_PROFILES = {
       {
         id: 'flux-ae-vae',
         relPath: 'image/ae.safetensors',
-        url: 'https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/ae.safetensors',
-        bytes: 335_644_682,
+        url: OPEN_AE_VAE_URL,
+        bytes: 335_304_388,
       },
     ],
     auxKeys: { vae: 'flux-ae-vae' },
