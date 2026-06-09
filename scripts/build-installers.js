@@ -30,7 +30,7 @@ const LLAMA_BACKENDS = path.join(ROOT, 'node_modules', '@node-llama-cpp');
 const BACKUP_DIR = path.join(ROOT, '.build-backup', '@node-llama-cpp');
 
 // Backend folders — what each variant keeps vs strips
-const CUDA_KEEP   = ['win-x64-cuda', 'win-x64-cuda-ext', 'win-x64'];
+const CUDA_KEEP   = ['win-x64-cuda', 'win-x64'];
 const CPU_KEEP    = ['win-x64', 'win-x64-vulkan'];
 
 // Read version from package.json and auto-bump patch for each build

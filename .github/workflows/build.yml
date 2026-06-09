@@ -138,6 +138,9 @@ jobs:
         shell: pwsh
         run: Get-ChildItem resources/media-assets -Recurse | Select-Object FullName, Length
 
+      - name: Prune llama backends (CPU package)
+        run: node scripts/prune-llama-backends.js --cpu
+
       - name: Build Windows CPU installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.json --publish never
         env:
@@ -239,7 +242,11 @@ jobs:
         shell: pwsh
         run: Get-ChildItem resources/media-assets -Recurse | Select-Object FullName, Length
 
+      - name: Prune llama backends (CUDA package)
+        run: node scripts/prune-llama-backends.js --cuda
+
       - name: Build Windows CUDA installer
+        timeout-minutes: 60
         run: npx electron-builder --win --x64 --config electron-builder.nosign.cuda.json --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
