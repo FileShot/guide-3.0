@@ -103,6 +103,7 @@ jobs:
           key: media-assets-v2-${{ hashFiles('mediaAssetsCatalog.js') }}
 
       - name: Bundle media assets (VAE, encoders)
+        timeout-minutes: 90
         run: node scripts/fetch-media-assets.js
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -203,6 +204,7 @@ jobs:
           key: media-assets-v2-${{ hashFiles('mediaAssetsCatalog.js') }}
 
       - name: Bundle media assets (VAE, encoders)
+        timeout-minutes: 90
         run: node scripts/fetch-media-assets.js
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
