@@ -15,6 +15,9 @@ const { scanSameDirectory, _auxDownloadMessage } = require('../mediaAuxResolver'
 assert.strictEqual(archToMediaProfile('lumina2', 'diffusion', '/m/z.gguf'), 'lumina-image');
 assert.strictEqual(archToMediaProfile('wan2', 'video', '/m/Wan2.2-TI2V-5B-Q2_K.gguf'), 'wan22-ti2v');
 assert.strictEqual(archToMediaProfile('wan', 'video', '/m/wan14b.gguf'), 'wan-video');
+assert.strictEqual(archToMediaProfile('cogvideox', 'video', '/m/cog.gguf'), 'cogvideo-video');
+assert.strictEqual(archToMediaProfile('ltx', 'video', '/m/ltx.gguf'), 'ltx-video');
+assert.notStrictEqual(archToMediaProfile('cogvideox', 'video', '/m/cog.gguf'), 'wan-video');
 assert.strictEqual(archToMediaProfile('sd3', 'diffusion', '/m/sd3.gguf'), 'sd3-image');
 assert.strictEqual(archToMediaProfile('pixart', 'diffusion', '/m/px.gguf'), 'pixart-image');
 assert.strictEqual(isWan22Ti2v('wan2', 'D:\\Wan2.2-TI2V-5B-Q2_K.gguf'), true);

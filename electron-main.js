@@ -365,12 +365,14 @@ const rulesManager = new RulesManager();
 const modelManager = new ModelManager(modelsBasePath);
 const { MediaAuxResolver } = require('./mediaAuxResolver');
 const mediaAuxResolver = new MediaAuxResolver({ userDataPath });
+const { getInstallVariant } = require('./updateVariant');
 const mediaEngine = new MediaEngine({
   userDataPath,
   rootDir: ROOT_DIR,
   getSettings: () => settingsManager.getAll(),
   isPackaged: app.isPackaged,
   resourcesPath: process.resourcesPath,
+  installVariant: getInstallVariant(),
   auxResolver: mediaAuxResolver,
   onAuxProgress: (p) => _send('media-aux-progress', p),
 });

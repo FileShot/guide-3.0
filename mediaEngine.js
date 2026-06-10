@@ -6,29 +6,14 @@ const fsp = require('fs').promises;
 const { spawn } = require('child_process');
 const { readGgufMetadata, detectModelTypeFromGguf } = require('./modelDetection');
 const {
-  LUMINA_ARCHS,
-  WAN_ARCHS,
   archToMediaProfile,
-  WAN_5D_INCOMPAT_MSG,
-  isWanIncompatibleStderr,
-  getRequiredAuxKeys,
+  getProfileGen,
+  TENSOR_5D_MSG,
+  is5dTensorStderr,
 } = require('./mediaAssetsCatalog');
+const { needs5dFix, apply5dFix, is5dCompatArch } = require('./gguf5dCompat');
+const { VRAM_TIGHT_MB, VRAM_LOW_MB, WIN_DLL_NOT_FOUND } = require('./mediaConstants');
 
-/** VRAM tiers (MB) for automatic media memory policy. */
-const VRAM_TIGHT_MB = 8192;
-const VRAM_LOW_MB = 6144;
-
-/** Windows STATUS_DLL_NOT_FOUND when sd.exe cannot load bundled CUDA DLLs. */
-const WIN_DLL_NOT_FOUND = 3221225781;
-
-const WAN_DEFAULT_NEGATIVE =
-  '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，'
-  + 'JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，'
-  + '形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走';
-
-/**
- * Query total GPU VRAM in MB (0 if unknown or no NVIDIA GPU).
- */
 function queryGpuVramMB() {
   try {
     const { execSync } = require('child_process');
@@ -103,16 +88,6 @@ function _applyMemoryCliArgs(args, mem) {
   }
 }
 
-function _isLuminaArch(arch) {
-  const a = (arch || '').toLowerCase();
-  return LUMINA_ARCHS.has(a) || a.startsWith('lumina') || a.includes('z-image') || a.includes('zimage');
-}
-
-function _isWanArch(arch) {
-  const a = (arch || '').toLowerCase();
-  return WAN_ARCHS.has(a) || a.startsWith('wan');
-}
-
 function formatSdExitError(code, stderr) {
   const raw = (stderr || '').trim();
   const lines = raw.split(/\r?\n/).filter((line) => {
@@ -127,15 +102,12 @@ function formatSdExitError(code, stderr) {
     .filter((l) => /\[ERROR\]/i.test(l))
     .map((l) => l.replace(/^\[ERROR\]\s*/i, '').trim());
 
-  if (isWanIncompatibleStderr(stderr) || errorLines.some((l) => isWanIncompatibleStderr(l))) {
-    return WAN_5D_INCOMPAT_MSG;
-  }
-  if (errorLines.some((l) => /not in model file/i.test(l)) && errorLines.some((l) => /first_stage_model/i.test(l))) {
-    return 'Wrong VAE file for this video model. guIDE will fetch wan2.2_vae or wan_2.1_vae on generate — retry, or set Settings → Media → VAE override.';
+  if (is5dTensorStderr(stderr) || errorLines.some((l) => is5dTensorStderr(l))) {
+    return TENSOR_5D_MSG;
   }
   if (errorLines.some((l) => /not in model file/i.test(l))) {
     return 'This model file is missing required diffusion components (VAE or text encoder). '
-      + 'Retry generate to fetch companions, or place files beside your GGUF / Settings → Media.';
+      + 'Place companion files beside your GGUF, set paths in Settings → Media, or retry to download.';
   }
   if (errorLines.some((l) => /get sd version from file failed/i.test(l))) {
     return 'Could not load model file. Ensure you are using a stable-diffusion.cpp compatible image/video GGUF.';
@@ -170,6 +142,7 @@ class MediaEngine {
     this.modelPath = null;
     this.ggufArchitecture = null;
     this.modelType = null;
+    this._profileId = null;
     this._generating = false;
     this._outputDir = path.join(this.userDataPath, 'guide-media');
     this._sdBinaryPath = null;
@@ -183,6 +156,7 @@ class MediaEngine {
       modelPath: this.modelPath,
       ggufArchitecture: this.ggufArchitecture,
       modelType: this.modelType,
+      profileId: this._profileId,
       sdBinary: primary,
       sdBinaryFound: !!primary,
     };
@@ -201,72 +175,24 @@ class MediaEngine {
     const profileId = archToMediaProfile(arch, type, modelPath);
     if (!profileId) {
       throw new Error(
-        `Unsupported media architecture "${arch || 'unknown'}" for generation. `
-        + 'guIDE supports stable-diffusion.cpp image/video arches (flux, lumina/z-image, wan, sd3, pixart, …).',
+        `Unsupported media architecture "${arch || 'unknown'}". `
+        + 'Use a stable-diffusion.cpp compatible image/video GGUF.',
       );
     }
     this.modelPath = modelPath;
     this.ggufArchitecture = arch;
     this.modelType = type;
+    this._profileId = profileId;
     this._resolvedAux = null;
 
-    if (_isWanArch(arch)) {
-      await this._probeWanCompatibility(modelPath);
-    }
-
     return this.getStatus();
-  }
-
-  async _probeWanCompatibility(modelPath) {
-    const sdCandidates = this._resolveSdBinaryCandidates();
-    if (!sdCandidates.length) return;
-
-    let aux = {};
-    if (this.auxResolver) {
-      try {
-        aux = await this.auxResolver.ensureForGenerate({
-          arch: this.ggufArchitecture,
-          modelType: this.modelType,
-          modelPath,
-          settings: this.getSettings(),
-          vramMB: queryGpuVramMB(),
-        });
-      } catch (e) {
-        console.warn(`[MediaEngine] Wan probe: aux not ready (${e.message})`);
-      }
-    }
-
-    const probeDir = path.join(this.userDataPath, 'guide-media');
-    await fsp.mkdir(probeDir, { recursive: true });
-    const probeOut = path.join(probeDir, `.probe-${Date.now()}.png`);
-
-    const args = [
-      '-M', 'vid_gen',
-      '--diffusion-model', modelPath,
-      '-p', 'probe',
-      '-o', probeOut,
-      '-W', '64', '-H', '64',
-      '--steps', '1',
-      '-s', '1',
-      '--video-frames', '1',
-      '--offload-to-cpu',
-    ];
-    if (aux.vae) args.push('--vae', aux.vae);
-    if (aux.tae) args.push('--tae', aux.tae);
-    if (aux.t5) args.push('--t5xxl', aux.t5);
-
-    const result = await this._runSdWithFallback(sdCandidates, args);
-    try { await fsp.unlink(probeOut); } catch { /* ignore */ }
-
-    if (!result.ok && isWanIncompatibleStderr(result.error || '')) {
-      throw new Error(WAN_5D_INCOMPAT_MSG);
-    }
   }
 
   async unload() {
     this.modelPath = null;
     this.ggufArchitecture = null;
     this.modelType = null;
+    this._profileId = null;
     this._resolvedAux = null;
   }
 
@@ -360,14 +286,13 @@ class MediaEngine {
 
   _buildSdArgs(opts) {
     const aux = opts.aux || {};
-    const arch = (this.ggufArchitecture || '').toLowerCase();
-    const isVideo = this.modelType === 'video';
+    const profileId = opts.profileId || this._profileId;
+    const gen = getProfileGen(profileId);
+    const isVideo = gen.video === true || this.modelType === 'video';
     const mem = opts.memoryFlags || {};
     const args = [];
 
-    if (isVideo) {
-      args.push('-M', 'vid_gen');
-    }
+    if (isVideo) args.push('-M', 'vid_gen');
 
     args.push('--diffusion-model', opts.model);
     this._pushOptionalAux(args, aux, mem);
@@ -378,20 +303,16 @@ class MediaEngine {
     args.push('--steps', String(opts.steps));
     args.push('-s', String(opts.seed));
 
-    if (_isLuminaArch(arch)) {
-      args.push('--cfg-scale', '1.0');
-    } else if (isVideo && _isWanArch(arch)) {
-      args.push('--cfg-scale', '6.0');
-      args.push('-n', WAN_DEFAULT_NEGATIVE);
-    }
+    if (gen.cfgScale != null) args.push('--cfg-scale', String(gen.cfgScale));
+    if (gen.negativePrompt) args.push('-n', gen.negativePrompt);
 
     if (isVideo) {
       args.push('--video-frames', String(opts.videoFrames || 33));
-      args.push('--flow-shift', '3.0');
+      if (gen.flowShift != null) args.push('--flow-shift', String(gen.flowShift));
     }
 
     _applyMemoryCliArgs(args, mem);
-    return { args, isVideo, missing: [] };
+    return { args, isVideo };
   }
 
   async generate(prompt, options = {}) {
@@ -446,8 +367,9 @@ class MediaEngine {
     const ext = isVideo ? 'mp4' : 'png';
     const outFile = path.join(this._outputDir, `guide-${Date.now()}.${ext}`);
 
-    const built = this._buildSdArgs({
-      model: this.modelPath,
+    const buildRun = (modelPath) => this._buildSdArgs({
+      model: modelPath,
+      profileId: this._profileId,
       prompt: prompt.trim().substring(0, 2000),
       width,
       height,
@@ -461,27 +383,61 @@ class MediaEngine {
 
     this._generating = true;
     try {
-      const cmdLine = built.args.join(' ');
-      console.log(`[MediaEngine] sd ${cmdLine}`);
-      const runResult = await this._runSdWithFallback(sdCandidates, built.args);
+      let modelForRun = this.modelPath;
+      let builtForRun = buildRun(modelForRun);
+      console.log(`[MediaEngine] sd ${builtForRun.args.join(' ')}`);
+      let runResult = await this._runSdWithFallback(sdCandidates, builtForRun.args);
+      let outputPath = runResult.outputPath || outFile;
+
+      const sd5dFailure = !runResult.ok
+        && (needs5dFix(runResult.stderr) || needs5dFix(runResult.error))
+        && is5dCompatArch(this.ggufArchitecture);
+      if (sd5dFailure) {
+        try {
+          const cacheDir = path.join(this.userDataPath, 'media-cache');
+          const fixed = await apply5dFix({
+            srcGguf: this.modelPath,
+            arch: this.ggufArchitecture,
+            modelPath: this.modelPath,
+            cacheDir,
+            onProgress: (msg) => {
+              console.log(`[MediaEngine] 5D compat: ${msg}`);
+              if (this.onAuxProgress) this.onAuxProgress({ phase: '5d-fix', message: msg });
+            },
+          });
+          modelForRun = fixed;
+          builtForRun = buildRun(modelForRun);
+          console.log(`[MediaEngine] retrying with 5D-patched GGUF: ${path.basename(fixed)}`);
+          runResult = await this._runSdWithFallback(sdCandidates, builtForRun.args);
+          if (runResult.outputPath) outputPath = runResult.outputPath;
+        } catch (fixErr) {
+          console.error(`[MediaEngine] 5D auto-patch failed: ${fixErr.message}`);
+          return {
+            success: false,
+            error: `${TENSOR_5D_MSG}\n\n${fixErr.message}`,
+            architecture: this.ggufArchitecture,
+          };
+        }
+      }
+
       if (!runResult.ok) {
         return { success: false, error: runResult.error, architecture: this.ggufArchitecture };
       }
-      const buf = await fsp.readFile(outFile);
-      const mimeType = built.isVideo ? 'video/mp4' : 'image/png';
+      const buf = await fsp.readFile(outputPath);
+      const mimeType = builtForRun.isVideo ? 'video/mp4' : 'image/png';
       const b64 = buf.toString('base64');
       return {
         success: true,
         imageBase64: b64,
-        videoBase64: built.isVideo ? b64 : undefined,
+        videoBase64: builtForRun.isVideo ? b64 : undefined,
         mimeType,
-        path: outFile,
+        path: outputPath,
         provider: 'stable-diffusion.cpp',
-        model: path.basename(this.modelPath),
+        model: path.basename(modelForRun),
         width,
         height,
         seed,
-        mediaType: built.isVideo ? 'video' : 'image',
+        mediaType: builtForRun.isVideo ? 'video' : 'image',
       };
     } catch (e) {
       return { success: false, error: e.message || String(e) };
@@ -492,6 +448,8 @@ class MediaEngine {
 
   async _runSdWithFallback(sdCandidates, args) {
     let lastError = 'sd generation failed';
+    let lastStderr = '';
+    let lastCode = null;
     for (let i = 0; i < sdCandidates.length; i++) {
       const sdBin = sdCandidates[i];
       const result = await this._runSdOnce(sdBin, args);
@@ -500,6 +458,8 @@ class MediaEngine {
         return result;
       }
       lastError = result.error;
+      lastStderr = result.stderr || lastStderr;
+      lastCode = result.code;
       const canRetry = i < sdCandidates.length - 1 && _isLaunchFailure(result.code);
       if (canRetry) {
         console.warn(`[MediaEngine] sd launch failed (${result.code}) — trying fallback binary: ${sdCandidates[i + 1]}`);
@@ -507,7 +467,21 @@ class MediaEngine {
       }
       break;
     }
-    return { ok: false, error: lastError };
+    return { ok: false, error: lastError, stderr: lastStderr, code: lastCode, outputPath: null };
+  }
+
+  _resolveSdOutputPath(requestedOut) {
+    if (!requestedOut) return null;
+    if (fs.existsSync(requestedOut)) return requestedOut;
+    const candidates = [
+      `${requestedOut}.avi`,
+      requestedOut.replace(/\.mp4$/i, '.mp4.avi'),
+      requestedOut.replace(/\.(mp4|png)$/i, '.avi'),
+    ];
+    for (const p of candidates) {
+      if (p && fs.existsSync(p)) return p;
+    }
+    return null;
   }
 
   _runSdOnce(sdBin, args, timeoutMs = 0) {
@@ -541,9 +515,10 @@ class MediaEngine {
       proc.on('close', (code) => {
         if (timer) clearTimeout(timer);
         const outIdx = args.indexOf('-o');
-        const out = outIdx >= 0 ? args[outIdx + 1] : null;
-        if (code === 0 && out && fs.existsSync(out)) {
-          resolve({ ok: true });
+        const requestedOut = outIdx >= 0 ? args[outIdx + 1] : null;
+        const actualOut = this._resolveSdOutputPath(requestedOut);
+        if (actualOut && (code === 0 || code == null)) {
+          resolve({ ok: true, outputPath: actualOut });
           return;
         }
         if (stderr.trim()) console.error(`[MediaEngine] sd stderr: ${stderr.trim().slice(-2000)}`);

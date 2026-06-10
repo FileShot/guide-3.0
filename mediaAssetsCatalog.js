@@ -1,8 +1,9 @@
 'use strict';
 
 /**
- * Auxiliary file URLs for stable-diffusion.cpp (AppData cache on first generate — not in installer).
- * @see https://github.com/leejet/stable-diffusion.cpp docs/z_image.md, docs/wan.md
+ * Arch → profile → aux companions for stable-diffusion.cpp.
+ * Profiles are family-level (not per-quantizer). Unknown diffusion/video arches
+ * fall back to generic profiles (same-folder scan + settings overrides only).
  */
 
 const LUMINA_ARCHS = new Set(['lumina', 'lumina2', 'lumina-mgpt', 'z-image', 'zimage']);
@@ -10,6 +11,8 @@ const FLUX_ARCHS = new Set(['flux', 'flux2', 'chroma', 'chroma-radiance']);
 const WAN_ARCHS = new Set(['wan', 'wan2']);
 const SD3_ARCHS = new Set(['sd3', 'mmdit']);
 const PIXART_ARCHS = new Set(['pixart', 'pixart-alpha', 'pixart-sigma']);
+const SDXL_ARCHS = new Set(['sdxl']);
+const SD_ARCHS = new Set(['sd', 'sd2', 'sd2.5', 'stable-diffusion', 'stable_diffusion']);
 
 const OPEN_AE_VAE_URL =
   'https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors';
@@ -26,14 +29,21 @@ const WAN22_VAE_URL =
 const UMT5_ENCODER_URL =
   'https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q8_0.gguf';
 
-/** Human-readable labels — never "chat LLM". */
-const LABEL_ZIMAGE_ENCODER = 'Z-Image text encoder (diffusion weights, not chat)';
-const LABEL_WAN_T5 = 'Wan T5 encoder (diffusion weights)';
+const LABEL_ENCODER = 'text encoder (diffusion weights, not chat)';
+const LABEL_T5 = 'T5 encoder (diffusion weights)';
 
-/** @type {Record<string, { label: string, assets: object[], auxKeys: object, auxKeyFallbacks?: object, lowVramAuxKeys?: object }>} */
+const WAN_NEGATIVE =
+  '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，'
+  + 'JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，'
+  + '形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走';
+
+const WAN_GEN = { video: true, cfgScale: 6.0, negativePrompt: WAN_NEGATIVE, flowShift: 3.0 };
+
+/** @type {Record<string, object>} */
 const MEDIA_ASSET_PROFILES = {
   'lumina-image': {
     label: 'image generation',
+    gen: { cfgScale: 1.0 },
     assets: [
       {
         id: 'flux-ae-vae',
@@ -47,14 +57,14 @@ const MEDIA_ASSET_PROFILES = {
         relPath: 'image/qwen_3_4b.safetensors',
         url: QWEN3_ENCODER_ST_URL,
         bytes: 0,
-        userLabel: LABEL_ZIMAGE_ENCODER,
+        userLabel: LABEL_ENCODER,
       },
       {
         id: 'qwen3-4b-llm',
         relPath: 'image/Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
         url: 'https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
         bytes: 2_492_781_248,
-        userLabel: LABEL_ZIMAGE_ENCODER,
+        userLabel: LABEL_ENCODER,
       },
     ],
     auxKeys: { vae: 'flux-ae-vae', llm: 'qwen3-4b-llm' },
@@ -62,6 +72,7 @@ const MEDIA_ASSET_PROFILES = {
   },
   'flux-image': {
     label: 'image generation',
+    gen: {},
     assets: [
       {
         id: 'flux-ae-vae',
@@ -73,18 +84,39 @@ const MEDIA_ASSET_PROFILES = {
     ],
     auxKeys: { vae: 'flux-ae-vae' },
   },
+  'sdxl-image': {
+    label: 'image generation',
+    gen: {},
+    assets: [],
+    auxKeys: {},
+  },
+  'sd-image': {
+    label: 'image generation',
+    gen: {},
+    assets: [],
+    auxKeys: {},
+  },
   'sd3-image': {
     label: 'image generation',
+    gen: {},
     assets: [],
     auxKeys: {},
   },
   'pixart-image': {
     label: 'image generation',
+    gen: {},
+    assets: [],
+    auxKeys: {},
+  },
+  'image-generic': {
+    label: 'image generation',
+    gen: {},
     assets: [],
     auxKeys: {},
   },
   'wan22-ti2v': {
     label: 'video generation',
+    gen: WAN_GEN,
     assets: [
       {
         id: 'wan22-vae',
@@ -105,13 +137,14 @@ const MEDIA_ASSET_PROFILES = {
         relPath: 'wan/umt5-xxl-encoder-Q8_0.gguf',
         url: UMT5_ENCODER_URL,
         bytes: 0,
-        userLabel: LABEL_WAN_T5,
+        userLabel: LABEL_T5,
       },
     ],
     auxKeys: { vae: 'wan22-vae', t5: 'umt5-xxl' },
   },
   'wan-video': {
     label: 'video generation',
+    gen: WAN_GEN,
     assets: [
       {
         id: 'wan21-vae',
@@ -132,37 +165,82 @@ const MEDIA_ASSET_PROFILES = {
         relPath: 'wan/umt5-xxl-encoder-Q8_0.gguf',
         url: UMT5_ENCODER_URL,
         bytes: 0,
-        userLabel: LABEL_WAN_T5,
+        userLabel: LABEL_T5,
       },
     ],
     auxKeys: { vae: 'wan21-vae', t5: 'umt5-xxl' },
     lowVramAuxKeys: { tae: 'wan-tae', t5: 'umt5-xxl' },
   },
+  'cogvideo-video': {
+    label: 'video generation',
+    gen: { video: true, flowShift: 3.0 },
+    assets: [],
+    auxKeys: {},
+  },
+  'ltx-video': {
+    label: 'video generation',
+    gen: { video: true, flowShift: 3.0 },
+    assets: [],
+    auxKeys: {},
+  },
+  'hunyuan-video': {
+    label: 'video generation',
+    gen: { video: true, flowShift: 3.0 },
+    assets: [],
+    auxKeys: {},
+  },
+  'mochi-video': {
+    label: 'video generation',
+    gen: { video: true, flowShift: 3.0 },
+    assets: [],
+    auxKeys: {},
+  },
+  'video-generic': {
+    label: 'video generation',
+    gen: { video: true, flowShift: 3.0 },
+    assets: [],
+    auxKeys: {},
+  },
 };
 
-const WAN_5D_INCOMPAT_MSG =
-  'This Wan GGUF uses 5D tensors incompatible with bundled stable-diffusion.cpp. '
-  + 'Use a fixed export (e.g. QuantStack/Wan2.2-TI2V-5B-GGUF) or Comfy-Org safetensors diffusion weights.';
+const TENSOR_5D_MSG =
+  'sd.cpp could not load this GGUF. guIDE attempted an automatic 5D tensor patch but generation still failed. '
+  + 'Place fix_5d_tensors_<arch>.safetensors beside the model, or use a GGUF converted via ComfyUI-GGUF fix_5d_tensors.';
 
 function isWan22Ti2v(arch, modelPath) {
   const a = (arch || '').toLowerCase();
   const base = (modelPath || '').toLowerCase();
   if (!WAN_ARCHS.has(a) && !a.startsWith('wan')) return false;
-  return /ti2v|wan2\.2|wan2_2|wan22/.test(base) || /5b/.test(base);
+  return /ti2v|wan2[._-]2|wan22/i.test(base);
 }
 
 function archToMediaProfile(arch, modelType, modelPath) {
   const a = (arch || '').toLowerCase();
-  if (modelType === 'video' || WAN_ARCHS.has(a) || a.startsWith('wan')) {
+
+  if (WAN_ARCHS.has(a) || a.startsWith('wan')) {
     return isWan22Ti2v(a, modelPath) ? 'wan22-ti2v' : 'wan-video';
   }
   if (LUMINA_ARCHS.has(a) || a.startsWith('lumina') || a.includes('z-image') || a.includes('zimage')) {
     return 'lumina-image';
   }
   if (FLUX_ARCHS.has(a) || a.includes('flux')) return 'flux-image';
+  if (SDXL_ARCHS.has(a) || a.startsWith('sdxl')) return 'sdxl-image';
+  if (SD_ARCHS.has(a) || a.startsWith('sd')) return 'sd-image';
   if (SD3_ARCHS.has(a) || a.startsWith('sd3') || a === 'mmdit') return 'sd3-image';
   if (PIXART_ARCHS.has(a) || a.startsWith('pixart')) return 'pixart-image';
+
+  if (a.startsWith('cogvideo')) return 'cogvideo-video';
+  if (a.startsWith('ltx')) return 'ltx-video';
+  if (a.includes('hunyuan')) return 'hunyuan-video';
+  if (a.startsWith('mochi')) return 'mochi-video';
+
+  if (modelType === 'video') return 'video-generic';
+  if (modelType === 'diffusion') return 'image-generic';
   return null;
+}
+
+function getProfileGen(profileId) {
+  return MEDIA_ASSET_PROFILES[profileId]?.gen || {};
 }
 
 function listAssetsForProfile(profileId) {
@@ -173,11 +251,6 @@ function listProfileIds() {
   return Object.keys(MEDIA_ASSET_PROFILES);
 }
 
-/**
- * Resolve which aux files are required for a profile.
- * wan22-ti2v always uses wan2.2_vae (VRAM tier affects offload flags only).
- * wan-video may use TAE on low VRAM unless user set mediaTaePath or mediaVaePath.
- */
 function getAuxKeyMap(profileId, lowVram, settings = {}) {
   const profile = MEDIA_ASSET_PROFILES[profileId];
   if (!profile) return {};
@@ -189,9 +262,7 @@ function getAuxKeyMap(profileId, lowVram, settings = {}) {
   }
 
   if (lowVram && profile.lowVramAuxKeys && !settings.mediaVaePath) {
-    const keys = { ...profile.lowVramAuxKeys };
-    if (settings.mediaTaePath) return keys;
-    return keys;
+    return { ...profile.lowVramAuxKeys };
   }
 
   const keys = { ...profile.auxKeys };
@@ -210,9 +281,12 @@ function getRequiredAuxKeys(profileId, lowVram, settings = {}) {
   return Object.keys(getAuxKeyMap(profileId, lowVram, settings));
 }
 
-function isWanIncompatibleStderr(stderr) {
+function is5dTensorStderr(stderr) {
   return /patch_embedding|invalid number of dimensions:\s*5\s*>\s*4|5D tensors incompatible/i.test(stderr || '');
 }
+
+/** @deprecated use is5dTensorStderr */
+const isWanIncompatibleStderr = is5dTensorStderr;
 
 module.exports = {
   MEDIA_ASSET_PROFILES,
@@ -221,13 +295,16 @@ module.exports = {
   WAN_ARCHS,
   SD3_ARCHS,
   PIXART_ARCHS,
-  WAN_5D_INCOMPAT_MSG,
+  TENSOR_5D_MSG,
+  WAN_5D_INCOMPAT_MSG: TENSOR_5D_MSG,
   archToMediaProfile,
+  getProfileGen,
   listAssetsForProfile,
   listProfileIds,
   getAuxKeyMap,
   getAuxKeyFallbacks,
   getRequiredAuxKeys,
   isWan22Ti2v,
+  is5dTensorStderr,
   isWanIncompatibleStderr,
 };

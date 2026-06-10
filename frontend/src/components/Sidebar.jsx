@@ -1652,7 +1652,7 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
       </button>
       {showAdvanced && [
         { kind: 'vae', key: 'mediaVaePath', label: 'VAE override' },
-        { kind: 'tae', key: 'mediaTaePath', label: 'TAE override (Wan)' },
+        { kind: 'tae', key: 'mediaTaePath', label: 'TAE override (video)' },
         { kind: 'clip', key: 'mediaClipPath', label: 'Text encoder override' },
         { kind: 't5', key: 'mediaT5Path', label: 'T5 override (Wan)' },
       ].map(({ kind, key, label }) => (

@@ -11,7 +11,7 @@ const {
   getRequiredAuxKeys,
 } = require('./mediaAssetsCatalog');
 const { downloadFileWithRetry } = require('./mediaAssetsManager');
-const { VRAM_LOW_MB } = require('./mediaEngine');
+const { VRAM_LOW_MB } = require('./mediaConstants');
 
 const SETTING_KEYS = {
   vae: 'mediaVaePath',
@@ -37,10 +37,18 @@ const SAME_DIR_PATTERNS = {
 const PROFILE_CACHE_PATTERNS = {
   'lumina-image': { vae: [/ae\.safetensors$/i], llm: SAME_DIR_PATTERNS.llm },
   'flux-image': { vae: [/ae\.safetensors$/i] },
-  'sd3-image': { vae: [/ae\.safetensors$/i] },
-  'pixart-image': { vae: [/ae\.safetensors$/i] },
+  'sdxl-image': { vae: SAME_DIR_PATTERNS.vae, clip: SAME_DIR_PATTERNS.clip },
+  'sd-image': { vae: SAME_DIR_PATTERNS.vae, clip: SAME_DIR_PATTERNS.clip },
+  'sd3-image': { vae: SAME_DIR_PATTERNS.vae, llm: SAME_DIR_PATTERNS.llm },
+  'pixart-image': { vae: SAME_DIR_PATTERNS.vae },
+  'image-generic': { vae: SAME_DIR_PATTERNS.vae, llm: SAME_DIR_PATTERNS.llm, clip: SAME_DIR_PATTERNS.clip },
   'wan22-ti2v': { vae: [/wan2\.2_vae\.safetensors$/i], t5: SAME_DIR_PATTERNS.t5, tae: SAME_DIR_PATTERNS.tae },
   'wan-video': { vae: [/wan_2\.1_vae\.safetensors$/i], t5: SAME_DIR_PATTERNS.t5, tae: SAME_DIR_PATTERNS.tae },
+  'cogvideo-video': { vae: SAME_DIR_PATTERNS.vae, t5: SAME_DIR_PATTERNS.t5, llm: SAME_DIR_PATTERNS.llm },
+  'ltx-video': { vae: SAME_DIR_PATTERNS.vae, llm: SAME_DIR_PATTERNS.llm },
+  'hunyuan-video': { vae: SAME_DIR_PATTERNS.vae, llm: SAME_DIR_PATTERNS.llm },
+  'mochi-video': { vae: SAME_DIR_PATTERNS.vae, llm: SAME_DIR_PATTERNS.llm },
+  'video-generic': { vae: SAME_DIR_PATTERNS.vae, t5: SAME_DIR_PATTERNS.t5, tae: SAME_DIR_PATTERNS.tae, llm: SAME_DIR_PATTERNS.llm },
 };
 
 function scanSameDirectory(modelPath, profileId) {

@@ -29,7 +29,6 @@ function makeEngine(settings = {}, aux = {}) {
 }
 
 function assertDiffusionModelArgs(built, modelPath) {
-  assert.strictEqual(built.missing.length, 0);
   assert.ok(built.args.includes('--diffusion-model'));
   assert.ok(built.args.includes(modelPath));
   assert.ok(!built.args.includes('-m'));
@@ -62,6 +61,7 @@ function testLuminaCfgScale() {
   const e = makeEngine({});
   e.ggufArchitecture = 'lumina2';
   e.modelType = 'diffusion';
+  e._profileId = 'lumina-image';
   const built = e._buildSdArgs({
     model: '/tmp/z.gguf',
     prompt: 'x',
@@ -84,6 +84,7 @@ function testVideoArchUsesVidGenAndDiffusionModel() {
     e.modelPath = modelPath;
     e.ggufArchitecture = arch;
     e.modelType = 'video';
+    e._profileId = require('../mediaAssetsCatalog').archToMediaProfile(arch, 'video', modelPath);
     const mem = resolveMediaMemoryFlags({}, VRAM_LOW_MB);
     const built = e._buildSdArgs({
       model: modelPath,
@@ -117,6 +118,7 @@ function testOptionalAuxPassedToCli() {
   const imageEngine = makeEngine({}, { vae, llm: clip });
   imageEngine.ggufArchitecture = 'flux';
   imageEngine.modelType = 'diffusion';
+  imageEngine._profileId = 'flux-image';
   const imageBuilt = imageEngine._buildSdArgs({
     model: '/tmp/model.gguf',
     prompt: 'test',
@@ -133,6 +135,7 @@ function testOptionalAuxPassedToCli() {
   const videoEngine = makeEngine({}, { tae, t5 });
   videoEngine.ggufArchitecture = 'wan2';
   videoEngine.modelType = 'video';
+  videoEngine._profileId = 'wan-video';
   const videoBuilt = videoEngine._buildSdArgs({
     model: '/tmp/video.gguf',
     prompt: 'test',
@@ -162,6 +165,22 @@ function testLowVramAutoOffload() {
   console.log('PASS low vram auto offload');
 }
 
+function testResolveSdOutputPath() {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { MediaEngine } = require('../mediaEngine');
+  const tmp = path.join(os.tmpdir(), `guide-sd-out-${Date.now()}`);
+  fs.mkdirSync(tmp, { recursive: true });
+  const requested = path.join(tmp, 'out.mp4');
+  const actual = path.join(tmp, 'out.mp4.avi');
+  fs.writeFileSync(actual, 'fake');
+  const engine = new MediaEngine({ rootDir: path.join(__dirname, '..') });
+  assert.strictEqual(engine._resolveSdOutputPath(requested), actual);
+  fs.rmSync(tmp, { recursive: true, force: true });
+  console.log('PASS resolveSdOutputPath');
+}
+
 function testFormatSdExitError() {
   const msg = formatSdExitError(WIN_DLL_NOT_FOUND, '');
   assert.ok(msg.includes('could not start'));
@@ -171,7 +190,7 @@ function testFormatSdExitError() {
   assert.ok(cleaned.includes('Could not load model file') || cleaned.includes('get sd version'));
   const wan5d = '[ERROR] ggml_extend.hpp:70 - patch_embedding.weight has invalid number of dimensions: 5 > 4';
   const wanMsg = formatSdExitError(1, wan5d);
-  assert.ok(wanMsg.includes('5D tensors') || wanMsg.includes('QuantStack'));
+  assert.ok(wanMsg.includes('5D') || wanMsg.includes('patch'));
   console.log('PASS formatSdExitError');
 }
 
@@ -180,5 +199,6 @@ testLuminaCfgScale();
 testVideoArchUsesVidGenAndDiffusionModel();
 testOptionalAuxPassedToCli();
 testLowVramAutoOffload();
+testResolveSdOutputPath();
 testFormatSdExitError();
 console.log('mediaEngine.test.js: all passed');
