@@ -72,8 +72,9 @@ function testLuminaCfgScale() {
     output: '/tmp/out.png',
     aux: {},
   });
-  assert.ok(built.args.includes('--cfg-scale'));
-  assert.ok(built.args.includes('1.0'));
+  const cfgIdx = built.args.indexOf('--cfg-scale');
+  assert.ok(cfgIdx >= 0);
+  assert.strictEqual(Number(built.args[cfgIdx + 1]), 1);
   console.log('PASS lumina cfg-scale 1.0');
 }
 
