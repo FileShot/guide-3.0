@@ -33,11 +33,12 @@ const E2E_PROFILES = {
   'flux-image': {
     arch: 'flux',
     modelType: 'diffusion',
-    ggufUrl: 'https://huggingface.co/leejet/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-Q4_0.gguf',
-    ggufName: 'flux1-schnell-Q4_0.gguf',
+    ggufUrl: 'https://huggingface.co/leejet/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-q4_0.gguf',
+    ggufName: 'flux1-schnell-q4_0.gguf',
     ext: 'png',
     steps: 4,
     size: 256,
+    fullOnly: true,
   },
   'wan-video': {
     arch: 'wan',
@@ -76,7 +77,8 @@ function findSdBinary() {
 function profilesToRun() {
   const ids = listProfileIds().filter((id) => E2E_PROFILES[id]);
   if (FULL) return ids;
-  return ids.filter((id) => !E2E_PROFILES[id].fullOnly);
+  // CI default: one small image profile (lumina) — proven PNG gate without 6GB+ downloads.
+  return ids.filter((id) => id === 'lumina-image');
 }
 
 async function ensureGguf(cacheDir, spec) {

@@ -24,7 +24,8 @@ async function downloadFileWithRetry(url, dest, { onProgress, expectedBytes, ret
     } catch (err) {
       lastErr = err;
       if (attempt < retries - 1) {
-        const delayMs = 2000 * (attempt + 1);
+        const isRateLimit = /HTTP 429/i.test(String(err.message));
+        const delayMs = isRateLimit ? 30000 * (attempt + 1) : 2000 * (attempt + 1);
         console.warn(`[MediaAssets] Download retry ${attempt + 2}/${retries} for ${path.basename(dest)}: ${err.message}`);
         await new Promise((r) => setTimeout(r, delayMs));
       }

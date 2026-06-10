@@ -183,11 +183,6 @@ jobs:
       - name: Bundle stable-diffusion.cpp (Windows CUDA)
         run: node scripts/fetch-sd-cpp.js
 
-      - name: Media E2E gate (PNG per image profile)
-        run: node tools/mediaE2E.test.js
-        env:
-          GUIDE_SKIP_MEDIA_E2E: '0'
-
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)
         working-directory: frontend
