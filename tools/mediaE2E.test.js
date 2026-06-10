@@ -83,7 +83,7 @@ async function ensureGguf(cacheDir, spec) {
   const dest = path.join(cacheDir, spec.ggufName);
   if (!fs.existsSync(dest)) {
     console.log(`[mediaE2E] downloading ${spec.ggufName}…`);
-    await downloadFile(spec.ggufUrl, dest);
+    await downloadFileWithRetry(spec.ggufUrl, dest);
   }
   return dest;
 }
