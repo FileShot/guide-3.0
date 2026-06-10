@@ -224,9 +224,9 @@ function archToMediaProfile(arch, modelType, modelPath) {
     return 'lumina-image';
   }
   if (FLUX_ARCHS.has(a) || a.includes('flux')) return 'flux-image';
-  if (SDXL_ARCHS.has(a) || a.startsWith('sdxl')) return 'sdxl-image';
-  if (SD_ARCHS.has(a) || a.startsWith('sd')) return 'sd-image';
   if (SD3_ARCHS.has(a) || a.startsWith('sd3') || a === 'mmdit') return 'sd3-image';
+  if (SDXL_ARCHS.has(a) || a.startsWith('sdxl')) return 'sdxl-image';
+  if (SD_ARCHS.has(a) || (a.startsWith('sd') && !a.startsWith('sd3'))) return 'sd-image';
   if (PIXART_ARCHS.has(a) || a.startsWith('pixart')) return 'pixart-image';
 
   if (a.startsWith('cogvideo')) return 'cogvideo-video';
