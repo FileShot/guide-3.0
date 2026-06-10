@@ -363,21 +363,12 @@ const memoryStore = new MemoryStore();
 const longTermMemory = new LongTermMemory();
 const rulesManager = new RulesManager();
 const modelManager = new ModelManager(modelsBasePath);
-const { MediaAssetsManager } = require('./mediaAssetsManager');
-const { archToMediaProfile } = require('./mediaAssetsCatalog');
-const mediaAssetsManager = new MediaAssetsManager({
-  userDataPath,
-  rootDir: ROOT_DIR,
-  resourcesPath: app.isPackaged ? process.resourcesPath : null,
-});
 const mediaEngine = new MediaEngine({
   userDataPath,
   rootDir: ROOT_DIR,
   getSettings: () => settingsManager.getAll(),
   isPackaged: app.isPackaged,
   resourcesPath: process.resourcesPath,
-  assetsManager: mediaAssetsManager,
-  onAssetsProgress: (p) => _send('media-assets-progress', p),
 });
 const sessionStore = new SessionStore(path.join(userDataPath, 'sessions'));
 const cloudLLM = new CloudLLMService();
@@ -1375,16 +1366,8 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
           }
           const status = await mediaEngine.load(modelPath);
           settingsManager.set('lastImageModelPath', modelPath);
-          const profileId = archToMediaProfile(status.ggufArchitecture, ggufType);
           const info = { ...status, modelType: ggufType, path: modelPath };
           _send('media-model-loaded', info);
-          if (profileId) {
-            mediaAssetsManager.ensureForModelBackground(
-              status.ggufArchitecture,
-              ggufType,
-              (p) => _send('media-assets-progress', p),
-            ).catch((e) => console.warn(`[MediaAssets] Prefetch failed: ${e.message}`));
-          }
           console.log(`[MediaEngine] loaded arch=${status.ggufArchitecture} type=${ggufType}`);
           return { success: true, modelInfo: info, media: true };
         } catch (e) {

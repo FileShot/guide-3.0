@@ -78,6 +78,11 @@
       "from": "resources/sd-cpp/win-x64-cuda",
       "to": "sd-cpp",
       "filter": ["**/*"]
+    },
+    {
+      "from": "resources/sd-cpp/win-x64-cpu",
+      "to": "sd-cpp-cpu",
+      "filter": ["**/*"]
     }
   ],
   "mac": {

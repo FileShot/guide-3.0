@@ -774,12 +774,6 @@ export default function App() {
         s.setActiveMediaModel(null);
         break;
 
-      case 'media-assets-progress':
-        if (data?.phase === 'error') {
-          s.addNotification({ type: 'error', message: data.error || 'Could not prepare generation' });
-        }
-        break;
-
       case 'media-generating':
         s.applyMediaGenerating(data);
         break;
@@ -1265,7 +1259,6 @@ export default function App() {
 
       api.onMediaModelUnloaded?.((d) => handleEvent('media-model-unloaded', d)),
 
-      api.onMediaAssetsProgress?.((d) => handleEvent('media-assets-progress', d)),
 
       api.onMediaGenerating?.((d) => handleEvent('media-generating', d)),
 

@@ -6,14 +6,12 @@ const fsp = require('fs').promises;
 const { spawn } = require('child_process');
 const { readGgufMetadata, detectModelTypeFromGguf } = require('./modelDetection');
 
-const FLUX_ARCHS = new Set(['flux', 'flux2', 'chroma', 'chroma-radiance']);
-const LUMINA_ARCHS = new Set(['lumina', 'lumina2', 'lumina-mgpt', 'z-image', 'zimage']);
-const SD_ARCHS = new Set(['sd', 'sd2', 'sd2.5', 'sd3', 'stable-diffusion', 'stable_diffusion', 'unet']);
-const WAN_ARCHS = new Set(['wan', 'wan2']);
-
 /** VRAM tiers (MB) for automatic media memory policy. */
 const VRAM_TIGHT_MB = 8192;
 const VRAM_LOW_MB = 6144;
+
+/** Windows STATUS_DLL_NOT_FOUND when sd.exe cannot load bundled CUDA DLLs. */
+const WIN_DLL_NOT_FOUND = 3221225781;
 
 /**
  * Query total GPU VRAM in MB (0 if unknown or no NVIDIA GPU).
@@ -87,6 +85,23 @@ function _applyMemoryCliArgs(args, mem) {
   if (mem.vaeConvDirect) args.push('--vae-conv-direct');
 }
 
+function formatSdExitError(code, stderr) {
+  const tail = (stderr || '').trim();
+  const excerpt = tail ? tail.slice(-2048) : '';
+  if (code === WIN_DLL_NOT_FOUND || code === -1073741515) {
+    return 'stable-diffusion.cpp could not start (missing GPU runtime DLLs). '
+      + 'Reinstall guIDE or set Settings → Media → sd.cpp path to a local sd.exe with its DLLs.'
+      + (excerpt ? `\n\n${excerpt}` : '');
+  }
+  if (excerpt) return excerpt;
+  if (code != null) return `sd exited with code ${code}`;
+  return 'sd generation failed';
+}
+
+function _isLaunchFailure(code) {
+  return code === WIN_DLL_NOT_FOUND || code === -1073741515;
+}
+
 class MediaEngine {
   constructor(options = {}) {
     this.rootDir = options.rootDir || __dirname;
@@ -101,18 +116,17 @@ class MediaEngine {
     this._generating = false;
     this._outputDir = path.join(this.userDataPath, 'guide-media');
     this._sdBinaryPath = null;
-    this.assetsManager = options.assetsManager || null;
-    this.onAssetsProgress = options.onAssetsProgress || null;
   }
 
   getStatus() {
+    const primary = this._resolveSdBinaryCandidates()[0] || null;
     return {
       loaded: !!this.modelPath,
       modelPath: this.modelPath,
       ggufArchitecture: this.ggufArchitecture,
       modelType: this.modelType,
-      sdBinary: this._resolveSdBinary(),
-      sdBinaryFound: !!this._resolveSdBinary(),
+      sdBinary: primary,
+      sdBinaryFound: !!primary,
     };
   }
 
@@ -137,149 +151,108 @@ class MediaEngine {
     this.modelType = null;
   }
 
-  _resolveSdBinary() {
-    if (this._sdBinaryPath && fs.existsSync(this._sdBinaryPath)) return this._sdBinaryPath;
+  _collectSdBinaryPaths() {
+    const candidates = [];
+    const push = (p) => {
+      if (!p) return;
+      const abs = path.resolve(p);
+      if (fs.existsSync(abs) && !candidates.includes(abs)) candidates.push(abs);
+    };
+
     const settings = this.getSettings();
-    if (settings.sdCppPath && fs.existsSync(settings.sdCppPath)) {
-      this._sdBinaryPath = settings.sdCppPath;
-      return this._sdBinaryPath;
-    }
-    if (process.env.GUIDE_SD_CPP_PATH && fs.existsSync(process.env.GUIDE_SD_CPP_PATH)) {
-      this._sdBinaryPath = process.env.GUIDE_SD_CPP_PATH;
-      return this._sdBinaryPath;
-    }
-    const binDir = path.join(this.rootDir, 'bin');
+    if (settings.sdCppPath) push(settings.sdCppPath);
+    if (process.env.GUIDE_SD_CPP_PATH) push(process.env.GUIDE_SD_CPP_PATH);
+
+    const rootDir = path.resolve(this.rootDir);
+    const binDir = path.join(rootDir, 'bin');
     for (const name of [process.platform === 'win32' ? 'sd.exe' : 'sd', 'sd-cli.exe']) {
-      const devBin = path.join(binDir, name);
-      if (fs.existsSync(devBin)) {
-        this._sdBinaryPath = devBin;
-        return this._sdBinaryPath;
-      }
+      push(path.join(binDir, name));
     }
+
     if (this.isPackaged && this.resourcesPath) {
-      for (const name of ['sd.exe', 'sd-cli.exe']) {
-        const bundled = path.join(this.resourcesPath, 'sd-cpp', name);
-        if (fs.existsSync(bundled)) {
-          this._sdBinaryPath = bundled;
-          return this._sdBinaryPath;
+      const resRoot = path.resolve(this.resourcesPath);
+      for (const sub of ['sd-cpp', 'sd-cpp-cpu']) {
+        for (const name of ['sd.exe', 'sd-cli.exe', 'sd']) {
+          push(path.join(resRoot, sub, name));
         }
       }
     }
-    return null;
+
+    for (const sub of ['win-x64-cuda', 'win-x64-cpu']) {
+      for (const name of ['sd.exe', 'sd-cli.exe', 'sd']) {
+        push(path.join(rootDir, 'resources', 'sd-cpp', sub, name));
+      }
+    }
+
+    return candidates;
   }
 
-  _resolveSdCwd() {
-    const bin = this._resolveSdBinary();
-    return bin ? path.dirname(bin) : this.rootDir;
+  _resolveSdBinaryCandidates() {
+    if (this._sdBinaryPath && fs.existsSync(this._sdBinaryPath)) {
+      const rest = this._collectSdBinaryPaths().filter((p) => p !== this._sdBinaryPath);
+      return [this._sdBinaryPath, ...rest];
+    }
+    return this._collectSdBinaryPaths();
+  }
+
+  _resolveSdBinary() {
+    return this._resolveSdBinaryCandidates()[0] || null;
   }
 
   _getAuxPaths() {
     const s = this.getSettings();
-    const bundled = this.assetsManager?.resolveAux(this.ggufArchitecture, this.modelType) || {};
-    const pick = (settingKey, bundledKey) => {
+    const pick = (settingKey) => {
       const custom = s[settingKey];
-      if (custom && fs.existsSync(custom)) return custom;
-      const cached = bundled[bundledKey];
-      return cached && fs.existsSync(cached) ? cached : null;
+      return custom && fs.existsSync(custom) ? custom : null;
     };
-    const llm = pick('mediaClipPath', 'llm');
+    const clip = pick('mediaClipPath');
     return {
-      vae: pick('mediaVaePath', 'vae'),
-      tae: pick('mediaTaePath', 'tae'),
-      clip: llm,
-      t5: pick('mediaT5Path', 't5'),
-      llm,
+      vae: pick('mediaVaePath'),
+      tae: pick('mediaTaePath'),
+      clip,
+      t5: pick('mediaT5Path'),
+      llm: clip,
     };
   }
 
-  _pushVaeOrTae(args, aux, mem) {
-    if (aux.tae && fs.existsSync(aux.tae)) {
+  _pushOptionalAux(args, aux, mem) {
+    if (aux.tae) {
       args.push('--tae', aux.tae);
       if (mem?.vaeConvDirect) args.push('--vae-conv-direct');
-    } else if (aux.vae && fs.existsSync(aux.vae)) {
+    } else if (aux.vae) {
       args.push('--vae', aux.vae);
     }
-  }
-
-  _validateAux() {
-    return [];
+    if (aux.t5) args.push('--t5xxl', aux.t5);
+    const enc = aux.llm || aux.clip;
+    if (enc) args.push('--llm', enc);
   }
 
   _buildSdArgs(opts) {
-    const arch = (this.ggufArchitecture || '').toLowerCase();
     const aux = this._getAuxPaths();
-    const isVideo = this.modelType === 'video' || WAN_ARCHS.has(arch) || arch.startsWith('wan');
+    const isVideo = this.modelType === 'video';
     const mem = opts.memoryFlags || {};
     const args = [];
 
     if (isVideo) {
       args.push('-M', 'vid_gen');
-      args.push('--diffusion-model', opts.model);
-      this._pushVaeOrTae(args, aux, mem);
-      if (aux.t5) args.push('--t5xxl', aux.t5);
-      args.push('-p', opts.prompt);
-      args.push('-o', opts.output);
-      args.push('-W', String(opts.width));
-      args.push('-H', String(opts.height));
-      args.push('--steps', String(opts.steps));
-      args.push('-s', String(opts.seed));
-      args.push('--video-frames', String(opts.videoFrames || 33));
-      args.push('--flow-shift', '3.0');
-      _applyMemoryCliArgs(args, mem);
-      return { args, isVideo: true, missing: this._validateAux(arch, aux, true) };
-    }
-
-    if (LUMINA_ARCHS.has(arch) || arch.startsWith('lumina') || arch.includes('z-image') || arch.includes('zimage')) {
-      args.push('--diffusion-model', opts.model);
-      this._pushVaeOrTae(args, aux, mem);
-      const enc = aux.llm && fs.existsSync(aux.llm) ? aux.llm : aux.clip;
-      if (enc && fs.existsSync(enc)) args.push('--llm', enc);
-      args.push('-p', opts.prompt);
-      args.push('-o', opts.output);
-      args.push('-W', String(opts.width));
-      args.push('-H', String(opts.height));
-      args.push('--steps', String(opts.steps));
-      args.push('-s', String(opts.seed));
-      _applyMemoryCliArgs(args, mem);
-      return { args, isVideo: false, missing: this._validateAux(arch, aux, false) };
-    }
-
-    if (FLUX_ARCHS.has(arch) || arch.includes('flux')) {
-      args.push('--diffusion-model', opts.model);
-      this._pushVaeOrTae(args, aux, mem);
-      const enc = aux.clip && fs.existsSync(aux.clip) ? aux.clip : aux.llm;
-      if (enc && fs.existsSync(enc)) args.push('--llm', enc);
-      args.push('-p', opts.prompt);
-      args.push('-o', opts.output);
-      args.push('-W', String(opts.width));
-      args.push('-H', String(opts.height));
-      args.push('--steps', String(opts.steps));
-      args.push('-s', String(opts.seed));
-      _applyMemoryCliArgs(args, mem);
-      return { args, isVideo: false, missing: this._validateAux(arch, aux, false) };
-    }
-
-    if (SD_ARCHS.has(arch) || arch.includes('sd')) {
-      args.push('--diffusion-model', opts.model);
-      this._pushVaeOrTae(args, aux, mem);
-      args.push('-p', opts.prompt);
-      args.push('-o', opts.output);
-      args.push('-W', String(opts.width));
-      args.push('-H', String(opts.height));
-      args.push('--steps', String(opts.steps));
-      args.push('-s', String(opts.seed));
-      _applyMemoryCliArgs(args, mem);
-      return { args, isVideo: false, missing: this._validateAux(arch, aux, false) };
     }
 
     args.push('-m', opts.model);
+    this._pushOptionalAux(args, aux, mem);
     args.push('-p', opts.prompt);
     args.push('-o', opts.output);
     args.push('-W', String(opts.width));
     args.push('-H', String(opts.height));
     args.push('--steps', String(opts.steps));
     args.push('-s', String(opts.seed));
-    return { args, isVideo: false, missing: this._validateAux(arch, aux, false) };
+
+    if (isVideo) {
+      args.push('--video-frames', String(opts.videoFrames || 33));
+      args.push('--flow-shift', '3.0');
+    }
+
+    _applyMemoryCliArgs(args, mem);
+    return { args, isVideo, missing: [] };
   }
 
   async generate(prompt, options = {}) {
@@ -293,20 +266,8 @@ class MediaEngine {
       return { success: false, error: 'Generation already in progress' };
     }
 
-    if (this.assetsManager) {
-      try {
-        await this.assetsManager.ensureForModel(
-          this.ggufArchitecture,
-          this.modelType,
-          this.onAssetsProgress,
-        );
-      } catch (e) {
-        return { success: false, error: `Could not prepare generation: ${e.message}` };
-      }
-    }
-
-    const sdBin = this._resolveSdBinary();
-    if (!sdBin) {
+    const sdCandidates = this._resolveSdBinaryCandidates();
+    if (sdCandidates.length === 0) {
       return {
         success: false,
         error: 'stable-diffusion.cpp binary not found. Run: node scripts/fetch-sd-cpp.js',
@@ -341,18 +302,14 @@ class MediaEngine {
       memoryFlags,
     });
 
-    if (built.missing.length > 0) {
-      return {
-        success: false,
-        error: `Missing auxiliary models: ${built.missing.join('; ')}. Configure in Settings → Media.`,
-        architecture: this.ggufArchitecture,
-        missing: built.missing,
-      };
-    }
-
     this._generating = true;
     try {
-      await this._runSd(sdBin, built.args);
+      const cmdLine = built.args.join(' ');
+      console.log(`[MediaEngine] sd ${cmdLine}`);
+      const runResult = await this._runSdWithFallback(sdCandidates, built.args);
+      if (!runResult.ok) {
+        return { success: false, error: runResult.error, architecture: this.ggufArchitecture };
+      }
       const buf = await fsp.readFile(outFile);
       const mimeType = built.isVideo ? 'video/mp4' : 'image/png';
       const b64 = buf.toString('base64');
@@ -376,19 +333,58 @@ class MediaEngine {
     }
   }
 
-  _runSd(sdBin, args) {
-    return new Promise((resolve, reject) => {
+  async _runSdWithFallback(sdCandidates, args) {
+    let lastError = 'sd generation failed';
+    for (let i = 0; i < sdCandidates.length; i++) {
+      const sdBin = sdCandidates[i];
+      const result = await this._runSdOnce(sdBin, args);
+      if (result.ok) {
+        this._sdBinaryPath = sdBin;
+        return result;
+      }
+      lastError = result.error;
+      const canRetry = i < sdCandidates.length - 1 && _isLaunchFailure(result.code);
+      if (canRetry) {
+        console.warn(`[MediaEngine] sd launch failed (${result.code}) — trying fallback binary: ${sdCandidates[i + 1]}`);
+        continue;
+      }
+      break;
+    }
+    return { ok: false, error: lastError };
+  }
+
+  _runSdOnce(sdBin, args) {
+    return new Promise((resolve) => {
+      const binDir = path.dirname(sdBin);
+      const env = { ...process.env };
+      env.PATH = `${binDir}${path.delimiter}${env.PATH || ''}`;
+
       const proc = spawn(sdBin, args, {
         stdio: ['ignore', 'pipe', 'pipe'],
-        cwd: this._resolveSdCwd(),
+        cwd: binDir,
+        env,
+        windowsHide: true,
       });
+
       let stderr = '';
       proc.stderr.on('data', (d) => { stderr += d.toString(); });
-      proc.on('error', (err) => reject(err));
+      proc.on('error', (err) => {
+        resolve({ ok: false, error: err.message, code: null, stderr });
+      });
       proc.on('close', (code) => {
-        const out = args[args.indexOf('-o') + 1];
-        if (code === 0 && out && fs.existsSync(out)) resolve();
-        else reject(new Error(stderr.trim() || `sd exited with code ${code}`));
+        const outIdx = args.indexOf('-o');
+        const out = outIdx >= 0 ? args[outIdx + 1] : null;
+        if (code === 0 && out && fs.existsSync(out)) {
+          resolve({ ok: true });
+          return;
+        }
+        if (stderr.trim()) console.error(`[MediaEngine] sd stderr: ${stderr.trim().slice(-2000)}`);
+        resolve({
+          ok: false,
+          code,
+          stderr,
+          error: formatSdExitError(code, stderr),
+        });
       });
     });
   }
@@ -396,12 +392,11 @@ class MediaEngine {
 
 module.exports = {
   MediaEngine,
-  FLUX_ARCHS,
-  SD_ARCHS,
-  WAN_ARCHS,
   queryGpuVramMB,
   resolveMediaMemoryFlags,
   getDefaultMediaDimensions,
+  formatSdExitError,
+  WIN_DLL_NOT_FOUND,
   VRAM_LOW_MB,
   VRAM_TIGHT_MB,
 };

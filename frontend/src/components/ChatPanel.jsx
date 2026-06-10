@@ -4277,7 +4277,7 @@ export default function ChatPanel() {
 
               placeholder={chatStreaming ? 'Type to queue a message...' : (
                 activeMediaModel?.modelPath
-                  ? (activeMediaModel.modelType === 'video' ? 'Describe a video (e.g. cat dancing)...' : 'Describe an image (e.g. sunset over mountains)...')
+                  ? 'Type a prompt…'
                   : (modelLoaded ? 'Ask anything... (@ files, @docs for docs)' : 'Load a model to start...')
               )}
 
