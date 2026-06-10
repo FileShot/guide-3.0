@@ -1624,7 +1624,8 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
   return (
     <SettingsSection title="Media Generation" icon={<ImageIcon size={13} />} keywords="media image video flux wan vae clip t5 stable diffusion sd.cpp">
       <div className="text-[10px] text-vsc-text-dim mb-2">
-        Load any supported image or video GGUF, then type a prompt in chat.
+        Load any supported image or video GGUF, then type a prompt in chat. First generate may
+        download diffusion pipeline weights (VAE / text encoders) — not your chat LLM.
       </div>
       {activeMediaModel?.modelPath ? (
         <div className="text-[11px] mb-2 text-vsc-text">
@@ -1663,7 +1664,7 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
               className="flex-1 text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
               value={settings[key] || ''}
               onChange={e => updateSetting(key, e.target.value)}
-              placeholder="Optional — auto-detected beside your GGUF or cached on first generate"
+              placeholder="Optional — beside your GGUF, Settings path, or one-time AppData cache"
             />
             <button type="button" className="btn btn-secondary text-[10px] px-2 shrink-0" onClick={() => pickAux(kind, key)}>Browse…</button>
           </div>

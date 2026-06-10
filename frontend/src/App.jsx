@@ -776,7 +776,15 @@ export default function App() {
 
       case 'media-aux-progress':
         if (data?.phase === 'start' && data.message) {
-          s.addNotification({ type: 'info', message: data.message, duration: 8000 });
+          s.addNotification({ type: 'info', message: data.message, duration: 12000 });
+        } else if (data?.phase === 'progress' && data.pct != null && data.pct % 25 === 0) {
+          s.addNotification({
+            type: 'info',
+            message: `Downloading ${data.label || 'diffusion weights'}… ${data.pct}%`,
+            duration: 4000,
+          });
+        } else if (data?.phase === 'done' && data.label) {
+          s.addNotification({ type: 'info', message: `${data.label} ready`, duration: 4000 });
         } else if (data?.phase === 'error') {
           s.addNotification({ type: 'error', message: data.error || 'Could not prepare generation' });
         }

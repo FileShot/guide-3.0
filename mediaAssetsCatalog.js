@@ -8,9 +8,14 @@
 const LUMINA_ARCHS = new Set(['lumina', 'lumina2', 'lumina-mgpt', 'z-image', 'zimage']);
 const FLUX_ARCHS = new Set(['flux', 'flux2', 'chroma', 'chroma-radiance']);
 const WAN_ARCHS = new Set(['wan', 'wan2']);
+const SD3_ARCHS = new Set(['sd3', 'mmdit']);
+const PIXART_ARCHS = new Set(['pixart', 'pixart-alpha', 'pixart-sigma']);
 
 const OPEN_AE_VAE_URL =
   'https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors';
+
+const QWEN3_ENCODER_ST_URL =
+  'https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors';
 
 const WAN21_VAE_URL =
   'https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors';
@@ -18,7 +23,14 @@ const WAN21_VAE_URL =
 const WAN22_VAE_URL =
   'https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan2.2_vae.safetensors';
 
-/** @type {Record<string, { label: string, assets: object[], auxKeys: object, lowVramAuxKeys?: object }>} */
+const UMT5_ENCODER_URL =
+  'https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q8_0.gguf';
+
+/** Human-readable labels — never "chat LLM". */
+const LABEL_ZIMAGE_ENCODER = 'Z-Image text encoder (diffusion weights, not chat)';
+const LABEL_WAN_T5 = 'Wan T5 encoder (diffusion weights)';
+
+/** @type {Record<string, { label: string, assets: object[], auxKeys: object, auxKeyFallbacks?: object, lowVramAuxKeys?: object }>} */
 const MEDIA_ASSET_PROFILES = {
   'lumina-image': {
     label: 'image generation',
@@ -31,14 +43,22 @@ const MEDIA_ASSET_PROFILES = {
         userLabel: 'VAE',
       },
       {
+        id: 'qwen3-4b-safetensors',
+        relPath: 'image/qwen_3_4b.safetensors',
+        url: QWEN3_ENCODER_ST_URL,
+        bytes: 0,
+        userLabel: LABEL_ZIMAGE_ENCODER,
+      },
+      {
         id: 'qwen3-4b-llm',
         relPath: 'image/Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
         url: 'https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
         bytes: 2_492_781_248,
-        userLabel: 'image text encoder',
+        userLabel: LABEL_ZIMAGE_ENCODER,
       },
     ],
     auxKeys: { vae: 'flux-ae-vae', llm: 'qwen3-4b-llm' },
+    auxKeyFallbacks: { llm: 'qwen3-4b-safetensors' },
   },
   'flux-image': {
     label: 'image generation',
@@ -52,6 +72,16 @@ const MEDIA_ASSET_PROFILES = {
       },
     ],
     auxKeys: { vae: 'flux-ae-vae' },
+  },
+  'sd3-image': {
+    label: 'image generation',
+    assets: [],
+    auxKeys: {},
+  },
+  'pixart-image': {
+    label: 'image generation',
+    assets: [],
+    auxKeys: {},
   },
   'wan22-ti2v': {
     label: 'video generation',
@@ -68,18 +98,17 @@ const MEDIA_ASSET_PROFILES = {
         relPath: 'wan/taew2_2.safetensors',
         url: 'https://github.com/madebyollin/taehv/raw/refs/heads/main/safetensors/taew2_2.safetensors',
         bytes: 0,
-        userLabel: 'lightweight video decoder',
+        userLabel: 'lightweight video decoder (optional override)',
       },
       {
         id: 'umt5-xxl',
-        relPath: 'wan/umt5-xxl-encoder-Q3_K_S.gguf',
-        url: 'https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q3_K_S.gguf',
-        bytes: 2_858_489_696,
-        userLabel: 'video text encoder',
+        relPath: 'wan/umt5-xxl-encoder-Q8_0.gguf',
+        url: UMT5_ENCODER_URL,
+        bytes: 0,
+        userLabel: LABEL_WAN_T5,
       },
     ],
     auxKeys: { vae: 'wan22-vae', t5: 'umt5-xxl' },
-    lowVramAuxKeys: { tae: 'wan-tae', t5: 'umt5-xxl' },
   },
   'wan-video': {
     label: 'video generation',
@@ -100,16 +129,20 @@ const MEDIA_ASSET_PROFILES = {
       },
       {
         id: 'umt5-xxl',
-        relPath: 'wan/umt5-xxl-encoder-Q3_K_S.gguf',
-        url: 'https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q3_K_S.gguf',
-        bytes: 2_858_489_696,
-        userLabel: 'video text encoder',
+        relPath: 'wan/umt5-xxl-encoder-Q8_0.gguf',
+        url: UMT5_ENCODER_URL,
+        bytes: 0,
+        userLabel: LABEL_WAN_T5,
       },
     ],
     auxKeys: { vae: 'wan21-vae', t5: 'umt5-xxl' },
     lowVramAuxKeys: { tae: 'wan-tae', t5: 'umt5-xxl' },
   },
 };
+
+const WAN_5D_INCOMPAT_MSG =
+  'This Wan GGUF uses 5D tensors incompatible with bundled stable-diffusion.cpp. '
+  + 'Use a fixed export (e.g. QuantStack/Wan2.2-TI2V-5B-GGUF) or Comfy-Org safetensors diffusion weights.';
 
 function isWan22Ti2v(arch, modelPath) {
   const a = (arch || '').toLowerCase();
@@ -127,6 +160,8 @@ function archToMediaProfile(arch, modelType, modelPath) {
     return 'lumina-image';
   }
   if (FLUX_ARCHS.has(a) || a.includes('flux')) return 'flux-image';
+  if (SD3_ARCHS.has(a) || a.startsWith('sd3') || a === 'mmdit') return 'sd3-image';
+  if (PIXART_ARCHS.has(a) || a.startsWith('pixart')) return 'pixart-image';
   return null;
 }
 
@@ -134,11 +169,49 @@ function listAssetsForProfile(profileId) {
   return MEDIA_ASSET_PROFILES[profileId]?.assets || [];
 }
 
-function getAuxKeyMap(profileId, lowVram) {
+function listProfileIds() {
+  return Object.keys(MEDIA_ASSET_PROFILES);
+}
+
+/**
+ * Resolve which aux files are required for a profile.
+ * wan22-ti2v always uses wan2.2_vae (VRAM tier affects offload flags only).
+ * wan-video may use TAE on low VRAM unless user set mediaTaePath or mediaVaePath.
+ */
+function getAuxKeyMap(profileId, lowVram, settings = {}) {
   const profile = MEDIA_ASSET_PROFILES[profileId];
   if (!profile) return {};
-  if (lowVram && profile.lowVramAuxKeys) return profile.lowVramAuxKeys;
-  return profile.auxKeys || {};
+
+  if (profileId === 'wan22-ti2v') {
+    const keys = { ...profile.auxKeys };
+    if (settings.mediaTaePath) keys.tae = 'wan-tae';
+    return keys;
+  }
+
+  if (lowVram && profile.lowVramAuxKeys && !settings.mediaVaePath) {
+    const keys = { ...profile.lowVramAuxKeys };
+    if (settings.mediaTaePath) return keys;
+    return keys;
+  }
+
+  const keys = { ...profile.auxKeys };
+  if (settings.mediaTaePath && profile.assets.some((a) => a.id === 'wan-tae')) {
+    delete keys.vae;
+    keys.tae = 'wan-tae';
+  }
+  return keys;
+}
+
+function getAuxKeyFallbacks(profileId) {
+  return MEDIA_ASSET_PROFILES[profileId]?.auxKeyFallbacks || {};
+}
+
+function getRequiredAuxKeys(profileId, lowVram, settings = {}) {
+  return Object.keys(getAuxKeyMap(profileId, lowVram, settings));
+}
+
+function isWanIncompatibleStderr(stderr) {
+  return /patch_embedding|invalid number of dimensions:\s*5\s*>\s*4|5D tensors incompatible/i.test(stderr || '');
 }
 
 module.exports = {
@@ -146,8 +219,15 @@ module.exports = {
   LUMINA_ARCHS,
   FLUX_ARCHS,
   WAN_ARCHS,
+  SD3_ARCHS,
+  PIXART_ARCHS,
+  WAN_5D_INCOMPAT_MSG,
   archToMediaProfile,
   listAssetsForProfile,
+  listProfileIds,
   getAuxKeyMap,
+  getAuxKeyFallbacks,
+  getRequiredAuxKeys,
   isWan22Ti2v,
+  isWanIncompatibleStderr,
 };

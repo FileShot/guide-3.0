@@ -7,8 +7,10 @@ const {
   archToMediaProfile,
   listAssetsForProfile,
   getAuxKeyMap,
+  getAuxKeyFallbacks,
+  getRequiredAuxKeys,
 } = require('./mediaAssetsCatalog');
-const { downloadFile } = require('./mediaAssetsManager');
+const { downloadFileWithRetry } = require('./mediaAssetsManager');
 const { VRAM_LOW_MB } = require('./mediaEngine');
 
 const SETTING_KEYS = {
@@ -22,14 +24,32 @@ const SETTING_KEYS = {
 const SAME_DIR_PATTERNS = {
   vae: [/ae\.safetensors$/i, /wan2\.2_vae\.safetensors$/i, /wan_2\.1_vae\.safetensors$/i],
   tae: [/taew2_2\.safetensors$/i],
-  t5: [/umt5.*\.gguf$/i],
-  llm: [/qwen3.*4b.*\.gguf$/i, /qwen.*instruct.*\.gguf$/i],
+  t5: [/umt5.*\.gguf$/i, /umt5.*\.safetensors$/i],
+  llm: [
+    /qwen_3_4b\.safetensors$/i,
+    /qwen3.*4b.*\.safetensors$/i,
+    /qwen3.*4b.*\.gguf$/i,
+    /qwen.*instruct.*\.gguf$/i,
+  ],
 };
 
-function scanSameDirectory(modelPath) {
+/** Cache scan patterns scoped per profile — prevents image VAE matching video jobs. */
+const PROFILE_CACHE_PATTERNS = {
+  'lumina-image': { vae: [/ae\.safetensors$/i], llm: SAME_DIR_PATTERNS.llm },
+  'flux-image': { vae: [/ae\.safetensors$/i] },
+  'sd3-image': { vae: [/ae\.safetensors$/i] },
+  'pixart-image': { vae: [/ae\.safetensors$/i] },
+  'wan22-ti2v': { vae: [/wan2\.2_vae\.safetensors$/i], t5: SAME_DIR_PATTERNS.t5, tae: SAME_DIR_PATTERNS.tae },
+  'wan-video': { vae: [/wan_2\.1_vae\.safetensors$/i], t5: SAME_DIR_PATTERNS.t5, tae: SAME_DIR_PATTERNS.tae },
+};
+
+function scanSameDirectory(modelPath, profileId) {
   const found = {};
   if (!modelPath) return found;
   const dir = path.dirname(modelPath);
+  const patternSource = (profileId && PROFILE_CACHE_PATTERNS[profileId])
+    ? PROFILE_CACHE_PATTERNS[profileId]
+    : SAME_DIR_PATTERNS;
   let entries;
   try {
     entries = fs.readdirSync(dir);
@@ -43,7 +63,7 @@ function scanSameDirectory(modelPath) {
     } catch {
       continue;
     }
-    for (const [key, patterns] of Object.entries(SAME_DIR_PATTERNS)) {
+    for (const [key, patterns] of Object.entries(patternSource)) {
       if (found[key]) continue;
       if (patterns.some((p) => p.test(name))) found[key] = full;
     }
@@ -63,6 +83,15 @@ function pickFromSettings(settings) {
   return out;
 }
 
+function _auxDownloadMessage(asset) {
+  const label = asset.userLabel || path.basename(asset.relPath);
+  const sizeMb = asset.bytes ? Math.round(asset.bytes / 1e6) : null;
+  if (sizeMb) {
+    return `First generate needs ~${sizeMb} MB diffusion weights for ${label} (one-time cache, not your chat model)`;
+  }
+  return `Setting up ${label} for diffusion (one-time cache, not your chat model)…`;
+}
+
 class MediaAuxResolver {
   constructor(options = {}) {
     this.userDataPath = options.userDataPath || require('os').tmpdir();
@@ -75,27 +104,51 @@ class MediaAuxResolver {
     return fs.existsSync(p) ? p : null;
   }
 
+  _findCachedByPattern(auxKey, profileId) {
+    const profileMap = PROFILE_CACHE_PATTERNS[profileId] || {};
+    const patterns = profileMap[auxKey] || SAME_DIR_PATTERNS[auxKey];
+    if (!patterns?.length || !fs.existsSync(this._cacheDir)) return null;
+
+    const walk = (dir) => {
+      let entries;
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return null;
+      }
+      for (const ent of entries) {
+        const full = path.join(dir, ent.name);
+        if (ent.isFile() && patterns.some((p) => p.test(ent.name))) return full;
+        if (ent.isDirectory()) {
+          const nested = walk(full);
+          if (nested) return nested;
+        }
+      }
+      return null;
+    };
+    return walk(this._cacheDir);
+  }
+
   async _downloadAsset(asset, onProgress) {
     const key = `asset:${asset.relPath}`;
     if (this._inflight.has(key)) return this._inflight.get(key);
     const dest = path.join(this._cacheDir, asset.relPath);
     const job = (async () => {
       const label = asset.userLabel || path.basename(asset.relPath);
-      const sizeMb = asset.bytes ? Math.round(asset.bytes / 1e6) : null;
+      const message = _auxDownloadMessage(asset);
       if (onProgress) {
         onProgress({
           phase: 'start',
           label,
           file: path.basename(asset.relPath),
           total: asset.bytes || 0,
-          message: sizeMb
-            ? `Setting up ${label}… downloading ${sizeMb} MB (one-time)`
-            : `Setting up ${label}…`,
+          message,
         });
       }
       console.log(`[MediaAux] Downloading ${asset.relPath} (${label})`);
-      await downloadFile(asset.url, dest, {
+      await downloadFileWithRetry(asset.url, dest, {
         expectedBytes: asset.bytes || undefined,
+        retries: 3,
         onProgress: ({ received, total }) => {
           if (onProgress && total > 0) {
             onProgress({
@@ -116,6 +169,33 @@ class MediaAuxResolver {
     return job;
   }
 
+  async _resolveAuxKey(auxKey, primaryAssetId, fallbacks, assetsById, resolved, onProgress, profileId) {
+    if (resolved[auxKey] && fs.existsSync(resolved[auxKey])) return;
+
+    const patternCached = this._findCachedByPattern(auxKey, profileId);
+    if (patternCached) {
+      resolved[auxKey] = patternCached;
+      return;
+    }
+
+    const tryIds = [primaryAssetId, fallbacks[auxKey]].filter(Boolean);
+    for (const assetId of tryIds) {
+      const asset = assetsById[assetId];
+      if (!asset) continue;
+      const cached = this._cachedPath(asset.relPath);
+      if (cached) {
+        resolved[auxKey] = cached;
+        return;
+      }
+      try {
+        resolved[auxKey] = await this._downloadAsset(asset, onProgress);
+        return;
+      } catch (e) {
+        console.warn(`[MediaAux] Could not fetch ${asset.relPath}: ${e.message}`);
+      }
+    }
+  }
+
   async ensureForGenerate({ arch, modelType, modelPath, settings = {}, vramMB = 0, onProgress }) {
     const profileId = archToMediaProfile(arch, modelType, modelPath);
     if (!profileId) {
@@ -123,26 +203,36 @@ class MediaAuxResolver {
     }
 
     const lowVram = vramMB > 0 && vramMB <= VRAM_LOW_MB;
-    const auxKeyMap = getAuxKeyMap(profileId, lowVram);
+    const auxKeyMap = getAuxKeyMap(profileId, lowVram, settings);
+    const fallbacks = getAuxKeyFallbacks(profileId);
     const profile = MEDIA_ASSET_PROFILES[profileId];
     const assetsById = Object.fromEntries(listAssetsForProfile(profileId).map((a) => [a.id, a]));
 
-    const resolved = { ...scanSameDirectory(modelPath), ...pickFromSettings(settings) };
+    const resolved = { ...scanSameDirectory(modelPath, profileId), ...pickFromSettings(settings) };
 
     for (const [auxKey, assetId] of Object.entries(auxKeyMap)) {
-      if (resolved[auxKey] && fs.existsSync(resolved[auxKey])) continue;
-      const asset = assetsById[assetId];
-      if (!asset) continue;
-      const cached = this._cachedPath(asset.relPath);
-      if (cached) {
-        resolved[auxKey] = cached;
-        continue;
+      await this._resolveAuxKey(auxKey, assetId, fallbacks, assetsById, resolved, onProgress, profileId);
+    }
+
+    const missing = [];
+    for (const key of getRequiredAuxKeys(profileId, lowVram, settings)) {
+      if (!resolved[key] || !fs.existsSync(resolved[key])) {
+        missing.push(key);
       }
-      try {
-        resolved[auxKey] = await this._downloadAsset(asset, onProgress);
-      } catch (e) {
-        throw new Error(`Could not download ${asset.userLabel || asset.relPath}: ${e.message}`);
-      }
+    }
+
+    if (missing.length > 0) {
+      const labels = missing.map((k) => {
+        if (k === 'llm') return 'text encoder (Settings → Media → Text encoder, or beside your GGUF)';
+        if (k === 't5') return 'T5 encoder (Settings → Media → T5 override, or beside your GGUF)';
+        if (k === 'vae') return 'VAE';
+        if (k === 'tae') return 'TAE decoder';
+        return k;
+      });
+      throw new Error(
+        `Missing required diffusion components: ${labels.join(', ')}. `
+        + 'Place files beside your GGUF, set paths in Settings → Media, or retry to download.',
+      );
     }
 
     if (resolved.llm) resolved.clip = resolved.llm;
@@ -157,4 +247,5 @@ module.exports = {
   scanSameDirectory,
   pickFromSettings,
   SAME_DIR_PATTERNS,
+  _auxDownloadMessage,
 };

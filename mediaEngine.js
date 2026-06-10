@@ -5,7 +5,14 @@ const fs = require('fs');
 const fsp = require('fs').promises;
 const { spawn } = require('child_process');
 const { readGgufMetadata, detectModelTypeFromGguf } = require('./modelDetection');
-const { LUMINA_ARCHS, WAN_ARCHS } = require('./mediaAssetsCatalog');
+const {
+  LUMINA_ARCHS,
+  WAN_ARCHS,
+  archToMediaProfile,
+  WAN_5D_INCOMPAT_MSG,
+  isWanIncompatibleStderr,
+  getRequiredAuxKeys,
+} = require('./mediaAssetsCatalog');
 
 /** VRAM tiers (MB) for automatic media memory policy. */
 const VRAM_TIGHT_MB = 8192;
@@ -59,24 +66,27 @@ function resolveMediaMemoryFlags(settings = {}, vramMB = 0) {
   const vram = vramMB > 0 ? vramMB : queryGpuVramMB();
   const low = vram > 0 && vram <= VRAM_LOW_MB;
   const tight = vram > 0 && vram <= VRAM_TIGHT_MB;
+  const unknownVram = vram <= 0;
   return {
-    offloadToCpu: low || tight,
-    vaeOnCpu: low,
-    clipOnCpu: low,
+    offloadToCpu: low || tight || unknownVram,
+    vaeOnCpu: low || unknownVram,
+    clipOnCpu: low || unknownVram,
     diffusionFa: true,
-    vaeConvDirect: low && !!settings.mediaTaePath,
-    vaeTiling: low,
+    vaeConvDirect: (low || unknownVram) && !!settings.mediaTaePath,
+    vaeTiling: low || unknownVram,
   };
 }
 
 function getDefaultMediaDimensions(vramMB, isVideo) {
   const vram = vramMB > 0 ? vramMB : queryGpuVramMB();
+  const conservative = vram <= 0 || vram <= VRAM_LOW_MB;
+  const tight = vram > 0 && vram <= VRAM_TIGHT_MB;
   if (!isVideo) {
-    if (vram > 0 && vram <= VRAM_LOW_MB) return { width: 384, height: 384, videoFrames: 1 };
+    if (conservative) return { width: 384, height: 384, videoFrames: 1 };
     return { width: 512, height: 512, videoFrames: 1 };
   }
-  if (vram > 0 && vram <= VRAM_LOW_MB) return { width: 384, height: 384, videoFrames: 17 };
-  if (vram > 0 && vram <= VRAM_TIGHT_MB) return { width: 480, height: 480, videoFrames: 25 };
+  if (conservative) return { width: 384, height: 384, videoFrames: 17 };
+  if (tight) return { width: 480, height: 480, videoFrames: 25 };
   return { width: 512, height: 512, videoFrames: 33 };
 }
 
@@ -117,9 +127,15 @@ function formatSdExitError(code, stderr) {
     .filter((l) => /\[ERROR\]/i.test(l))
     .map((l) => l.replace(/^\[ERROR\]\s*/i, '').trim());
 
+  if (isWanIncompatibleStderr(stderr) || errorLines.some((l) => isWanIncompatibleStderr(l))) {
+    return WAN_5D_INCOMPAT_MSG;
+  }
+  if (errorLines.some((l) => /not in model file/i.test(l)) && errorLines.some((l) => /first_stage_model/i.test(l))) {
+    return 'Wrong VAE file for this video model. guIDE will fetch wan2.2_vae or wan_2.1_vae on generate — retry, or set Settings → Media → VAE override.';
+  }
   if (errorLines.some((l) => /not in model file/i.test(l))) {
-    return 'This model file is missing required components. guIDE will download them on first generate — try again, '
-      + 'or place VAE / encoder files beside your GGUF.';
+    return 'This model file is missing required diffusion components (VAE or text encoder). '
+      + 'Retry generate to fetch companions, or place files beside your GGUF / Settings → Media.';
   }
   if (errorLines.some((l) => /get sd version from file failed/i.test(l))) {
     return 'Could not load model file. Ensure you are using a stable-diffusion.cpp compatible image/video GGUF.';
@@ -181,11 +197,70 @@ class MediaEngine {
         + 'Load a diffusion/video model with proper GGUF metadata.',
       );
     }
+    const arch = (meta?.general?.architecture || '').toLowerCase();
+    const profileId = archToMediaProfile(arch, type, modelPath);
+    if (!profileId) {
+      throw new Error(
+        `Unsupported media architecture "${arch || 'unknown'}" for generation. `
+        + 'guIDE supports stable-diffusion.cpp image/video arches (flux, lumina/z-image, wan, sd3, pixart, …).',
+      );
+    }
     this.modelPath = modelPath;
-    this.ggufArchitecture = (meta?.general?.architecture || '').toLowerCase();
+    this.ggufArchitecture = arch;
     this.modelType = type;
     this._resolvedAux = null;
+
+    if (_isWanArch(arch)) {
+      await this._probeWanCompatibility(modelPath);
+    }
+
     return this.getStatus();
+  }
+
+  async _probeWanCompatibility(modelPath) {
+    const sdCandidates = this._resolveSdBinaryCandidates();
+    if (!sdCandidates.length) return;
+
+    let aux = {};
+    if (this.auxResolver) {
+      try {
+        aux = await this.auxResolver.ensureForGenerate({
+          arch: this.ggufArchitecture,
+          modelType: this.modelType,
+          modelPath,
+          settings: this.getSettings(),
+          vramMB: queryGpuVramMB(),
+        });
+      } catch (e) {
+        console.warn(`[MediaEngine] Wan probe: aux not ready (${e.message})`);
+      }
+    }
+
+    const probeDir = path.join(this.userDataPath, 'guide-media');
+    await fsp.mkdir(probeDir, { recursive: true });
+    const probeOut = path.join(probeDir, `.probe-${Date.now()}.png`);
+
+    const args = [
+      '-M', 'vid_gen',
+      '--diffusion-model', modelPath,
+      '-p', 'probe',
+      '-o', probeOut,
+      '-W', '64', '-H', '64',
+      '--steps', '1',
+      '-s', '1',
+      '--video-frames', '1',
+      '--offload-to-cpu',
+    ];
+    if (aux.vae) args.push('--vae', aux.vae);
+    if (aux.tae) args.push('--tae', aux.tae);
+    if (aux.t5) args.push('--t5xxl', aux.t5);
+
+    const result = await this._runSdWithFallback(sdCandidates, args);
+    try { await fsp.unlink(probeOut); } catch { /* ignore */ }
+
+    if (!result.ok && isWanIncompatibleStderr(result.error || '')) {
+      throw new Error(WAN_5D_INCOMPAT_MSG);
+    }
   }
 
   async unload() {
@@ -232,11 +307,43 @@ class MediaEngine {
   }
 
   _resolveSdBinaryCandidates() {
+    const all = this._collectSdBinaryPaths();
     if (this._sdBinaryPath && fs.existsSync(this._sdBinaryPath)) {
-      const rest = this._collectSdBinaryPaths().filter((p) => p !== this._sdBinaryPath);
+      const rest = all.filter((p) => p !== this._sdBinaryPath);
       return [this._sdBinaryPath, ...rest];
     }
-    return this._collectSdBinaryPaths();
+    if (this.installVariant === 'cuda') {
+      const vulkan = [];
+      const cuda = [];
+      const other = [];
+      const seen = new Set();
+      for (const p of all) {
+        const key = path.resolve(p);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (/sd-cpp-cpu|win-x64-cpu|vulkan/i.test(p)) vulkan.push(p);
+        else if (/sd-cpp|win-x64-cuda|cuda/i.test(p)) cuda.push(p);
+        else other.push(p);
+      }
+      if (cuda.length && vulkan.length) return [cuda[0], vulkan[0], ...cuda.slice(1), ...vulkan.slice(1), ...other];
+      return [...cuda, ...vulkan, ...other];
+    }
+    return all;
+  }
+
+  _collectSdPathDirs() {
+    const dirs = new Set();
+    for (const bin of this._collectSdBinaryPaths()) {
+      dirs.add(path.dirname(bin));
+    }
+    if (this.isPackaged && this.resourcesPath) {
+      const resRoot = path.resolve(this.resourcesPath);
+      for (const sub of ['sd-cpp', 'sd-cpp-cpu']) {
+        const d = path.join(resRoot, sub);
+        if (fs.existsSync(d)) dirs.add(d);
+      }
+    }
+    return [...dirs];
   }
 
   _pushOptionalAux(args, aux, mem) {
@@ -403,11 +510,13 @@ class MediaEngine {
     return { ok: false, error: lastError };
   }
 
-  _runSdOnce(sdBin, args) {
+  _runSdOnce(sdBin, args, timeoutMs = 0) {
     return new Promise((resolve) => {
       const binDir = path.dirname(sdBin);
       const env = { ...process.env };
-      env.PATH = `${binDir}${path.delimiter}${env.PATH || ''}`;
+      const pathDirs = this._collectSdPathDirs();
+      if (!pathDirs.includes(binDir)) pathDirs.unshift(binDir);
+      env.PATH = [...pathDirs, env.PATH || ''].filter(Boolean).join(path.delimiter);
 
       const proc = spawn(sdBin, args, {
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -417,11 +526,20 @@ class MediaEngine {
       });
 
       let stderr = '';
+      let timer = null;
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          try { proc.kill(); } catch { /* ignore */ }
+        }, timeoutMs);
+      }
+
       proc.stderr.on('data', (d) => { stderr += d.toString(); });
       proc.on('error', (err) => {
+        if (timer) clearTimeout(timer);
         resolve({ ok: false, error: err.message, code: null, stderr });
       });
       proc.on('close', (code) => {
+        if (timer) clearTimeout(timer);
         const outIdx = args.indexOf('-o');
         const out = outIdx >= 0 ? args[outIdx + 1] : null;
         if (code === 0 && out && fs.existsSync(out)) {

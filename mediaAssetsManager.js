@@ -16,25 +16,79 @@ function downloadHeaders(url) {
   return headers;
 }
 
+async function downloadFileWithRetry(url, dest, { onProgress, expectedBytes, retries = 3 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      return await downloadFile(url, dest, { onProgress, expectedBytes });
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries - 1) {
+        const delayMs = 2000 * (attempt + 1);
+        console.warn(`[MediaAssets] Download retry ${attempt + 2}/${retries} for ${path.basename(dest)}: ${err.message}`);
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 async function downloadFile(url, dest, { onProgress, expectedBytes } = {}) {
   const { Readable } = require('stream');
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   const tmp = `${dest}.part`;
+
+  if (fs.existsSync(dest)) {
+    const got = fs.statSync(dest).size;
+    if (!expectedBytes || got >= expectedBytes * 0.95) return dest;
+  }
+
+  let startAt = 0;
+  if (fs.existsSync(tmp)) {
+    startAt = fs.statSync(tmp).size;
+    if (expectedBytes && startAt >= expectedBytes * 0.95) {
+      if (fs.existsSync(dest)) fs.unlinkSync(dest);
+      fs.renameSync(tmp, dest);
+      return dest;
+    }
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60 * 60 * 1000);
-  let received = 0;
+  let received = startAt;
   let lastPct = -1;
   try {
+    const headers = downloadHeaders(url);
+    if (startAt > 0) headers.Range = `bytes=${startAt}-`;
+
     const res = await fetch(url, {
-      headers: downloadHeaders(url),
+      headers,
       redirect: 'follow',
       signal: controller.signal,
     });
-    if (!res.ok) {
+
+    if (startAt > 0 && res.status === 416) {
+      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+      startAt = 0;
+      return downloadFile(url, dest, { onProgress, expectedBytes });
+    }
+    if (!res.ok && res.status !== 206) {
       throw new Error(`Download failed HTTP ${res.status}: ${url}`);
     }
-    const total = Number(res.headers.get('content-length') || expectedBytes || 0);
-    const file = fs.createWriteStream(tmp);
+    if (startAt > 0 && res.status === 200) {
+      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+      startAt = 0;
+      received = 0;
+    }
+
+    const contentLen = Number(res.headers.get('content-length') || 0);
+    const total = expectedBytes || (startAt > 0 ? startAt + contentLen : contentLen);
+    const file = fs.createWriteStream(tmp, { flags: received > 0 ? 'a' : 'w' });
+    await new Promise((resolve, reject) => {
+      file.on('error', reject);
+      file.on('open', resolve);
+    });
+
     for await (const chunk of Readable.fromWeb(res.body)) {
       received += chunk.length;
       if (!file.write(chunk)) {
@@ -53,7 +107,6 @@ async function downloadFile(url, dest, { onProgress, expectedBytes } = {}) {
       file.on('error', reject);
     });
     if (expectedBytes && received < expectedBytes * 0.95) {
-      fs.unlinkSync(tmp);
       throw new Error(
         `Download incomplete ${path.basename(dest)}: ${received} < ${expectedBytes}`,
       );
@@ -62,7 +115,6 @@ async function downloadFile(url, dest, { onProgress, expectedBytes } = {}) {
     fs.renameSync(tmp, dest);
     return dest;
   } catch (err) {
-    if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
     throw err;
   } finally {
     clearTimeout(timeout);
@@ -247,4 +299,4 @@ class MediaAssetsManager {
   }
 }
 
-module.exports = { MediaAssetsManager, downloadFile };
+module.exports = { MediaAssetsManager, downloadFile, downloadFileWithRetry };

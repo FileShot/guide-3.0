@@ -143,7 +143,17 @@ async function main() {
     extractZip(zipPath, extractDir);
     if (fs.existsSync(variant.outDir)) fs.rmSync(variant.outDir, { recursive: true, force: true });
     flattenToOut(extractDir, variant.outDir);
-    log(`Installed ${variant.name} → ${variant.outDir}`);
+    const sdExe = path.join(variant.outDir, 'sd.exe');
+    const dllCount = fs.existsSync(variant.outDir)
+      ? fs.readdirSync(variant.outDir).filter((n) => /\.dll$/i.test(n)).length
+      : 0;
+    if (!fs.existsSync(sdExe)) {
+      throw new Error(`${variant.name}: sd.exe missing after extract`);
+    }
+    log(`Installed ${variant.name} → ${variant.outDir} (${dllCount} DLLs beside sd.exe)`);
+    if (variant.name === 'cuda' && dllCount === 0) {
+      log('WARN: CUDA bundle has no DLLs — installs may hit STATUS_DLL_NOT_FOUND');
+    }
   }
 
   const cudaSd = path.join(OUT_CUDA, 'sd.exe');

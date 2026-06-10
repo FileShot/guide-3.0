@@ -169,6 +169,9 @@ function testFormatSdExitError() {
   const cleaned = formatSdExitError(1, vulkanSpam);
   assert.ok(!cleaned.includes('ggml_vulkan'));
   assert.ok(cleaned.includes('Could not load model file') || cleaned.includes('get sd version'));
+  const wan5d = '[ERROR] ggml_extend.hpp:70 - patch_embedding.weight has invalid number of dimensions: 5 > 4';
+  const wanMsg = formatSdExitError(1, wan5d);
+  assert.ok(wanMsg.includes('5D tensors') || wanMsg.includes('QuantStack'));
   console.log('PASS formatSdExitError');
 }
 
