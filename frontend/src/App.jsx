@@ -775,10 +775,8 @@ export default function App() {
         break;
 
       case 'media-assets-progress':
-        if (data?.phase === 'download' || data?.phase === 'assemble' || data?.phase === 'start') {
-          s.addNotification({ type: 'info', message: 'Preparing generation (first time only)…' });
-        } else if (data?.phase === 'error') {
-          s.addNotification({ type: 'error', message: `Could not prepare generation: ${data.error}` });
+        if (data?.phase === 'error') {
+          s.addNotification({ type: 'error', message: data.error || 'Could not prepare generation' });
         }
         break;
 

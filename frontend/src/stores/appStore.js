@@ -756,7 +756,13 @@ const useAppStore = create((set, get) => ({
       const msgs = [...store.chatMessages];
       const idx = msgs.findIndex((m) => m.id === messageId);
       if (idx >= 0) {
-        msgs[idx] = { ...msgs[idx], content: error || 'Media generation failed', isError: true, mediaItems: [] };
+        msgs[idx] = {
+          ...msgs[idx],
+          content: error || 'Media generation failed',
+          errorMessage: error || 'Media generation failed',
+          isError: true,
+          mediaItems: [],
+        };
         set({ chatMessages: msgs });
         persistProjectChatMessages(store.projectPath, msgs);
       }
@@ -772,7 +778,13 @@ const useAppStore = create((set, get) => ({
     const msgs = [...store.chatMessages];
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role === 'assistant') {
-        msgs[i] = { ...msgs[i], content: error || 'Media generation failed', isError: true, mediaItems: [] };
+        msgs[i] = {
+          ...msgs[i],
+          content: error || 'Media generation failed',
+          errorMessage: error || 'Media generation failed',
+          isError: true,
+          mediaItems: [],
+        };
         set({ chatMessages: msgs });
         persistProjectChatMessages(store.projectPath, msgs);
         break;

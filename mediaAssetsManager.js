@@ -195,29 +195,26 @@ class MediaAssetsManager {
   }
 
   async ensureForModel(arch, modelType, onProgress) {
-    const profileId = archToMediaProfile(arch, modelType);
-    if (!profileId) return this.resolveAux(arch, modelType);
-    await this.ensureProfile(profileId, onProgress);
-    return this.resolveAux(arch, modelType);
+    return this.ensureForModelBackground(arch, modelType, onProgress);
   }
 
   ensureForModelBackground(arch, modelType, onProgress) {
     const profileId = archToMediaProfile(arch, modelType);
     if (!profileId) return Promise.resolve(this.resolveAux(arch, modelType));
     if (this._inflight.has(profileId)) return this._inflight.get(profileId);
-    const job = this.ensureForModel(arch, modelType, onProgress)
+    const job = this.ensureProfile(profileId, onProgress)
+      .then(() => this.resolveAux(arch, modelType))
       .finally(() => this._inflight.delete(profileId));
     this._inflight.set(profileId, job);
     return job;
   }
 
-  async ensureProfile(profileId, onProgress) {
-    const progress = onProgress || this.onProgress;
-    await this.materializeProfile(profileId, progress);
-    for (const asset of listAssetsForProfile(profileId)) {
-      if (this._assetPath(asset.relPath)) continue;
-      const dest = path.join(this._cacheDir, asset.relPath);
-      const sizeMb = asset.bytes ? Math.round(asset.bytes / 1e6) : '?';
+  async _downloadAsset(asset, progress) {
+    const key = `asset:${asset.relPath}`;
+    if (this._inflight.has(key)) return this._inflight.get(key);
+    const dest = path.join(this._cacheDir, asset.relPath);
+    const sizeMb = asset.bytes ? Math.round(asset.bytes / 1e6) : '?';
+    const job = (async () => {
       console.log(`[MediaAssets] Downloading ${asset.relPath} (~${sizeMb}MB)`);
       if (progress) progress({ phase: 'start', asset: asset.id, file: path.basename(asset.relPath), total: asset.bytes || 0 });
       let lastLogPct = -1;
@@ -230,10 +227,21 @@ class MediaAssetsManager {
             lastLogPct = pct;
             console.log(`[MediaAssets] ${file}: ${pct}%`);
           }
-          if (progress) progress({ phase: 'download', asset: asset.id, file, received, total: t });
         },
       });
       if (progress) progress({ phase: 'done', asset: asset.id, file: path.basename(asset.relPath) });
+      return dest;
+    })().finally(() => this._inflight.delete(key));
+    this._inflight.set(key, job);
+    return job;
+  }
+
+  async ensureProfile(profileId, onProgress) {
+    const progress = onProgress || this.onProgress;
+    await this.materializeProfile(profileId, progress);
+    for (const asset of listAssetsForProfile(profileId)) {
+      if (this._assetPath(asset.relPath)) continue;
+      await this._downloadAsset(asset, progress);
     }
     return this.getProfileStatus(profileId);
   }

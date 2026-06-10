@@ -1614,7 +1614,9 @@ export default function ChatPanel() {
       && (mediaModel.modelType === 'diffusion' || mediaModel.modelType === 'video')
       && !/^\s*\//.test(text)
     ) {
-      const mediaType = mediaModel.modelType === 'video' ? 'video' : 'image';
+      const arch = (mediaModel.ggufArchitecture || '').toLowerCase();
+      const isVideo = mediaModel.modelType === 'video' || arch.startsWith('wan');
+      const mediaType = isVideo ? 'video' : 'image';
       await runMediaCommand(text.trim(), mediaType, { natural: true });
       return;
     }
@@ -3367,10 +3369,12 @@ export default function ChatPanel() {
 
                         <GenerationErrorCard
                           message={
-                            msg.errorMessage ||
-                            (msg.needsAccount
-                              ? "You've used all your free messages today. Log in and upgrade to Pro for more."
-                              : "You've used all your free messages today. Upgrade to Pro for more daily messages.")
+                            msg.errorMessage || msg.content ||
+                            (msg.usageLimit || msg.quotaExceeded
+                              ? (msg.needsAccount
+                                ? "You've used all your free messages today. Log in and upgrade to Pro for more."
+                                : "You've used all your free messages today. Upgrade to Pro for more daily messages.")
+                              : 'Something went wrong.')
                           }
                           suggestion={msg.errorSuggestion}
                           cooldownUntil={msg.cooldownUntil}
@@ -3390,7 +3394,7 @@ export default function ChatPanel() {
                         item.status === 'generating' ? (
                           <div key={`media-${mi}`} className="my-2 text-sm text-vsc-fg-dim flex items-center gap-2">
                             <Loader size={14} className="animate-spin" />
-                            Generating image…
+                            Generating {item.mediaType === 'video' ? 'video' : 'image'}…
                           </div>
                         ) : item.src ? (
                           <MediaBlock

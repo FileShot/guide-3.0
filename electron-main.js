@@ -1426,7 +1426,9 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     }
     if (p === '/api/media/generate' && method === 'POST') {
       const { prompt, width, height, steps, seed, videoFrames, messageId, mediaType } = body || {};
-      _send('media-generating', { prompt, messageId, mediaType });
+      const resolvedMediaType = mediaType
+        || (mediaEngine.modelType === 'video' ? 'video' : 'image');
+      _send('media-generating', { prompt, messageId, mediaType: resolvedMediaType });
       const { queryGpuVramMB, resolveMediaMemoryFlags } = require('./mediaEngine');
       const settings = settingsManager.getAll();
       const vramMB = queryGpuVramMB();
