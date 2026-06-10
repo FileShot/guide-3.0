@@ -7,9 +7,10 @@ const os = require('os');
 const { archToMediaProfile } = require('../mediaAssetsCatalog');
 const { MediaAssetsManager } = require('../mediaAssetsManager');
 
-assert.strictEqual(archToMediaProfile('lumina2', 'diffusion'), 'lumina-image');
-assert.strictEqual(archToMediaProfile('wan', 'video'), 'wan-video');
-assert.strictEqual(archToMediaProfile('flux', 'diffusion'), 'flux-image');
+assert.strictEqual(archToMediaProfile('lumina2', 'diffusion', ''), 'lumina-image');
+assert.strictEqual(archToMediaProfile('wan', 'video', '/wan14.gguf'), 'wan-video');
+assert.strictEqual(archToMediaProfile('wan2', 'video', '/Wan2.2-TI2V-5B.gguf'), 'wan22-ti2v');
+assert.strictEqual(archToMediaProfile('flux', 'diffusion', ''), 'flux-image');
 
 const tmp = path.join(os.tmpdir(), `guide-media-assets-test-${Date.now()}`);
 const bundled = path.join(tmp, 'bundled', 'media-assets');

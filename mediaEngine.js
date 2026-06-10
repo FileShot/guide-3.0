@@ -5,6 +5,7 @@ const fs = require('fs');
 const fsp = require('fs').promises;
 const { spawn } = require('child_process');
 const { readGgufMetadata, detectModelTypeFromGguf } = require('./modelDetection');
+const { LUMINA_ARCHS, WAN_ARCHS } = require('./mediaAssetsCatalog');
 
 /** VRAM tiers (MB) for automatic media memory policy. */
 const VRAM_TIGHT_MB = 8192;
@@ -12,6 +13,11 @@ const VRAM_LOW_MB = 6144;
 
 /** Windows STATUS_DLL_NOT_FOUND when sd.exe cannot load bundled CUDA DLLs. */
 const WIN_DLL_NOT_FOUND = 3221225781;
+
+const WAN_DEFAULT_NEGATIVE =
+  '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，'
+  + 'JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，'
+  + '形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走';
 
 /**
  * Query total GPU VRAM in MB (0 if unknown or no NVIDIA GPU).
@@ -29,10 +35,6 @@ function queryGpuVramMB() {
   }
 }
 
-/**
- * stable-diffusion.cpp uses component-level offload (VAE/T5/diffusion weights), not
- * per-transformer-block layers like llama.cpp. Map user settings + VRAM to sd.cpp flags.
- */
 function resolveMediaMemoryFlags(settings = {}, vramMB = 0) {
   if (settings.gpuPreference === 'cpu' || settings.mediaOffloadPolicy === 'max') {
     return {
@@ -41,6 +43,7 @@ function resolveMediaMemoryFlags(settings = {}, vramMB = 0) {
       clipOnCpu: true,
       diffusionFa: true,
       vaeConvDirect: !!settings.mediaTaePath,
+      vaeTiling: true,
     };
   }
   if (settings.mediaOffloadPolicy === 'off') {
@@ -50,6 +53,7 @@ function resolveMediaMemoryFlags(settings = {}, vramMB = 0) {
       clipOnCpu: false,
       diffusionFa: true,
       vaeConvDirect: false,
+      vaeTiling: false,
     };
   }
   const vram = vramMB > 0 ? vramMB : queryGpuVramMB();
@@ -61,10 +65,10 @@ function resolveMediaMemoryFlags(settings = {}, vramMB = 0) {
     clipOnCpu: low,
     diffusionFa: true,
     vaeConvDirect: low && !!settings.mediaTaePath,
+    vaeTiling: low,
   };
 }
 
-/** Smaller defaults on low VRAM — video activations scale with frames × resolution. */
 function getDefaultMediaDimensions(vramMB, isVideo) {
   const vram = vramMB > 0 ? vramMB : queryGpuVramMB();
   if (!isVideo) {
@@ -83,11 +87,46 @@ function _applyMemoryCliArgs(args, mem) {
   if (mem.vaeOnCpu) args.push('--vae-on-cpu');
   if (mem.clipOnCpu) args.push('--clip-on-cpu');
   if (mem.vaeConvDirect) args.push('--vae-conv-direct');
+  if (mem.vaeTiling) {
+    args.push('--vae-tiling');
+    args.push('--vae-tile-size', '64');
+  }
+}
+
+function _isLuminaArch(arch) {
+  const a = (arch || '').toLowerCase();
+  return LUMINA_ARCHS.has(a) || a.startsWith('lumina') || a.includes('z-image') || a.includes('zimage');
+}
+
+function _isWanArch(arch) {
+  const a = (arch || '').toLowerCase();
+  return WAN_ARCHS.has(a) || a.startsWith('wan');
 }
 
 function formatSdExitError(code, stderr) {
-  const tail = (stderr || '').trim();
-  const excerpt = tail ? tail.slice(-2048) : '';
+  const raw = (stderr || '').trim();
+  const lines = raw.split(/\r?\n/).filter((line) => {
+    const t = line.trim();
+    if (!t) return false;
+    if (/^ggml_vulkan:/i.test(t)) return false;
+    if (/^\[INFO\]/i.test(t)) return false;
+    return true;
+  });
+
+  const errorLines = lines
+    .filter((l) => /\[ERROR\]/i.test(l))
+    .map((l) => l.replace(/^\[ERROR\]\s*/i, '').trim());
+
+  if (errorLines.some((l) => /not in model file/i.test(l))) {
+    return 'This model file is missing required components. guIDE will download them on first generate — try again, '
+      + 'or place VAE / encoder files beside your GGUF.';
+  }
+  if (errorLines.some((l) => /get sd version from file failed/i.test(l))) {
+    return 'Could not load model file. Ensure you are using a stable-diffusion.cpp compatible image/video GGUF.';
+  }
+
+  const excerpt = (errorLines.length ? errorLines.slice(-5) : lines.slice(-6)).join('\n');
+
   if (code === WIN_DLL_NOT_FOUND || code === -1073741515) {
     return 'stable-diffusion.cpp could not start (missing GPU runtime DLLs). '
       + 'Reinstall guIDE or set Settings → Media → sd.cpp path to a local sd.exe with its DLLs.'
@@ -110,12 +149,15 @@ class MediaEngine {
     this.isPackaged = options.isPackaged || false;
     this.resourcesPath = options.resourcesPath || null;
     this.installVariant = options.installVariant || 'cpu';
+    this.auxResolver = options.auxResolver || null;
+    this.onAuxProgress = options.onAuxProgress || null;
     this.modelPath = null;
     this.ggufArchitecture = null;
     this.modelType = null;
     this._generating = false;
     this._outputDir = path.join(this.userDataPath, 'guide-media');
     this._sdBinaryPath = null;
+    this._resolvedAux = null;
   }
 
   getStatus() {
@@ -142,6 +184,7 @@ class MediaEngine {
     this.modelPath = modelPath;
     this.ggufArchitecture = (meta?.general?.architecture || '').toLowerCase();
     this.modelType = type;
+    this._resolvedAux = null;
     return this.getStatus();
   }
 
@@ -149,6 +192,7 @@ class MediaEngine {
     this.modelPath = null;
     this.ggufArchitecture = null;
     this.modelType = null;
+    this._resolvedAux = null;
   }
 
   _collectSdBinaryPaths() {
@@ -195,26 +239,6 @@ class MediaEngine {
     return this._collectSdBinaryPaths();
   }
 
-  _resolveSdBinary() {
-    return this._resolveSdBinaryCandidates()[0] || null;
-  }
-
-  _getAuxPaths() {
-    const s = this.getSettings();
-    const pick = (settingKey) => {
-      const custom = s[settingKey];
-      return custom && fs.existsSync(custom) ? custom : null;
-    };
-    const clip = pick('mediaClipPath');
-    return {
-      vae: pick('mediaVaePath'),
-      tae: pick('mediaTaePath'),
-      clip,
-      t5: pick('mediaT5Path'),
-      llm: clip,
-    };
-  }
-
   _pushOptionalAux(args, aux, mem) {
     if (aux.tae) {
       args.push('--tae', aux.tae);
@@ -228,7 +252,8 @@ class MediaEngine {
   }
 
   _buildSdArgs(opts) {
-    const aux = this._getAuxPaths();
+    const aux = opts.aux || {};
+    const arch = (this.ggufArchitecture || '').toLowerCase();
     const isVideo = this.modelType === 'video';
     const mem = opts.memoryFlags || {};
     const args = [];
@@ -237,7 +262,7 @@ class MediaEngine {
       args.push('-M', 'vid_gen');
     }
 
-    args.push('-m', opts.model);
+    args.push('--diffusion-model', opts.model);
     this._pushOptionalAux(args, aux, mem);
     args.push('-p', opts.prompt);
     args.push('-o', opts.output);
@@ -245,6 +270,13 @@ class MediaEngine {
     args.push('-H', String(opts.height));
     args.push('--steps', String(opts.steps));
     args.push('-s', String(opts.seed));
+
+    if (_isLuminaArch(arch)) {
+      args.push('--cfg-scale', '1.0');
+    } else if (isVideo && _isWanArch(arch)) {
+      args.push('--cfg-scale', '6.0');
+      args.push('-n', WAN_DEFAULT_NEGATIVE);
+    }
 
     if (isVideo) {
       args.push('--video-frames', String(opts.videoFrames || 33));
@@ -286,6 +318,23 @@ class MediaEngine {
     const seed = options.seed != null ? options.seed : Math.floor(Math.random() * 2147483647);
     const videoFrames = options.videoFrames || defaults.videoFrames;
 
+    let aux = this._resolvedAux || {};
+    if (this.auxResolver) {
+      try {
+        aux = await this.auxResolver.ensureForGenerate({
+          arch: this.ggufArchitecture,
+          modelType: this.modelType,
+          modelPath: this.modelPath,
+          settings,
+          vramMB,
+          onProgress: this.onAuxProgress,
+        });
+        this._resolvedAux = aux;
+      } catch (e) {
+        return { success: false, error: e.message || String(e), architecture: this.ggufArchitecture };
+      }
+    }
+
     await fsp.mkdir(this._outputDir, { recursive: true });
     const ext = isVideo ? 'mp4' : 'png';
     const outFile = path.join(this._outputDir, `guide-${Date.now()}.${ext}`);
@@ -300,6 +349,7 @@ class MediaEngine {
       output: outFile,
       videoFrames,
       memoryFlags,
+      aux,
     });
 
     this._generating = true;

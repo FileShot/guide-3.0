@@ -1663,7 +1663,7 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
               className="flex-1 text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
               value={settings[key] || ''}
               onChange={e => updateSetting(key, e.target.value)}
-              placeholder="Leave empty to use bundled assets"
+              placeholder="Optional — auto-detected beside your GGUF or cached on first generate"
             />
             <button type="button" className="btn btn-secondary text-[10px] px-2 shrink-0" onClick={() => pickAux(kind, key)}>Browse…</button>
           </div>

@@ -774,6 +774,14 @@ export default function App() {
         s.setActiveMediaModel(null);
         break;
 
+      case 'media-aux-progress':
+        if (data?.phase === 'start' && data.message) {
+          s.addNotification({ type: 'info', message: data.message, duration: 8000 });
+        } else if (data?.phase === 'error') {
+          s.addNotification({ type: 'error', message: data.error || 'Could not prepare generation' });
+        }
+        break;
+
       case 'media-generating':
         s.applyMediaGenerating(data);
         break;
@@ -1260,6 +1268,7 @@ export default function App() {
       api.onMediaModelUnloaded?.((d) => handleEvent('media-model-unloaded', d)),
 
 
+      api.onMediaAuxProgress?.((d) => handleEvent('media-aux-progress', d)),
       api.onMediaGenerating?.((d) => handleEvent('media-generating', d)),
 
       api.onMediaComplete?.((d) => handleEvent('media-complete', d)),
