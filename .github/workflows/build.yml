@@ -178,11 +178,14 @@ jobs:
       - name: Bundle stable-diffusion.cpp (Windows CUDA)
         run: node scripts/fetch-sd-cpp.js
 
+      - name: Install Vulkan runtime (sd.cpp CPU binary for E2E)
+        run: choco install vulkan-runtime -y --no-progress
+
       - name: Media E2E gate (PNG per image profile)
         run: node tools/mediaE2E.test.js
         env:
           GUIDE_SKIP_MEDIA_E2E: '0'
-          GUIDE_MEDIA_E2E_VARIANT: cuda
+          GUIDE_MEDIA_E2E_VARIANT: cpu
 
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)
