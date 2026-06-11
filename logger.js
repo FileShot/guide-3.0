@@ -137,6 +137,21 @@ const logger = {
 
   close() { if (stream) { stream.end(); stream = null; } },
 
+  clearAll() {
+    if (stream) {
+      try { stream.end(); } catch (_) {}
+      stream = null;
+    }
+    bytesWritten = 0;
+    ensureDir();
+    for (const f of [LOG_FILE, `${LOG_FILE}.1`]) {
+      try { fs.unlinkSync(f); } catch (_) {}
+    }
+    let version = '2.0.0';
+    try { version = require('./package.json').version || version; } catch (_) {}
+    writeLine(`\n${'='.repeat(80)}\n${new Date().toISOString()} SESSION START — guIDE v${version} (logs cleared)\n${'='.repeat(80)}`);
+  },
+
   /**
    * Intercept all console.log/warn/error so every module's output goes to
    * the persistent log file. Call once at startup from electron-main.js.

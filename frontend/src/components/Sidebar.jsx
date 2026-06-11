@@ -2035,6 +2035,26 @@ function SettingsPanel() {
             if (v) updateSetting('debugStreamDiag', true);
           }}
           hint="Writes verbatim stream/ipc/ui/api traces to %APPDATA%/guide-ide/logs/. Disabling prevents freeze diagnosis." />
+        <div className="mt-1">
+          <button
+            type="button"
+            className="text-[10px] px-2 py-1 rounded text-vsc-accent border border-vsc-accent/50 hover:bg-vsc-accent/10"
+            onClick={async () => {
+              if (!confirm('Delete ALL diagnostic logs in %APPDATA%/guide-ide/logs/ (guide-main, stream/ipc/ui/api traces, trace-blobs)? This cannot be undone.')) return;
+              try {
+                const res = window.electronAPI?.clearLogs
+                  ? await window.electronAPI.clearLogs()
+                  : await (await import('../api/websocket')).invoke('clear-logs');
+                alert(res?.success ? `Logs cleared.\n${res.logDir || ''}` : 'Failed to clear logs.');
+              } catch (e) {
+                alert(`Failed to clear logs: ${e?.message || e}`);
+              }
+            }}
+          >
+            Clear all logs
+          </button>
+          <p className="text-[10px] text-vsc-text-dim mt-1">Wipes guide-main.log and all trace files. Use before a clean diagnostic run.</p>
+        </div>
         <SettingToggle label="Debug stream diagnostics" value={!!settings.debugStreamDiag}
           onChange={v => updateSetting('debugStreamDiag', v)}
           hint="Logs verbose [StreamDiag] token traces to guide-main.log. Does not change model output." />

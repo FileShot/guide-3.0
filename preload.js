@@ -83,6 +83,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   mcpStopServer: (name) => ipcRenderer.invoke('mcp-stop-server', name),
   setThinkingMode: (mode) => ipcRenderer.invoke('set-thinking-mode', mode),
   uiLog: (msg) => ipcRenderer.invoke('ui-log', msg),
+  clearLogs: () => ipcRenderer.invoke('clear-logs'),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
 
   // ── Terminal ──────────────────────────────────────────

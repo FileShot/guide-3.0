@@ -206,6 +206,31 @@ function syncFromSettings(settings) {
   _enabled = settings?.streamTraceEnabled !== false;
 }
 
+function clearAll() {
+  flushAll();
+  close();
+  _pending.clear();
+  _bytesWritten.clear();
+  _seq = 0;
+  _turnId = null;
+  ensureDir();
+  for (const cfg of Object.values(CHANNELS)) {
+    const filePath = path.join(LOG_DIR, cfg.file);
+    try { fs.unlinkSync(filePath); } catch (_) {}
+    for (let i = 1; i <= cfg.backups; i++) {
+      try { fs.unlinkSync(`${filePath}.${i}`); } catch (_) {}
+    }
+  }
+  const blobDir = path.join(LOG_DIR, 'trace-blobs');
+  try {
+    if (fs.existsSync(blobDir)) {
+      for (const name of fs.readdirSync(blobDir)) {
+        try { fs.unlinkSync(path.join(blobDir, name)); } catch (_) {}
+      }
+    }
+  } catch (_) {}
+}
+
 module.exports = {
   trace,
   traceFull,
@@ -215,6 +240,7 @@ module.exports = {
   setDeferRotate,
   flushAll,
   close,
+  clearAll,
   syncFromSettings,
   LOG_DIR,
   CHANNELS,

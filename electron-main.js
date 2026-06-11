@@ -1172,6 +1172,15 @@ ipcMain.handle('ui-log', (_e, msg) => {
   }
 });
 
+function clearAllLogs() {
+  log.clearAll();
+  streamTrace.clearAll();
+  console.log('[Main] All diagnostic logs cleared');
+  return { success: true, logDir: streamTrace.LOG_DIR };
+}
+
+ipcMain.handle('clear-logs', () => clearAllLogs());
+
 // Handle answer from frontend for ask_question tool
 ipcMain.handle('answer-question', (_e, answer) => {
   if (mcpToolServer._pendingQuestionResolve) {
@@ -1878,6 +1887,11 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         mainWindow.webContents.send('files-changed');
       }
       return apiReturn({ success: true, filesChanged, replacements });
+    }
+
+    // ── Logs ────────────────────────────────────────────
+    if (p === '/api/logs/clear' && method === 'POST') {
+      return apiReturn(clearAllLogs());
     }
 
     // ── Settings ────────────────────────────────────────
