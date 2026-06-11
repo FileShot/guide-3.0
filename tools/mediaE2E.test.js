@@ -51,6 +51,16 @@ const E2E_PROFILES = {
     frames: 9,
     fullOnly: true,
   },
+  'sd3-image': {
+    arch: 'sd3',
+    modelType: 'diffusion',
+    ggufUrl: 'https://huggingface.co/leejet/stable-diffusion-3.5-medium-gguf/resolve/main/sd3.5m_turbo-Q4_K_M.gguf',
+    ggufName: 'sd3.5m_turbo-Q4_K_M.gguf',
+    ext: 'png',
+    steps: 4,
+    size: 256,
+    fullOnly: true,
+  },
   'wan22-ti2v': {
     arch: 'wan2',
     modelType: 'video',

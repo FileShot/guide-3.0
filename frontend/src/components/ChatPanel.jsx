@@ -133,23 +133,6 @@ function canonicalizeFilePath(filePath) {
   return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 
-/** Strip tool-call JSON from prose via main-process toolParser (IPC). */
-async function stripToolProseViaApi(text) {
-  if (!text) return '';
-  try {
-    const r = await fetch('/api/tools/strip-prose', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: String(text) }),
-    });
-    const d = await r.json();
-    if (d && typeof d.text === 'string') return d.text;
-  } catch (e) {
-    console.warn('[ChatPanel] strip-prose failed:', e?.message || e);
-  }
-  return text;
-}
-
 /** Safety net: rebuild file segments from write_file tool params when IPC file blocks were lost. */
 function synthesizeFileBlocksFromToolCalls(toolCalls, messageSegments, messageFileBlocks) {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) return;
@@ -818,6 +801,7 @@ function StreamingFooter() {
               <MediaBlock
                 key={`seg-media-${seg.mediaIndex}`}
                 src={item.src}
+                path={item.path}
                 mimeType={item.mimeType}
                 prompt={item.prompt}
                 mediaType={item.mediaType || 'image'}
@@ -2182,13 +2166,6 @@ export default function ChatPanel() {
 
       }
 
-      for (let _si = 0; _si < messageSegments.length; _si++) {
-        const seg = messageSegments[_si];
-        if ((seg.type === 'text' || seg.type === 'thinking') && seg.content) {
-          const stripped = await stripToolProseViaApi(seg.content);
-          messageSegments[_si] = { ...seg, content: stripped };
-        }
-      }
       messageContent = messageSegments
         .filter((s) => s.type === 'text')
         .map((s) => s.content || '')
@@ -2208,7 +2185,7 @@ export default function ChatPanel() {
       // in the same message as the reply and is never subject to IPC event lag.
       {
 
-        const _backendProse = await stripToolProseViaApi(result?.text || '');
+        const _backendProse = result?.text || '';
         const _backendTrim = _backendProse.trim();
         const _messageTrim = messageContent.trim();
 
@@ -2239,42 +2216,6 @@ export default function ChatPanel() {
             const lastIdx = textSegIndices[textSegIndices.length - 1];
 
             messageSegments[lastIdx] = { ...messageSegments[lastIdx], content: correctedLastProse };
-
-          } else {
-
-            messageSegments.push({ type: 'text', content: _backendProse });
-
-          }
-
-          messageContent = _backendProse;
-
-        } else if (_messageTrim.length > _backendTrim.length) {
-
-          console.warn(`[ChatPanel] R53-Shrink: streamed prose longer than backend — segments=${_messageTrim.length} chars, backend=${_backendTrim.length} chars. Replacing with backend stripped text.`);
-
-          const textSegIndices = messageSegments
-            .map((seg, i) => (seg.type === 'text' ? i : -1))
-            .filter((i) => i >= 0);
-
-          if (textSegIndices.length > 0) {
-
-            messageSegments[textSegIndices[0]] = {
-              ...messageSegments[textSegIndices[0]],
-              content: _backendProse,
-            };
-
-            for (let _j = 1; _j < textSegIndices.length; _j++) {
-
-              messageSegments[textSegIndices[_j]] = {
-                ...messageSegments[textSegIndices[_j]],
-                content: '',
-              };
-
-            }
-
-          } else if (!_backendProse) {
-
-            messageSegments.length = 0;
 
           } else {
 
@@ -3418,6 +3359,7 @@ export default function ChatPanel() {
                           <MediaBlock
                             key={`media-${mi}`}
                             src={item.src}
+                            path={item.path}
                             mimeType={item.mimeType}
                             prompt={item.prompt}
                             mediaType={item.mediaType || 'image'}
@@ -3469,6 +3411,7 @@ export default function ChatPanel() {
                               <MediaBlock
                                 key={`media-seg-${i}`}
                                 src={item.src}
+                                path={item.path}
                                 mimeType={item.mimeType}
                                 prompt={item.prompt}
                                 mediaType={item.mediaType || 'image'}

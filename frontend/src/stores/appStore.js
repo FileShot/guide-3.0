@@ -709,8 +709,9 @@ const useAppStore = create((set, get) => ({
   },
 
   applyMediaComplete: (data) => {
-    const { prompt, messageId, dataUrl, mimeType, mediaType = 'image' } = data || {};
-    const item = { status: 'complete', prompt, src: dataUrl, mimeType, mediaType };
+    const { prompt, messageId, dataUrl, playbackUrl, path, mimeType, mediaType = 'image' } = data || {};
+    const src = playbackUrl || dataUrl || (path && mediaType === 'video' ? path : dataUrl);
+    const item = { status: 'complete', prompt, src, path, mimeType, mediaType };
     const store = get();
     if (messageId) {
       const msgs = [...store.chatMessages];
@@ -2717,6 +2718,14 @@ const useAppStore = create((set, get) => ({
   closeCommandPalette: () => set({ commandPaletteOpen: false }),
 
 
+
+  // ─── Media status (status bar chip) ───────────────────
+
+  mediaStatus: null,
+
+  setMediaStatus: (status) => set({ mediaStatus: status || null }),
+
+  clearMediaStatus: () => set({ mediaStatus: null }),
 
   // ─── Notifications ─────────────────────────────────────
 

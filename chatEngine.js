@@ -112,13 +112,14 @@ const SF_TOOL_FENCE_LANGS = new Set(['json', 'tool', 'tool_call', 'text', 'plain
 
 function _sfIsToolFenceLang(lang) {
   const l = (lang || '').toLowerCase();
-  if (l === '') return true;
+  if (!l) return false;
   return SF_TOOL_FENCE_LANGS.has(l);
 }
 
 /**
  * Whether a fence buffer at header detection should stream to prose chat.
  * Used by the stream filter and regression tests.
+ * All non-tool markdown/code fences (html, css, js, md, …) stream live.
  */
 function _sfFenceHeaderShouldStreamPlain(fenceBuf) {
   if (!RE_FENCE_HEADER.test(fenceBuf)) return false;
@@ -129,8 +130,7 @@ function _sfFenceHeaderShouldStreamPlain(fenceBuf) {
   const looksLikeToolBody = _sfFenceBufferLooksLikeToolJson(afterHeader.slice(0, 8000))
     || _sfIsToolLikeJson(afterHeader.slice(0, 6000));
   if (looksLikeToolBody) return false;
-  if (SF_PLAIN_FENCE_LANGS.has(lang)) return true;
-  return false;
+  return true;
 }
 
 /** Keep fence markers; append closing ``` when generation ended mid-fence. */
@@ -1830,7 +1830,6 @@ class ChatEngine extends EventEmitter {
 
       const _sfForward = (text) => {
         if (!text) return;
-        if (/^\s*```[a-z0-9_-]*\s*$/i.test(text)) return;
         if (isVisibleToolArtifact(text)) {
           console.log(`[ChatEngine] _sfForward: suppressed tool artifact (${text.length} chars)`);
           return;

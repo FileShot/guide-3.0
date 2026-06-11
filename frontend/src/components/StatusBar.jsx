@@ -4,7 +4,7 @@
  */
 import useAppStore from '../stores/appStore';
 import { installUpdateNow, updateVersionLabel } from '../lib/updateStatus';
-import { GitBranch, AlertTriangle, AlertCircle, Cpu, Zap, HardDrive, Radio, Download } from 'lucide-react';
+import { GitBranch, AlertTriangle, AlertCircle, Cpu, Zap, HardDrive, Radio, Download, Loader2, ImageIcon } from 'lucide-react';
 import { useEffect, useState, useRef } from 'react';
 
 export default function StatusBar() {
@@ -49,6 +49,8 @@ export default function StatusBar() {
   const vramWarning = useAppStore(s => s.vramWarning);
   const clearVramWarning = useAppStore(s => s.clearVramWarning);
   const updateStatus = useAppStore(s => s.updateStatus);
+  const mediaStatus = useAppStore(s => s.mediaStatus);
+  const setActiveActivity = useAppStore(s => s.setActiveActivity);
 
   // Tokens per second tracking
   const [tokensPerSec, setTokensPerSec] = useState(0);
@@ -271,6 +273,24 @@ export default function StatusBar() {
           <div className="statusbar-item shrink-0 text-vsc-text-dim" title="Downloading update in background">
             Updating… {Math.round(updateStatus.progress?.percent || 0)}%
           </div>
+        )}
+
+        {mediaStatus?.message && (
+          <button
+            type="button"
+            className={`statusbar-item shrink-0 max-w-[280px] truncate flex items-center gap-1.5 ${
+              mediaStatus.phase === 'error' ? 'text-vsc-error' : 'text-vsc-info'
+            }`}
+            title={mediaStatus.message}
+            onClick={() => setActiveActivity('settings')}
+          >
+            {(mediaStatus.phase === 'generating' || mediaStatus.phase === 'download') && (
+              <Loader2 size={11} className="animate-spin shrink-0" />
+            )}
+            {mediaStatus.phase === 'done' && <ImageIcon size={11} className="shrink-0" />}
+            {mediaStatus.phase === 'error' && <AlertCircle size={11} className="shrink-0" />}
+            <span className="truncate">{mediaStatus.message}</span>
+          </button>
         )}
 
         {projectPath && !hideLeftGit && (

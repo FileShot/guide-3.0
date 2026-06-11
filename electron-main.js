@@ -377,6 +377,7 @@ const mediaEngine = new MediaEngine({
   installVariant: getInstallVariant(),
   auxResolver: mediaAuxResolver,
   onAuxProgress: (p) => _send('media-aux-progress', p),
+  onGenProgress: (p) => _send('media-gen-progress', p),
 });
 const sessionStore = new SessionStore(path.join(userDataPath, 'sessions'));
 const cloudLLM = new CloudLLMService();
@@ -1366,6 +1367,12 @@ function isPathUnderWorkspaceRoots(absPath) {
   });
 }
 
+function isPathUnderGuideMediaOutput(absPath) {
+  const resolved = path.resolve(absPath);
+  const guideMediaDir = path.resolve(path.join(userDataPath, 'guide-media'));
+  return resolved === guideMediaDir || resolved.startsWith(guideMediaDir + path.sep);
+}
+
 // ─── Generic API-fetch IPC handler ──────────────────────────────────
 // The frontend's fetch('/api/...') calls are intercepted and routed here.
 // This replaces the entire Express REST API from server/main.js.
@@ -1463,7 +1470,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       const { prompt, width, height, steps, seed, videoFrames, messageId, mediaType } = body || {};
       const resolvedMediaType = mediaType
         || (mediaEngine.modelType === 'video' ? 'video' : 'image');
-      _send('media-generating', { prompt, messageId, mediaType: resolvedMediaType });
+      _send('media-generating', { prompt, messageId, mediaType: resolvedMediaType, startedAt: Date.now() });
       const { queryGpuVramMB, resolveMediaMemoryFlags } = require('./mediaEngine');
       const settings = settingsManager.getAll();
       const vramMB = queryGpuVramMB();
@@ -1475,7 +1482,11 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         width, height, steps, seed, videoFrames, vramMB, memoryFlags,
       }));
       if (result.success) {
+        const isVideo = (result.mediaType || resolvedMediaType) === 'video';
         const b64 = result.videoBase64 || result.imageBase64;
+        const playbackUrl = isVideo && result.path
+          ? `guide-media://media/?path=${encodeURIComponent(result.path)}`
+          : undefined;
         console.log(`[MediaEngine] media-complete ${result.mediaType || resolvedMediaType} path=${result.path} mime=${result.mimeType}`);
         _send('media-complete', {
           prompt,
@@ -1483,7 +1494,10 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
           mimeType: result.mimeType,
           mediaType: result.mediaType || 'image',
           path: result.path,
-          dataUrl: `data:${result.mimeType};base64,${b64}`,
+          playbackUrl,
+          videoFrames: result.videoFrames,
+          sdCpuFallback: result.sdCpuFallback,
+          dataUrl: isVideo ? playbackUrl : `data:${result.mimeType};base64,${b64}`,
         });
       } else {
         console.log(`[MediaEngine] media-error: ${result.error || 'unknown'}`);
@@ -1954,6 +1968,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       settingsManager.set('lastCloudModel', model || null);
       return apiReturn({ success: true, activeProvider: cloudLLM.activeProvider, activeModel: cloudLLM.activeModel });
     }
+    // Internal tool-parser only — must NOT be used to mutate chat display content.
     if (p === '/api/tools/strip-prose' && method === 'POST') {
       const { stripToolCallText } = require('./tools/toolParser');
       const text = body?.text != null ? String(body.text) : '';
@@ -2977,7 +2992,7 @@ app.whenReady().then(async () => {
       const filePath = u.searchParams.get('path');
       if (!filePath) return new Response('Bad request', { status: 400 });
       const resolved = path.resolve(decodeURIComponent(filePath));
-      if (!isPathUnderWorkspaceRoots(resolved)) {
+      if (!isPathUnderWorkspaceRoots(resolved) && !isPathUnderGuideMediaOutput(resolved)) {
         return new Response('Forbidden', { status: 403 });
       }
       if (!fs.existsSync(resolved)) {

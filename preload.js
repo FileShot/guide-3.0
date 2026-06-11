@@ -164,6 +164,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onMediaModelUnloaded: (cb) => _on('media-model-unloaded', cb),
   onMediaAuxProgress: (cb) => _on('media-aux-progress', cb),
   onMediaGenerating:  (cb) => _on('media-generating', cb),
+  onMediaGenProgress: (cb) => _on('media-gen-progress', cb),
   onMediaComplete:    (cb) => _on('media-complete', cb),
   onMediaError:       (cb) => _on('media-error', cb),
 

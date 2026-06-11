@@ -29,7 +29,14 @@ const WAN22_VAE_URL =
 const UMT5_ENCODER_URL =
   'https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q8_0.gguf';
 
+const SD35_SPLIT = 'https://huggingface.co/Comfy-Org/stable-diffusion-3.5-medium_repackaged/resolve/main/split_files';
+const SDXL_SPLIT = 'https://huggingface.co/Comfy-Org/stable-diffusion-xl-base-1.0_repackaged/resolve/main/split_files';
+const SD15_SPLIT = 'https://huggingface.co/Comfy-Org/stable-diffusion-v1-5_repackaged/resolve/main/split_files';
+const PIXART_SPLIT = 'https://huggingface.co/Comfy-Org/PixArt-alpha_repackaged/resolve/main/split_files';
+
 const LABEL_ENCODER = 'text encoder (diffusion weights, not chat)';
+const LABEL_CLIP_L = 'CLIP-L text encoder';
+const LABEL_CLIP_G = 'CLIP-G text encoder';
 const LABEL_T5 = 'T5 encoder (diffusion weights)';
 
 const WAN_NEGATIVE =
@@ -87,26 +94,107 @@ const MEDIA_ASSET_PROFILES = {
   'sdxl-image': {
     label: 'image generation',
     gen: {},
-    assets: [],
-    auxKeys: {},
+    assets: [
+      {
+        id: 'sdxl-vae',
+        relPath: 'image/sdxl_vae.safetensors',
+        url: `${SDXL_SPLIT}/vae/diffusion_pytorch_model.safetensors`,
+        bytes: 0,
+        userLabel: 'VAE',
+      },
+      {
+        id: 'sdxl-clip-l',
+        relPath: 'image/sdxl_clip_l.safetensors',
+        url: `${SDXL_SPLIT}/text_encoders/clip_l.safetensors`,
+        bytes: 0,
+        userLabel: LABEL_CLIP_L,
+      },
+      {
+        id: 'sdxl-clip-g',
+        relPath: 'image/sdxl_clip_g.safetensors',
+        url: `${SDXL_SPLIT}/text_encoders/clip_g.safetensors`,
+        bytes: 0,
+        userLabel: LABEL_CLIP_G,
+      },
+    ],
+    auxKeys: { vae: 'sdxl-vae', clip_l: 'sdxl-clip-l', clip_g: 'sdxl-clip-g' },
   },
   'sd-image': {
     label: 'image generation',
     gen: {},
-    assets: [],
-    auxKeys: {},
+    assets: [
+      {
+        id: 'sd15-vae',
+        relPath: 'image/sd15_vae.safetensors',
+        url: `${SD15_SPLIT}/vae/diffusion_pytorch_model.safetensors`,
+        bytes: 0,
+        userLabel: 'VAE',
+      },
+      {
+        id: 'sd15-clip-l',
+        relPath: 'image/sd15_clip_l.safetensors',
+        url: `${SD15_SPLIT}/text_encoders/clip_l.safetensors`,
+        bytes: 0,
+        userLabel: LABEL_CLIP_L,
+      },
+    ],
+    auxKeys: { vae: 'sd15-vae', clip_l: 'sd15-clip-l' },
   },
   'sd3-image': {
     label: 'image generation',
-    gen: {},
-    assets: [],
-    auxKeys: {},
+    gen: { cfgScale: 4.5 },
+    assets: [
+      {
+        id: 'sd3-vae',
+        relPath: 'image/sd3_vae.safetensors',
+        url: `${SD35_SPLIT}/vae/diffusion_pytorch_model.safetensors`,
+        bytes: 0,
+        userLabel: 'VAE',
+      },
+      {
+        id: 'sd3-clip-l',
+        relPath: 'image/sd3_clip_l.safetensors',
+        url: `${SD35_SPLIT}/text_encoders/clip_l.safetensors`,
+        bytes: 0,
+        userLabel: LABEL_CLIP_L,
+      },
+      {
+        id: 'sd3-clip-g',
+        relPath: 'image/sd3_clip_g.safetensors',
+        url: `${SD35_SPLIT}/text_encoders/clip_g.safetensors`,
+        bytes: 0,
+        userLabel: LABEL_CLIP_G,
+      },
+      {
+        id: 'sd3-t5',
+        relPath: 'image/sd3_t5xxl_fp16.safetensors',
+        url: `${SD35_SPLIT}/text_encoders/t5xxl_fp16.safetensors`,
+        bytes: 0,
+        userLabel: LABEL_T5,
+      },
+    ],
+    auxKeys: { vae: 'sd3-vae', clip_l: 'sd3-clip-l', clip_g: 'sd3-clip-g', t5: 'sd3-t5' },
   },
   'pixart-image': {
     label: 'image generation',
     gen: {},
-    assets: [],
-    auxKeys: {},
+    assets: [
+      {
+        id: 'pixart-vae',
+        relPath: 'image/pixart_vae.safetensors',
+        url: `${PIXART_SPLIT}/vae/diffusion_pytorch_model.safetensors`,
+        bytes: 0,
+        userLabel: 'VAE',
+      },
+      {
+        id: 'pixart-t5',
+        relPath: 'image/pixart_t5xxl.safetensors',
+        url: `${PIXART_SPLIT}/text_encoders/t5xxl_fp16.safetensors`,
+        bytes: 0,
+        userLabel: LABEL_T5,
+      },
+    ],
+    auxKeys: { vae: 'pixart-vae', t5: 'pixart-t5' },
   },
   'image-generic': {
     label: 'image generation',

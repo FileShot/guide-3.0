@@ -1,8 +1,10 @@
 import React, { useState, useCallback } from 'react';
 import { Copy, Check, RotateCcw, Download, ImageIcon } from 'lucide-react';
+import { resolveMediaSrc } from '../../lib/guideMedia';
 
 export default function MediaBlock({
   src,
+  path,
   mimeType = 'image/png',
   prompt = '',
   mediaType = 'image',
@@ -10,6 +12,8 @@ export default function MediaBlock({
   onSaveToProject,
 }) {
   const [copied, setCopied] = useState(false);
+  const [playError, setPlayError] = useState(false);
+  const displaySrc = resolveMediaSrc(path, src);
 
   const handleCopyPrompt = useCallback(async () => {
     if (!prompt) return;
@@ -55,9 +59,21 @@ export default function MediaBlock({
       </div>
       <div className="p-2 flex justify-center bg-black/20">
         {mediaType === 'video' ? (
-          <video src={src} controls className="max-w-full max-h-96 rounded" />
+          playError ? (
+            <div className="text-xs text-vsc-fg-dim p-4 text-center">
+              Unable to play video
+              {path && <div className="mt-1 font-mono text-[10px] break-all">{path}</div>}
+            </div>
+          ) : (
+            <video
+              src={displaySrc}
+              controls
+              className="max-w-full max-h-96 rounded"
+              onError={() => setPlayError(true)}
+            />
+          )
         ) : (
-          <img src={src} alt={prompt || 'Generated'} className="max-w-full max-h-96 rounded object-contain" />
+          <img src={displaySrc} alt={prompt || 'Generated'} className="max-w-full max-h-96 rounded object-contain" />
         )}
       </div>
       {prompt && (

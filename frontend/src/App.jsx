@@ -781,30 +781,67 @@ export default function App() {
 
       case 'media-aux-progress':
         if (data?.phase === 'start' && data.message) {
-          s.addNotification({ type: 'info', message: data.message, duration: 12000 });
-        } else if (data?.phase === 'progress' && data.pct != null && data.pct % 25 === 0) {
-          s.addNotification({
-            type: 'info',
-            message: `Downloading ${data.label || 'diffusion weights'}… ${data.pct}%`,
-            duration: 4000,
+          s.setMediaStatus({ phase: 'download', message: data.message, label: data.label });
+        } else if (data?.phase === 'progress' && data.pct != null) {
+          s.setMediaStatus({
+            phase: 'download',
+            message: `Downloading ${data.label || 'weights'}… ${data.pct}%`,
+            pct: data.pct,
+            label: data.label,
           });
         } else if (data?.phase === 'done' && data.label) {
-          s.addNotification({ type: 'info', message: `${data.label} ready`, duration: 4000 });
+          s.setMediaStatus({ phase: 'download', message: `${data.label} ready`, label: data.label });
+          setTimeout(() => {
+            const cur = useAppStore.getState().mediaStatus;
+            if (cur?.phase === 'download' && cur?.label === data.label) s.clearMediaStatus();
+          }, 3000);
         } else if (data?.phase === 'error') {
-          s.addNotification({ type: 'error', message: data.error || 'Could not prepare generation' });
+          s.setMediaStatus({ phase: 'error', message: data.error || 'Could not prepare generation' });
+        } else if (data?.phase === '5d-fix' && data.message) {
+          s.setMediaStatus({ phase: 'generating', message: data.message });
         }
         break;
 
       case 'media-generating':
         s.applyMediaGenerating(data);
+        s.setMediaStatus({
+          phase: 'generating',
+          message: data?.mediaType === 'video' ? 'Generating video…' : 'Generating image…',
+          startedAt: data?.startedAt || Date.now(),
+          mediaType: data?.mediaType,
+        });
         break;
+
+      case 'media-gen-progress': {
+        const elapsedSec = data?.elapsedMs != null ? Math.floor(data.elapsedMs / 1000) : 0;
+        const stepPart = data?.step && data?.totalSteps ? ` step ${data.step}/${data.totalSteps}` : '';
+        const durPart = data?.estDurationSec ? ` · ~${data.estDurationSec}s clip` : '';
+        const cpuPart = data?.sdCpuFallback ? ' · CPU' : '';
+        s.setMediaStatus({
+          phase: 'generating',
+          message: data?.label || `Generating… ${elapsedSec}s${stepPart}${durPart}${cpuPart}`,
+          startedAt: data?.startedAt,
+          mediaType: data?.videoFrames ? 'video' : undefined,
+          sdCpuFallback: data?.sdCpuFallback,
+        });
+        break;
+      }
 
       case 'media-complete':
         s.applyMediaComplete(data);
+        s.setMediaStatus({
+          phase: 'done',
+          message: data?.mediaType === 'video' ? 'Video ready' : 'Image ready',
+        });
+        setTimeout(() => useAppStore.getState().clearMediaStatus(), 3000);
         break;
 
       case 'media-error':
         s.applyMediaError(data);
+        s.setMediaStatus({
+          phase: 'error',
+          message: data?.error || 'Media generation failed',
+        });
         break;
 
       case 'model-loaded': {
@@ -1283,6 +1320,7 @@ export default function App() {
 
       api.onMediaAuxProgress?.((d) => handleEvent('media-aux-progress', d)),
       api.onMediaGenerating?.((d) => handleEvent('media-generating', d)),
+      api.onMediaGenProgress?.((d) => handleEvent('media-gen-progress', d)),
 
       api.onMediaComplete?.((d) => handleEvent('media-complete', d)),
 

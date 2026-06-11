@@ -63,17 +63,66 @@ function resolveMediaMemoryFlags(settings = {}, vramMB = 0) {
   };
 }
 
-function getDefaultMediaDimensions(vramMB, isVideo) {
+function getDefaultMediaDimensions(vramMB, isVideo, settings = {}) {
   const vram = vramMB > 0 ? vramMB : queryGpuVramMB();
   const conservative = vram <= 0 || vram <= VRAM_LOW_MB;
   const tight = vram > 0 && vram <= VRAM_TIGHT_MB;
-  if (!isVideo) {
-    if (conservative) return { width: 384, height: 384, videoFrames: 1 };
-    return { width: 512, height: 512, videoFrames: 1 };
+  const preset = settings.mediaVideoResolution || 'auto';
+
+  let width = 512;
+  let height = 512;
+  let videoFrames = 33;
+
+  if (preset === 'fast' || (preset === 'auto' && conservative)) {
+    width = 384;
+    height = 384;
+    videoFrames = 17;
+  } else if (preset === 'balanced' || (preset === 'auto' && tight)) {
+    width = 480;
+    height = 480;
+    videoFrames = 25;
+  } else if (preset === 'quality') {
+    width = 512;
+    height = 512;
+    videoFrames = 49;
   }
-  if (conservative) return { width: 384, height: 384, videoFrames: 17 };
-  if (tight) return { width: 480, height: 480, videoFrames: 25 };
-  return { width: 512, height: 512, videoFrames: 33 };
+
+  if (settings.mediaVideoFrames > 0) videoFrames = settings.mediaVideoFrames;
+
+  if (!isVideo) {
+    if (conservative && preset === 'auto') return { width: 384, height: 384, videoFrames: 1 };
+    return { width, height, videoFrames: 1 };
+  }
+  return { width, height, videoFrames };
+}
+
+const WAN_VIDEO_FPS = 16;
+
+function estimateVideoDurationSec(frames) {
+  return Math.round((frames / WAN_VIDEO_FPS) * 10) / 10;
+}
+
+async function tryRemuxVideoToMp4(inputPath) {
+  if (!inputPath || !fs.existsSync(inputPath)) return inputPath;
+  const lower = inputPath.toLowerCase();
+  if (lower.endsWith('.mp4') && !lower.endsWith('.mp4.avi')) return inputPath;
+  const outPath = inputPath.replace(/\.(mp4\.avi|avi)$/i, '.mp4');
+  if (outPath === inputPath) return inputPath;
+  try {
+    const { spawn } = require('child_process');
+    await new Promise((resolve, reject) => {
+      const proc = spawn('ffmpeg', ['-y', '-i', inputPath, '-c', 'copy', outPath], { windowsHide: true });
+      proc.on('error', reject);
+      proc.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exit ${code}`))));
+    });
+    if (fs.existsSync(outPath) && fs.statSync(outPath).size > 0) {
+      console.log(`[MediaEngine] remuxed video → ${outPath}`);
+      return outPath;
+    }
+  } catch (e) {
+    console.warn(`[MediaEngine] ffmpeg remux skipped: ${e.message}`);
+  }
+  return inputPath;
 }
 
 function _applyMemoryCliArgs(args, mem) {
@@ -107,8 +156,9 @@ function formatSdExitError(code, stderr) {
     return TENSOR_5D_MSG;
   }
   if (errorLines.some((l) => /not in model file/i.test(l))) {
-    return 'This model file is missing required diffusion components (VAE or text encoder). '
-      + 'Place companion files beside your GGUF, set paths in Settings → Media, or retry to download.';
+    return 'This model file is missing required diffusion components (VAE and/or text encoders). '
+      + 'guIDE will auto-download companions for supported profiles on first generate. '
+      + 'Otherwise place files beside your GGUF or set paths in Settings → Media.';
   }
   if (errorLines.some((l) => /get sd version from file failed/i.test(l))) {
     return 'Could not load model file. Ensure you are using a stable-diffusion.cpp compatible image/video GGUF.';
@@ -149,7 +199,9 @@ class MediaEngine {
     this.installVariant = options.installVariant || 'cpu';
     this.auxResolver = options.auxResolver || null;
     this.onAuxProgress = options.onAuxProgress || null;
+    this.onGenProgress = options.onGenProgress || null;
     this.modelPath = null;
+    this._mediaReadiness = null;
     this.ggufArchitecture = null;
     this.modelType = null;
     this._profileId = null;
@@ -167,6 +219,7 @@ class MediaEngine {
       ggufArchitecture: this.ggufArchitecture,
       modelType: this.modelType,
       profileId: this._profileId,
+      mediaReadiness: this._mediaReadiness,
       sdBinary: primary,
       sdBinaryFound: !!primary,
     };
@@ -194,6 +247,16 @@ class MediaEngine {
     this.modelType = type;
     this._profileId = profileId;
     this._resolvedAux = null;
+
+    if (this.auxResolver) {
+      const settings = this.getSettings();
+      const vramMB = queryGpuVramMB();
+      this._mediaReadiness = this.auxResolver.preflight({
+        arch, modelType: type, modelPath, settings, vramMB,
+      });
+    } else {
+      this._mediaReadiness = { profileId, ready: true, missing: [] };
+    }
 
     return this.getStatus();
   }
@@ -290,9 +353,11 @@ class MediaEngine {
     } else if (aux.vae) {
       args.push('--vae', aux.vae);
     }
+    if (aux.clip_l) args.push('--clip_l', aux.clip_l);
+    if (aux.clip_g) args.push('--clip_g', aux.clip_g);
     if (aux.t5) args.push('--t5xxl', aux.t5);
-    const enc = aux.llm || aux.clip;
-    if (enc) args.push('--llm', enc);
+    if (aux.llm) args.push('--llm', aux.llm);
+    else if (aux.clip && !aux.clip_l) args.push('--llm', aux.clip);
   }
 
   _buildSdArgs(opts) {
@@ -334,7 +399,7 @@ class MediaEngine {
       return { success: false, error: 'No prompt provided' };
     }
     if (this._generating) {
-      return { success: false, error: 'Generation already in progress' };
+      return { success: false, error: 'Generation already in progress — wait for the current job to finish.' };
     }
 
     const sdCandidates = this._resolveSdBinaryCandidates();
@@ -349,13 +414,29 @@ class MediaEngine {
     const settings = this.getSettings();
     const vramMB = options.vramMB || 0;
     const isVideo = this.modelType === 'video';
-    const defaults = getDefaultMediaDimensions(vramMB, isVideo);
+    const defaults = getDefaultMediaDimensions(vramMB, isVideo, settings);
     const memoryFlags = options.memoryFlags || resolveMediaMemoryFlags(settings, vramMB);
     const width = options.width || defaults.width;
     const height = options.height || defaults.height;
-    const steps = options.steps || 20;
+    const steps = options.steps || (settings.mediaVideoSteps > 0 ? settings.mediaVideoSteps : 20);
     const seed = options.seed != null ? options.seed : Math.floor(Math.random() * 2147483647);
     const videoFrames = options.videoFrames || defaults.videoFrames;
+    const genStartedAt = Date.now();
+    const emitGenProgress = (fields) => {
+      if (this.onGenProgress) {
+        this.onGenProgress({
+          phase: 'generating',
+          elapsedMs: Date.now() - genStartedAt,
+          width,
+          height,
+          videoFrames: isVideo ? videoFrames : undefined,
+          estDurationSec: isVideo ? estimateVideoDurationSec(videoFrames) : undefined,
+          sdCpuFallback: !!this._lastSdCpuFallback,
+          ...fields,
+        });
+      }
+    };
+    emitGenProgress({ label: isVideo ? `Generating video (${videoFrames} frames ≈ ${estimateVideoDurationSec(videoFrames)}s)` : 'Generating image…' });
 
     let aux = this._resolvedAux || {};
     if (this.auxResolver) {
@@ -397,7 +478,7 @@ class MediaEngine {
       let modelForRun = this.modelPath;
       let builtForRun = buildRun(modelForRun);
       console.log(`[MediaEngine] sd ${builtForRun.args.join(' ')}`);
-      let runResult = await this._runSdWithFallback(sdCandidates, builtForRun.args);
+      let runResult = await this._runSdWithFallback(sdCandidates, builtForRun.args, emitGenProgress);
       let outputPath = runResult.outputPath || outFile;
 
       const sd5dFailure = !runResult.ok
@@ -420,7 +501,7 @@ class MediaEngine {
           modelForRun = fixed;
           builtForRun = buildRun(modelForRun);
           console.log(`[MediaEngine] retrying with 5D-patched GGUF: ${path.basename(fixed)}`);
-          runResult = await this._runSdWithFallback(sdCandidates, builtForRun.args);
+          runResult = await this._runSdWithFallback(sdCandidates, builtForRun.args, emitGenProgress);
           if (runResult.outputPath) outputPath = runResult.outputPath;
         } catch (fixErr) {
           console.error(`[MediaEngine] 5D auto-patch failed: ${fixErr.message}`);
@@ -434,6 +515,9 @@ class MediaEngine {
 
       if (!runResult.ok) {
         return { success: false, error: runResult.error, architecture: this.ggufArchitecture };
+      }
+      if (builtForRun.isVideo) {
+        outputPath = await tryRemuxVideoToMp4(outputPath);
       }
       const buf = await fsp.readFile(outputPath);
       const mimeType = mimeForOutputPath(outputPath, builtForRun.isVideo);
@@ -450,6 +534,8 @@ class MediaEngine {
         width,
         height,
         seed,
+        videoFrames: builtForRun.isVideo ? videoFrames : undefined,
+        sdCpuFallback: !!this._lastSdCpuFallback,
         mediaType: builtForRun.isVideo ? 'video' : 'image',
       };
     } catch (e) {
@@ -459,15 +545,17 @@ class MediaEngine {
     }
   }
 
-  async _runSdWithFallback(sdCandidates, args) {
+  async _runSdWithFallback(sdCandidates, args, onProgress) {
     let lastError = 'sd generation failed';
     let lastStderr = '';
     let lastCode = null;
+    this._lastSdCpuFallback = false;
     for (let i = 0; i < sdCandidates.length; i++) {
       const sdBin = sdCandidates[i];
-      const result = await this._runSdOnce(sdBin, args);
+      const result = await this._runSdOnce(sdBin, args, onProgress);
       if (result.ok) {
         this._sdBinaryPath = sdBin;
+        this._lastSdCpuFallback = /sd-cpp-cpu/i.test(sdBin);
         return result;
       }
       lastError = result.error;
@@ -476,6 +564,8 @@ class MediaEngine {
       const canRetry = i < sdCandidates.length - 1 && _isLaunchFailure(result.code);
       if (canRetry) {
         console.warn(`[MediaEngine] sd launch failed (${result.code}) — trying fallback binary: ${sdCandidates[i + 1]}`);
+        this._lastSdCpuFallback = true;
+        if (onProgress) onProgress({ label: 'CUDA unavailable — generating on CPU (slower, lower quality)' });
         continue;
       }
       break;
@@ -497,7 +587,7 @@ class MediaEngine {
     return null;
   }
 
-  _runSdOnce(sdBin, args, timeoutMs = 0) {
+  _runSdOnce(sdBin, args, onProgress, timeoutMs = 0) {
     return new Promise((resolve) => {
       const binDir = path.dirname(sdBin);
       const env = { ...process.env };
@@ -514,13 +604,27 @@ class MediaEngine {
 
       let stderr = '';
       let timer = null;
+      const startedAt = Date.now();
+      let lastProgressAt = 0;
       if (timeoutMs > 0) {
         timer = setTimeout(() => {
           try { proc.kill(); } catch { /* ignore */ }
         }, timeoutMs);
       }
 
-      proc.stderr.on('data', (d) => { stderr += d.toString(); });
+      proc.stderr.on('data', (d) => {
+        stderr += d.toString();
+        if (!onProgress) return;
+        const now = Date.now();
+        if (now - lastProgressAt < 2000) return;
+        lastProgressAt = now;
+        const stepMatch = stderr.match(/step\s+(\d+)\s*\/\s*(\d+)/i);
+        onProgress({
+          elapsedMs: now - startedAt,
+          step: stepMatch ? parseInt(stepMatch[1], 10) : undefined,
+          totalSteps: stepMatch ? parseInt(stepMatch[2], 10) : undefined,
+        });
+      });
       proc.on('error', (err) => {
         if (timer) clearTimeout(timer);
         resolve({ ok: false, error: err.message, code: null, stderr });
@@ -559,7 +663,9 @@ module.exports = {
   queryGpuVramMB,
   resolveMediaMemoryFlags,
   getDefaultMediaDimensions,
+  estimateVideoDurationSec,
   formatSdExitError,
+  WAN_VIDEO_FPS,
   WIN_DLL_NOT_FOUND,
   VRAM_LOW_MB,
   VRAM_TIGHT_MB,

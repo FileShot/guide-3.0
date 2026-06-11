@@ -8,6 +8,7 @@ const {
   MediaEngine,
   resolveMediaMemoryFlags,
   getDefaultMediaDimensions,
+  estimateVideoDurationSec,
   formatSdExitError,
   WIN_DLL_NOT_FOUND,
   VRAM_LOW_MB,
@@ -166,6 +167,41 @@ function testLowVramAutoOffload() {
   console.log('PASS low vram auto offload');
 }
 
+function testVideoQualityPresets() {
+  const quality = getDefaultMediaDimensions(8192, true, { mediaVideoResolution: 'quality' });
+  assert.strictEqual(quality.width, 512);
+  assert.strictEqual(quality.videoFrames, 49);
+  const custom = getDefaultMediaDimensions(4096, true, { mediaVideoFrames: 33, mediaVideoResolution: 'fast' });
+  assert.strictEqual(custom.videoFrames, 33);
+  assert.strictEqual(estimateVideoDurationSec(17), 1.1);
+  console.log('PASS video quality presets');
+}
+
+function testSd3ClipGCli() {
+  const clipL = touchTmp('clip_l.safetensors');
+  const clipG = touchTmp('clip_g.safetensors');
+  const vae = touchTmp('sd3_vae.safetensors');
+  const t5 = touchTmp('t5.safetensors');
+  const e = makeEngine({}, { clip_l: clipL, clip_g: clipG, vae, t5 });
+  e.ggufArchitecture = 'sd3';
+  e.modelType = 'diffusion';
+  e._profileId = 'sd3-image';
+  const built = e._buildSdArgs({
+    model: '/tmp/sd3.gguf',
+    prompt: 'cat',
+    width: 512,
+    height: 512,
+    steps: 10,
+    seed: 1,
+    output: '/tmp/out.png',
+    aux: { clip_l: clipL, clip_g: clipG, vae, t5 },
+  });
+  assert.ok(built.args.includes('--clip_l'));
+  assert.ok(built.args.includes('--clip_g'));
+  assert.ok(built.args.includes('--vae'));
+  console.log('PASS sd3 clip_l/clip_g CLI');
+}
+
 function testResolveSdOutputPath() {
   const fs = require('fs');
   const os = require('os');
@@ -200,6 +236,8 @@ testLuminaCfgScale();
 testVideoArchUsesVidGenAndDiffusionModel();
 testOptionalAuxPassedToCli();
 testLowVramAutoOffload();
+testVideoQualityPresets();
+testSd3ClipGCli();
 testResolveSdOutputPath();
 testFormatSdExitError();
 console.log('mediaEngine.test.js: all passed');

@@ -19,12 +19,25 @@ const SETTING_KEYS = {
   t5: 'mediaT5Path',
   llm: 'mediaClipPath',
   clip: 'mediaClipPath',
+  clip_l: 'mediaClipPath',
+  clip_g: 'mediaClipGPath',
 };
 
 const SAME_DIR_PATTERNS = {
-  vae: [/ae\.safetensors$/i, /wan2\.2_vae\.safetensors$/i, /wan_2\.1_vae\.safetensors$/i],
+  vae: [
+    /ae\.safetensors$/i,
+    /wan2\.2_vae\.safetensors$/i,
+    /wan_2\.1_vae\.safetensors$/i,
+    /diffusion_pytorch_model\.safetensors$/i,
+    /sdxl.*vae.*\.safetensors$/i,
+    /sd3.*vae.*\.safetensors$/i,
+    /vae.*\.safetensors$/i,
+  ],
   tae: [/taew2_2\.safetensors$/i],
-  t5: [/umt5.*\.gguf$/i, /umt5.*\.safetensors$/i],
+  t5: [/umt5.*\.gguf$/i, /umt5.*\.safetensors$/i, /t5xxl.*\.safetensors$/i],
+  clip_l: [/clip_l\.safetensors$/i, /clip-l\.safetensors$/i],
+  clip_g: [/clip_g\.safetensors$/i, /clip-g\.safetensors$/i],
+  clip: [/clip_l\.safetensors$/i, /clip-l\.safetensors$/i],
   llm: [
     /qwen_3_4b\.safetensors$/i,
     /qwen3.*4b.*\.safetensors$/i,
@@ -37,10 +50,10 @@ const SAME_DIR_PATTERNS = {
 const PROFILE_CACHE_PATTERNS = {
   'lumina-image': { vae: [/ae\.safetensors$/i], llm: SAME_DIR_PATTERNS.llm },
   'flux-image': { vae: [/ae\.safetensors$/i] },
-  'sdxl-image': { vae: SAME_DIR_PATTERNS.vae, clip: SAME_DIR_PATTERNS.clip },
-  'sd-image': { vae: SAME_DIR_PATTERNS.vae, clip: SAME_DIR_PATTERNS.clip },
-  'sd3-image': { vae: SAME_DIR_PATTERNS.vae, llm: SAME_DIR_PATTERNS.llm },
-  'pixart-image': { vae: SAME_DIR_PATTERNS.vae },
+  'sdxl-image': { vae: SAME_DIR_PATTERNS.vae, clip_l: SAME_DIR_PATTERNS.clip_l, clip_g: SAME_DIR_PATTERNS.clip_g },
+  'sd-image': { vae: SAME_DIR_PATTERNS.vae, clip_l: SAME_DIR_PATTERNS.clip_l },
+  'sd3-image': { vae: SAME_DIR_PATTERNS.vae, clip_l: SAME_DIR_PATTERNS.clip_l, clip_g: SAME_DIR_PATTERNS.clip_g, t5: SAME_DIR_PATTERNS.t5 },
+  'pixart-image': { vae: SAME_DIR_PATTERNS.vae, t5: SAME_DIR_PATTERNS.t5 },
   'image-generic': { vae: SAME_DIR_PATTERNS.vae, llm: SAME_DIR_PATTERNS.llm, clip: SAME_DIR_PATTERNS.clip },
   'wan22-ti2v': { vae: [/wan2\.2_vae\.safetensors$/i], t5: SAME_DIR_PATTERNS.t5, tae: SAME_DIR_PATTERNS.tae },
   'wan-video': { vae: [/wan_2\.1_vae\.safetensors$/i], t5: SAME_DIR_PATTERNS.t5, tae: SAME_DIR_PATTERNS.tae },
@@ -232,21 +245,41 @@ class MediaAuxResolver {
     if (missing.length > 0) {
       const labels = missing.map((k) => {
         if (k === 'llm') return 'text encoder (Settings → Media → Text encoder, or beside your GGUF)';
+        if (k === 'clip_l') return 'CLIP-L encoder (Settings → Media, or beside your GGUF)';
+        if (k === 'clip_g') return 'CLIP-G encoder (Settings → Media → CLIP-G, or beside your GGUF)';
         if (k === 't5') return 'T5 encoder (Settings → Media → T5 override, or beside your GGUF)';
         if (k === 'vae') return 'VAE';
         if (k === 'tae') return 'TAE decoder';
         return k;
       });
+      const profileLabel = profile?.label || profileId || 'media';
       throw new Error(
-        `Missing required diffusion components: ${labels.join(', ')}. `
+        `[${profileLabel}] Missing required diffusion components: ${labels.join(', ')}. `
         + 'Place files beside your GGUF, set paths in Settings → Media, or retry to download.',
       );
     }
 
     if (resolved.llm) resolved.clip = resolved.llm;
+    if (resolved.clip_l && !resolved.clip) resolved.clip = resolved.clip_l;
     resolved._profileId = profileId;
     resolved._profileLabel = profile?.label;
     return resolved;
+  }
+
+  /** Lightweight preflight — scan/settings only, no downloads. */
+  preflight({ arch, modelType, modelPath, settings = {}, vramMB = 0 }) {
+    const profileId = archToMediaProfile(arch, modelType, modelPath);
+    if (!profileId) return { profileId: null, ready: true, missing: [] };
+    const lowVram = vramMB > 0 && vramMB <= VRAM_LOW_MB;
+    const required = getRequiredAuxKeys(profileId, lowVram, settings);
+    const resolved = { ...scanSameDirectory(modelPath, profileId), ...pickFromSettings(settings) };
+    const missing = required.filter((k) => !resolved[k] || !fs.existsSync(resolved[k]));
+    return {
+      profileId,
+      ready: missing.length === 0,
+      missing,
+      willAutoDownload: missing.length > 0 && (MEDIA_ASSET_PROFILES[profileId]?.assets?.length > 0),
+    };
   }
 }
 

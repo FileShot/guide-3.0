@@ -1653,8 +1653,9 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
       {showAdvanced && [
         { kind: 'vae', key: 'mediaVaePath', label: 'VAE override' },
         { kind: 'tae', key: 'mediaTaePath', label: 'TAE override (video)' },
-        { kind: 'clip', key: 'mediaClipPath', label: 'Text encoder override' },
-        { kind: 't5', key: 'mediaT5Path', label: 'T5 override (Wan)' },
+        { kind: 'clip', key: 'mediaClipPath', label: 'Text encoder / CLIP-L override' },
+        { kind: 'clip_g', key: 'mediaClipGPath', label: 'CLIP-G override (SD3/SDXL)' },
+        { kind: 't5', key: 'mediaT5Path', label: 'T5 override (Wan/SD3)' },
       ].map(({ kind, key, label }) => (
         <div key={key} className="mb-2">
           <label className="text-[11px] text-vsc-text-dim block mb-1">{label}</label>
@@ -1694,6 +1695,54 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
         </div>
         <div className="text-[10px] text-vsc-text-dim mt-1">
           Auto: offload weights to RAM on ≤8GB GPUs (sd.cpp — not the same as LLM layer slider).
+        </div>
+      </div>
+      <div className="mb-2">
+        <label className="text-[11px] text-vsc-text-dim block mb-1">Video quality preset</label>
+        <div className="flex gap-1 flex-wrap">
+          {[
+            { v: 'auto', label: 'Auto' },
+            { v: 'fast', label: 'Fast' },
+            { v: 'balanced', label: 'Balanced' },
+            { v: 'quality', label: 'Quality' },
+          ].map(opt => (
+            <button
+              key={opt.v}
+              type="button"
+              className={`text-[10px] px-2 py-1 rounded border ${
+                (settings.mediaVideoResolution || 'auto') === opt.v
+                  ? 'border-vsc-accent/60 bg-vsc-accent/15 text-vsc-text-bright'
+                  : 'border-vsc-panel-border/25 text-vsc-text-dim hover:bg-vsc-list-hover'
+              }`}
+              onClick={() => updateSetting('mediaVideoResolution', opt.v)}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="mb-2 grid grid-cols-2 gap-2">
+        <div>
+          <label className="text-[11px] text-vsc-text-dim block mb-1">Video frames (0=auto)</label>
+          <input
+            type="number"
+            min={0}
+            max={121}
+            className="w-full text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text"
+            value={settings.mediaVideoFrames || 0}
+            onChange={e => updateSetting('mediaVideoFrames', Math.max(0, parseInt(e.target.value, 10) || 0))}
+          />
+        </div>
+        <div>
+          <label className="text-[11px] text-vsc-text-dim block mb-1">Steps (0=default)</label>
+          <input
+            type="number"
+            min={0}
+            max={60}
+            className="w-full text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text"
+            value={settings.mediaVideoSteps || 0}
+            onChange={e => updateSetting('mediaVideoSteps', Math.max(0, parseInt(e.target.value, 10) || 0))}
+          />
         </div>
       </div>
       <SettingToggle label="Unload LLM for media generation" value={settings.unloadLlmForMedia !== false}
