@@ -50,7 +50,6 @@ export default function StatusBar() {
   const clearVramWarning = useAppStore(s => s.clearVramWarning);
   const updateStatus = useAppStore(s => s.updateStatus);
   const mediaStatus = useAppStore(s => s.mediaStatus);
-  const setActiveActivity = useAppStore(s => s.setActiveActivity);
 
   // Tokens per second tracking
   const [tokensPerSec, setTokensPerSec] = useState(0);
