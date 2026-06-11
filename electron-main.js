@@ -586,7 +586,7 @@ async function openProjectPath(projectPath) {
 
 // Helper to send events to renderer
 function _send(event, data) {
-  if (streamTrace.isEnabled()) {
+  if (streamTrace.isEnabled() && event !== 'output-log') {
     streamTrace.trace('ipc', 'ipc-send', { channel: event, data });
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1161,7 +1161,6 @@ ipcMain.handle('set-thinking-mode', async (_e, mode) => {
 
 ipcMain.handle('ui-log', (_e, msg) => {
   const text = String(msg ?? '');
-  console.log(`[UI] ${text}`);
   if (text.startsWith('[TraceUI]')) {
     try {
       const payload = JSON.parse(text.slice('[TraceUI]'.length));
@@ -1169,7 +1168,9 @@ ipcMain.handle('ui-log', (_e, msg) => {
     } catch (_) {
       streamTrace.traceFull('ui', 'ui-log', text);
     }
+    return;
   }
+  console.log(`[UI] ${text}`);
 });
 
 function clearAllLogs() {
@@ -1393,7 +1394,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       body: result,
       ms: Date.now() - _apiT0,
     });
-    return apiReturn(result);
+    return result;
   };
 
   try {

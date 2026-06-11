@@ -85,14 +85,16 @@ export default function App() {
       return;
     }
 
-    traceUi('handleEvent', {
-      event,
-      data,
-      epoch: s.activeChatEpoch,
-      chatGenerationEpoch: s.chatGenerationEpoch,
-      chatStreaming: s.chatStreaming,
-      fromPaceQueue,
-    });
+    if (event !== 'output-log') {
+      traceUi('handleEvent', {
+        event,
+        data,
+        epoch: s.activeChatEpoch,
+        chatGenerationEpoch: s.chatGenerationEpoch,
+        chatStreaming: s.chatStreaming,
+        fromPaceQueue,
+      });
+    }
 
     switch (event) {
 
