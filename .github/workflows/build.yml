@@ -61,7 +61,7 @@ jobs:
   # ─── Windows CPU ────────────────────────────────────────────
   build-windows-cpu:
     needs: prepare
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
@@ -82,7 +82,7 @@ jobs:
         run: pip install setuptools
 
       - name: Install root dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts || (timeout /t 15 /nobreak >nul & npm ci --ignore-scripts) || (timeout /t 30 /nobreak >nul & npm ci --ignore-scripts)
 
       - name: Verify bundled TypeScript LSP
         run: npx typescript-language-server --version
@@ -144,7 +144,7 @@ jobs:
   # ─── Windows CUDA ───────────────────────────────────────────
   build-windows-cuda:
     needs: prepare
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
@@ -169,7 +169,7 @@ jobs:
           cuda: '12.4.0'
 
       - name: Install root dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts || (timeout /t 15 /nobreak >nul & npm ci --ignore-scripts) || (timeout /t 30 /nobreak >nul & npm ci --ignore-scripts)
 
       - name: Verify bundled TypeScript LSP
         run: npx typescript-language-server --version
