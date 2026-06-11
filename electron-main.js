@@ -1430,6 +1430,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       }));
       if (result.success) {
         const b64 = result.videoBase64 || result.imageBase64;
+        console.log(`[MediaEngine] media-complete ${result.mediaType || resolvedMediaType} path=${result.path} mime=${result.mimeType}`);
         _send('media-complete', {
           prompt,
           messageId,
@@ -1439,6 +1440,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
           dataUrl: `data:${result.mimeType};base64,${b64}`,
         });
       } else {
+        console.log(`[MediaEngine] media-error: ${result.error || 'unknown'}`);
         _send('media-error', { prompt, messageId, error: result.error, missing: result.missing });
       }
       return result;

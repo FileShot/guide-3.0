@@ -129,6 +129,15 @@ function _isLaunchFailure(code) {
   return code === WIN_DLL_NOT_FOUND || code === -1073741515;
 }
 
+function mimeForOutputPath(filePath, isVideo) {
+  if (!isVideo) return 'image/png';
+  const lower = String(filePath || '').toLowerCase();
+  if (lower.endsWith('.avi') || lower.endsWith('.mp4.avi')) return 'video/x-msvideo';
+  if (lower.endsWith('.webm')) return 'video/webm';
+  if (lower.endsWith('.mov')) return 'video/quicktime';
+  return 'video/mp4';
+}
+
 class MediaEngine {
   constructor(options = {}) {
     this.rootDir = options.rootDir || __dirname;
@@ -425,7 +434,8 @@ class MediaEngine {
         return { success: false, error: runResult.error, architecture: this.ggufArchitecture };
       }
       const buf = await fsp.readFile(outputPath);
-      const mimeType = builtForRun.isVideo ? 'video/mp4' : 'image/png';
+      const mimeType = mimeForOutputPath(outputPath, builtForRun.isVideo);
+      console.log(`[MediaEngine] generate OK ${builtForRun.isVideo ? 'video' : 'image'} path=${outputPath} mime=${mimeType} bytes=${buf.length}`);
       const b64 = buf.toString('base64');
       return {
         success: true,
@@ -518,9 +528,17 @@ class MediaEngine {
         const outIdx = args.indexOf('-o');
         const requestedOut = outIdx >= 0 ? args[outIdx + 1] : null;
         const actualOut = this._resolveSdOutputPath(requestedOut);
-        if (actualOut && (code === 0 || code == null)) {
-          resolve({ ok: true, outputPath: actualOut });
-          return;
+        if (actualOut) {
+          try {
+            const stat = fs.statSync(actualOut);
+            if (stat.size > 0) {
+              if (code !== 0 && code != null) {
+                console.warn(`[MediaEngine] sd exited ${code} but output exists (${stat.size} bytes): ${actualOut}`);
+              }
+              resolve({ ok: true, outputPath: actualOut, code });
+              return;
+            }
+          } catch (_) { /* fall through */ }
         }
         if (stderr.trim()) console.error(`[MediaEngine] sd stderr: ${stderr.trim().slice(-2000)}`);
         resolve({

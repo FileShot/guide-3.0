@@ -94,13 +94,8 @@ function _decodeFenceContentEscape(ch) {
 // Pre-compiled regex patterns for the streaming tool call filter.
 // These are tested on line boundaries only — never on every character.
 const RE_FENCE_HEADER = /^```\s*(\w*)\r?\n/;
-/** Languages streamed as markdown code fences to chat (not buffered as tool JSON). */
-const SF_PLAIN_FENCE_LANGS = new Set([
-  'html', 'htm', 'css', 'scss', 'sass', 'less', 'js', 'javascript', 'jsx', 'mjs', 'cjs',
-  'ts', 'tsx', 'vue', 'svelte', 'md', 'markdown', 'py', 'python', 'bash', 'sh', 'shell',
-  'yaml', 'yml', 'xml', 'svg', 'go', 'rust', 'rs', 'java', 'cpp', 'c', 'h', 'cs', 'php',
-  'rb', 'swift', 'kt', 'sql', 'jsonl',
-]);
+/** Prose-only fence langs that may stream live to chat; code langs buffer until close → CodeBlock. */
+const SF_PLAIN_FENCE_LANGS = new Set(['md', 'markdown']);
 
 function _sfPlainFenceLang(fenceBuf) {
   const m = String(fenceBuf || '').match(/^```\s*(\w*)/i);
@@ -130,10 +125,11 @@ function _sfFenceHeaderShouldStreamPlain(fenceBuf) {
   const lang = (hm[1] || '').toLowerCase();
   const afterHeader = fenceBuf.slice(hm[0].length);
   if (_sfIsToolFenceLang(lang)) return false;
-  if (SF_PLAIN_FENCE_LANGS.has(lang)) return true;
   const looksLikeToolBody = _sfFenceBufferLooksLikeToolJson(afterHeader.slice(0, 8000))
     || _sfIsToolLikeJson(afterHeader.slice(0, 6000));
-  return !looksLikeToolBody;
+  if (looksLikeToolBody) return false;
+  if (SF_PLAIN_FENCE_LANGS.has(lang)) return true;
+  return false;
 }
 
 /** Keep fence markers; append closing ``` when generation ended mid-fence. */
@@ -1850,18 +1846,13 @@ class ChatEngine extends EventEmitter {
           _sfContentStreamActive = false;
         }
         if (_sfFenceBuf) {
-          const isPlainMarkdownFence = _sfIsPlainMarkdownFence(_sfFenceBuf);
-          // Flush-guard: if the fence buffer contains tool-call JSON, discard it.
-          // Plain markdown fences (```html, ```css, …) are never tool JSON — route to chat.
-          const _isToolCall = !isPlainMarkdownFence && _sfFenceBufferLooksLikeToolJson(_sfFenceBuf);
+          const _isToolCall = _sfFenceBufferLooksLikeToolJson(_sfFenceBuf);
           if (_isToolCall) {
             console.log(`[ChatEngine] _sfFlushFence: discarding tool-call JSON (${_sfFenceBuf.length} chars)`);
             const _fpM = _sfFenceBuf.match(RE_FILE_PATH);
             if (_fpM && _fpM[1]) _sfProsedFileWrites.add(_normalizePath(_fpM[1]));
           } else {
-            const payload = isPlainMarkdownFence
-              ? _sfPreparePlainFenceFlushPayload(_sfFenceBuf)
-              : _sfFenceBuf.replace(/^```[a-z0-9]*\s*\n?/i, '');
+            const payload = _sfPreparePlainFenceFlushPayload(_sfFenceBuf);
             if (payload.length > 0) _sfForward(payload);
           }
           _sfFenceBuf = '';
@@ -4399,7 +4390,7 @@ class ChatEngine extends EventEmitter {
       ? `Progress summary:\n${progressSummary}`
       : 'Progress summary: (generating...)';
 
-    const text = `[System: Session memory condensed — continue task silently] ${droppedCount} earlier turn(s) summarized.\n${taskLine}\n${progressLine}\nContinue the active task. Use a tool only if needed; otherwise answer the user. Do not mention context limits or rotation to the user.\n`;
+    const text = `[System: Session memory condensed] ${droppedCount} earlier turn(s) summarized.\n${taskLine}\n${progressLine}\nDo not mention context limits or rotation to the user.\n`;
 
     copy.splice(Math.max(1, copy.length - 1), 0, { type: 'user', text });
     return copy;

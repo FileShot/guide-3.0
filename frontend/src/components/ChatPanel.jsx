@@ -546,9 +546,12 @@ async function runMediaCommand(prompt, mediaType = 'image', { natural = false } 
     role: 'user',
     content: natural ? prompt.trim() : `/${mediaType === 'video' ? 'video' : 'image'} ${prompt}`,
   });
+  const isVideo = mediaType === 'video';
   const assistantIdx = useAppStore.getState().addChatMessage({
     role: 'assistant',
-    content: '',
+    content: isVideo
+      ? 'Generating video… this can take several minutes on CPU offload.'
+      : '',
     mediaItems: [{ status: 'generating', prompt, mediaType }],
   });
   const msgId = useAppStore.getState().chatMessages[assistantIdx]?.id;
@@ -1594,6 +1597,8 @@ export default function ChatPanel() {
 
     if (!text) return;
 
+    setInput('');
+
     useAppStore.getState().ensureChatSessionId();
 
     const mediaModel = useAppStore.getState().activeMediaModel;
@@ -1650,38 +1655,51 @@ export default function ChatPanel() {
 
 
 
-    // If model is currently streaming (likely in a tool loop), inject the message
-
-    // into the ongoing loop instead of blocking. The model will see it in its next continuation.
+    // Mid-stream send: inject only during tool-wait; prose streaming gets a fresh turn.
 
     if (useAppStore.getState().chatStreaming && !forceNewTurn) {
+      const live = useAppStore.getState();
+      const inToolPhase = !!live.chatGeneratingTool && !live.chatGeneratingTool.done;
 
+      if (inToolPhase) {
+        try {
+          if (window.electronAPI?.injectUserMessage) {
+            await window.electronAPI.injectUserMessage(text);
+          } else {
+            await (await import('../api/websocket')).invoke('inject-user-message', { text });
+          }
+        } catch (_) {}
+
+        live.materializePartialAssistant();
+        const injectIdx = addChatMessage({ role: 'user', content: text, injected: true });
+        requestAnimationFrame(() => {
+          if (virtuosoRef.current != null && injectIdx >= 0) {
+            virtuosoRef.current.scrollToIndex({ index: injectIdx, align: 'end', behavior: 'auto' });
+          }
+        });
+        return;
+      }
+
+      live.bumpChatGenerationEpoch();
       try {
-
-        if (window.electronAPI?.injectUserMessage) {
-
-          await window.electronAPI.injectUserMessage(text);
-
+        if (window.electronAPI?.agentPause) {
+          await window.electronAPI.agentPause();
         } else {
-
-          await (await import('../api/websocket')).invoke('inject-user-message', { text });
-
+          await (await import('../api/websocket')).invoke('agent-pause');
         }
-
       } catch (_) {}
-
-      useAppStore.getState().materializePartialAssistant();
-
-      const injectIdx = addChatMessage({ role: 'user', content: text, injected: true });
-
-      requestAnimationFrame(() => {
-        if (virtuosoRef.current != null && injectIdx >= 0) {
-          virtuosoRef.current.scrollToIndex({ index: injectIdx, align: 'end', behavior: 'auto' });
-        }
-      });
-
+      live.materializePartialAssistant();
+      addChatMessage({ role: 'user', content: text });
+      const revertMsgs = useAppStore.getState().chatMessages.map((m) => ({
+        role: m.role,
+        content: messageContentForRevert(m),
+      }));
+      try {
+        await window.electronAPI?.revertContext?.(revertMsgs);
+      } catch (_) {}
+      live.resetChatStreamingUI();
+      await doSend(text, { skipAddMessage: true, forceNewTurn: true });
       return;
-
     }
 
 
@@ -1763,10 +1781,6 @@ export default function ChatPanel() {
     const attachmentsSnapshot = Array.isArray(chatAttachments) ? [...chatAttachments] : [];
 
     const serializedAttachments = await serializeAttachments(attachmentsSnapshot);
-
-
-
-    setInput('');
 
     useAppStore.getState().clearPendingQuestion();
     useAppStore.getState().clearPendingPermission();
@@ -2706,7 +2720,7 @@ export default function ChatPanel() {
 
   const persistCurrentConversationPlan = useCallback(() => {
     const store = useAppStore.getState();
-    const sessionId = store.chatMessages[0]?.id;
+    const sessionId = store.chatSessionId || store.ensureChatSessionId();
     if (!sessionId) return;
     try {
       const raw = localStorage.getItem('guide-chat-sessions');
@@ -2864,25 +2878,19 @@ export default function ChatPanel() {
 
 
 
-  const currentSessionId = chatMessages[0]?.id || 'current';
+  const chatSessionId = useAppStore((s) => s.chatSessionId);
 
   const conversationTabs = useMemo(() => {
-
+    const liveSessionId = chatSessionId || useAppStore.getState().ensureChatSessionId();
     const tabs = [{ id: 'current', title: currentTitle, isCurrent: true }];
 
     for (const s of filteredSessions) {
-
-      if (s.id === currentSessionId) continue;
-
+      if (s.id === liveSessionId) continue;
       tabs.push({ id: s.id, title: s.title || 'Chat session', isCurrent: false, session: s });
-
-      if (tabs.length >= 2) break; // current + 1 recent max; rest via ··· history
-
     }
 
     return tabs;
-
-  }, [filteredSessions, currentSessionId, currentTitle]);
+  }, [filteredSessions, chatSessionId, currentTitle]);
 
   const openSavedSession = useCallback(async (session) => {
 
@@ -2916,7 +2924,11 @@ export default function ChatPanel() {
     store.setTodos([]);
     window.electronAPI?.cancelPendingQuestion?.();
 
-    useAppStore.setState({ chatMessages: session.messages || [] });
+    useAppStore.setState({
+      chatMessages: session.messages || [],
+      chatSessionId: session.id,
+      pendingFreshChatSession: false,
+    });
 
     if (session.planSession) {
       store.setPlanSession(session.planSession);
@@ -2985,20 +2997,6 @@ export default function ChatPanel() {
             </button>
 
           ))}
-
-          {filteredSessions.length > 1 && (
-
-            <button
-
-              className="px-2 h-[33px] text-[11px] text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/30 border-b-2 border-transparent flex-shrink-0"
-
-              title="More conversations"
-
-              onClick={() => setHistoryOpen(v => !v)}
-
-            >···</button>
-
-          )}
 
         </div>
 
