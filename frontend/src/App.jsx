@@ -33,6 +33,7 @@ function pocketWelcomeDismissed() {
   }
 }
 import { createDisplayPaceQueue } from './utils/displayPaceQueue';
+import { traceUi } from './lib/traceUi';
 
 
 
@@ -52,6 +53,7 @@ export default function App() {
   if (!paceStreamRef.current) {
     paceStreamRef.current = createDisplayPaceQueue({
       tokensPerSec: 50,
+      onTrace: (evt, fields) => traceUi(evt, fields),
       onFlush: (channel, chunk) => {
         const st = useAppStore.getState();
         if (channel === 'thinking') st.appendThinkingToken(chunk);
@@ -83,13 +85,14 @@ export default function App() {
       return;
     }
 
-    // Log all events except high-frequency token streaming
-
-    if (event !== 'llm-token' && event !== 'llm-thinking-token' && event !== 'context-usage') {
-
-      console.log(`[App] Event received: '${event}'`, typeof data === 'string' ? data.substring(0, 100) : data);
-
-    }
+    traceUi('handleEvent', {
+      event,
+      data,
+      epoch: s.activeChatEpoch,
+      chatGenerationEpoch: s.chatGenerationEpoch,
+      chatStreaming: s.chatStreaming,
+      fromPaceQueue,
+    });
 
     switch (event) {
 

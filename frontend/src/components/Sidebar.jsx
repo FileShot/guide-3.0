@@ -2029,6 +2029,12 @@ function SettingsPanel() {
         <SettingToggle label="Grammar-Constrained Tool Calls" value={settings.enableGrammar}
           onChange={v => updateSetting('enableGrammar', v)}
           hint="Forces JSON schema grammar on raw output. Mutually exclusive with Native FC — enabling this disables native FC. May cause hangs on small models." />
+        <SettingToggle label="Full stream trace logging" value={settings.streamTraceEnabled !== false}
+          onChange={v => {
+            updateSetting('streamTraceEnabled', v);
+            if (v) updateSetting('debugStreamDiag', true);
+          }}
+          hint="Writes verbatim stream/ipc/ui/api traces to %APPDATA%/guide-ide/logs/. Disabling prevents freeze diagnosis." />
         <SettingToggle label="Debug stream diagnostics" value={!!settings.debugStreamDiag}
           onChange={v => updateSetting('debugStreamDiag', v)}
           hint="Logs verbose [StreamDiag] token traces to guide-main.log. Does not change model output." />

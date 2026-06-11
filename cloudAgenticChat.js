@@ -20,6 +20,7 @@ const {
   filterPlanModeToolCalls,
   shouldStreamFileContentForAgent,
 } = require('./agentModeResolver');
+const streamTrace = require('./streamTrace');
 
 const CLOUD_CONTINUE_PROMPT = 'Continue from the tool results above. Call more tools if needed, or give a concise final answer.';
 
@@ -137,8 +138,14 @@ async function runCloudAgenticChat({
       ...genBase,
       conversationHistory,
       images: iter === 0 ? images : [],
-      onToken: (token) => streamFilters.processContentChunk(token),
-      onThinkingToken: (token) => streamFilters.processThinkingChunk(token),
+      onToken: (token) => {
+        streamTrace.trace('stream', 'cloud-token', { token, iter });
+        streamFilters.processContentChunk(token);
+      },
+      onThinkingToken: (token) => {
+        streamTrace.trace('stream', 'cloud-thinking-token', { token, iter });
+        streamFilters.processThinkingChunk(token);
+      },
     });
 
     streamFilters.flush();

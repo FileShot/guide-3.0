@@ -7,9 +7,11 @@
  *   tokensPerSec?: number,
  *   onFlush?: (channel: 'text'|'thinking', chunk: string) => void,
  *   onFlushEvent?: (event: string, data: unknown) => void,
+ *   onTrace?: (evt: string, fields: Record<string, unknown>) => void,
  * }} opts
  */
-export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush, onFlushEvent } = {}) {
+export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush, onFlushEvent, onTrace } = {}) {
+  const trace = (evt, fields = {}) => { try { onTrace?.(evt, fields); } catch (_) {} };
   const charsPerSec = tokensPerSec * 4;
   /** @type {Array<{ kind: 'token', channel: 'text'|'thinking', chunk: string } | { kind: 'event', event: string, data: unknown }>} */
   let queue = [];
@@ -17,10 +19,12 @@ export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush, onFlushEven
   let lastTick = 0;
 
   const flushToken = (channel, chunk) => {
+    if (chunk) trace('pace-flush', { channel, chunk });
     if (chunk && onFlush) onFlush(channel, chunk);
   };
 
   const flushEvent = (event, data) => {
+    trace('pace-flush-event', { event, data });
     if (onFlushEvent) onFlushEvent(event, data);
   };
 
@@ -73,15 +77,18 @@ export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush, onFlushEven
     enqueue(channel, text) {
       if (!text) return;
       const ch = channel === 'thinking' ? 'thinking' : 'text';
+      trace('pace-enqueue', { channel: ch, chunk: text });
       queue.push({ kind: 'token', channel: ch, chunk: text });
       schedule();
     },
     enqueueEvent(event, data) {
       if (!event) return;
+      trace('pace-enqueue-event', { event, data });
       queue.push({ kind: 'event', event, data });
       schedule();
     },
     flushNow() {
+      trace('pace-flush-now', { pending: queue.length });
       while (queue.length) {
         const item = queue.shift();
         if (item.kind === 'event') flushEvent(item.event, item.data);
@@ -93,6 +100,7 @@ export function createDisplayPaceQueue({ tokensPerSec = 50, onFlush, onFlushEven
       }
     },
     reset() {
+      if (queue.length) trace('pace-drop', { reason: 'reset', items: queue });
       queue = [];
       if (timer) {
         clearInterval(timer);

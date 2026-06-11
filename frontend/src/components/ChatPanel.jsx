@@ -10,6 +10,7 @@ import { useState, useRef, useEffect, useCallback, useMemo, Component } from 're
 import { createPortal } from 'react-dom';
 
 import useAppStore from '../stores/appStore';
+import { traceUi } from '../lib/traceUi';
 
 import MarkdownRenderer from './chat/MarkdownRenderer';
 import PlanCard from './PlanCard';
@@ -1806,6 +1807,16 @@ export default function ChatPanel() {
 
     store.setChatStreaming(true);
 
+    traceUi('doSend-start', {
+      text,
+      epochAtStart,
+      skipAddMessage,
+      forceNewTurn,
+      agentPhase: effectiveAgentPhase,
+      chatMode: effectiveChatMode,
+      planMode: effectivePlanMode,
+    });
+
     store.clearFileLintErrors(); // Plan F: clear stale lint pills from previous generation
 
 
@@ -2352,6 +2363,15 @@ export default function ChatPanel() {
           }
 
         }
+
+        traceUi('doSend-finalize', {
+          epochAtStart,
+          messageContent,
+          messageSegments,
+          messageFileBlocks,
+          finalToolCalls,
+          thinkingText,
+        });
 
         useAppStore.getState().addChatMessage({
 

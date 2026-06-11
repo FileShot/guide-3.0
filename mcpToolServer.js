@@ -23,6 +23,7 @@ const {
   VALID_TOOLS,
 } = require('./tools/toolParser');
 const { canonicalizeToolParams } = require('./tools/canonicalizeToolParams');
+const streamTrace = require('./streamTrace');
 
 /** run_command / terminal_run timing (ms) */
 const COMMAND_SOFT_WARNING_MS = 180000;
@@ -1103,17 +1104,22 @@ class MCPToolServer {
   async executeTool(toolName, params = {}) {
     const startTime = Date.now();
     let result;
+    streamTrace.trace('stream', 'tool-exec-start', { toolName, params });
 
     const { checkPlanModeToolGate, checkGuideMetadataPathGate, isPlanFilePath, parsePlanFileContent, relativePlanPath } = require('./agentModeResolver');
     const planGate = checkPlanModeToolGate(toolName, params, this._agentContext);
     if (!planGate.allowed) {
       console.log(`[MCPToolServer] Plan mode gate blocked: ${toolName}`);
-      return { success: false, error: planGate.error, planModeBlocked: true };
+      const blocked = { success: false, error: planGate.error, planModeBlocked: true };
+      streamTrace.trace('stream', 'tool-exec-blocked', { toolName, params, reason: 'planGate', result: blocked, durationMs: Date.now() - startTime });
+      return blocked;
     }
     const guideGate = checkGuideMetadataPathGate(toolName, params);
     if (!guideGate.allowed) {
       console.log(`[MCPToolServer] Guide metadata path gate blocked: ${toolName}`);
-      return { success: false, error: guideGate.error, guidePathBlocked: true };
+      const blocked = { success: false, error: guideGate.error, guidePathBlocked: true };
+      streamTrace.trace('stream', 'tool-exec-blocked', { toolName, params, reason: 'guideGate', result: blocked, durationMs: Date.now() - startTime });
+      return blocked;
     }
 
     // Reject disabled tools. We intentionally report this as "does not exist"
@@ -1192,6 +1198,10 @@ class MCPToolServer {
           result = await this._readFile(params.filePath, params.startLine, params.endLine);
           break;
         case 'write_file':
+          streamTrace.traceFull('stream', 'write-file-disk-phase', params.content != null ? String(params.content) : '', {
+            filePath: params.filePath,
+            contentLen: params.content != null ? String(params.content).length : 0,
+          });
           result = await this._writeFile(params.filePath, params.content);
           break;
         case 'search_codebase':
@@ -1324,6 +1334,12 @@ class MCPToolServer {
           result = await this._renameFile(params.oldPath, params.newPath);
           break;
         case 'edit_file':
+          if (params.newText != null) {
+            streamTrace.traceFull('stream', 'edit-file-disk-phase', String(params.newText), {
+              filePath: params.filePath,
+              newTextLen: String(params.newText).length,
+            });
+          }
           result = await this._editFile(params.filePath, params.oldText, params.newText);
           break;
         case 'get_file_info':
@@ -1564,6 +1580,12 @@ class MCPToolServer {
       } catch (_) { /* plan-ready optional */ }
     }
 
+    streamTrace.trace('stream', 'tool-exec-done', {
+      toolName,
+      params,
+      result,
+      durationMs: Date.now() - startTime,
+    });
     return result;
   }
 

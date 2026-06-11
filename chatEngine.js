@@ -19,6 +19,7 @@ const {
   resolveAgentMode,
   getAgentSystemPrompt,
 } = require('./agentModeResolver');
+const streamTrace = require('./streamTrace');
 
 /** Base max chars of each tool result injected into chat history.
  *  Actual cap is computed at runtime proportional to the model's context size
@@ -790,15 +791,18 @@ class ChatEngine extends EventEmitter {
   async waitForIdle({ timeoutMs = 5000 } = {}) {
     if (!this._activeChatPromise) return;
     console.log('[ChatEngine] waitForIdle: awaiting active chat');
+    streamTrace.trace('stream', 'waitForIdle-start', { timeoutMs });
     let timer;
     const timeout = new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error('waitForIdle timeout')), timeoutMs);
     });
     try {
       await Promise.race([this._activeChatPromise, timeout]);
+      streamTrace.trace('stream', 'waitForIdle-done', { timeoutMs });
     } catch (err) {
       if (err?.message === 'waitForIdle timeout') {
         console.warn(`[ChatEngine] waitForIdle: timed out after ${timeoutMs}ms`);
+        streamTrace.trace('stream', 'waitForIdle-timeout', { timeoutMs });
       }
     } finally {
       if (timer) clearTimeout(timer);
@@ -1339,6 +1343,15 @@ class ChatEngine extends EventEmitter {
       this.isReady = true;
       this.isLoading = false;
       this._loadState = 'ready';
+      streamTrace.trace('stream', 'model-load-complete', {
+        modelPath,
+        modelInfo: { ...this.modelInfo },
+        contextSize: this._context?.contextSize,
+        gpuLayers: this._model?.gpuLayers,
+        vramFreeAfterModelGB: (vramFreeAfterModel / 1e9).toFixed(3),
+        batchSize,
+        threadCount,
+      });
 
       // Check vision availability — do NOT auto-start. Vision starts on-demand when an image needs captioning.
       try {
@@ -1427,7 +1440,9 @@ class ChatEngine extends EventEmitter {
     this._enableContextSummarizer = options.enableContextSummarizer !== false;
     const isCancelled = () => (typeof getCancelled === 'function' && getCancelled()) || this.isCancelled();
     const _streamDiag = !!options.debugStreamDiag;
+    const _traceOn = options.streamTraceEnabled !== false;
     const _logStreamDiag = (...args) => { if (_streamDiag) console.log(...args); };
+    const _trace = (evt, fields) => { if (_traceOn) streamTrace.trace('stream', evt, fields); };
 
       // Inject attachment content into user message
       const attachments = Array.isArray(options.attachments) ? options.attachments : [];
@@ -1512,6 +1527,15 @@ class ChatEngine extends EventEmitter {
       toolsEnabled: options.toolsEnabled !== false,
       planReady: !!options.planReady,
       planFileExists: !!options.planFileExists,
+    });
+    streamTrace.trace('stream', 'agent-mode-resolved', {
+      askOnly: resolvedMode.askOnly,
+      planMode: resolvedMode.planMode,
+      planning: resolvedMode.planning,
+      building: resolvedMode.building,
+      planPhase: resolvedMode.planPhase,
+      toolsActive: resolvedMode.toolsActive,
+      allowedTools: resolvedMode.allowedTools ? [...resolvedMode.allowedTools] : null,
     });
     let basePrompt = systemPrompt || resolvedMode.baseSystemPrompt;
 
@@ -1713,6 +1737,31 @@ class ChatEngine extends EventEmitter {
       let _sfContentContinuation = null;
       const _sfContentEndCompleted = new Set();
 
+      const _traceSfState = () => ({
+        active: _sfActive,
+        confirmed: _sfConfirmed,
+        inFence: _sfInFence,
+        fileWriteDetected: _sfFileWriteDetected,
+        contentStreamActive: _sfContentStreamActive,
+        contentDone: _sfContentDone,
+        contentEsc: _sfContentEsc,
+        unicodeCount: _sfUnicodeCount,
+        depth: _sfDepth,
+        inStr: _sfInStr,
+        bufLen: _sfBuf.length,
+        contentBufLen: _sfContentBuf.length,
+        contentFilePath: _sfContentFilePath,
+        fenceBufLen: _sfFenceBuf.length,
+        visibleChars: _sfVisibleChars,
+        nativeThinkActive: _sfNativeThinkActive,
+        inThink: _sfInThink,
+        fenceStreamPlain: _sfFenceStreamPlain,
+      });
+      const _traceSfChar = (ch) => {
+        if (!_traceOn) return;
+        streamTrace.trace('stream', 'sf-char', { ch, sf: _traceSfState() });
+      };
+
       const _sfSaveContentContinuation = () => {
         if (!_sfContentFilePath) return;
         _sfContentContinuation = {
@@ -1889,6 +1938,7 @@ class ChatEngine extends EventEmitter {
       const _sfProcessChunk = (chunk) => {
         for (let i = 0; i < chunk.length; i++) {
           const ch = chunk[i];
+          _traceSfChar(ch);
 
           // Think-tag detection for reasoning models (non-Jinja only).
           // These models output thinking in raw text (LlamaCompletion mode).
@@ -2103,10 +2153,12 @@ class ChatEngine extends EventEmitter {
                 _sfContentStreamActive = false;
                 _sfContentDone = true;
                 if (_sfContentBuf && onStreamEvent) {
+                  _trace('sf-content-token-emit', { filePath: _sfContentFilePath, text: _sfContentBuf, phase: 'fence-close-quote-flush' });
                   onStreamEvent('file-content-token', _sfContentBuf);
                   _sfContentBuf = '';
                 }
                 if (onStreamEvent) {
+                  _trace('sf-content-end', { reason: 'fence-close-quote', filePath: _sfContentFilePath, sf: _traceSfState() });
                   onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
                   _sfContentEndCompleted.add(_normalizePath(_sfContentFilePath));
                   _sfMarkFileContentStreamActive(null);
@@ -2116,6 +2168,7 @@ class ChatEngine extends EventEmitter {
               }
               if (_sfContentStreamActive && _sfContentBuf.length >= 1) {
                 if (onStreamEvent) {
+                  _trace('sf-content-token-emit', { filePath: _sfContentFilePath, text: _sfContentBuf, phase: 'fence-stream' });
                   onStreamEvent('file-content-token', _sfContentBuf);
                   _sfContentBuf = '';
                 }
@@ -2328,10 +2381,12 @@ class ChatEngine extends EventEmitter {
               _sfContentStreamActive = false;
               _sfContentDone = true;
               if (_sfContentBuf && onStreamEvent) {
+                _trace('sf-content-token-emit', { filePath: _sfContentFilePath, text: _sfContentBuf, phase: 'json-close-quote-flush' });
                 onStreamEvent('file-content-token', _sfContentBuf);
                 _sfContentBuf = '';
               }
               if (onStreamEvent) {
+                _trace('sf-content-end', { reason: 'json-close-quote', filePath: _sfContentFilePath, sf: _traceSfState() });
                 onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
                 _sfContentEndCompleted.add(_normalizePath(_sfContentFilePath));
                 _sfMarkFileContentStreamActive(null);
@@ -2341,6 +2396,7 @@ class ChatEngine extends EventEmitter {
             }
             if (_sfContentStreamActive && _sfContentBuf.length >= 1) {
               if (onStreamEvent) {
+                _trace('sf-content-token-emit', { filePath: _sfContentFilePath, text: _sfContentBuf, phase: 'json-stream' });
                 onStreamEvent('file-content-token', _sfContentBuf);
                 _sfContentBuf = '';
               }
@@ -2484,6 +2540,7 @@ class ChatEngine extends EventEmitter {
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {
           if (!chunk) return;
+          _trace('token-prose', { text: chunk });
           _proseLogBuf += chunk;
           if (_proseLogBuf.includes('\n')) {
             _logStreamDiag(`[StreamDiag] PROSE: ${JSON.stringify(_proseLogBuf)}`);
@@ -2506,6 +2563,15 @@ class ChatEngine extends EventEmitter {
           if (_thinkingFilterEnabled) return;
           const text = chunk.text || '';
           if (!text && chunk.type !== 'segment') return;
+          if (text) {
+            _trace('token-response-chunk', {
+              text,
+              type: chunk.type,
+              segmentType: chunk.segmentType,
+              segmentStart: chunk.segmentStartTime,
+              segmentEnd: chunk.segmentEndTime,
+            });
+          }
 
           if (text && chunk.type === 'segment' && chunk.segmentType === 'thought') {
             _thinkLogBuf += text;
@@ -2637,6 +2703,16 @@ class ChatEngine extends EventEmitter {
           // Done: log full params (capped at 600 chars with head+tail)
           // Never skips a token — chunkCount proves every chunk arrived
           s.logBuf += paramsChunk;
+          if (_traceOn) {
+            streamTrace.trace('stream', 'fc-chunk', {
+              functionName,
+              callIndex,
+              paramsChunk,
+              done,
+              chunkCount: s.chunkCount,
+              logBuf: s.logBuf,
+            });
+          }
           if (s.chunkCount === 1) {
             _logStreamDiag(`[StreamDiag] FC ${functionName}[${callIndex}] START chunk#1: "${s.logBuf.slice(0, 120)}"`);
           } else if (s.chunkCount % 100 === 0) {
@@ -2774,6 +2850,22 @@ class ChatEngine extends EventEmitter {
       const roundStartTime = Date.now();
       const ctxUsedBefore = this._sequence?.nextTokenIndex || 0;
       console.log(`[ChatEngine] Calling generateResponse #1: history=${this._chatHistory.length} msgs, ctxUsedBefore=${ctxUsedBefore}`);
+      _trace('generateResponse-enter', {
+        round: 1,
+        historyLen: this._chatHistory.length,
+        ctxUsedBefore,
+        genOptions: {
+          maxTokens: genOptions.maxTokens,
+          temperature: genOptions.temperature,
+          budgets: genOptions.budgets,
+          hasFunctions: !!genOptions.functions,
+          functionNames: genOptions.functions ? Object.keys(genOptions.functions) : [],
+        },
+        chatHistory: this._chatHistory.map((m) => ({
+          type: m.type,
+          text: m.text || m.response || m,
+        })),
+      });
 
       let result = await this._generateResponseSafe(genOptions, {
         contextSize,
@@ -2790,6 +2882,15 @@ class ChatEngine extends EventEmitter {
       const roundTokens = result.metadata?.totalTokens ?? result.response?.length ?? 0;
       const roundTokPerSec = roundElapsed > 0 ? (roundTokens / roundElapsed).toFixed(1) : '?';
       const ctxUsedAfter = this._sequence?.nextTokenIndex || 0;
+      _trace('generateResponse-return', {
+        round: 1,
+        stopReason: result.metadata?.stopReason,
+        response: result.response,
+        metadata: result.metadata,
+        roundElapsedMs: roundElapsed * 1000,
+        ctxUsedAfter,
+        roundTokens,
+      });
       const currentGpuLayers = this._model?.gpuLayers ?? '?';
       console.log(`[ChatEngine] generateResponse returned: stopReason=${result.metadata?.stopReason}, tokens=${roundTokens}, time=${roundElapsed.toFixed(1)}s, tok/s=${roundTokPerSec}, ctxUsed=${ctxUsedAfter}/${contextSize}, gpuLayers=${currentGpuLayers}`);
       // EOG DIAGNOSTIC: When stopReason is eogToken, log detailed context for root cause analysis.
@@ -3841,6 +3942,14 @@ class ChatEngine extends EventEmitter {
             onContextUsage({ used: this._sequence.nextTokenIndex, total: this._context.contextSize });
           }
           const _prefillAndGenMs = Date.now() - _prefillStart;
+          _trace('generateResponse-return', {
+            round: 'continuation',
+            stopReason: result.metadata?.stopReason,
+            response: result.response,
+            metadata: result.metadata,
+            prefillAndGenMs: _prefillAndGenMs,
+            ctxUsed: ctxUsedNow,
+          });
           console.log(`[ChatEngine] Continuation after tools: stopReason=${result.metadata?.stopReason}, responseLen=${result.response?.length || 0}, prefill+gen=${_prefillAndGenMs}ms, ctxUsed=${ctxUsedNow}`);
           // EOG DIAGNOSTIC (continuation): same shape as the primary diagnostic above.
           // Reads `roundTokens` (recomputed from this round's metadata) so the printed
@@ -4031,6 +4140,12 @@ class ChatEngine extends EventEmitter {
 
   cancelGeneration(reason) {
     console.log(`[ChatEngine] cancelGeneration called: reason=${reason || 'cancelled'}`);
+    streamTrace.trace('stream', 'cancel-generation', {
+      reason: reason || 'cancelled',
+      abortActive: !!this._abortController,
+      activeChatPromise: !!this._activeChatPromise,
+      cancelled: this._cancelRequested,
+    });
     this._cancelRequested = true;
     if (this._abortController) {
       this._abortController.abort(reason || 'cancelled');
@@ -4764,6 +4879,14 @@ class ChatEngine extends EventEmitter {
     const kvUsed = this._sequence?.nextTokenIndex || 0;
     const genRoom = contextSize - kvUsed;
     const needsShift = measured > maxTokensCount || genRoom < 1;
+    streamTrace.trace('stream', 'preflightContextBeforeGenerate', {
+      measured,
+      maxTokensCount,
+      kvUsed,
+      genRoom,
+      contextSize,
+      needsShift,
+    });
     if (!needsShift) return;
 
     if (this._fileContentStreamActivePath && onStreamEvent) {
@@ -4784,6 +4907,14 @@ class ChatEngine extends EventEmitter {
       documentFunctionParams,
     });
     this._chatHistory = shifted.chatHistory;
+    streamTrace.trace('stream', 'preflightContextShifted', {
+      droppedCount: shifted.metadata?.droppedCount || 0,
+      chatHistory: this._chatHistory.map((m) => ({
+        type: m.type,
+        text: m.text || m.response || m,
+      })),
+      metadata: shifted.metadata,
+    });
     if (shifted.metadata?.droppedCount > 0) {
       const { droppedItems, pinnedUserText } = shifted.metadata;
       const syncFallback = this._extractDeterministicSummary(droppedItems, pinnedUserText);
@@ -4864,9 +4995,24 @@ class ChatEngine extends EventEmitter {
       this.emit('status', { state: 'error', message: 'Chat engine context was lost during summarization. Please reload the model.' });
       throw new Error('Chat engine context was lost during summarization and could not be recovered.');
     }
+    streamTrace.trace('stream', 'generateResponse-native-enter', {
+      historyLen: this._chatHistory?.length,
+      genOptions,
+    });
     try {
-      return await this._chat.generateResponse(this._chatHistory, genOptions);
+      const result = await this._chat.generateResponse(this._chatHistory, genOptions);
+      streamTrace.trace('stream', 'generateResponse-native-return', {
+        stopReason: result?.metadata?.stopReason,
+        response: result?.response,
+        metadata: result?.metadata,
+        functionCalls: result?.functionCalls,
+      });
+      return result;
     } catch (err) {
+      streamTrace.trace('stream', 'generateResponse-native-error', {
+        message: err?.message,
+        stack: err?.stack,
+      });
       const msg = err?.message || '';
       if (!/context shift strategy|did not return a history that fits|context size is too small/i.test(msg)) throw err;
       console.warn(`[ChatEngine] Context shift recovery (retry): ${msg}`);

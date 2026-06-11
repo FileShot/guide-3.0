@@ -255,6 +255,8 @@ for (const dir of [MODELS_DIR, userDataPath, path.join(userDataPath, 'sessions')
 const log = require('./logger');
 log.installConsoleIntercepts();
 
+const streamTrace = require('./streamTrace');
+
 const { ChatEngine, buildEngineLoadSettings } = require('./chatEngine');
 const { resolveRuntimeDefaultsForModel } = require('./modelRuntimeDefaults');
 
@@ -526,6 +528,7 @@ languageServerManager.on('log', ({ serverId, stderr }) => {
 });
 
 let currentSettings = settingsManager.getAll();
+streamTrace.syncFromSettings(currentSettings);
 let agenticCancelled = false;
 let autoUpdater = null;
 
@@ -583,6 +586,9 @@ async function openProjectPath(projectPath) {
 
 // Helper to send events to renderer
 function _send(event, data) {
+  if (streamTrace.isEnabled()) {
+    streamTrace.trace('ipc', 'ipc-send', { channel: event, data });
+  }
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(event, data);
   }
@@ -747,8 +753,14 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
 
   // ── Checkpoint: begin turn capture before generation ──
   const turnId = `turn-${Date.now()}`;
+  streamTrace.setTurnId(turnId);
   mcpToolServer.startTurn(turnId);
   console.log(`[electron-main] checkpoint: startTurn(${turnId})`);
+  streamTrace.trace('stream', 'ai-chat-start', {
+    userMessage,
+    cloudProvider: chatContext?.cloudProvider || null,
+    chatContext,
+  });
 
   // ── Cloud provider path (agentic tools + same system/tool prompt as local) ──
   if (cloudProvider) {
@@ -997,7 +1009,8 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       enableGrammar: settings.enableGrammar,
       enableNativeFC: settings.enableNativeFC !== false,
       enableContextSummarizer: settings.enableContextSummarizer !== false,
-      debugStreamDiag: !!settings.debugStreamDiag,
+      debugStreamDiag: !!settings.debugStreamDiag || settings.streamTraceEnabled !== false,
+      streamTraceEnabled: settings.streamTraceEnabled !== false,
       maxIterations: settings.maxIterations || 0,
       generationTimeoutSec: settings.generationTimeoutSec || 0,
       reasoningEffort: settings.reasoningEffort || 'medium',
@@ -1147,7 +1160,16 @@ ipcMain.handle('set-thinking-mode', async (_e, mode) => {
 });
 
 ipcMain.handle('ui-log', (_e, msg) => {
-  console.log(`[UI] ${String(msg ?? '')}`);
+  const text = String(msg ?? '');
+  console.log(`[UI] ${text}`);
+  if (text.startsWith('[TraceUI]')) {
+    try {
+      const payload = JSON.parse(text.slice('[TraceUI]'.length));
+      streamTrace.trace('ui', payload.evt || 'ui', payload);
+    } catch (_) {
+      streamTrace.traceFull('ui', 'ui-log', text);
+    }
+  }
 });
 
 // Handle answer from frontend for ask_question tool
@@ -1217,6 +1239,7 @@ ipcMain.handle('cancel-generation', async () => {
 
 ipcMain.handle('agent-pause', async () => {
   console.log('[electron-main] agent-pause');
+  streamTrace.trace('stream', 'lifecycle-agent-pause', {});
   agenticCancelled = true;
   ctx.agenticCancelled = true;
   llmEngine.cancelGeneration('user');
@@ -1350,16 +1373,29 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
   const p = urlObj.pathname;
   const q = Object.fromEntries(urlObj.searchParams);
   const _bodyLen = options?.body ? String(options.body).length : 0;
+  const _apiRawBody = options?.body != null ? String(options.body) : '';
   console.log(`[api-fetch] ENTRY ${method} ${p} bodyLen=${_bodyLen}`);
+  streamTrace.trace('api', 'api-req', { method, path: p, body: _apiRawBody });
+  const apiReturn = (result) => {
+    streamTrace.trace('api', 'api-res', {
+      method,
+      path: p,
+      status: result?._status ?? 200,
+      body: result,
+      ms: Date.now() - _apiT0,
+    });
+    return apiReturn(result);
+  };
 
   try {
     // ── Models ──────────────────────────────────────────
     if (p === '/api/models' && method === 'GET') {
-      return { models: modelManager.availableModels, status: llmEngine.getStatus() };
+      return apiReturn({ models: modelManager.availableModels, status: llmEngine.getStatus() });
     }
     if (p === '/api/models/load' && method === 'POST') {
       const { modelPath } = body;
       if (!modelPath) return { _status: 400, error: 'modelPath required' };
+      streamTrace.trace('stream', 'lifecycle-model-load-start', { modelPath, body });
       const meta = await readGgufMetadata(modelPath);
       const ggufType = meta ? detectModelTypeFromGguf(meta) : 'unknown';
       if (ggufType === 'diffusion' || ggufType === 'video') {
@@ -1375,19 +1411,19 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
           const info = { ...status, modelType: ggufType, path: modelPath };
           _send('media-model-loaded', info);
           console.log(`[MediaEngine] loaded arch=${status.ggufArchitecture} type=${ggufType}`);
-          return { success: true, modelInfo: info, media: true };
+          return apiReturn({ success: true, modelInfo: info, media: true });
         } catch (e) {
-          return { _status: 400, error: e.message };
+          return apiReturn({ _status: 400, error: e.message });
         }
       }
       if (ggufType === 'unknown') {
         const arch = meta?.general?.architecture || '(missing)';
-        return {
+        return apiReturn({
           _status: 400,
           error: meta
             ? `Unknown GGUF architecture "${arch}" — cannot load as LLM or media model`
             : 'Could not read GGUF metadata — cannot determine model type',
-        };
+        });
       }
       if (mediaEngine.modelPath) {
         await mediaEngine.unload();
@@ -1411,7 +1447,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       _send('model-loaded', info);
       console.log(`[Settings] model-load DONE path=${modelPath} thinkingMode=${settingsManager.get('thinkingMode')}`);
       console.log(`[api-fetch] DONE POST /api/models/load ms=${Date.now() - _apiT0}`);
-      return { success: true, modelInfo: info };
+      return apiReturn({ success: true, modelInfo: info });
     }
     if (p === '/api/media/generate' && method === 'POST') {
       const { prompt, width, height, steps, seed, videoFrames, messageId, mediaType } = body || {};
@@ -1443,33 +1479,33 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         console.log(`[MediaEngine] media-error: ${result.error || 'unknown'}`);
         _send('media-error', { prompt, messageId, error: result.error, missing: result.missing });
       }
-      return result;
+      return apiReturn(result);
     }
     if (p === '/api/media/status' && method === 'GET') {
-      return mediaEngine.getStatus();
+      return apiReturn(mediaEngine.getStatus());
     }
     if (p === '/api/models/unload' && method === 'POST') {
       await llmEngine.dispose();
-      return { success: true };
+      return apiReturn({ success: true });
     }
     if (p === '/api/models/status' && method === 'GET') {
-      return llmEngine.getStatus();
+      return apiReturn(llmEngine.getStatus());
     }
     if (p === '/api/models/scan' && method === 'POST') {
       const models = await modelManager.scanModels();
-      return { models };
+      return apiReturn({ models });
     }
     if (p === '/api/models/add' && method === 'POST') {
       const { filePaths } = body;
       if (!filePaths || !Array.isArray(filePaths)) return { _status: 400, error: 'filePaths array required' };
       const added = await modelManager.addModels(filePaths);
-      return { added };
+      return apiReturn({ added });
     }
     if (p === '/api/models/upload' && method === 'POST') {
       // IPC file upload: expects body._files = [{ name, buffer }]
       const files = body._files;
       if (!files || !Array.isArray(files) || files.length === 0) {
-        return { _status: 400, error: 'No files provided' };
+        return apiReturn({ _status: 400, error: 'No files provided' });
       }
       const saved = [];
       for (const file of files) {
@@ -1481,7 +1517,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       }
       if (saved.length === 0) return { _status: 400, error: 'No .gguf files found in upload' };
       await modelManager.scanModels();
-      return { success: true, saved };
+      return apiReturn({ success: true, saved });
     }
     if (p === '/api/models/recommend' && method === 'GET') {
       let vramMB = 0;
@@ -1500,7 +1536,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       ];
       const fits = recommended.filter(m => m.size <= maxModelGB);
       const other = recommended.filter(m => m.size > maxModelGB);
-      return { fits, other, maxModelGB, vramMB };
+      return apiReturn({ fits, other, maxModelGB, vramMB });
     }
 
     // ── HuggingFace model downloads ─────────────────────
@@ -1508,27 +1544,27 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       const query = q.q;
       if (!query || !query.trim()) return { models: [] };
       const models = await modelDownloader.searchModels(query.trim());
-      return { models };
+      return apiReturn({ models });
     }
     if (p.startsWith('/api/models/hf/files/') && method === 'GET') {
       const parts = p.replace('/api/models/hf/files/', '').split('/');
       const repoId = parts.slice(0, 2).join('/');
       const result = await modelDownloader.getRepoFiles(repoId);
-      return result;
+      return apiReturn(result);
     }
     if (p === '/api/models/hf/download' && method === 'POST') {
       const { url: dlUrl, fileName } = body;
       if (!dlUrl || !fileName) return { _status: 400, error: 'url and fileName required' };
       const result = await modelDownloader.downloadModel(dlUrl, fileName);
-      return { success: true, ...result };
+      return apiReturn({ success: true, ...result });
     }
     if (p === '/api/models/hf/cancel' && method === 'POST') {
       const { id } = body;
       if (!id) return { _status: 400, error: 'id required' };
-      return { success: modelDownloader.cancelDownload(id) };
+      return apiReturn({ success: modelDownloader.cancelDownload(id) });
     }
     if (p === '/api/models/hf/downloads' && method === 'GET') {
-      return { downloads: modelDownloader.getActiveDownloads() };
+      return apiReturn({ downloads: modelDownloader.getActiveDownloads() });
     }
 
     // ── GPU ─────────────────────────────────────────────
@@ -1567,7 +1603,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
           info.totalLayers = llmEngine.modelInfo.totalLayers;
         }
       }
-      return info;
+      return apiReturn(info);
     }
 
     // ── Project ─────────────────────────────────────────
@@ -1575,10 +1611,10 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       const { projectPath } = body;
       if (!projectPath) return { _status: 400, error: 'projectPath required' };
       const openedProject = await openProjectPath(projectPath);
-      return { success: true, path: openedProject.path };
+      return apiReturn({ success: true, path: openedProject.path });
     }
     if (p === '/api/project/current' && method === 'GET') {
-      return { projectPath: currentProjectPath };
+      return apiReturn({ projectPath: currentProjectPath });
     }
 
     // ── Files ───────────────────────────────────────────
@@ -1586,16 +1622,16 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       const dirPath = q.path || currentProjectPath;
       if (!dirPath) return { items: [] };
       const items = await _readDirRecursive(dirPath, 0, 3);
-      return { items, root: dirPath };
+      return apiReturn({ items, root: dirPath });
     }
     if (p === '/api/files/import' && method === 'POST') {
       const { sources, destDir } = body;
       if (!Array.isArray(sources) || !destDir) {
-        return { _status: 400, error: 'sources (array) and destDir required' };
+        return apiReturn({ _status: 400, error: 'sources (array) and destDir required' });
       }
       const destResolved = path.resolve(destDir);
       if (!isPathUnderWorkspaceRoots(destResolved)) {
-        return { _status: 403, error: 'Destination not in workspace' };
+        return apiReturn({ _status: 403, error: 'Destination not in workspace' });
       }
       fs.mkdirSync(destResolved, { recursive: true });
       const copied = [];
@@ -1603,14 +1639,14 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         if (!src || typeof src !== 'string') continue;
         const srcResolved = path.resolve(src);
         if (!fs.existsSync(srcResolved)) {
-          return { _status: 404, error: `Source not found: ${srcResolved}` };
+          return apiReturn({ _status: 404, error: `Source not found: ${srcResolved}` });
         }
         const destPath = path.join(destResolved, path.basename(srcResolved));
         fs.cpSync(srcResolved, destPath, { recursive: true, force: true });
         copied.push(destPath);
       }
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('files-changed');
-      return { success: true, copied };
+      return apiReturn({ success: true, copied });
     }
     if (p === '/api/files/read' && method === 'GET') {
       const filePath = q.path;
@@ -1623,17 +1659,17 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
           const stat = fs.statSync(fullPath);
           const mimeType = getMimeForExtension(ext);
           if (stat.size > BINARY_READ_INLINE_MAX) {
-            return { path: fullPath, extension: ext, name, binary: true, mimeType, lazy: true };
+            return apiReturn({ path: fullPath, extension: ext, name, binary: true, mimeType, lazy: true });
           }
           const buf = fs.readFileSync(fullPath);
           const dataUrl = `data:${mimeType};base64,${buf.toString('base64')}`;
-          return { path: fullPath, extension: ext, name, binary: true, mimeType, dataUrl };
+          return apiReturn({ path: fullPath, extension: ext, name, binary: true, mimeType, dataUrl });
         }
         const content = fs.readFileSync(fullPath, 'utf8');
-        return { content, path: fullPath, extension: ext, name };
+        return apiReturn({ content, path: fullPath, extension: ext, name });
       } catch (err) {
         if (err.code === 'ENOENT') {
-          return { content: null, path: fullPath, missing: true, name: path.basename(fullPath) };
+          return apiReturn({ content: null, path: fullPath, missing: true, name: path.basename(fullPath) });
         }
         throw err;
       }
@@ -1648,7 +1684,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         fs.mkdirSync(path.dirname(fullPath), { recursive: true });
         fs.writeFileSync(fullPath, Buffer.from(finalContent, 'base64'));
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('files-changed');
-        return { success: true, path: fullPath, binary: true };
+        return apiReturn({ success: true, path: fullPath, binary: true });
       }
       if (doFormat !== false && settingsManager.get('formatOnSave') !== false) {
         formatResult = await formatOnSave({
@@ -1665,7 +1701,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       }
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
       fs.writeFileSync(fullPath, finalContent, 'utf8');
-      return { success: true, path: fullPath, content: finalContent, formatted: formatResult?.formatted || false, problems: formatResult?.problems || [] };
+      return apiReturn({ success: true, path: fullPath, content: finalContent, formatted: formatResult?.formatted || false, problems: formatResult?.problems || [] });
     }
     if (p === '/api/files/create' && method === 'POST') {
       const { path: fp, content } = body;
@@ -1675,7 +1711,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (fs.existsSync(fullPath)) return { _status: 409, error: 'File already exists' };
       fs.writeFileSync(fullPath, content || '', 'utf8');
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('files-changed');
-      return { success: true, path: fullPath };
+      return apiReturn({ success: true, path: fullPath });
     }
     if (p === '/api/files/mkdir' && method === 'POST') {
       const { path: fp } = body;
@@ -1684,7 +1720,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (fs.existsSync(fullPath)) return { _status: 409, error: 'Already exists' };
       fs.mkdirSync(fullPath, { recursive: true });
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('files-changed');
-      return { success: true, path: fullPath };
+      return apiReturn({ success: true, path: fullPath });
     }
     if (p === '/api/files/delete' && method === 'POST') {
       const { path: fp } = body;
@@ -1700,7 +1736,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('files-changed', { deletedPaths: [fullPath] });
       }
-      return { success: true };
+      return apiReturn({ success: true });
     }
     if (p === '/api/files/rename' && method === 'POST') {
       const { oldPath, newPath } = body;
@@ -1710,7 +1746,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (!fs.existsSync(fullOld)) return { _status: 404, error: 'Source not found' };
       fs.renameSync(fullOld, fullNew);
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('files-changed');
-      return { success: true, path: fullNew };
+      return apiReturn({ success: true, path: fullNew });
     }
     if (p === '/api/files/search' && method === 'GET') {
       const basePath = q.path || currentProjectPath;
@@ -1781,7 +1817,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (semantic) {
         results.sort((a, b) => (b.score || 0) - (a.score || 0));
       }
-      return { results: results.slice(0, maxResults) };
+      return apiReturn({ results: results.slice(0, maxResults) });
     }
     if (p === '/api/files/replace' && method === 'POST') {
       const basePath = body.path || currentProjectPath;
@@ -1841,41 +1877,45 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (filesChanged > 0 && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('files-changed');
       }
-      return { success: true, filesChanged, replacements };
+      return apiReturn({ success: true, filesChanged, replacements });
     }
 
     // ── Settings ────────────────────────────────────────
     if (p === '/api/settings' && method === 'GET') {
-      return settingsManager.getAll();
+      return apiReturn(settingsManager.getAll());
     }
     if (p === '/api/settings' && method === 'POST') {
       console.log(`[Settings] POST /api/settings HANDLER START thinkingMode=${body?.thinkingMode} toolsEnabled=${body?.toolsEnabled} browserEngine=${body?.browserEngine}`);
       settingsManager.setAll(body);
+      if (body?.streamTraceEnabled !== false) {
+        settingsManager.set('debugStreamDiag', true);
+      }
       settingsManager.flush();
       currentSettings = settingsManager.getAll();
+      streamTrace.syncFromSettings(currentSettings);
       syncBrowserRouterFromSettings();
       console.log(`[Settings] POST /api/settings HANDLER DONE thinkingMode=${settingsManager.get('thinkingMode')} browserEngine=${settingsManager.get('browserEngine')}`);
       console.log(`[api-fetch] DONE POST /api/settings ms=${Date.now() - _apiT0}`);
-      return { success: true };
+      return apiReturn({ success: true });
     }
 
     // ── Cloud LLM ───────────────────────────────────────
     if (p === '/api/cloud/status' && method === 'GET') {
-      return cloudLLM.getStatus();
+      return apiReturn(cloudLLM.getStatus());
     }
     if (p === '/api/cloud/providers' && method === 'GET') {
-      return { configured: cloudLLM.getConfiguredProviders(), all: cloudLLM.getAllProviders() };
+      return apiReturn({ configured: cloudLLM.getConfiguredProviders(), all: cloudLLM.getAllProviders() });
     }
     if (p.startsWith('/api/cloud/models/') && method === 'GET') {
       const provider = p.replace('/api/cloud/models/', '');
       if (provider === 'openrouter') {
         const models = await cloudLLM.fetchOpenRouterModels();
-        return { models };
+        return apiReturn({ models });
       } else if (provider === 'ollama') {
         await cloudLLM.detectOllama();
-        return { models: cloudLLM.getOllamaModels() };
+        return apiReturn({ models: cloudLLM.getOllamaModels() });
       } else {
-        return { models: cloudLLM._getProviderModels(provider) };
+        return apiReturn({ models: cloudLLM._getProviderModels(provider) });
       }
     }
     if (p === '/api/cloud/provider' && method === 'POST') {
@@ -1885,7 +1925,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         cloudLLM.activeModel = null;
         settingsManager.set('lastCloudProvider', null);
         settingsManager.set('lastCloudModel', null);
-        return { success: true, activeProvider: null, activeModel: null };
+        return apiReturn({ success: true, activeProvider: null, activeModel: null });
       }
       try { llmEngine.cancelGeneration('cloud-select'); } catch (_) {}
       if (llmEngine.isReady || llmEngine.getStatus().loadState === 'loading') {
@@ -1897,23 +1937,23 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (model) cloudLLM.activeModel = model;
       settingsManager.set('lastCloudProvider', provider);
       settingsManager.set('lastCloudModel', model || null);
-      return { success: true, activeProvider: cloudLLM.activeProvider, activeModel: cloudLLM.activeModel };
+      return apiReturn({ success: true, activeProvider: cloudLLM.activeProvider, activeModel: cloudLLM.activeModel });
     }
     if (p === '/api/tools/strip-prose' && method === 'POST') {
       const { stripToolCallText } = require('./tools/toolParser');
       const text = body?.text != null ? String(body.text) : '';
-      return { text: stripToolCallText(text) };
+      return apiReturn({ text: stripToolCallText(text) });
     }
     if (p === '/api/cloud/apikey' && method === 'POST') {
       const { provider, key } = body;
       if (!provider) return { _status: 400, error: 'provider required' };
       cloudLLM.setApiKey(provider, key || '');
       settingsManager.setApiKey(provider, key || '');
-      return { success: true, hasKey: !!(key && key.trim()) };
+      return apiReturn({ success: true, hasKey: !!(key && key.trim()) });
     }
     if (p.startsWith('/api/cloud/pool/') && method === 'GET') {
       const provider = p.replace('/api/cloud/pool/', '');
-      return cloudLLM.getPoolStatus(provider);
+      return apiReturn(cloudLLM.getPoolStatus(provider));
     }
     if (p.startsWith('/api/cloud/test/') && method === 'GET') {
       const provider = p.replace('/api/cloud/test/', '');
@@ -1932,9 +1972,9 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
           cloudLLM.generate([{ role: 'user', content: 'Say hi' }], { maxTokens: 5, stream: false }),
           new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout after 15s')), 15000)),
         ]);
-        return { success: true };
+        return apiReturn({ success: true });
       } catch (e) {
-        return { success: false, error: e.message };
+        return apiReturn({ success: false, error: e.message });
       } finally {
         cloudLLM.activeProvider = prevProvider;
         cloudLLM.activeModel = prevModel;
@@ -1946,9 +1986,9 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       const basePath = q.path || currentProjectPath;
       if (!basePath) return { error: 'No project path' };
       try {
-        return gitManager.getStatus(basePath);
+        return apiReturn(gitManager.getStatus(basePath));
       } catch (e) {
-        return { error: e.message, branch: '', staged: [], modified: [], untracked: [] };
+        return apiReturn({ error: e.message, branch: '', staged: [], modified: [], untracked: [] });
       }
     }
     if (p === '/api/git/stage' && method === 'POST') {
@@ -1959,9 +1999,9 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       } else if (body.files && Array.isArray(body.files)) {
         gitManager.stageFiles(body.files, basePath);
       } else {
-        return { _status: 400, error: 'Provide files array or all:true' };
+        return apiReturn({ _status: 400, error: 'Provide files array or all:true' });
       }
-      return { success: true };
+      return apiReturn({ success: true });
     }
     if (p === '/api/git/unstage' && method === 'POST') {
       const basePath = body.path || currentProjectPath;
@@ -1971,16 +2011,16 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       } else if (body.files && Array.isArray(body.files)) {
         gitManager.unstageFiles(body.files, basePath);
       } else {
-        return { _status: 400, error: 'Provide files array or all:true' };
+        return apiReturn({ _status: 400, error: 'Provide files array or all:true' });
       }
-      return { success: true };
+      return apiReturn({ success: true });
     }
     if (p === '/api/git/commit' && method === 'POST') {
       const basePath = body.path || currentProjectPath;
       const message = body.message;
       if (!basePath) return { _status: 400, error: 'No project path' };
       if (!message || !message.trim()) return { _status: 400, error: 'Commit message required' };
-      return gitManager.commit(message, basePath);
+      return apiReturn(gitManager.commit(message, basePath));
     }
     if (p === '/api/git/discard' && method === 'POST') {
       const basePath = body.path || currentProjectPath;
@@ -1988,41 +2028,41 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (body.files && Array.isArray(body.files)) {
         gitManager.discardFiles(body.files, basePath);
       } else {
-        return { _status: 400, error: 'Provide files array' };
+        return apiReturn({ _status: 400, error: 'Provide files array' });
       }
-      return { success: true };
+      return apiReturn({ success: true });
     }
     if (p === '/api/git/diff' && method === 'GET') {
       const basePath = q.path || currentProjectPath;
       if (!basePath) return { _status: 400, error: 'No project path' };
-      return gitManager.getDiff({ staged: q.staged === 'true', file: q.file }, basePath);
+      return apiReturn(gitManager.getDiff({ staged: q.staged === 'true', file: q.file }, basePath));
     }
     if (p === '/api/git/log' && method === 'GET') {
       const basePath = q.path || currentProjectPath;
       if (!basePath) return { _status: 400, error: 'No project path' };
       const count = parseInt(q.count) || 20;
-      return gitManager.getLog(count, basePath);
+      return apiReturn(gitManager.getLog(count, basePath));
     }
     if (p === '/api/git/branches' && method === 'GET') {
       const basePath = q.path || currentProjectPath;
       if (!basePath) return { _status: 400, error: 'No project path' };
-      return gitManager.getBranches(basePath);
+      return apiReturn(gitManager.getBranches(basePath));
     }
     if (p === '/api/git/checkout' && method === 'POST') {
       const basePath = body.path || currentProjectPath;
       const branch = body.branch;
       if (!basePath) return { _status: 400, error: 'No project path' };
       if (!branch) return { _status: 400, error: 'Branch name required' };
-      return gitManager.checkout(branch, { create: !!body.create }, basePath);
+      return apiReturn(gitManager.checkout(branch, { create: !!body.create }, basePath));
     }
     if (p === '/api/git/blame' && method === 'GET') {
       const basePath = q.path || currentProjectPath;
       if (!basePath) return { _status: 400, error: 'No project path' };
       if (!q.file) return { _status: 400, error: 'File path required' };
       try {
-        return gitManager.blame(q.file, basePath);
+        return apiReturn(gitManager.blame(q.file, basePath));
       } catch (e) {
-        return { success: false, error: e.message };
+        return apiReturn({ success: false, error: e.message });
       }
     }
     if (p === '/api/git/stage-all-commit' && method === 'POST') {
@@ -2031,9 +2071,9 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (!basePath) return { _status: 400, error: 'No project path' };
       if (!message || !message.trim()) return { _status: 400, error: 'Commit message required' };
       try {
-        return gitManager.stageAllAndCommit(message, basePath);
+        return apiReturn(gitManager.stageAllAndCommit(message, basePath));
       } catch (e) {
-        return { success: false, error: e.message };
+        return apiReturn({ success: false, error: e.message });
       }
     }
     if (p === '/api/git/push' && method === 'POST') {
@@ -2041,9 +2081,9 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (!basePath) return { _status: 400, error: 'No project path' };
       const remote = body.remote || 'origin';
       try {
-        return gitManager.push(remote, body.branch, basePath);
+        return apiReturn(gitManager.push(remote, body.branch, basePath));
       } catch (e) {
-        return { success: false, error: e.message };
+        return apiReturn({ success: false, error: e.message });
       }
     }
     if (p === '/api/git/pull' && method === 'POST') {
@@ -2051,52 +2091,52 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       if (!basePath) return { _status: 400, error: 'No project path' };
       const remote = body.remote || 'origin';
       try {
-        return gitManager.pull(remote, body.branch, basePath);
+        return apiReturn(gitManager.pull(remote, body.branch, basePath));
       } catch (e) {
-        return { success: false, error: e.message };
+        return apiReturn({ success: false, error: e.message });
       }
     }
 
     // ── License ─────────────────────────────────────────
     if (p === '/api/license/status' && method === 'GET') {
-      return {
+      return apiReturn({
         isActivated: licenseManager.isActivated || false,
         isAuthenticated: accountManager.isAuthenticated || false,
         license: licenseManager.licenseData || null,
         machineId: licenseManager.machineId || null,
         user: accountManager.user || null,
         plan: licenseManager.getPlan(),
-      };
+      });
     }
     if (p === '/api/license/activate' && method === 'POST') {
       const { method: activationMethod, key, email, password } = body;
       if (activationMethod === 'key') {
-        return await licenseManager.activateKey(key);
+        return apiReturn(await licenseManager.activateKey(key));
       } else if (activationMethod === 'account') {
         if (email && password) {
           const loginResult = await accountManager.loginWithEmail(email, password);
           if (!loginResult.success) return loginResult;
         }
-        return await licenseManager.activateAccount();
+        return apiReturn(await licenseManager.activateAccount());
       } else {
-        return { success: false, error: 'Invalid activation method. Use "key" or "account".' };
+        return apiReturn({ success: false, error: 'Invalid activation method. Use "key" or "account".' });
       }
     }
     if (p === '/api/license/oauth' && method === 'POST') {
       const { provider } = body;
       if (!provider || !['google', 'github'].includes(provider)) {
-        return { success: false, error: 'Invalid OAuth provider' };
+        return apiReturn({ success: false, error: 'Invalid OAuth provider' });
       }
       const { url: oauthUrl } = accountManager.getOAuthURL(provider);
       const nav = await runOAuthInWindow({ parent: mainWindow, oauthUrl });
       if (!nav.success) {
-        return { success: false, error: nav.error || 'Sign-in cancelled' };
+        return apiReturn({ success: false, error: nav.error || 'Sign-in cancelled' });
       }
       const oauthResult = nav.guideToken
         ? await accountManager.completeOAuthWithToken(nav.guideToken)
         : { success: false, error: 'Sign-in did not return a session token. Update graysoft.dev and try again.' };
       if (!oauthResult.success) {
-        return oauthResult;
+        return apiReturn(oauthResult);
       }
       const activateResult = await licenseManager.activateAccount();
       if (!activateResult.success) {
@@ -2104,75 +2144,75 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       } else if (activateResult.warning) {
         console.log('[OAuth] signed in (cloud free tier):', activateResult.warning);
       }
-      return {
+      return apiReturn({
         success: true,
         user: oauthResult.user,
         licenseActivated: activateResult.success && !activateResult.cloudOnly,
         licenseError: activateResult.success ? activateResult.warning : activateResult.error,
-      };
+      });
     }
     if (p === '/api/license/deactivate' && method === 'POST') {
       licenseManager.deactivate();
       accountManager.logout();
-      return { success: true };
+      return apiReturn({ success: true });
     }
     if (p === '/api/license/plans' && method === 'GET') {
-      return { plans: licenseManager.getPlans() };
+      return apiReturn({ plans: licenseManager.getPlans() });
     }
     if (p === '/api/stripe/checkout' && method === 'POST') {
       const { plan } = body;
-      return await licenseManager.createCheckoutSession(plan);
+      return apiReturn(await licenseManager.createCheckoutSession(plan));
     }
     if (p === '/api/stripe/subscription' && method === 'GET') {
-      return await licenseManager.checkSubscription();
+      return apiReturn(await licenseManager.checkSubscription());
     }
 
     // ── Account ─────────────────────────────────────────
     if (p === '/api/account/status' && method === 'GET') {
-      return {
+      return apiReturn({
         isAuthenticated: accountManager._isAuthenticated,
         user: accountManager._user,
         machineId: accountManager._machineId,
-      };
+      });
     }
     if (p === '/api/account/login' && method === 'POST') {
       const { email, password } = body;
-      return await accountManager.loginWithEmail(email, password);
+      return apiReturn(await accountManager.loginWithEmail(email, password));
     }
     if (p === '/api/account/register' && method === 'POST') {
       const { email, password, name } = body;
-      return await accountManager.register(email, password, name);
+      return apiReturn(await accountManager.register(email, password, name));
     }
     if (p === '/api/account/oauth/start' && method === 'POST') {
       const { provider } = body;
       if (!provider || !['google', 'github'].includes(provider)) {
-        return { success: false, error: 'Invalid OAuth provider' };
+        return apiReturn({ success: false, error: 'Invalid OAuth provider' });
       }
       const { url: oauthUrl } = accountManager.getOAuthURL(provider);
       const nav = await runOAuthInWindow({ parent: mainWindow, oauthUrl });
       if (!nav.success) {
-        return { success: false, error: nav.error || 'Sign-in cancelled' };
+        return apiReturn({ success: false, error: nav.error || 'Sign-in cancelled' });
       }
       if (nav.guideToken) {
-        return await accountManager.completeOAuthWithToken(nav.guideToken);
+        return apiReturn(await accountManager.completeOAuthWithToken(nav.guideToken));
       }
-      return { success: false, error: 'Sign-in did not return a session token' };
+      return apiReturn({ success: false, error: 'Sign-in did not return a session token' });
     }
     if (p === '/api/account/logout' && method === 'POST') {
       accountManager.logout();
-      return { success: true };
+      return apiReturn({ success: true });
     }
     if (p === '/api/account/refresh' && method === 'POST') {
-      return await accountManager.refreshSession();
+      return apiReturn(await accountManager.refreshSession());
     }
 
     // ── Setup (first run) ───────────────────────────────
     if (p === '/api/setup/status' && method === 'GET') {
-      return {
+      return apiReturn({
         isFirstRun: firstRunSetup.isFirstRun(),
         systemInfo: firstRunSetup.getSystemInfo(),
         recommended: firstRunSetup.recommendSettings(),
-      };
+      });
     }
     if (p === '/api/setup/complete' && method === 'POST') {
       const { applyRecommended, settings } = body;
@@ -2185,7 +2225,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         }
       }
       firstRunSetup.markComplete();
-      return { success: true };
+      return apiReturn({ success: true });
     }
 
     // ── LSP ─────────────────────────────────────────────
@@ -2193,29 +2233,29 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       const { language, cwd } = body;
       const basePath = cwd || currentProjectPath;
       if (!basePath) return { _status: 400, error: 'No project path' };
-      return await languageServerManager.start(language || 'typescript', basePath);
+      return apiReturn(await languageServerManager.start(language || 'typescript', basePath));
     }
     if (p === '/api/lsp/status' && method === 'GET') {
-      return { success: true, status: lspBundleManager.getStatus(), running: languageServerManager.listRunning() };
+      return apiReturn({ success: true, status: lspBundleManager.getStatus(), running: languageServerManager.listRunning() });
     }
     if (p === '/api/lsp/install' && method === 'POST') {
       const { language } = body;
       if (!language) return { _status: 400, error: 'language required' };
       try {
         const cmd = await lspBundleManager.ensureLanguage(language);
-        return { success: true, ...cmd, status: lspBundleManager.getStatus() };
+        return apiReturn({ success: true, ...cmd, status: lspBundleManager.getStatus() });
       } catch (e) {
-        return { success: false, error: e.message };
+        return apiReturn({ success: false, error: e.message });
       }
     }
     if (p === '/api/lsp/stop' && method === 'POST') {
       const { serverId } = body;
       if (serverId) languageServerManager.stop(serverId);
       else languageServerManager.stopAll();
-      return { success: true };
+      return apiReturn({ success: true });
     }
     if (p === '/api/lsp/list' && method === 'GET') {
-      return { success: true, servers: languageServerManager.listRunning() };
+      return apiReturn({ success: true, servers: languageServerManager.listRunning() });
     }
     if (p === '/api/lsp/send' && method === 'POST') {
       const { serverId, method: lspMethod, params, language, cwd } = body;
@@ -2231,13 +2271,13 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       // Notifications (didOpen/didChange/didClose) — fire and forget
       if (lspMethod.startsWith('textDocument/did') || lspMethod.startsWith('$/')) {
         languageServerManager.sendNotification(sid, lspMethod, params || {});
-        return { success: true };
+        return apiReturn({ success: true });
       }
       try {
         const result = await languageServerManager.sendRequest(sid, lspMethod, params || {});
-        return { success: true, result };
+        return apiReturn({ success: true, result });
       } catch (e) {
-        return { _status: 502, error: e.message };
+        return apiReturn({ _status: 502, error: e.message });
       }
     }
     if (p === '/api/lsp/completion' && method === 'POST') {
@@ -2251,9 +2291,9 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
           textDocument: { uri },
           position: { line, character },
         });
-        return { success: true, result };
+        return apiReturn({ success: true, result });
       } catch (e) {
-        return { _status: 502, error: e.message };
+        return apiReturn({ _status: 502, error: e.message });
       }
     }
     if (p === '/api/lsp/hover' && method === 'POST') {
@@ -2267,9 +2307,9 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
           textDocument: { uri },
           position: { line, character },
         });
-        return { success: true, result };
+        return apiReturn({ success: true, result });
       } catch (e) {
-        return { _status: 502, error: e.message };
+        return apiReturn({ _status: 502, error: e.message });
       }
     }
     if (p === '/api/lsp/definition' && method === 'POST') {
@@ -2283,9 +2323,9 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
           textDocument: { uri },
           position: { line, character },
         });
-        return { success: true, result };
+        return apiReturn({ success: true, result });
       } catch (e) {
-        return { _status: 502, error: e.message };
+        return apiReturn({ _status: 502, error: e.message });
       }
     }
     if (p === '/api/lsp/documentSymbol' && method === 'POST') {
@@ -2298,9 +2338,9 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         const result = await languageServerManager.sendRequest(ensured.serverId, 'textDocument/documentSymbol', {
           textDocument: { uri },
         });
-        return { success: true, result };
+        return apiReturn({ success: true, result });
       } catch (e) {
-        return { _status: 502, error: e.message };
+        return apiReturn({ _status: 502, error: e.message });
       }
     }
 
@@ -2316,68 +2356,68 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
           position: { line, character },
           newName,
         });
-        return { success: true, result };
+        return apiReturn({ success: true, result });
       } catch (e) {
-        return { _status: 502, error: e.message };
+        return apiReturn({ _status: 502, error: e.message });
       }
     }
 
     // ── Inline completion (FIM) ─────────────────────────
     if (p === '/api/complete' && method === 'POST') {
       const result = await fimCompletionService.complete(body);
-      return { success: true, text: result?.text || '' };
+      return apiReturn({ success: true, text: result?.text || '' });
     }
 
     if (p === '/api/voice/status' && method === 'GET') {
-      return { success: true, ...voiceService.getStatus() };
+      return apiReturn({ success: true, ...voiceService.getStatus() });
     }
     if (p === '/api/voice/transcribe' && method === 'POST') {
       if (body._audioBuffer) {
         const buf = Buffer.from(body._audioBuffer);
-        return await voiceService.transcribe(buf, { format: body.format || 'wav' });
+        return apiReturn(await voiceService.transcribe(buf, { format: body.format || 'wav' }));
       }
-      return { success: false, error: 'audio buffer required', useWebSpeech: true };
+      return apiReturn({ success: false, error: 'audio buffer required', useWebSpeech: true });
     }
 
     // ── Extension host commands ─────────────────────────
     if (p === '/api/extensions/commands' && method === 'GET') {
-      return { success: true, commands: extensionHost.listCommands() };
+      return apiReturn({ success: true, commands: extensionHost.listCommands() });
     }
     if (p === '/api/extensions/runCommand' && method === 'POST') {
       const { commandId, args } = body;
       if (!commandId) return { _status: 400, error: 'commandId required' };
-      return extensionHost.executeCommand(commandId, ...(args || []));
+      return apiReturn(extensionHost.executeCommand(commandId, ...(args || [])));
     }
 
     // ── Extensions marketplace ──────────────────────────
     if (p === '/api/extensions/catalog' && method === 'GET') {
-      return await fetchCatalog();
+      return apiReturn(await fetchCatalog());
     }
 
     // ── Extensions ──────────────────────────────────────
     if (p === '/api/extensions' && method === 'GET') {
-      return { extensions: extensionManager.getInstalled(), categories: extensionManager.getCategories() };
+      return apiReturn({ extensions: extensionManager.getInstalled(), categories: extensionManager.getCategories() });
     }
     if (p === '/api/extensions/install' && method === 'POST') {
       if (body.downloadUrl) {
         const result = await extensionManager.installFromUrl(body.downloadUrl);
         extensionHost.activate(result.id, extensionManager.getExtension(result.id));
-        return { success: true, ...result };
+        return apiReturn({ success: true, ...result });
       }
       if (body._vsixBuffer && body._fileName) {
         const result = await loadVsix(Buffer.from(body._vsixBuffer), extensionManager);
         if (result.success && result.id) {
           extensionHost.activate(result.id, extensionManager.getExtension(result.id));
         }
-        return result;
+        return apiReturn(result);
       }
       // File upload — handle binary data passed from frontend
       if (body._fileBuffer && body._fileName) {
         const result = await extensionManager.installFromZip(Buffer.from(body._fileBuffer), body._fileName);
         extensionHost.activate(result.id, extensionManager.getExtension(result.id));
-        return { success: true, ...result };
+        return apiReturn({ success: true, ...result });
       }
-      return { _status: 400, error: 'File upload or downloadUrl required' };
+      return apiReturn({ _status: 400, error: 'File upload or downloadUrl required' });
     }
     if (p === '/api/extensions/enable' && method === 'POST') {
       const { id } = body;
@@ -2385,98 +2425,98 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       const result = await extensionManager.enable(id);
       const ext = extensionManager.getExtension(id);
       if (ext) extensionHost.activate(id, ext);
-      return { success: true, ...result };
+      return apiReturn({ success: true, ...result });
     }
     if (p === '/api/extensions/disable' && method === 'POST') {
       const { id } = body;
       if (!id) return { _status: 400, error: 'Extension ID required' };
       extensionHost.deactivate(id);
       const result = await extensionManager.disable(id);
-      return { success: true, ...result };
+      return apiReturn({ success: true, ...result });
     }
     if (p === '/api/extensions/uninstall' && method === 'POST') {
       const { id } = body;
       if (!id) return { _status: 400, error: 'Extension ID required' };
       extensionHost.deactivate(id);
-      return { success: true, ...(await extensionManager.uninstall(id)) };
+      return apiReturn({ success: true, ...(await extensionManager.uninstall(id)) });
     }
 
     // ── Debug ───────────────────────────────────────────
     if (p === '/api/debug/start' && method === 'POST') {
       const { type, program, cwd, args: debugArgs } = body;
       if (!program) return { _status: 400, error: 'Program path required' };
-      return await debugService.start({
+      return apiReturn(await debugService.start({
         type: type || 'node', program,
         cwd: cwd || currentProjectPath || undefined,
         args: debugArgs || [],
-      });
+      }));
     }
     if (p === '/api/debug/stop' && method === 'POST') {
       const { sessionId } = body;
       if (!sessionId) return { _status: 400, error: 'Session ID required' };
-      return await debugService.stop(sessionId);
+      return apiReturn(await debugService.stop(sessionId));
     }
     if (p === '/api/debug/continue' && method === 'POST') {
-      return await debugService.resume(body.sessionId);
+      return apiReturn(await debugService.resume(body.sessionId));
     }
     if (p === '/api/debug/stepOver' && method === 'POST') {
-      return await debugService.stepOver(body.sessionId);
+      return apiReturn(await debugService.stepOver(body.sessionId));
     }
     if (p === '/api/debug/stepInto' && method === 'POST') {
-      return await debugService.stepInto(body.sessionId);
+      return apiReturn(await debugService.stepInto(body.sessionId));
     }
     if (p === '/api/debug/stepOut' && method === 'POST') {
-      return await debugService.stepOut(body.sessionId);
+      return apiReturn(await debugService.stepOut(body.sessionId));
     }
     if (p === '/api/debug/pause' && method === 'POST') {
-      return await debugService.pause(body.sessionId);
+      return apiReturn(await debugService.pause(body.sessionId));
     }
     if (p === '/api/debug/stackTrace' && method === 'GET') {
-      return await debugService.getStackTrace(parseInt(q.sessionId));
+      return apiReturn(await debugService.getStackTrace(parseInt(q.sessionId)));
     }
     if (p === '/api/debug/scopes' && method === 'GET') {
-      return await debugService.getScopes(parseInt(q.sessionId), parseInt(q.frameId || '0'));
+      return apiReturn(await debugService.getScopes(parseInt(q.sessionId), parseInt(q.frameId || '0')));
     }
     if (p === '/api/debug/variables' && method === 'GET') {
-      return await debugService.getVariables(parseInt(q.sessionId), q.ref);
+      return apiReturn(await debugService.getVariables(parseInt(q.sessionId), q.ref));
     }
     if (p === '/api/debug/evaluate' && method === 'POST') {
-      return await debugService.evaluate(body.sessionId, body.expression, body.frameId);
+      return apiReturn(await debugService.evaluate(body.sessionId, body.expression, body.frameId));
     }
     if (p === '/api/debug/setBreakpoints' && method === 'POST') {
-      return await debugService.setBreakpoints(body.sessionId, body.filePath, body.breakpoints || []);
+      return apiReturn(await debugService.setBreakpoints(body.sessionId, body.filePath, body.breakpoints || []));
     }
     if (p === '/api/debug/sessions' && method === 'GET') {
-      return { sessions: debugService.getActiveSessions() };
+      return apiReturn({ sessions: debugService.getActiveSessions() });
     }
 
     // ── Background agents ─────────────────────────────
     if (p === '/api/agent/background' && method === 'POST') {
       try {
         const job = backgroundAgentQueue.enqueue({ task: body?.task, context: body?.context });
-        return { success: true, job };
+        return apiReturn({ success: true, job });
       } catch (err) {
-        return { _status: 400, error: err.message };
+        return apiReturn({ _status: 400, error: err.message });
       }
     }
     if (p === '/api/agent/background' && method === 'GET') {
-      return { jobs: backgroundAgentQueue.list() };
+      return apiReturn({ jobs: backgroundAgentQueue.list() });
     }
 
     // ── Docs index / search ─────────────────────────────
     if (p === '/api/docs/index' && method === 'POST') {
       if (!currentProjectPath) return { _status: 400, error: 'No project open' };
       const result = await docsIndexService.index(currentProjectPath);
-      return { success: true, ...result };
+      return apiReturn({ success: true, ...result });
     }
     if (p === '/api/docs/search' && method === 'GET') {
       const results = docsIndexService.search(q.q || q.query || '', parseInt(q.limit || '12', 10));
-      return { results };
+      return apiReturn({ results });
     }
 
     // ── Listening ports ─────────────────────────────────
     if (p === '/api/ports/list' && method === 'GET') {
-      return { ports: listListeningPorts() };
+      return apiReturn({ ports: listListeningPorts() });
     }
 
     // ── Code formatting (Prettier) ──────────────────────
@@ -2505,121 +2545,121 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         } catch (_) {}
       }
       const formatted = await prettier.format(content, { parser, ...prettierConfig, filepath: fp || undefined });
-      return { formatted };
+      return apiReturn({ formatted });
     }
 
     // ── Format on save ──────────────────────────────────
     if (p === '/api/format-on-save' && method === 'POST') {
       const { content, filePath, formatEnabled, lintEnabled } = body;
-      return await formatOnSave({
+      return apiReturn(await formatOnSave({
         content,
         filePath,
         projectPath: currentProjectPath,
         formatEnabled: formatEnabled !== false,
         lintEnabled: lintEnabled !== false,
-      });
+      }));
     }
 
     // ── Multi-root workspace ────────────────────────────
     if (p === '/api/workspace/roots' && method === 'GET') {
-      return multiRootWorkspace.getRoots();
+      return apiReturn(multiRootWorkspace.getRoots());
     }
     if (p === '/api/workspace/roots' && method === 'POST') {
       const { path: rootPath, action, primary } = body;
       if (action === 'remove') return multiRootWorkspace.removeRoot(rootPath);
       if (action === 'setPrimary') return multiRootWorkspace.setPrimary(primary || rootPath);
       if (!rootPath) return { _status: 400, error: 'path required' };
-      return multiRootWorkspace.addRoot(rootPath);
+      return apiReturn(multiRootWorkspace.addRoot(rootPath));
     }
 
     // ── Settings sync ───────────────────────────────────
     if (p === '/api/sync/export' && method === 'POST') {
       const { passphrase } = body;
-      return exportSettings(settingsManager, passphrase);
+      return apiReturn(exportSettings(settingsManager, passphrase));
     }
     if (p === '/api/sync/import' && method === 'POST') {
       const { bundle, passphrase } = body;
       if (!bundle) return { _status: 400, error: 'bundle required' };
-      return importSettings(settingsManager, bundle, passphrase);
+      return apiReturn(importSettings(settingsManager, bundle, passphrase));
     }
 
     // ── Remote SSH ──────────────────────────────────────
     if (p === '/api/remote/connect' && method === 'POST') {
-      return remoteManager.connect(body);
+      return apiReturn(remoteManager.connect(body));
     }
     if (p === '/api/remote/disconnect' && method === 'POST') {
-      return remoteManager.disconnect(body.id);
+      return apiReturn(remoteManager.disconnect(body.id));
     }
     if (p === '/api/remote/list' && method === 'GET') {
-      return { connections: remoteManager.listConnections() };
+      return apiReturn({ connections: remoteManager.listConnections() });
     }
     if (p === '/api/remote/read' && method === 'POST') {
       const { id, path: remotePath } = body;
       if (!id || !remotePath) return { _status: 400, error: 'id and path required' };
-      return await remoteManager.readFile(id, remotePath);
+      return apiReturn(await remoteManager.readFile(id, remotePath));
     }
     if (p === '/api/remote/write' && method === 'POST') {
       const { id, path: remotePath, content } = body;
       if (!id || !remotePath) return { _status: 400, error: 'id and path required' };
-      return await remoteManager.writeFile(id, remotePath, content);
+      return apiReturn(await remoteManager.writeFile(id, remotePath, content));
     }
     if (p === '/api/remote/listdir' && method === 'POST') {
       const { id, path: remotePath } = body;
       if (!id || !remotePath) return { _status: 400, error: 'id and path required' };
-      return await remoteManager.listDir(id, remotePath);
+      return apiReturn(await remoteManager.listDir(id, remotePath));
     }
 
     // ── Dev container ───────────────────────────────────
     if (p === '/api/devcontainer/parse' && method === 'GET') {
       const root = q.path || currentProjectPath;
       if (!root) return { _status: 400, error: 'No project path' };
-      return devContainerManager.parse(root);
+      return apiReturn(devContainerManager.parse(root));
     }
     if (p === '/api/devcontainer/start' && method === 'POST') {
       const root = body.path || currentProjectPath;
       if (!root) return { _status: 400, error: 'No project path' };
-      return devContainerManager.start(root);
+      return apiReturn(devContainerManager.start(root));
     }
     if (p === '/api/devcontainer/stop' && method === 'POST') {
-      return devContainerManager.stop(body.sessionId);
+      return apiReturn(devContainerManager.stop(body.sessionId));
     }
     if (p === '/api/devcontainer/status' && method === 'GET') {
-      return devContainerManager.status();
+      return apiReturn(devContainerManager.status());
     }
 
     // ── Team sharing ────────────────────────────────────
     if (p === '/api/team/export' && method === 'POST') {
       const { passphrase } = body;
-      return exportTeamBundle({ rulesManager, memoryStore, longTermMemory, passphrase });
+      return apiReturn(exportTeamBundle({ rulesManager, memoryStore, longTermMemory, passphrase }));
     }
     if (p === '/api/team/import' && method === 'POST') {
       const { bundle, passphrase, merge } = body;
       if (!bundle) return { _status: 400, error: 'bundle required' };
-      return importTeamBundle({ rulesManager, memoryStore, longTermMemory, bundle, passphrase, merge });
+      return apiReturn(importTeamBundle({ rulesManager, memoryStore, longTermMemory, bundle, passphrase, merge }));
     }
 
     // ── PR integration ──────────────────────────────────
     if (p === '/api/pr/review' && method === 'POST') {
       const basePath = body.path || currentProjectPath;
       if (!basePath) return { _status: 400, error: 'No project path' };
-      return prIntegration.submitReview(basePath, body);
+      return apiReturn(prIntegration.submitReview(basePath, body));
     }
     if (p === '/api/pr/info' && method === 'GET') {
       const basePath = q.path || currentProjectPath;
       if (!basePath) return { _status: 400, error: 'No project path' };
-      return prIntegration.getPrInfo(basePath, parseInt(q.number));
+      return apiReturn(prIntegration.getPrInfo(basePath, parseInt(q.number)));
     }
     if (p === '/api/pr/comments' && method === 'GET') {
       const basePath = q.path || currentProjectPath;
       if (!basePath) return { _status: 400, error: 'No project path' };
-      return prIntegration.listPrComments(basePath, parseInt(q.number));
+      return apiReturn(prIntegration.listPrComments(basePath, parseInt(q.number)));
     }
 
     // ── RAG embed search ────────────────────────────────
     if (p === '/api/rag/embed-search' && method === 'POST') {
       const { query, maxResults } = body;
       if (!query) return { _status: 400, error: 'query required' };
-      return { results: ragEngine.embedSearch(query, maxResults || 10) };
+      return apiReturn({ results: ragEngine.embedSearch(query, maxResults || 10) });
     }
 
     // ── TODO Scanner ────────────────────────────────────
@@ -2659,12 +2699,13 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         }
       }
       scanDir(currentProjectPath);
-      return { todos: results, total: results.length, capped: results.length >= MAX_RESULTS };
+      return apiReturn({ todos: results, total: results.length, capped: results.length >= MAX_RESULTS });
     }
 
     // ── Session ─────────────────────────────────────────
     if (p === '/api/session/clear' && method === 'POST') {
       console.log('[Main] session/clear: resetting all state');
+      streamTrace.trace('stream', 'lifecycle-session-clear', {});
       agenticCancelled = true;
       ctx.agenticCancelled = true;
       if (ctx.resetPause) ctx.resetPause();
@@ -2679,12 +2720,12 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       agenticCancelled = false;
       ctx.agenticCancelled = false;
       console.log('[Main] session/clear: complete');
-      return { success: true };
+      return apiReturn({ success: true });
     }
 
     // ── Health ───────────────────────────────────────────
     if (p === '/api/health' && method === 'GET') {
-      return {
+      return apiReturn({
         status: 'running',
         version: require('./package.json').version,
         modelLoaded: llmEngine.isReady,
@@ -2692,37 +2733,37 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         projectPath: currentProjectPath,
         uptime: process.uptime(),
         memory: process.memoryUsage(),
-      };
+      });
     }
 
     // ── Browser Preview ─────────────────────────────────
     if (p === '/api/preview/start' && method === 'POST') {
       const rootPath = body.rootPath || currentProjectPath;
       if (!rootPath) return { _status: 400, error: 'No project path' };
-      return await browserManager.startPreview(rootPath);
+      return apiReturn(await browserManager.startPreview(rootPath));
     }
     if (p === '/api/preview/stop' && method === 'POST') {
-      return await browserManager.stopPreview();
+      return apiReturn(await browserManager.stopPreview());
     }
     if (p === '/api/preview/reload' && method === 'POST') {
       browserManager.reloadPreview();
-      return { success: true };
+      return apiReturn({ success: true });
     }
     if (p === '/api/preview/status' && method === 'GET') {
-      return browserManager.getPreviewStatus();
+      return apiReturn(browserManager.getPreviewStatus());
     }
 
     // ── Live Server ─────────────────────────────────────
     if (p === '/api/live-server/start' && method === 'POST') {
       const rootPath = body.path || currentProjectPath;
       if (!rootPath) return { _status: 400, error: 'No project path' };
-      return await liveServer.start(rootPath);
+      return apiReturn(await liveServer.start(rootPath));
     }
     if (p === '/api/live-server/stop' && method === 'POST') {
-      return await liveServer.stop();
+      return apiReturn(await liveServer.stop());
     }
     if (p === '/api/live-server/status' && method === 'GET') {
-      return liveServer.getStatus();
+      return apiReturn(liveServer.getStatus());
     }
 
     // ── Terminal execute (legacy fallback) ───────────────
@@ -2735,21 +2776,21 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
           cwd: cwd || currentProjectPath || process.cwd(),
           encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024,
         });
-        return { success: true, output };
+        return apiReturn({ success: true, output });
       } catch (e) {
-        return { success: false, output: e.stderr || e.stdout || e.message };
+        return apiReturn({ success: false, output: e.stderr || e.stdout || e.message });
       }
     }
 
     // ── Templates ───────────────────────────────────────
     if (p === '/api/templates' && method === 'GET') {
-      return TEMPLATES.map(t => ({ id: t.id, name: t.name, description: t.description, icon: t.icon, category: t.category, tags: t.tags }));
+      return apiReturn(TEMPLATES.map(t => ({ id: t.id, name: t.name, description: t.description, icon: t.icon, category: t.category, tags: t.tags })));
     }
     if (p.startsWith('/api/templates/') && p !== '/api/templates/create' && method === 'GET') {
       const tid = p.replace('/api/templates/', '');
       const template = TEMPLATES.find(t => t.id === tid);
       if (!template) return { _status: 404, error: 'Template not found' };
-      return { ...template, files: undefined, fileList: Object.keys(template.files) };
+      return apiReturn({ ...template, files: undefined, fileList: Object.keys(template.files) });
     }
     if (p === '/api/templates/create' && method === 'POST') {
       const { templateId, projectName, parentDir } = body;
@@ -2768,41 +2809,41 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         createdFiles.push(relativePath);
       }
       const openedProject = await openProjectPath(projectDir);
-      return {
+      return apiReturn({
         success: true,
         projectDir,
         path: openedProject.path,
         projectName: safeName,
         filesCreated: createdFiles,
-      };
+      });
     }
 
     // ── Updater ─────────────────────────────────────────
     if (p === '/api/updater/status' && method === 'GET') {
-      return autoUpdater.getStatus();
+      return apiReturn(autoUpdater.getStatus());
     }
     if (p === '/api/updater/check' && method === 'POST') {
       autoUpdater.checkForUpdates();
-      return { success: true };
+      return apiReturn({ success: true });
     }
     if (p === '/api/updater/download' && method === 'POST') {
       autoUpdater.downloadUpdate();
-      return { success: true };
+      return apiReturn({ success: true });
     }
     if (p === '/api/updater/install' && method === 'POST') {
       autoUpdater.quitAndInstall();
-      return { success: true };
+      return apiReturn({ success: true });
     }
 
     // ── Unknown route ───────────────────────────────────
     console.warn(`[Main] Unknown API route: ${method} ${p}`);
     console.log(`[api-fetch] DONE ${method} ${p} status=404 ms=${Date.now() - _apiT0}`);
-    return { _status: 404, error: `Unknown route: ${method} ${p}` };
+    return apiReturn({ _status: 404, error: `Unknown route: ${method} ${p}` });
 
   } catch (e) {
     console.error(`[Main] API error (${method} ${p}):`, e.message);
     console.log(`[api-fetch] ERROR ${method} ${p} ms=${Date.now() - _apiT0} err=${e.message}`);
-    return { _status: 500, error: e.message };
+    return apiReturn({ _status: 500, error: e.message });
   }
 });
 

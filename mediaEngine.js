@@ -13,6 +13,7 @@ const {
 } = require('./mediaAssetsCatalog');
 const { needs5dFix, apply5dFix, is5dCompatArch } = require('./gguf5dCompat');
 const { VRAM_TIGHT_MB, VRAM_LOW_MB, WIN_DLL_NOT_FOUND } = require('./mediaConstants');
+const streamTrace = require('./streamTrace');
 
 function queryGpuVramMB() {
   try {
@@ -412,6 +413,7 @@ class MediaEngine {
             cacheDir,
             onProgress: (msg) => {
               console.log(`[MediaEngine] 5D compat: ${msg}`);
+              streamTrace.trace('stream', 'media-progress', { phase: '5d-fix', message: msg });
               if (this.onAuxProgress) this.onAuxProgress({ phase: '5d-fix', message: msg });
             },
           });

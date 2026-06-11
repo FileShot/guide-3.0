@@ -2,6 +2,7 @@
  * LSP ↔ Monaco bridge — diagnostics, completion, hover, definition, symbols.
  * Communicates with main-process LSP via electronAPI.apiFetch or fetch.
  */
+import { traceUi } from './traceUi';
 
 let _nextLocalId = 1;
 let _markersCallback = null;
@@ -29,10 +30,22 @@ export function uriToPath(uri) {
 }
 
 async function apiFetch(url, options = {}) {
+  const isLsp = String(url).includes('/api/lsp/');
+  if (isLsp) {
+    traceUi('lsp-api-req', { url, method: options.method || 'GET', body: options.body });
+  }
   const api = typeof window !== 'undefined' ? window.electronAPI : null;
-  if (api?.apiFetch) return api.apiFetch(url, options);
-  const r = await fetch(url, options);
-  return r.json();
+  let result;
+  if (api?.apiFetch) {
+    result = await api.apiFetch(url, options);
+  } else {
+    const r = await fetch(url, options);
+    result = await r.json();
+  }
+  if (isLsp) {
+    traceUi('lsp-api-res', { url, method: options.method || 'GET', result });
+  }
+  return result;
 }
 
 function lspSeverityToMonaco(severity, monaco) {

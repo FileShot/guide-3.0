@@ -24,6 +24,7 @@
 
 import { create } from 'zustand';
 import { normalizeUpdateStatus } from '../lib/updateStatus';
+import { traceUi } from '../lib/traceUi';
 
 function _uiLog(msg) {
   try { window.electronAPI?.uiLog?.(String(msg)); } catch (_) {}
@@ -948,6 +949,16 @@ const useAppStore = create((set, get) => ({
   setChatStreaming: (val) => {
 
     console.log('[appStore] setChatStreaming:', val);
+    const prev = get();
+    traceUi('setChatStreaming', {
+      old: prev.chatStreaming,
+      new: val,
+      textLen: prev.chatStreamingText?.length || 0,
+      fileBlocks: prev.streamingFileBlocks?.length || 0,
+      segments: prev.streamingSegments?.length || 0,
+      epoch: prev.chatGenerationEpoch,
+      activeEpoch: prev.activeChatEpoch,
+    });
 
     if (!val) {
 
@@ -1135,11 +1146,25 @@ const useAppStore = create((set, get) => ({
     const store = get();
 
     if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) {
+      traceUi('DROP', {
+        fn: 'appendStreamToken',
+        reason: 'epoch-or-streaming',
+        chatStreaming: store.chatStreaming,
+        activeChatEpoch: store.activeChatEpoch,
+        chatGenerationEpoch: store.chatGenerationEpoch,
+        token,
+      });
       if (store.settings?.debugStreamDiag) {
         _uiLog(`appendStreamToken dropped epoch=${store.activeChatEpoch} gen=${store.chatGenerationEpoch}`);
       }
       return;
     }
+
+    traceUi('appendStreamToken', {
+      token,
+      cumLen: (store.chatStreamingText?.length || 0) + (store._textTokenBuffer?.length || 0) + (token?.length || 0),
+      segmentsLen: store.streamingSegments?.length || 0,
+    });
 
     if (!store._textTokenBuffer) {
 
@@ -1200,7 +1225,18 @@ const useAppStore = create((set, get) => ({
   appendThinkingToken: (token) => {
 
     const store = get();
-    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) {
+      traceUi('DROP', {
+        fn: 'appendThinkingToken',
+        reason: 'epoch-or-streaming',
+        chatStreaming: store.chatStreaming,
+        activeChatEpoch: store.activeChatEpoch,
+        chatGenerationEpoch: store.chatGenerationEpoch,
+        token,
+      });
+      return;
+    }
+    traceUi('appendThinkingToken', { token });
     const segs = store.streamingSegments;
     let newSegs;
 
@@ -1247,11 +1283,25 @@ const useAppStore = create((set, get) => ({
 
   setChatGeneratingTool: (tool) => {
     const store = get();
-    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) {
+      traceUi('DROP', {
+        fn: 'setChatGeneratingTool',
+        reason: 'epoch-or-streaming',
+        chatStreaming: store.chatStreaming,
+        activeChatEpoch: store.activeChatEpoch,
+        chatGenerationEpoch: store.chatGenerationEpoch,
+        tool,
+      });
+      return;
+    }
+    traceUi('setChatGeneratingTool', { tool });
     set({ chatGeneratingTool: tool });
   },
 
-  setChatContextUsage: (usage) => set({ chatContextUsage: usage }),
+  setChatContextUsage: (usage) => {
+    traceUi('setChatContextUsage', { usage });
+    set({ chatContextUsage: usage });
+  },
 
   setChatIteration: (iter) => set({ chatIteration: iter }),
 
@@ -1358,7 +1408,19 @@ const useAppStore = create((set, get) => ({
     // R34: Flush pending text buffer before starting file block (ensures correct segment ordering)
 
     const store = get();
-    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) {
+      traceUi('DROP', {
+        fn: 'startFileContentBlock',
+        reason: 'epoch-or-streaming',
+        chatStreaming: store.chatStreaming,
+        activeChatEpoch: store.activeChatEpoch,
+        chatGenerationEpoch: store.chatGenerationEpoch,
+        filePath,
+        fileKey,
+      });
+      return;
+    }
+    traceUi('startFileContentBlock', { filePath, fileKey, language, fileName, op, oldText, newText });
 
     // Always canonicalize filePath for dedup — the fileKey from events may be raw
     // (e.g., regex-captured path with double backslashes from JSON text) which would
@@ -1493,24 +1555,49 @@ const useAppStore = create((set, get) => ({
   appendFileContentToken: (chunk) => {
 
     const store = get();
-    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) {
+      traceUi('DROP', {
+        fn: 'appendFileContentToken',
+        reason: 'epoch-or-streaming',
+        chatStreaming: store.chatStreaming,
+        activeChatEpoch: store.activeChatEpoch,
+        chatGenerationEpoch: store.chatGenerationEpoch,
+        chunk,
+      });
+      return;
+    }
 
     if (typeof chunk !== 'string') {
       console.error('[appStore] appendFileContentToken: chunk is not string!', typeof chunk, chunk);
+      traceUi('DROP', { fn: 'appendFileContentToken', reason: 'not-string', chunk });
       return;
     }
 
     const targetIdx = findActiveStreamingFileBlockIndex(store.streamingFileBlocks, store.activeStreamingFileKey);
-    if (targetIdx === -1) return;
+    if (targetIdx === -1) {
+      traceUi('DROP', { fn: 'appendFileContentToken', reason: 'no-active-block', chunk, activeStreamingFileKey: store.activeStreamingFileKey });
+      return;
+    }
 
     const block = store.streamingFileBlocks[targetIdx];
-    if (block.complete) return;
+    if (block.complete) {
+      traceUi('DROP', { fn: 'appendFileContentToken', reason: 'block-complete', chunk, fileKey: block.fileKey });
+      return;
+    }
 
     // Defense in depth: drop leaked tool-call JSON that escaped the stream filter.
     if (/^\s*```json\s*\{[\s\S]*"tool"\s*:/.test(chunk)) {
       console.warn('[appStore] appendFileContentToken: dropped leaked tool JSON chunk');
+      traceUi('DROP', { fn: 'appendFileContentToken', reason: 'leaked-tool-json', chunk });
       return;
     }
+
+    traceUi('appendFileContentToken', {
+      chunk,
+      blockIndex: targetIdx,
+      fileKey: block.fileKey,
+      totalContentLen: (block.content?.length || 0) + chunk.length,
+    });
 
     // Per-token flush for smooth file-content streaming (plan/file write blocks only).
     if (store._fileTokenTimer) {
@@ -1543,7 +1630,20 @@ const useAppStore = create((set, get) => ({
    */
   addCompleteFileContentBlock: ({ filePath, fileKey, language, fileName, content, op, oldText, newText }) => {
     const store = get();
-    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) {
+      traceUi('DROP', {
+        fn: 'addCompleteFileContentBlock',
+        reason: 'epoch-or-streaming',
+        chatStreaming: store.chatStreaming,
+        activeChatEpoch: store.activeChatEpoch,
+        chatGenerationEpoch: store.chatGenerationEpoch,
+        filePath,
+        fileKey,
+        content,
+      });
+      return;
+    }
+    traceUi('addCompleteFileContentBlock', { filePath, fileKey, language, fileName, content, op, oldText, newText });
     // Always canonicalize filePath for dedup — the fileKey from events may be raw
     // (e.g., regex-captured path with double backslashes from JSON text) which would
     // mismatch the canonicalized key used by startFileContentBlock.
@@ -1648,7 +1748,18 @@ const useAppStore = create((set, get) => ({
     console.log('[appStore] endFileContentBlock:', payload?.fileKey || payload?.filePath);
 
     const store = get();
-    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) {
+      traceUi('DROP', {
+        fn: 'endFileContentBlock',
+        reason: 'epoch-or-streaming',
+        chatStreaming: store.chatStreaming,
+        activeChatEpoch: store.activeChatEpoch,
+        chatGenerationEpoch: store.chatGenerationEpoch,
+        payload,
+      });
+      return;
+    }
+    traceUi('endFileContentBlock', { payload });
 
     // R33-Phase2: Flush any pending buffered tokens before marking complete
 
