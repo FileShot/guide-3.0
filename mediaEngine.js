@@ -238,22 +238,23 @@ class MediaEngine {
       const rest = all.filter((p) => p !== this._sdBinaryPath);
       return [this._sdBinaryPath, ...rest];
     }
+    const vulkan = [];
+    const cuda = [];
+    const other = [];
+    const seen = new Set();
+    for (const p of all) {
+      const key = path.resolve(p);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (/sd-cpp-cpu|win-x64-cpu|vulkan/i.test(p)) vulkan.push(p);
+      else if (/sd-cpp|win-x64-cuda|cuda/i.test(p)) cuda.push(p);
+      else other.push(p);
+    }
     if (this.installVariant === 'cuda') {
-      const vulkan = [];
-      const cuda = [];
-      const other = [];
-      const seen = new Set();
-      for (const p of all) {
-        const key = path.resolve(p);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        if (/sd-cpp-cpu|win-x64-cpu|vulkan/i.test(p)) vulkan.push(p);
-        else if (/sd-cpp|win-x64-cuda|cuda/i.test(p)) cuda.push(p);
-        else other.push(p);
-      }
       if (cuda.length && vulkan.length) return [cuda[0], vulkan[0], ...cuda.slice(1), ...vulkan.slice(1), ...other];
       return [...cuda, ...vulkan, ...other];
     }
+    if (vulkan.length) return [...vulkan, ...cuda, ...other];
     return all;
   }
 

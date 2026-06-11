@@ -96,11 +96,6 @@ jobs:
       - name: Bundle stable-diffusion.cpp (Windows CPU)
         run: node scripts/fetch-sd-cpp.js
 
-      - name: Media E2E gate (PNG per image profile)
-        run: node tools/mediaE2E.test.js
-        env:
-          GUIDE_SKIP_MEDIA_E2E: '0'
-
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)
         working-directory: frontend
@@ -182,6 +177,12 @@ jobs:
 
       - name: Bundle stable-diffusion.cpp (Windows CUDA)
         run: node scripts/fetch-sd-cpp.js
+
+      - name: Media E2E gate (PNG per image profile)
+        run: node tools/mediaE2E.test.js
+        env:
+          GUIDE_SKIP_MEDIA_E2E: '0'
+          GUIDE_MEDIA_E2E_VARIANT: cuda
 
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)
@@ -429,8 +430,8 @@ jobs:
       always() &&
       !cancelled() &&
       needs.prepare.result == 'success' &&
-      (needs.build-windows-cpu.result == 'success' ||
-       needs.build-windows-cuda.result == 'success') &&
+      needs.build-windows-cpu.result == 'success' &&
+      needs.build-windows-cuda.result == 'success' &&
       (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v'))
     steps:
       - name: Download all artifacts

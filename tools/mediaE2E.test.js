@@ -103,7 +103,7 @@ async function runProfile(profileId, workDir, vramMB) {
     getSettings: () => ({}),
     auxResolver,
     isPackaged: false,
-    installVariant: 'cpu',
+    installVariant: process.env.GUIDE_MEDIA_E2E_VARIANT === 'cuda' ? 'cuda' : 'cpu',
   });
 
   engine.ggufArchitecture = spec.arch;
