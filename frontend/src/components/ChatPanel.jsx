@@ -3371,7 +3371,7 @@ export default function ChatPanel() {
 
                       {/* R35-L4: Use segments + FileContentBlock for file blocks when available */}
 
-                      {msg.segments && (msg.fileBlocks || msg.toolCalls || msg.segments.some(s => s.type === 'thinking')) ? (
+                      {msg.segments && msg.segments.length > 0 ? (
 
                         msg.segments.map((seg, i) => {
 

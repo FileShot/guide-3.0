@@ -41,6 +41,90 @@ function shouldStreamFileContentForAgent(options, filePath) {
   return isPlanFilePath(filePath || '');
 }
 
+function _sfStripFenceMarkers(fenceBuf) {
+  const trimmed = String(fenceBuf || '').trim();
+  const open = trimmed.match(/^(`{3,})\s*(\w*)\s*\n?/);
+  if (!open) return trimmed;
+  let inner = trimmed.slice(open[0].length);
+  const close = inner.match(/\n?(`{3,})\s*$/);
+  if (close) inner = inner.slice(0, -close[0].length);
+  return inner.trim();
+}
+
+/** Parse write_file / edit_file payload from a closed tool-json fence buffer. */
+function _sfExtractFileWriteFromToolFence(fenceBuf) {
+  try {
+    const calls = parseToolCalls(fenceBuf);
+    for (const c of calls) {
+      if (RE_FILE_STREAM_TOOLS.test(c.tool)) {
+        const p = c.params || {};
+        const filePath = p.filePath || p.path;
+        if (!filePath) continue;
+        return {
+          tool: c.tool,
+          filePath: String(filePath),
+          content: p.content ?? p.newText ?? '',
+          oldText: p.oldText,
+          isEdit: FILE_EDIT_OPS.has(c.tool),
+        };
+      }
+    }
+  } catch (_) { /* parseToolCalls may fail on partial buffers */ }
+  const inner = _sfStripFenceMarkers(fenceBuf);
+  if (!inner) return null;
+  try {
+    const parsed = JSON.parse(inner);
+    const tool = parsed.tool || parsed.name;
+    const params = parsed.params || parsed.parameters || parsed.arguments || parsed;
+    if (tool && RE_FILE_STREAM_TOOLS.test(tool) && (params.filePath || params.path)) {
+      return {
+        tool,
+        filePath: params.filePath || params.path,
+        content: params.content ?? params.newText ?? '',
+        oldText: params.oldText,
+        isEdit: FILE_EDIT_OPS.has(tool),
+      };
+    }
+  } catch (_) {}
+  return null;
+}
+
+/** Bulk-replay file-content IPC when tool JSON fence closes without live char streaming. */
+function _sfBulkReplayFileContentFromFence(fenceBuf, ctx) {
+  const {
+    onStreamEvent, options, streamedSet, normalizePath, allowNewStart, endCompleted, markActive,
+  } = ctx;
+  if (!fenceBuf || !onStreamEvent) return false;
+  const info = _sfExtractFileWriteFromToolFence(fenceBuf);
+  if (!info?.filePath || info.content == null) return false;
+  if (!shouldStreamFileContentForAgent(options, info.filePath)) return false;
+  const np = normalizePath(info.filePath);
+  if (streamedSet.has(np) || endCompleted.has(np)) return false;
+  if (!allowNewStart(info.filePath)) return false;
+
+  const fileName = info.filePath.split(/[\\/]/).pop() || info.filePath;
+  const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+  const content = String(info.content);
+  onStreamEvent('file-content-start', {
+    filePath: info.filePath,
+    fileName,
+    language: ext,
+    fileKey: info.filePath,
+    op: info.isEdit ? 'edit' : 'write',
+    oldText: info.oldText != null ? String(info.oldText) : undefined,
+  });
+  streamedSet.add(np);
+  markActive(info.filePath);
+  const CHUNK = 4096;
+  for (let i = 0; i < content.length; i += CHUNK) {
+    onStreamEvent('file-content-token', content.slice(i, i + CHUNK));
+  }
+  onStreamEvent('file-content-end', { filePath: info.filePath, fileKey: info.filePath });
+  endCompleted.add(np);
+  markActive(null);
+  return true;
+}
+
 /** Emit one atomic IPC event for a complete file write (native FC / batch prose path). */
 function emitCompleteFileContentBlock(onStreamEvent, filePath, content, options, meta = {}) {
   if (!onStreamEvent || content == null) return;
@@ -1440,9 +1524,16 @@ class ChatEngine extends EventEmitter {
     this._enableContextSummarizer = options.enableContextSummarizer !== false;
     const isCancelled = () => (typeof getCancelled === 'function' && getCancelled()) || this.isCancelled();
     const _streamDiag = !!options.debugStreamDiag;
-    const _traceOn = options.streamTraceEnabled !== false;
+    const _traceOn = options.streamTraceEnabled === true;
+    const _traceLevel = options.streamTraceLevel || 'tokens';
+    const _traceFull = _traceOn && _traceLevel === 'full';
+    const _TOKEN_TRACE_EVTS = new Set(['token-prose', 'token-response-chunk', 'sf-content-token-emit']);
     const _logStreamDiag = (...args) => { if (_streamDiag) console.log(...args); };
-    const _trace = (evt, fields) => { if (_traceOn) streamTrace.trace('stream', evt, fields); };
+    const _trace = (evt, fields) => {
+      if (!_traceOn) return;
+      if (_traceLevel === 'tokens' && !_TOKEN_TRACE_EVTS.has(evt)) return;
+      streamTrace.trace('stream', evt, fields);
+    };
 
       // Inject attachment content into user message
       const attachments = Array.isArray(options.attachments) ? options.attachments : [];
@@ -1681,6 +1772,10 @@ class ChatEngine extends EventEmitter {
       let _sfInFence = false;    // inside a code fence
       let _sfFenceBuf = '';      // accumulated fence content (markers + body)
       let _sfFenceTickCount = 0; // tracks consecutive backticks
+      let _sfPendingFenceOpen = false; // defer fence open until header line completes (glued ``` prose)
+      let _sfPendingFenceLine = '';
+      let _sfSwallowFenceDebris = false; // swallow orphan ``` after tool-json fence close
+      let _sfDebrisBuf = '';
       /** When true, fence body is plain markdown code (html, etc.) — stream to UI instead of buffering until ``` */
       let _sfFenceStreamPlain = false;
       let _sfFencePlainTick = 0; // backticks while streaming plain fence (closing ```)
@@ -1758,8 +1853,36 @@ class ChatEngine extends EventEmitter {
         fenceStreamPlain: _sfFenceStreamPlain,
       });
       const _traceSfChar = (ch) => {
-        if (!_traceOn) return;
+        if (!_traceFull) return;
         streamTrace.trace('stream', 'sf-char', { ch, sf: _traceSfState() });
+      };
+
+      const _sfResetPerGenerationTurn = () => {
+        _sfStreamedFileWrites.clear();
+        _sfProsedFileWrites.clear();
+        _sfContentEndCompleted.clear();
+        _sfContentContinuation = null;
+        _sfEarlyFileStartEmitted = false;
+        _sfSwallowFenceDebris = false;
+        _sfDebrisBuf = '';
+      };
+
+      const _sfBulkReplayCtx = () => ({
+        onStreamEvent,
+        options,
+        streamedSet: _sfStreamedFileWrites,
+        normalizePath: _normalizePath,
+        allowNewStart: _sfShouldAllowNewFileContentStart,
+        endCompleted: _sfContentEndCompleted,
+        markActive: _sfMarkFileContentStreamActive,
+      });
+
+      const _sfOnToolJsonFenceClose = (fenceBuf) => {
+        if (!_sfContentStreamActive && !_sfEarlyFileStartEmitted) {
+          _sfBulkReplayFileContentFromFence(fenceBuf, _sfBulkReplayCtx());
+        }
+        _sfSwallowFenceDebris = true;
+        _sfDebrisBuf = '';
       };
 
       const _sfSaveContentContinuation = () => {
@@ -1897,6 +2020,7 @@ class ChatEngine extends EventEmitter {
           const _isToolCall = _sfFenceBufferLooksLikeToolJson(_sfFenceBuf);
           if (_isToolCall) {
             console.log(`[ChatEngine] _sfFlushFence: discarding tool-call JSON (${_sfFenceBuf.length} chars)`);
+            _sfOnToolJsonFenceClose(_sfFenceBuf);
             const _fpM = _sfFenceBuf.match(RE_FILE_PATH);
             if (_fpM && _fpM[1]) _sfProsedFileWrites.add(_normalizePath(_fpM[1]));
           } else {
@@ -1938,6 +2062,51 @@ class ChatEngine extends EventEmitter {
         for (let i = 0; i < chunk.length; i++) {
           const ch = chunk[i];
           _traceSfChar(ch);
+
+          if (_sfSwallowFenceDebris) {
+            _sfDebrisBuf += ch;
+            const t = _sfDebrisBuf;
+            if (/^[\s`]*$/.test(t) && t.length <= 20) continue;
+            if (/^`{3,}\s*$/.test(t.trim())) {
+              _sfDebrisBuf = '';
+              _sfSwallowFenceDebris = false;
+              continue;
+            }
+            _sfSwallowFenceDebris = false;
+            const debris = _sfDebrisBuf;
+            _sfDebrisBuf = '';
+            if (debris) _sfProcessChunk(debris);
+            i--;
+            continue;
+          }
+
+          if (_sfPendingFenceOpen) {
+            _sfPendingFenceLine += ch;
+            if (ch === '\n' || ch === '\r') {
+              _sfPendingFenceOpen = false;
+              const hdr = _sfPendingFenceLine.replace(/\r?\n$/, '');
+              if (/^`{3,}[a-z0-9_-]*\s*$/i.test(hdr)) {
+                _sfInFence = true;
+                _sfFenceBuf = _sfPendingFenceLine;
+                _sfFenceStreamPlain = false;
+                _sfFencePlainTick = 0;
+              } else {
+                _sfForward(_sfPendingFenceLine);
+              }
+              _sfPendingFenceLine = '';
+              _sfLastCharWasNewlineOrStart = (ch === '\n' || ch === '\r');
+              continue;
+            }
+            if (_sfPendingFenceLine.length > 12 && !/^`{3,}[a-z0-9_-]*$/i.test(_sfPendingFenceLine)) {
+              _sfPendingFenceOpen = false;
+              _sfForward(_sfPendingFenceLine);
+              _sfPendingFenceLine = '';
+              _sfLastCharWasNewlineOrStart = false;
+              continue;
+            }
+            _sfLastCharWasNewlineOrStart = false;
+            continue;
+          }
 
           // Think-tag detection for reasoning models (non-Jinja only).
           // These models output thinking in raw text (LlamaCompletion mode).
@@ -2285,6 +2454,7 @@ class ChatEngine extends EventEmitter {
               } else {
                 // Normal fence close (not inside think)
                 if (_sfIsToolLikeJson(_sfFenceBuf)) {
+                  _sfOnToolJsonFenceClose(_sfFenceBuf);
                   _sfFenceBuf = '';
                 } else {
                   _sfFlushFence();
@@ -2310,11 +2480,9 @@ class ChatEngine extends EventEmitter {
             if (ch === '`' && _sfLastCharWasNewlineOrStart) {
               _sfFenceTickCount++;
               if (_sfFenceTickCount >= 3) {
-                _sfInFence = true;
-                _sfFenceBuf = '```';
+                _sfPendingFenceOpen = true;
+                _sfPendingFenceLine = '```';
                 _sfFenceTickCount = 0;
-                _sfFenceStreamPlain = false;
-                _sfFencePlainTick = 0;
                 _sfLastCharWasNewlineOrStart = false;
                 continue;
               }
@@ -2848,6 +3016,7 @@ class ChatEngine extends EventEmitter {
       // Generate response — model outputs text which may contain tool call JSON blocks
       const roundStartTime = Date.now();
       const ctxUsedBefore = this._sequence?.nextTokenIndex || 0;
+      _sfResetPerGenerationTurn();
       console.log(`[ChatEngine] Calling generateResponse #1: history=${this._chatHistory.length} msgs, ctxUsedBefore=${ctxUsedBefore}`);
       _trace('generateResponse-enter', {
         round: 1,
@@ -3155,6 +3324,7 @@ class ChatEngine extends EventEmitter {
             if (userMaxTokens !== Infinity) {
               genOptions.maxTokens = Math.min(userMaxTokens, ctxAvailNow);
             }
+            _sfResetPerGenerationTurn();
             result = await this._generateResponseSafe(genOptions, {
               contextSize,
               onStreamEvent,
@@ -3928,6 +4098,7 @@ class ChatEngine extends EventEmitter {
           console.log(`[ChatEngine] Continuation maxTokens: ${genOptions.maxTokens} (ctx used: ${ctxUsedNow}/${contextSize})`);
 
           roundStart = fullResponse.length;
+          _sfResetPerGenerationTurn();
           console.log(`[ChatEngine] Calling generateResponse CONTINUATION: history=${this._chatHistory.length} msgs`);
           result = await this._generateResponseSafe(genOptions, {
             contextSize,

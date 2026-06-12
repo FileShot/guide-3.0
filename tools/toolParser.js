@@ -2,6 +2,10 @@
 
 const { canonicalizeToolParams, getCanonicalPathParamForRecovery } = require('./canonicalizeToolParams');
 
+function _tpLog(...args) {
+  if (process.env.DEBUG_TOOL_PARSER === '1') console.log(...args);
+}
+
 // ─── Tool Name Aliases ───
 // Maps common model misspellings/hallucinations to canonical tool names
 const TOOL_NAME_ALIASES = {
@@ -178,7 +182,7 @@ function stripJsonComments(raw) {
 function sanitizeJson(raw) {
   if (!raw || typeof raw !== 'string') return raw;
   raw = stripJsonComments(raw);
-  console.log(`[ToolParser] sanitizeJson START: rawLen=${raw.length}`);
+  _tpLog(`[ToolParser] sanitizeJson START: rawLen=${raw.length}`);
   let result = '';
   let inStr = false;
   let escaped = false;
@@ -227,7 +231,7 @@ function sanitizeJson(raw) {
     }
     result += ch;
   }
-  console.log(`[ToolParser] sanitizeJson DONE: resultLen=${result.length}`);
+  _tpLog(`[ToolParser] sanitizeJson DONE: resultLen=${result.length}`);
   return result;
 }
 
@@ -271,19 +275,19 @@ function fixSeparatorTypos(raw) {
 }
 
 function tryParseJson(raw) {
-  console.log(`[ToolParser] tryParseJson START: rawLen=${raw?.length || 0}`);
+  _tpLog(`[ToolParser] tryParseJson START: rawLen=${raw?.length || 0}`);
   // Quadruple-try chain: raw → fixQuoting → fixBackticks → fixSeparatorTypos
-  try { const r = JSON.parse(sanitizeJson(raw)); console.log('[ToolParser] tryParseJson: raw parse OK'); return r; } catch {}
-  try { const r = JSON.parse(sanitizeJson(fixQuoting(raw))); console.log('[ToolParser] tryParseJson: fixQuoting parse OK'); return r; } catch {}
-  try { const r = JSON.parse(sanitizeJson(fixBackticks(fixQuoting(raw)))); console.log('[ToolParser] tryParseJson: fixBackticks parse OK'); return r; } catch {}
-  try { const r = JSON.parse(sanitizeJson(fixSeparatorTypos(fixBackticks(fixQuoting(raw))))); console.log('[ToolParser] tryParseJson: fixSeparatorTypos parse OK'); return r; } catch {}
-  console.log('[ToolParser] tryParseJson: all parse attempts failed');
+  try { const r = JSON.parse(sanitizeJson(raw)); _tpLog('[ToolParser] tryParseJson: raw parse OK'); return r; } catch {}
+  try { const r = JSON.parse(sanitizeJson(fixQuoting(raw))); _tpLog('[ToolParser] tryParseJson: fixQuoting parse OK'); return r; } catch {}
+  try { const r = JSON.parse(sanitizeJson(fixBackticks(fixQuoting(raw)))); _tpLog('[ToolParser] tryParseJson: fixBackticks parse OK'); return r; } catch {}
+  try { const r = JSON.parse(sanitizeJson(fixSeparatorTypos(fixBackticks(fixQuoting(raw))))); _tpLog('[ToolParser] tryParseJson: fixSeparatorTypos parse OK'); return r; } catch {}
+  _tpLog('[ToolParser] tryParseJson: all parse attempts failed');
   return null;
 }
 
 // ─── Brace-Counting JSON Extractor ───
 function extractJsonObjects(text) {
-  console.log(`[ToolParser] extractJsonObjects START: textLen=${text?.length || 0}`);
+  _tpLog(`[ToolParser] extractJsonObjects START: textLen=${text?.length || 0}`);
   const objects = [];
   let depth = 0;
   let start = -1;
@@ -384,7 +388,7 @@ function extractJsonObjects(text) {
                 }
               }
               objects.push(recovered);
-              console.log(`[ToolParser] Recovered tool call via regex: ${toolName}`);
+              _tpLog(`[ToolParser] Recovered tool call via regex: ${toolName}`);
             }
           }
         }
@@ -449,13 +453,13 @@ function extractJsonObjects(text) {
         const parsed = tryParseJson(repaired);
         if (parsed && typeof parsed === 'object') {
           objects.push(parsed);
-          console.log(`[ToolParser] Recovered malformed tool call via brace-closing: ${toolNameMatch[1]}`);
+          _tpLog(`[ToolParser] Recovered malformed tool call via brace-closing: ${toolNameMatch[1]}`);
         }
       }
     }
   }
 
-  console.log(`[ToolParser] extractJsonObjects DONE: objects=${objects.length}`);
+  _tpLog(`[ToolParser] extractJsonObjects DONE: objects=${objects.length}`);
   return objects;
 }
 
@@ -514,7 +518,7 @@ function _recoverBareNameCallsFromText(text) {
     if (seen.has(sig)) continue;
     seen.add(sig);
     calls.push(call);
-    console.log(`[ToolParser] Method 1.2: Recovered bare-name tool call: ${toolName}`);
+    _tpLog(`[ToolParser] Method 1.2: Recovered bare-name tool call: ${toolName}`);
   }
   return calls;
 }
@@ -565,7 +569,7 @@ function _levenshtein(a, b) {
 // ─── Tool Call Normalization ───
 function normalizeToolCall(parsed) {
   if (!parsed || typeof parsed !== 'object') return null;
-  console.log(`[ToolParser] normalizeToolCall START: raw=${JSON.stringify(parsed).substring(0,200)}`);
+  _tpLog(`[ToolParser] normalizeToolCall START: raw=${JSON.stringify(parsed).substring(0,200)}`);
 
   const metaKeys = new Set(['tool', 'name', 'function', 'action', 'params', 'parameters', 'arguments', 'args']);
 
@@ -589,7 +593,7 @@ function normalizeToolCall(parsed) {
   }
 
   if (!toolName) {
-    console.log('[ToolParser] normalizeToolCall: no tool name found');
+    _tpLog('[ToolParser] normalizeToolCall: no tool name found');
     return null;
   }
 
@@ -602,13 +606,13 @@ function normalizeToolCall(parsed) {
   const shellBinaries = /^(node|npm|npx|git|python|pip|cargo|go|ruby|java|gcc|make|cmake|dotnet|curl|wget)\b/;
   if (shellBinaries.test(toolName) && !VALID_TOOLS.has(toolName)) {
     const cmd = parsed.params?.command || `${toolName} ${parsed.params?.args || ''}`.trim();
-    console.log(`[ToolParser] normalizeToolCall: shell binary recovered as run_command`);
+    _tpLog(`[ToolParser] normalizeToolCall: shell binary recovered as run_command`);
     return { tool: 'run_command', params: { command: cmd } };
   }
 
   // Reject hallucinated tool names
   if (!VALID_TOOLS.has(toolName)) {
-    console.log(`[ToolParser] normalizeToolCall: invalid toolName=${toolName}`);
+    _tpLog(`[ToolParser] normalizeToolCall: invalid toolName=${toolName}`);
     return null;
   }
 
@@ -622,7 +626,7 @@ function normalizeToolCall(parsed) {
       params[k] = v;
     }
   }
-  console.log(`[ToolParser] normalizeToolCall DONE: tool=${toolName}`);
+  _tpLog(`[ToolParser] normalizeToolCall DONE: tool=${toolName}`);
 
   return { tool: toolName, params: canonicalizeToolParams(toolName, params) };
 }
@@ -630,10 +634,10 @@ function normalizeToolCall(parsed) {
 // ─── Main Parser ───
 function parseToolCalls(text) {
   if (!text || typeof text !== 'string') {
-    console.log('[ToolParser] parseToolCalls: empty or non-string input');
+    _tpLog('[ToolParser] parseToolCalls: empty or non-string input');
     return [];
   }
-  console.log(`[ToolParser] parseToolCalls START: textLen=${text.length}`);
+  _tpLog(`[ToolParser] parseToolCalls START: textLen=${text.length}`);
 
   const calls = [];
   const seen = new Set(); // dedup by signature
@@ -673,12 +677,12 @@ function parseToolCalls(text) {
   const fenceRe = /```(?:tool_call|tool|json)[^\n]*\n([\s\S]*?)```/g;
   while ((m = fenceRe.exec(text)) !== null) {
     const fenceContent = m[1];
-    console.log(`[ToolParser] Method 1: Found fenced block (${fenceContent.length} chars). First 200: ${fenceContent.substring(0, 200).replace(/\n/g, '\\n')}`);
+    _tpLog(`[ToolParser] Method 1: Found fenced block (${fenceContent.length} chars). First 200: ${fenceContent.substring(0, 200).replace(/\n/g, '\\n')}`);
     const objects = extractJsonObjects(fenceContent);
-    console.log(`[ToolParser] Method 1: extractJsonObjects returned ${objects.length} object(s)`);
+    _tpLog(`[ToolParser] Method 1: extractJsonObjects returned ${objects.length} object(s)`);
     for (const obj of objects) {
       const normalized = normalizeToolCall(obj);
-      if (!normalized) console.log(`[ToolParser] Method 1: normalizeToolCall returned null for keys: ${Object.keys(obj).join(', ')}`);
+      if (!normalized) _tpLog(`[ToolParser] Method 1: normalizeToolCall returned null for keys: ${Object.keys(obj).join(', ')}`);
       addCall(normalized);
     }
 
@@ -698,7 +702,7 @@ function parseToolCalls(text) {
         const rawToolName = toolMatch[1].toLowerCase().replace(/-/g, '_');
         const toolName = TOOL_NAME_ALIASES[rawToolName] || rawToolName;
         if (!VALID_TOOLS.has(toolName)) continue;
-        console.log(`[ToolParser] Method 1.1: JSON parse failed but found tool name "${toolMatch[1]}" — attempting regex recovery`);
+        _tpLog(`[ToolParser] Method 1.1: JSON parse failed but found tool name "${toolMatch[1]}" — attempting regex recovery`);
         const call = { tool: toolName, params: {}, _regexRecovered: true };
         // Extract filePath — find the one closest to this tool name match
         const pathMatches = [...fenceContent.matchAll(/"(?:filePath|file_path|path|filename)"\s*:\s*"([^"]+)"/gi)];
@@ -730,10 +734,10 @@ function parseToolCalls(text) {
                     .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
                 } catch (_) {}
                 if (rawContent.trim().startsWith('{"tool":') || rawContent.trim().startsWith('{"tool" :')) {
-                  console.log(`[ToolParser] Method 1.1: Skipping recovered content — looks like tool call JSON leak`);
+                  _tpLog(`[ToolParser] Method 1.1: Skipping recovered content — looks like tool call JSON leak`);
                 } else if (rawContent.trim().length > 10) {
                   call.params.content = rawContent;
-                  console.log(`[ToolParser] Method 1.1: Recovered ${toolName} with content (${rawContent.length} chars)`);
+                  _tpLog(`[ToolParser] Method 1.1: Recovered ${toolName} with content (${rawContent.length} chars)`);
                 }
               }
             }
@@ -751,7 +755,7 @@ function parseToolCalls(text) {
           }
           // If oldText is empty and newText has content, convert to write_file
           if (!call.params.oldText && call.params.newText && call.params.newText.length > 10) {
-            console.log(`[ToolParser] Method 1.1: edit_file with empty oldText → converting to write_file`);
+            _tpLog(`[ToolParser] Method 1.1: edit_file with empty oldText → converting to write_file`);
             call.tool = 'write_file';
             call.params.content = call.params.newText;
             delete call.params.oldText;
@@ -771,7 +775,7 @@ function parseToolCalls(text) {
         // Infer filePath from content if missing
         if (!call.params.filePath && call.params.content) {
           call.params.filePath = _inferFilePath(text, call.params.content);
-          console.log(`[ToolParser] Method 1.1: Inferred filePath: ${call.params.filePath}`);
+          _tpLog(`[ToolParser] Method 1.1: Inferred filePath: ${call.params.filePath}`);
         }
         addCall(call);
       }
@@ -845,7 +849,7 @@ function parseToolCalls(text) {
               const rangeMatch = afterFence.match(/"(?:lineRange|lines)"\s*:\s*\[(\d+)\s*,\s*(\d+)\]/i);
               if (rangeMatch) call.params.lineRange = [parseInt(rangeMatch[1]), parseInt(rangeMatch[2])];
             }
-            console.log(`[ToolParser] Recovered truncated ${toolName} call`);
+            _tpLog(`[ToolParser] Recovered truncated ${toolName} call`);
             addCall(call);
           }
         }
@@ -892,9 +896,9 @@ function parseToolCalls(text) {
   // Method 2: Raw JSON objects with "tool" or "name" key
   const rawJsonRe = /\{\s*["']?(?:tool|name)["']?\s*:\s*["'][^"']+["']/g;
   while ((m = rawJsonRe.exec(text)) !== null) {
-    console.log(`[ToolParser] Method 2: Found raw JSON at offset ${m.index}. Match: ${m[0]}`);
+    _tpLog(`[ToolParser] Method 2: Found raw JSON at offset ${m.index}. Match: ${m[0]}`);
     const objects = extractJsonObjects(text.slice(m.index));
-    console.log(`[ToolParser] Method 2: extractJsonObjects returned ${objects.length} object(s)`);
+    _tpLog(`[ToolParser] Method 2: extractJsonObjects returned ${objects.length} object(s)`);
     for (const obj of objects) addCall(normalizeToolCall(obj));
   }
 
@@ -933,12 +937,12 @@ function parseToolCalls(text) {
     }
   }
 
-  console.log(`[ToolParser] parseToolCalls DONE: calls=${calls.length}`);
+  _tpLog(`[ToolParser] parseToolCalls DONE: calls=${calls.length}`);
   return _postProcess(calls, text);
 }
 
 function _postProcess(calls, text) {
-  console.log(`[ToolParser] _postProcess: calls=${calls?.length || 0}`);
+  _tpLog(`[ToolParser] _postProcess: calls=${calls?.length || 0}`);
   // Passthrough — no regex-based tool conversion.
   // The model must call the correct tool explicitly.
   return calls;
@@ -946,7 +950,7 @@ function _postProcess(calls, text) {
 
 // ─── Tool Call Repair ───
 function repairToolCalls(toolCalls, responseText) {
-  console.log(`[ToolParser] repairToolCalls START: toolCalls=${toolCalls?.length || 0}`);
+  _tpLog(`[ToolParser] repairToolCalls START: toolCalls=${toolCalls?.length || 0}`);
   const repaired = [];
   const issues = [];
   const droppedFilePaths = [];
@@ -968,12 +972,15 @@ function repairToolCalls(toolCalls, responseText) {
         issues.push(`Dropped write_file with empty content: ${params.filePath || 'unknown'}`);
         continue;
       }
-      // Empty or wrong filePath
-      if (!params.filePath || !_looksLikeRealFilePath(params.filePath)) {
+      // Infer path only when missing — never overwrite a parsed filePath
+      if (!params.filePath || !String(params.filePath).trim()) {
         const inferred = _inferFilePath(responseText, params.content);
         if (inferred) {
           params.filePath = inferred;
           issues.push(`Inferred filePath: ${params.filePath}`);
+        } else {
+          issues.push('Dropped write_file with missing filePath');
+          continue;
         }
       }
     }
@@ -1083,7 +1090,7 @@ function repairToolCalls(toolCalls, responseText) {
     }
   }
 
-  console.log(`[ToolParser] repairToolCalls DONE: repaired=${repaired.length}, issues=${issues.length}, dropped=${droppedFilePaths.length}`);
+  _tpLog(`[ToolParser] repairToolCalls DONE: repaired=${repaired.length}, issues=${issues.length}, dropped=${droppedFilePaths.length}`);
   return { repaired, issues, droppedFilePaths };
 }
 
@@ -1108,10 +1115,12 @@ function _preferPlanFilePath(text) {
 
 function _looksLikeRealFilePath(fp) {
   if (!fp || typeof fp !== 'string') return false;
-  const n = fp.replace(/\\/g, '/');
+  const n = fp.replace(/\\/g, '/').trim();
+  if (!n) return false;
   if (/\.guide[/\\]plans[/\\].+\.plan\.md$/i.test(n)) return true;
   if (n.includes('/') || n.includes('\\')) return true;
-  // Reject bare filenames like Three.js that lack directory context
+  // Bare project-root filenames: server.js, index.html, package.json, etc.
+  if (/^[\w.-]+\.[a-zA-Z0-9]{1,12}$/.test(n)) return true;
   return false;
 }
 
@@ -1184,15 +1193,18 @@ function _inferFilePath(text, content, lang) {
   const match = text.match(pathRe);
   if (match) {
     const candidate = match[1].replace(/\\/g, '/');
-    if (candidate.includes('/') || candidate.includes('.guide/')) return candidate;
+    if (candidate.includes('/') || candidate.includes('.guide/') || /^[\w.-]+\.[a-zA-Z0-9]{1,12}$/.test(candidate)) {
+      return candidate;
+    }
   }
   // Infer from content type
   if (content) {
     if (content.includes('<!DOCTYPE') || content.includes('<html')) return 'index.html';
     if (content.includes('import React') || content.includes('from "react"')) return 'component.jsx';
     if (/^[.#@][a-zA-Z][\w-]*\s*\{/m.test(content) || /@media\s|@keyframes\s|@import\s|:root\s*\{/.test(content)) return 'style.css';
-    if (content.includes('def ') || content.includes('import ')) return 'script.py';
+    if (content.includes('def ') || (content.includes('import ') && !content.includes("require('"))) return 'script.py';
     if (content.trimStart().startsWith('{')) return 'data.json';
+    if (/require\s*\(\s*['"]express['"]\s*\)/.test(content) || /\.listen\s*\(/.test(content)) return 'server.js';
   }
   // Infer from language hint
   const langToExt = {
@@ -1202,7 +1214,7 @@ function _inferFilePath(text, content, lang) {
     bash: 'script.sh', ruby: 'script.rb', go: 'main.go', rust: 'main.rs',
   };
   if (lang && langToExt[lang.toLowerCase()]) return langToExt[lang.toLowerCase()];
-  return 'output.txt';
+  return null;
 }
 
 // ─── Tool-call range detection (shared by strip + stream guard) ───
@@ -1417,10 +1429,10 @@ function _applyRangeStrip(text, merged) {
 // ─── Strip Tool Call Text ───
 function stripToolCallText(text) {
   if (!text || typeof text !== 'string') {
-    console.log('[ToolParser] stripToolCallText: empty or non-string input');
+    _tpLog('[ToolParser] stripToolCallText: empty or non-string input');
     return '';
   }
-  console.log(`[ToolParser] stripToolCallText START: textLen=${text.length}`);
+  _tpLog(`[ToolParser] stripToolCallText START: textLen=${text.length}`);
   const merged = findToolCallRanges(text);
   if (merged.length === 0) return collapseOrphanMarkdownFences(text);
   return _applyRangeStrip(text, merged);
@@ -1461,4 +1473,6 @@ module.exports = {
   suggestClosestToolName,
   _recoverWriteFileContent,
   _inferFilePath,
+  _looksLikeRealFilePath,
+  repairToolCalls,
 };

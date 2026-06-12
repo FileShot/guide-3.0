@@ -11,22 +11,31 @@ const LOG_DIR = path.join(
 );
 
 const CHANNELS = {
-  stream: { file: 'stream-trace.log', maxBytes: 200 * 1024 * 1024, backups: 5 },
-  ipc: { file: 'ipc-trace.log', maxBytes: 200 * 1024 * 1024, backups: 5 },
-  ui: { file: 'ui-trace.log', maxBytes: 200 * 1024 * 1024, backups: 5 },
-  api: { file: 'api-trace.log', maxBytes: 100 * 1024 * 1024, backups: 3 },
+  stream: { file: 'stream-trace.log', maxBytes: 50 * 1024 * 1024, backups: 3 },
+  ipc: { file: 'ipc-trace.log', maxBytes: 50 * 1024 * 1024, backups: 3 },
+  ui: { file: 'ui-trace.log', maxBytes: 50 * 1024 * 1024, backups: 3 },
+  api: { file: 'api-trace.log', maxBytes: 25 * 1024 * 1024, backups: 2 },
 };
 
-const BLOB_THRESHOLD = 64 * 1024; // sidecar for payloads > 64KB in JSON line
+const BLOB_THRESHOLD = 64 * 1024;
 
+/** @type {'off'|'tokens'|'full'} */
+let _level = 'tokens';
 let _seq = 0;
 let _turnId = null;
-let _enabled = true;
+let _enabled = false;
 let _deferRotate = false;
 const _streams = new Map();
 const _bytesWritten = new Map();
 const _pending = new Map();
 let _flushTimer = null;
+
+const TOKEN_STREAM_EVTS = new Set([
+  'token-prose',
+  'token-response-chunk',
+  'sf-content-token-emit',
+  'llm-token',
+]);
 
 function ensureDir() {
   try {
@@ -94,7 +103,7 @@ function serializeValue(val, seq) {
   if (typeof val === 'string') {
     if (val.length > BLOB_THRESHOLD) {
       const blob = writeBlob(seq, val);
-      return { __blob: blob, len: val.length, text: val };
+      return { __blob: blob, len: val.length };
     }
     return val;
   }
@@ -103,7 +112,7 @@ function serializeValue(val, seq) {
       const json = JSON.stringify(val);
       if (json.length > BLOB_THRESHOLD) {
         const blob = writeBlob(seq, json);
-        return { __blob: blob, len: json.length, json: val };
+        return { __blob: blob, len: json.length };
       }
       return val;
     } catch (_) {
@@ -138,8 +147,17 @@ function scheduleFlush() {
   }, 10);
 }
 
+function shouldTraceEvt(channel, evt) {
+  if (!_enabled || _level === 'off') return false;
+  if (_level === 'full') return true;
+  if (channel === 'stream' && TOKEN_STREAM_EVTS.has(evt)) return true;
+  if (channel === 'ipc' && evt === 'ipc-send') return true;
+  if (evt === 'ai-chat-start' || evt.startsWith('lifecycle-') || evt.startsWith('generateResponse-')) return true;
+  return false;
+}
+
 function trace(channel, evt, fields = {}) {
-  if (!_enabled) return _seq;
+  if (!shouldTraceEvt(channel, evt)) return _seq;
   const seq = ++_seq;
   const record = {
     ts: new Date().toISOString(),
@@ -153,7 +171,16 @@ function trace(channel, evt, fields = {}) {
   }
   let line;
   try {
-    line = JSON.stringify(record) + '\n';
+    if (_level === 'tokens' && TOKEN_STREAM_EVTS.has(evt) && typeof fields.text === 'string') {
+      const preview = fields.text.length > 120 ? `${fields.text.slice(0, 80)}…` : fields.text;
+      line = JSON.stringify({
+        ts: record.ts, seq, turnId: _turnId, channel, evt,
+        len: fields.text.length,
+        text: preview,
+      }) + '\n';
+    } else {
+      line = JSON.stringify(record) + '\n';
+    }
   } catch (err) {
     line = JSON.stringify({
       ts: record.ts, seq, turnId: _turnId, channel, evt,
@@ -176,6 +203,10 @@ function setEnabled(on) {
 
 function isEnabled() {
   return _enabled;
+}
+
+function getLevel() {
+  return _level;
 }
 
 function setTurnId(id) {
@@ -203,7 +234,10 @@ function close() {
 }
 
 function syncFromSettings(settings) {
-  _enabled = settings?.streamTraceEnabled !== false;
+  _enabled = settings?.streamTraceEnabled === true;
+  const lvl = settings?.streamTraceLevel;
+  _level = (lvl === 'off' || lvl === 'tokens' || lvl === 'full') ? lvl : 'tokens';
+  if (!_enabled) _level = 'off';
 }
 
 function clearAll() {
@@ -236,6 +270,7 @@ module.exports = {
   traceFull,
   setEnabled,
   isEnabled,
+  getLevel,
   setTurnId,
   setDeferRotate,
   flushAll,

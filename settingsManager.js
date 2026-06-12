@@ -40,8 +40,8 @@ const SETTINGS_DEFAULTS = {
   enableNativeFC: false,         // Default OFF: models use prose tool calls parsed by toolParser.js unless user enables native FC.
   enableContextSummarizer: true,  // When true, generates a progress summary from dropped context during context shifts using the loaded model (sub-context pattern)
   debugStreamDiag: false,         // When true, logs verbose [StreamDiag] token/FC traces to guide-main.log (no effect on generation)
-  streamTraceEnabled: true,       // Full verbatim diagnostic trace to stream/ipc/ui/api-trace.log files
-  streamTraceLevel: 'full',       // Only 'full' supported during diagnostic period
+  streamTraceEnabled: false,      // Diagnostic trace to stream/ipc/ui/api-trace.log files (off by default)
+  streamTraceLevel: 'tokens',     // off | tokens (compact per-token) | full (includes sf-char)
   // Command Execution Policy
   // 'disabled' = all commands require approval, 'allowlist' = only allowlisted auto-execute,
   // 'auto' = agent judges safety (default), 'turbo' = all auto-execute except denylisted

@@ -1,6 +1,6 @@
 ﻿/**
  * MarkdownRenderer — ReactMarkdown wrapper with syntax highlighting and custom components.
- * Streaming fast path: open code fences render as plain CodeBlock without full re-highlight.
+ * Fenced code blocks render via plain CodeBlock (no rehype-highlight on fence bodies).
  */
 import { memo, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -10,6 +10,7 @@ import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
 import CodeBlock from './CodeBlock';
 import MermaidBlock from './MermaidBlock';
+import { splitMarkdownFences, isOrphanFenceChunk, escapeProse } from '../../utils/markdownFenceUtils.js';
 import 'katex/dist/katex.min.css';
 
 function sanitizeChildren(children) {
@@ -129,82 +130,37 @@ function isProseTextFence(lang, text) {
   return true;
 }
 
-/** Split streaming markdown into stable prose + live code tail when fence is open. */
-function splitStreamingMarkdown(content, streaming) {
-  if (!content) return { stable: '', openCode: null };
-  const lines = content.split('\n');
-  let openFenceLen = 0;
-  let openLang = '';
-  let openFenceLine = -1;
-
-  for (let i = 0; i < lines.length; i++) {
-    const fenceMatch = lines[i].match(/^(`{3,})(\w*)/);
-    if (fenceMatch) {
-      const len = fenceMatch[1].length;
-      if (openFenceLen === 0) {
-        openFenceLen = len;
-        openLang = fenceMatch[2] || '';
-        openFenceLine = i;
-      } else if (len >= openFenceLen) {
-        openFenceLen = 0;
-        openLang = '';
-        openFenceLine = -1;
-      }
-    }
-  }
-
-  if (streaming && openFenceLen > 0 && openFenceLine >= 0) {
-    const stableLines = lines.slice(0, openFenceLine + 1);
-    const tailLines = lines.slice(openFenceLine + 1);
-    return {
-      stable: stableLines.join('\n'),
-      openCode: { lang: openLang, text: tailLines.join('\n') },
-    };
-  }
-
-  return { stable: content, openCode: null };
-}
-
-function escapeProse(content) {
-  if (!content) return '';
-  const lines = content.split('\n');
-  let openFenceLen = 0;
-  const escapedLines = [];
-  for (const line of lines) {
-    const fenceMatch = line.match(/^(`{3,})/);
-    if (fenceMatch) {
-      const len = fenceMatch[1].length;
-      if (openFenceLen === 0) openFenceLen = len;
-      else if (len >= openFenceLen) openFenceLen = 0;
-      escapedLines.push(line);
-    } else if (openFenceLen > 0) {
-      escapedLines.push(line);
-    } else {
-      escapedLines.push(line.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
-    }
-  }
-  let out = escapedLines.join('\n');
-  if (openFenceLen > 0) out += '\n' + '`'.repeat(openFenceLen);
-  return out;
-}
-
 function MarkdownRendererImpl({ content, streaming }) {
-  const { stable, openCode } = useMemo(
-    () => splitStreamingMarkdown(content, streaming),
+  const { chunks, openCode } = useMemo(
+    () => splitMarkdownFences(content, streaming),
     [content, streaming],
   );
-
-  const displayContent = useMemo(() => escapeProse(stable), [stable]);
 
   if (!content) return null;
 
   return (
     <div className="markdown-body">
-      {displayContent ? (
-        <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={markdownComponents}>
-          {displayContent}
-        </ReactMarkdown>
-      ) : null}
+      {chunks.map((chunk, i) => {
+        if (chunk.type === 'prose' && chunk.text && !isOrphanFenceChunk(chunk.text)) {
+          const displayContent = escapeProse(chunk.text);
+          return displayContent ? (
+            <ReactMarkdown key={`prose-${i}`} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={markdownComponents}>
+              {displayContent}
+            </ReactMarkdown>
+          ) : null;
+        }
+        if (chunk.type === 'code' && chunk.text && chunk.text.trim()) {
+          if (isProseTextFence(chunk.lang, chunk.text)) {
+            return <p key={`code-prose-${i}`} className="my-1.5 leading-relaxed">{chunk.text.trim()}</p>;
+          }
+          return (
+            <CodeBlock key={`code-${i}`} language={chunk.lang || 'text'} streaming={streaming}>
+              {chunk.text}
+            </CodeBlock>
+          );
+        }
+        return null;
+      })}
       {openCode && openCode.text.trim() && (
         isProseTextFence(openCode.lang, openCode.text) ? (
           <p className="my-1.5 leading-relaxed">{openCode.text.trim()}</p>

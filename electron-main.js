@@ -587,7 +587,7 @@ async function openProjectPath(projectPath) {
 
 // Helper to send events to renderer
 function _send(event, data) {
-  if (streamTrace.isEnabled() && event !== 'output-log') {
+  if (streamTrace.isEnabled() && event !== 'output-log' && event !== 'llm-token') {
     streamTrace.trace('ipc', 'ipc-send', { channel: event, data });
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1010,8 +1010,9 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       enableGrammar: settings.enableGrammar,
       enableNativeFC: settings.enableNativeFC !== false,
       enableContextSummarizer: settings.enableContextSummarizer !== false,
-      debugStreamDiag: !!settings.debugStreamDiag || settings.streamTraceEnabled !== false,
-      streamTraceEnabled: settings.streamTraceEnabled !== false,
+      debugStreamDiag: !!settings.debugStreamDiag,
+      streamTraceEnabled: settings.streamTraceEnabled === true,
+      streamTraceLevel: settings.streamTraceLevel || 'tokens',
       maxIterations: settings.maxIterations || 0,
       generationTimeoutSec: settings.generationTimeoutSec || 0,
       reasoningEffort: settings.reasoningEffort || 'medium',
@@ -1916,7 +1917,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/settings' && method === 'POST') {
       console.log(`[Settings] POST /api/settings HANDLER START thinkingMode=${body?.thinkingMode} toolsEnabled=${body?.toolsEnabled} browserEngine=${body?.browserEngine}`);
       settingsManager.setAll(body);
-      if (body?.streamTraceEnabled !== false) {
+      if (body?.debugStreamDiag === true) {
         settingsManager.set('debugStreamDiag', true);
       }
       settingsManager.flush();
