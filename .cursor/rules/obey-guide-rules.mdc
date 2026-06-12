@@ -1,0 +1,36 @@
+---
+description: Always read and obey notes/guide3/RULES.md before code changes or fix suggestions — survives context rotation
+alwaysApply: true
+---
+
+# RULES.md is mandatory (not optional memory)
+
+**Source of truth:** [`notes/guide3/RULES.md`](../../notes/guide3/RULES.md) (read with the Read tool — never rely on conversation memory).
+
+## When to read (every time, not once per session)
+
+| Trigger | Action |
+|---------|--------|
+| Session start / user assigns implementation | Read RULES.md (full file or Tripwires + Section 3 + 5 + 7 + 9) |
+| Before **any** code edit | Re-read Section 3, 7, Tripwire 8 (trace full pipeline) |
+| Before **any** fix/architecture suggestion | Re-read Section 5 + 12; reject if it matches a failure pattern |
+| Before **any** test run | Re-read Section 9 |
+
+If you cannot confirm compliance, stop and read RULES.md before proceeding.
+
+## Non-negotiable constraints (violations = rejected work)
+
+- **No band-aids:** no repetition detectors, auto-cancel, post-hoc stripping, retries/limiters that fix symptoms after the fact
+- **No per-model hacks:** arch-family profiles only (`generationProfiles.js` / `modelProfiles.js`), no `if (qwen35)` branches
+- **Root cause at source:** correct sampler/config/pipeline phase — not detectors
+- **No guessing:** research or read code; definitive answers only
+- **Production quality:** simple correct fix beats layered systems; over-engineering also banned
+- **Trace full pipeline** before changing one file (Tripwire 8)
+
+## Suggestions and plans must be checked
+
+Before presenting a plan or code change to the user, explicitly verify it does **not** violate Section 5 (Failure Patterns) or Section 12 (Past Failures). If it resembles a past failure, do not suggest it unless you document why it is different.
+
+## Cursor rules stack
+
+This file works with `plan-execute-ship.mdc`: implementing a plan still requires obeying RULES.md **and** shipping (push, tag, CI green) as the final step.

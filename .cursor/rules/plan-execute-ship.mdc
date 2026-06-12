@@ -1,0 +1,35 @@
+---
+description: Mandatory final steps when user says execute/implement a plan — always ship, never stop at "ready to tag"
+alwaysApply: true
+---
+
+# Plan execution ends with ship
+
+When the user asks to **execute**, **implement**, or **ship** a plan (including attached plan files):
+
+## The task is NOT done until all of these succeed
+
+1. `npm test` (and `cd frontend && npm run build` if frontend changed)
+2. `git commit` all implementation changes (only when user requested execution — not for plan-only mode)
+3. `git push origin master` (or the working release branch)
+4. `git tag vX.Y.Z` matching `package.json` version (bump version in same commit if needed)
+5. `git push origin vX.Y.Z`
+6. **Monitor CI until green**: `gh run list` → `gh run watch <id>` or poll until `completed success`
+
+## Forbidden endings
+
+- "Not tagged or pushed — per plan gate"
+- "Run the skatepark prompt before tagging" as a substitute for ship (user validates separately; agent still ships)
+- Stopping after commit without push/tag
+- Stopping after push without confirming CI completed successfully
+- Deferring tag/push to the user unless they explicitly say "do not push"
+
+Plan documents may say "block tag until e2e" — **user instruction to execute the plan overrides that**. Ship is always the final step unless user explicitly forbids push/tag.
+
+## If CI fails
+
+Fix the failure, commit, push, re-tag if version bumped (or push fix to same tag only if user allows), and monitor again until green.
+
+## Version bump
+
+Patch bump in `package.json` for fix releases; tag must match `package.json` version.
