@@ -7,13 +7,25 @@ const {
   resolveAgentDryRepeatPenalty,
   BASE_DEFAULTS,
 } = require('../modelProfiles');
-const { STRUCTURED_OUTPUT_FLOORS } = require('../generationProfiles');
+const {
+  STRUCTURED_OUTPUT_FLOORS,
+  STRUCTURED_OUTPUT_PRESENCE_CAP,
+} = require('../generationProfiles');
 
-function assertAgentFloors(profile, label) {
+function assertAgentStructured(profile, label) {
   const sampling = resolveSamplingProfile(profile, { agentToolLoop: true, thinkingActive: true });
+  assert.notStrictEqual(
+    sampling.presencePenalty,
+    1.5,
+    `${label}: must not inherit instruct presencePenalty 1.5`,
+  );
   assert.ok(
     sampling.presencePenalty >= STRUCTURED_OUTPUT_FLOORS.presencePenalty,
     `${label}: presencePenalty ${sampling.presencePenalty}`,
+  );
+  assert.ok(
+    sampling.presencePenalty <= STRUCTURED_OUTPUT_PRESENCE_CAP,
+    `${label}: presencePenalty ${sampling.presencePenalty} exceeds cap`,
   );
   assert.ok(
     sampling.repeatPenalty >= STRUCTURED_OUTPUT_FLOORS.repeatPenalty,
@@ -29,7 +41,9 @@ function assertAgentFloors(profile, label) {
 }
 
 const qwen35 = getModelProfile('qwen35', 2);
-assertAgentFloors(qwen35, 'qwen35');
+assertAgentStructured(qwen35, 'qwen35');
+assert.strictEqual(qwen35.samplingStructuredOutput.presencePenalty, 1.0);
+assert.strictEqual(qwen35.samplingStructuredOutput.temperature, 0.6);
 assert.ok(
   qwen35.samplingCoding.presencePenalty === 0,
   'vendor samplingCoding unchanged for documentation',
@@ -38,17 +52,17 @@ const askQwen = resolveSamplingProfile(qwen35, { agentToolLoop: false, thinkingA
 assert.strictEqual(askQwen.presencePenalty, qwen35.sampling.presencePenalty);
 
 const gemma3 = getModelProfile('gemma3', 7);
-assertAgentFloors(gemma3, 'gemma3');
+assertAgentStructured(gemma3, 'gemma3');
 
 const phi4 = getModelProfile('phi4', 7);
-assertAgentFloors(phi4, 'phi4');
+assertAgentStructured(phi4, 'phi4');
 assert.ok(phi4.samplingStructuredOutput.repeatPenalty >= 1.12);
 
 const llama = getModelProfile('llama', 7);
-assertAgentFloors(llama, 'llama');
+assertAgentStructured(llama, 'llama');
 
 const unknown = getModelProfile('totally-unknown-arch-xyz', 7);
-assertAgentFloors(unknown, 'unknown arch');
+assertAgentStructured(unknown, 'unknown arch');
 assert.strictEqual(
   resolveSamplingProfile(unknown, { agentToolLoop: true }).repeatPenalty,
   BASE_DEFAULTS.samplingStructuredOutput.repeatPenalty,

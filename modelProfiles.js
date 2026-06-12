@@ -547,7 +547,7 @@ function getModelProfile(ggufArchOrFamily, paramSize, options = {}) {
   if (!profile.samplingStructuredOutput) {
     profile.samplingStructuredOutput = buildStructuredOutputSampling(
       profile.sampling,
-      profile.samplingInstruct,
+      profile.samplingCoding,
     );
   }
 

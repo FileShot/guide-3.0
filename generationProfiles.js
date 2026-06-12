@@ -10,24 +10,26 @@ const STRUCTURED_OUTPUT_FLOORS = {
   presencePenalty: 1.0,
   lastTokensPenaltyCount: 512,
 };
+const STRUCTURED_OUTPUT_PRESENCE_CAP = 1.2;
 
-function buildStructuredOutputSampling(sampling, samplingInstruct) {
-  const base = { ...(samplingInstruct || sampling || {}) };
+/** Agent structured output — coding/thinking base only (never instruct chat). */
+function buildStructuredOutputSampling(sampling, samplingCoding) {
+  const base = { ...(samplingCoding || sampling || {}) };
   return {
     ...base,
     repeatPenalty: Math.max(
-      samplingInstruct?.repeatPenalty ?? sampling?.repeatPenalty ?? 1.0,
+      base.repeatPenalty ?? 1.0,
       STRUCTURED_OUTPUT_FLOORS.repeatPenalty,
     ),
-    presencePenalty: Math.max(
-      samplingInstruct?.presencePenalty ?? sampling?.presencePenalty ?? 0,
-      STRUCTURED_OUTPUT_FLOORS.presencePenalty,
+    presencePenalty: Math.min(
+      Math.max(base.presencePenalty ?? 0, STRUCTURED_OUTPUT_FLOORS.presencePenalty),
+      STRUCTURED_OUTPUT_PRESENCE_CAP,
     ),
     lastTokensPenaltyCount: Math.max(
-      samplingInstruct?.lastTokensPenaltyCount ?? sampling?.lastTokensPenaltyCount ?? 128,
+      base.lastTokensPenaltyCount ?? 128,
       STRUCTURED_OUTPUT_FLOORS.lastTokensPenaltyCount,
     ),
-    frequencyPenalty: samplingInstruct?.frequencyPenalty ?? sampling?.frequencyPenalty ?? 0,
+    frequencyPenalty: base.frequencyPenalty ?? 0,
   };
 }
 
@@ -54,11 +56,14 @@ function profile(sampling, samplingInstruct, meta, extras = {}) {
       ...samplingInstruct,
     };
   }
-  base.samplingStructuredOutput = buildStructuredOutputSampling(base.sampling, base.samplingInstruct);
   if (extras.samplingCoding) {
     base.samplingCoding = { repeatPenalty: 1.0, frequencyPenalty: 0, ...extras.samplingCoding };
     delete extras.samplingCoding;
   }
+  base.samplingStructuredOutput = buildStructuredOutputSampling(
+    base.sampling,
+    base.samplingCoding,
+  );
   if (extras.thinkTokens) base.thinkTokens = extras.thinkTokens;
   return { ...extras, ...base };
 }
@@ -519,4 +524,5 @@ module.exports = {
   getGenerationProfile,
   buildStructuredOutputSampling,
   STRUCTURED_OUTPUT_FLOORS,
+  STRUCTURED_OUTPUT_PRESENCE_CAP,
 };
