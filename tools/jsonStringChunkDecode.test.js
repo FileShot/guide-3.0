@@ -2,7 +2,29 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { jsonStringChunkDecode } = require('./jsonStringChunkDecode');
+const {
+  createJsonStringStreamState,
+  jsonStringStreamStep,
+  jsonStringChunkDecode,
+} = require('./jsonStringChunkDecode');
+
+function streamChars(chars, initialState) {
+  let state = initialState || createJsonStringStreamState();
+  let out = '';
+  let ended = false;
+  let endReason = null;
+  for (const ch of chars) {
+    const step = jsonStringStreamStep(ch, state);
+    state = step.state;
+    out += step.out;
+    if (step.ended) {
+      ended = true;
+      endReason = step.endReason;
+      break;
+    }
+  }
+  return { out, state, ended, endReason };
+}
 
 describe('jsonStringChunkDecode', () => {
   it('decodes This intact', () => {
@@ -30,14 +52,41 @@ describe('jsonStringChunkDecode', () => {
     const a = jsonStringChunkDecode('th\\', false);
     assert.equal(a.out, 'th');
     assert.equal(a.escPending, true);
-    const b = jsonStringChunkDecode('s', a.escPending);
+    const b = jsonStringChunkDecode('s', a.state);
     assert.equal(a.out + b.out, String.raw`th\s`);
     assert.notEqual(a.out + b.out, 'ths');
   });
 
-  it('ends on closing quote', () => {
-    const r = jsonStringChunkDecode('hello"', false);
+  it('ends on structural close quote before }', () => {
+    const r = jsonStringChunkDecode('hello"}', false);
     assert.equal(r.out, 'hello');
     assert.equal(r.ended, true);
+    assert.equal(r.endReason, 'structural-close');
+  });
+
+  it('ends on structural close quote before comma', () => {
+    const r = jsonStringChunkDecode('hello",', false);
+    assert.equal(r.out, 'hello');
+    assert.equal(r.ended, true);
+  });
+
+  it('keeps interior HTML quotes charset="UTF-8"', () => {
+    const seq = 'charset="UTF-8">';
+    const r = streamChars(seq);
+    assert.equal(r.out, 'charset="UTF-8">');
+    assert.equal(r.ended, false);
+  });
+
+  it('keeps interior quotes across chunk boundaries', () => {
+    const a = jsonStringChunkDecode('charset=', false);
+    const b = jsonStringChunkDecode('"UTF-8">', a.state);
+    assert.equal(a.out + b.out, 'charset="UTF-8">');
+    assert.equal(b.ended, false);
+  });
+
+  it('decodes escaped lang attribute in HTML', () => {
+    const r = jsonStringChunkDecode('<html lang=\\"en\\">', false);
+    assert.equal(r.out, '<html lang="en">');
+    assert.equal(r.ended, false);
   });
 });

@@ -15,6 +15,7 @@ const fsP = require('fs').promises;
 const os = require('os');
 const http = require('http');
 const { pathToFileURL } = require('url');
+const { Readable } = require('stream');
 const { buildAppMenu } = require('./appMenu');
 const { AutoUpdater } = require('./autoUpdater');
 
@@ -1375,6 +1376,47 @@ function isPathUnderGuideMediaOutput(absPath) {
   const resolved = path.resolve(absPath);
   const guideMediaDir = path.resolve(path.join(userDataPath, 'guide-media'));
   return resolved === guideMediaDir || resolved.startsWith(guideMediaDir + path.sep);
+}
+
+function serveGuideMediaFile(resolved, request) {
+  const stat = fs.statSync(resolved);
+  const fileSize = stat.size;
+  const contentType = getMimeForExtension(path.extname(resolved));
+  const baseHeaders = {
+    'Content-Type': contentType,
+    'Accept-Ranges': 'bytes',
+  };
+  const rangeHeader = request.headers.get('range');
+
+  if (!rangeHeader) {
+    const stream = fs.createReadStream(resolved);
+    return new Response(Readable.toWeb(stream), {
+      status: 200,
+      headers: { ...baseHeaders, 'Content-Length': String(fileSize) },
+    });
+  }
+
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader);
+  if (!match) {
+    return new Response('Invalid Range', { status: 416, headers: { 'Content-Range': `bytes */${fileSize}` } });
+  }
+
+  let start = match[1] ? parseInt(match[1], 10) : 0;
+  let end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
+  if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= fileSize) {
+    return new Response('Invalid Range', { status: 416, headers: { 'Content-Range': `bytes */${fileSize}` } });
+  }
+  end = Math.min(end, fileSize - 1);
+  const chunkSize = end - start + 1;
+  const stream = fs.createReadStream(resolved, { start, end });
+  return new Response(Readable.toWeb(stream), {
+    status: 206,
+    headers: {
+      ...baseHeaders,
+      'Content-Length': String(chunkSize),
+      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+    },
+  });
 }
 
 // ─── Generic API-fetch IPC handler ──────────────────────────────────
@@ -3002,7 +3044,7 @@ app.whenReady().then(async () => {
       if (!fs.existsSync(resolved)) {
         return new Response('Not found', { status: 404 });
       }
-      return net.fetch(pathToFileURL(resolved).href);
+      return serveGuideMediaFile(resolved, request);
     } catch (err) {
       console.warn('[Main] guide-media protocol error:', err.message);
       return new Response('Error', { status: 500 });

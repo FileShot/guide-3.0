@@ -1,6 +1,6 @@
 {
   "name": "guide-ide",
-  "version": "0.4.61",
+  "version": "0.4.62",
   "description": "guIDE Local First IDE",
   "main": "electron-main.js",
   "scripts": {
@@ -16,7 +16,7 @@
     "release:minor": "npm version minor && git push && git push --tags",
     "release:major": "npm version major && git push && git push --tags",
     "postinstall": "cd frontend && npm install",
-    "test": "node tools/apiReturnSmoke.test.js && node tools/writeTodos.test.js && node tools/modelProfiles.test.js && node tools/samplingProfile.test.js && node tools/modelDetection.test.js && node tools/planModePrompt.test.js && node tools/fenceFlush.test.js && node tools/streamRouting.test.js && node tools/repairToolCalls.test.js && node tools/markdownFenceSplit.test.js && node tools/mediaArchMatrix.test.js && node tools/mediaAux.test.js && node tools/mediaAssets.test.js && node tools/gguf5dCompat.test.js && node tools/mediaEngine.test.js && node tools/mediaSmoke.test.js",
+    "test": "node tools/apiReturnSmoke.test.js && node tools/writeTodos.test.js && node tools/modelProfiles.test.js && node tools/samplingProfile.test.js && node tools/modelDetection.test.js && node tools/planModePrompt.test.js && node tools/fenceFlush.test.js && node tools/streamRouting.test.js && node tools/repairToolCalls.test.js && node tools/markdownFenceSplit.test.js && node tools/jsonStringChunkDecode.test.js && node tools/mediaArchMatrix.test.js && node tools/mediaAux.test.js && node tools/mediaAssets.test.js && node tools/gguf5dCompat.test.js && node tools/mediaEngine.test.js && node tools/mediaSmoke.test.js",
     "test:media-e2e": "node tools/mediaE2E.test.js"
   },
   "keywords": [

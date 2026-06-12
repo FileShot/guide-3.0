@@ -10,7 +10,7 @@ const {
   getAuxKeyFallbacks,
   getRequiredAuxKeys,
 } = require('./mediaAssetsCatalog');
-const { downloadFileWithMirrorRetry } = require('./mediaAssetsManager');
+const { downloadFileWithMirrorRetry, http401Hint } = require('./mediaAssetsManager');
 const { VRAM_LOW_MB } = require('./mediaConstants');
 
 const SETTING_KEYS = {
@@ -235,6 +235,7 @@ class MediaAuxResolver {
         resolved[auxKey] = await this._downloadAsset(asset, onProgress);
         return;
       } catch (e) {
+        this._downloadErrors[auxKey] = e.message;
         console.warn(`[MediaAux] Could not fetch ${asset.relPath}: ${e.message}`);
       }
     }
@@ -253,6 +254,7 @@ class MediaAuxResolver {
     const assetsById = Object.fromEntries(listAssetsForProfile(profileId).map((a) => [a.id, a]));
 
     const resolved = { ...scanSameDirectory(modelPath, profileId), ...pickFromSettings(settings) };
+    this._downloadErrors = {};
 
     for (const [auxKey, assetId] of Object.entries(auxKeyMap)) {
       await this._resolveAuxKey(auxKey, assetId, fallbacks, assetsById, resolved, onProgress, profileId);
@@ -276,9 +278,17 @@ class MediaAuxResolver {
         return k;
       });
       const profileLabel = profile?.label || profileId || 'media';
+      const downloadHints = missing
+        .map((k) => this._downloadErrors[k])
+        .filter(Boolean);
+      let detail = 'Place files beside your GGUF, set paths in Settings → Media, or retry to download.';
+      if (downloadHints.some((m) => /HTTP 401/i.test(m))) {
+        detail += http401Hint('https://huggingface.co/');
+      } else if (downloadHints.length > 0) {
+        detail += ` Download failed: ${downloadHints[downloadHints.length - 1]}`;
+      }
       throw new Error(
-        `[${profileLabel}] Missing required diffusion components: ${labels.join(', ')}. `
-        + 'Place files beside your GGUF, set paths in Settings → Media, or retry to download.',
+        `[${profileLabel}] Missing required diffusion components: ${labels.join(', ')}. ${detail}`,
       );
     }
 

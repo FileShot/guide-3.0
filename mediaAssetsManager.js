@@ -335,4 +335,5 @@ module.exports = {
   downloadFileWithRetry,
   downloadFileWithMirrorRetry,
   downloadHeaders,
+  http401Hint,
 };

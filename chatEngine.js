@@ -160,7 +160,11 @@ function _jsonUnescape(s) {
  *   escPending  — true if trailing \ needs next chunk to resolve
  *   ended       — true if unescaped " (end of JSON string) was found
  */
-const { jsonStringChunkDecode: _jsonStringChunkDecode } = require('./tools/jsonStringChunkDecode');
+const {
+  jsonStringChunkDecode: _jsonStringChunkDecode,
+  createJsonStringStreamState: _createJsonStringStreamState,
+  jsonStringStreamStep: _jsonStringStreamStep,
+} = require('./tools/jsonStringChunkDecode');
 
 function _decodeFenceContentEscape(ch) {
   switch (ch) {
@@ -1795,6 +1799,58 @@ class ChatEngine extends EventEmitter {
       let _sfStreamIsEdit = false;
       let _sfUnicodeCount = 0;
       let _sfUnicodeChars = '';
+      let _sfContentJsonState = _createJsonStringStreamState();
+
+      const _sfContentStreamInProgress = () => (
+        _sfContentStreamActive
+        || _sfContentJsonState.quotePending
+        || _sfContentJsonState.escPending
+        || _sfContentJsonState.unicodeCount > 0
+      );
+
+      const _sfResetContentJsonState = () => {
+        _sfContentJsonState = _createJsonStringStreamState();
+        _sfContentEsc = false;
+        _sfUnicodeCount = 0;
+        _sfUnicodeChars = '';
+      };
+
+      const _sfProcessContentStreamChar = (ch, phase) => {
+        const step = _jsonStringStreamStep(ch, _sfContentJsonState);
+        _sfContentJsonState = step.state;
+        _sfContentEsc = step.state.escPending;
+        _sfUnicodeCount = step.state.unicodeCount;
+
+        if (step.out) _sfContentBuf += step.out;
+
+        if (step.ended) {
+          _sfContentStreamActive = false;
+          _sfContentDone = true;
+          if (_sfContentBuf && onStreamEvent) {
+            _trace('sf-content-token-emit', { filePath: _sfContentFilePath, text: _sfContentBuf, phase: `${phase}-flush` });
+            onStreamEvent('file-content-token', _sfContentBuf);
+            _sfContentBuf = '';
+          }
+          const reason = step.endReason === 'structural-close'
+            ? `${phase}-structural-close`
+            : `${phase}-close-quote`;
+          if (onStreamEvent) {
+            _trace('sf-content-end', { reason, filePath: _sfContentFilePath, sf: _traceSfState() });
+            onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
+            _sfContentEndCompleted.add(_normalizePath(_sfContentFilePath));
+            _sfMarkFileContentStreamActive(null);
+          }
+          return;
+        }
+
+        if (_sfContentStreamActive && _sfContentBuf.length >= 1) {
+          if (onStreamEvent) {
+            _trace('sf-content-token-emit', { filePath: _sfContentFilePath, text: _sfContentBuf, phase });
+            onStreamEvent('file-content-token', _sfContentBuf);
+            _sfContentBuf = '';
+          }
+        }
+      };
 
       // enableThinkingFilter — when true, suppress thinking tokens from UI output
       const _thinkingFilterEnabled = !!options.enableThinkingFilter;
@@ -1839,8 +1895,9 @@ class ChatEngine extends EventEmitter {
         fileWriteDetected: _sfFileWriteDetected,
         contentStreamActive: _sfContentStreamActive,
         contentDone: _sfContentDone,
-        contentEsc: _sfContentEsc,
-        unicodeCount: _sfUnicodeCount,
+        contentEsc: _sfContentJsonState.escPending,
+        unicodeCount: _sfContentJsonState.unicodeCount,
+        quotePending: _sfContentJsonState.quotePending,
         depth: _sfDepth,
         inStr: _sfInStr,
         bufLen: _sfBuf.length,
@@ -1903,6 +1960,7 @@ class ChatEngine extends EventEmitter {
         _sfFileWriteDetected = true;
         _sfContentStreamActive = true;
         _sfContentDone = false;
+        _sfResetContentJsonState();
         _sfEarlyFileStartEmitted = true;
         _sfContentContinuation = null;
         this._fileContentStreamActivePath = resume.filePath;
@@ -1996,12 +2054,10 @@ class ChatEngine extends EventEmitter {
         _sfToolGeneratingStart = 0;
         _sfLastToolProgressAt = 0;
         _sfContentDone = false;
-        _sfContentEsc = false;
+        _sfResetContentJsonState();
         _sfContentOldText = '';
         _sfStreamIsEdit = false;
         _sfEarlyFileStartEmitted = false;
-        _sfUnicodeCount = 0;
-        _sfUnicodeChars = '';
         _sfThinkTagMatch = '';
         _sfInThink = false;     // ensure think-state never bleeds into the next generation
         _sfThinkBuf = '';
@@ -2036,9 +2092,7 @@ class ChatEngine extends EventEmitter {
         _sfFileWriteDetected = false;
         _sfToolCallNotified = false;
         _sfContentDone = false;
-        _sfContentEsc = false;
-        _sfUnicodeCount = 0;
-        _sfUnicodeChars = '';
+        _sfResetContentJsonState();
         _sfInThink = false;     // ensure think-state never bleeds into the next generation
         _sfThinkBuf = '';
         _sfFenceInThink = false;
@@ -2290,57 +2344,8 @@ class ChatEngine extends EventEmitter {
             }
 
             // Real-time content streaming from WITHIN a fenced tool call.
-            // Uses the same shared state variables as the raw JSON path.
             if (_sfContentStreamActive) {
-              if (_sfUnicodeCount > 0) {
-                _sfUnicodeChars += ch;
-                _sfUnicodeCount--;
-                if (_sfUnicodeCount === 0) {
-                  try { _sfContentBuf += String.fromCharCode(parseInt(_sfUnicodeChars, 16)); }
-                  catch { _sfContentBuf += '\\u' + _sfUnicodeChars; }
-                }
-              } else if (_sfContentEsc) {
-                let decoded;
-                switch (ch) {
-                  case 'n': decoded = '\n'; break;
-                  case 't': decoded = '\t'; break;
-                  case 'r': decoded = '\r'; break;
-                  case '"': decoded = '"'; break;
-                  case '\\': decoded = '\\'; break;
-                  case '/': decoded = '/'; break;
-                  case 'b': decoded = '\b'; break;
-                  case 'f': decoded = '\f'; break;
-                  case 'u': _sfUnicodeCount = 4; _sfUnicodeChars = ''; decoded = null; break;
-                  default: decoded = _decodeFenceContentEscape(ch);
-                }
-                _sfContentEsc = false;
-                if (decoded !== null) _sfContentBuf += decoded;
-              } else if (ch === '\\') {
-                _sfContentEsc = true;
-              } else if (ch === '"') {
-                _sfContentStreamActive = false;
-                _sfContentDone = true;
-                if (_sfContentBuf && onStreamEvent) {
-                  _trace('sf-content-token-emit', { filePath: _sfContentFilePath, text: _sfContentBuf, phase: 'fence-close-quote-flush' });
-                  onStreamEvent('file-content-token', _sfContentBuf);
-                  _sfContentBuf = '';
-                }
-                if (onStreamEvent) {
-                  _trace('sf-content-end', { reason: 'fence-close-quote', filePath: _sfContentFilePath, sf: _traceSfState() });
-                  onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
-                  _sfContentEndCompleted.add(_normalizePath(_sfContentFilePath));
-                  _sfMarkFileContentStreamActive(null);
-                }
-              } else {
-                _sfContentBuf += ch;
-              }
-              if (_sfContentStreamActive && _sfContentBuf.length >= 1) {
-                if (onStreamEvent) {
-                  _trace('sf-content-token-emit', { filePath: _sfContentFilePath, text: _sfContentBuf, phase: 'fence-stream' });
-                  onStreamEvent('file-content-token', _sfContentBuf);
-                  _sfContentBuf = '';
-                }
-              }
+              _sfProcessContentStreamChar(ch, 'fence-stream');
             } else if (_sfFileWriteDetected && !_sfContentDone) {
               const _startRe = _sfStreamIsEdit ? RE_NEW_TEXT_START : RE_CONTENT_START;
               if (ch === '"' && _startRe.test(_sfFenceBuf)) {
@@ -2353,6 +2358,7 @@ class ChatEngine extends EventEmitter {
                 if (shouldStreamFileContentForAgent(options, _sfContentFilePath)
                   && _sfShouldAllowNewFileContentStart(_sfContentFilePath)) {
                   _sfContentStreamActive = true;
+                  _sfResetContentJsonState();
                   const fileName = _sfContentFilePath.split(/[\\/]/).pop() || _sfContentFilePath;
                   const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
                   if (onStreamEvent) {
@@ -2408,7 +2414,7 @@ class ChatEngine extends EventEmitter {
             }
 
             // Detect closing ``` — but NOT while inside the content string
-            if (_sfContentStreamActive || _sfContentEsc || _sfUnicodeCount > 0) {
+            if (_sfContentStreamInProgress()) {
               _sfFenceTickCount = 0;
             } else if (ch === '`') {
               _sfFenceTickCount++;
@@ -2466,7 +2472,7 @@ class ChatEngine extends EventEmitter {
               _sfToolGeneratingStart = 0;
               _sfLastToolProgressAt = 0;
               _sfContentDone = false;
-              _sfContentEsc = false;
+              _sfResetContentJsonState();
               _sfLastCharWasNewlineOrStart = true;
               continue;
             }
@@ -2516,58 +2522,8 @@ class ChatEngine extends EventEmitter {
           _sfBuf += ch;
 
           // ── Real-time file content streaming ──
-          // When inside a confirmed file-write tool call, intercept the "content"
-          // field value and stream decoded characters to file-content-token events.
           if (_sfContentStreamActive) {
-            if (_sfUnicodeCount > 0) {
-              _sfUnicodeChars += ch;
-              _sfUnicodeCount--;
-              if (_sfUnicodeCount === 0) {
-                try { _sfContentBuf += String.fromCharCode(parseInt(_sfUnicodeChars, 16)); }
-                catch { _sfContentBuf += '\\u' + _sfUnicodeChars; }
-              }
-            } else if (_sfContentEsc) {
-              let decoded;
-              switch (ch) {
-                case 'n': decoded = '\n'; break;
-                case 't': decoded = '\t'; break;
-                case 'r': decoded = '\r'; break;
-                case '"': decoded = '"'; break;
-                case '\\': decoded = '\\'; break;
-                case '/': decoded = '/'; break;
-                case 'b': decoded = '\b'; break;
-                case 'f': decoded = '\f'; break;
-                case 'u': _sfUnicodeCount = 4; _sfUnicodeChars = ''; decoded = null; break;
-                default: decoded = _decodeFenceContentEscape(ch);
-              }
-              _sfContentEsc = false;
-              if (decoded !== null) _sfContentBuf += decoded;
-            } else if (ch === '\\') {
-              _sfContentEsc = true;
-            } else if (ch === '"') {
-              _sfContentStreamActive = false;
-              _sfContentDone = true;
-              if (_sfContentBuf && onStreamEvent) {
-                _trace('sf-content-token-emit', { filePath: _sfContentFilePath, text: _sfContentBuf, phase: 'json-close-quote-flush' });
-                onStreamEvent('file-content-token', _sfContentBuf);
-                _sfContentBuf = '';
-              }
-              if (onStreamEvent) {
-                _trace('sf-content-end', { reason: 'json-close-quote', filePath: _sfContentFilePath, sf: _traceSfState() });
-                onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
-                _sfContentEndCompleted.add(_normalizePath(_sfContentFilePath));
-                _sfMarkFileContentStreamActive(null);
-              }
-            } else {
-              _sfContentBuf += ch;
-            }
-            if (_sfContentStreamActive && _sfContentBuf.length >= 1) {
-              if (onStreamEvent) {
-                _trace('sf-content-token-emit', { filePath: _sfContentFilePath, text: _sfContentBuf, phase: 'json-stream' });
-                onStreamEvent('file-content-token', _sfContentBuf);
-                _sfContentBuf = '';
-              }
-            }
+            _sfProcessContentStreamChar(ch, 'json-stream');
           } else if (_sfConfirmed && _sfFileWriteDetected && !_sfContentDone) {
             const _startRe = _sfStreamIsEdit ? RE_NEW_TEXT_START : RE_CONTENT_START;
             if (ch === '"' && _startRe.test(_sfBuf)) {
@@ -2580,6 +2536,7 @@ class ChatEngine extends EventEmitter {
               if (shouldStreamFileContentForAgent(options, _sfContentFilePath)
                 && _sfShouldAllowNewFileContentStart(_sfContentFilePath)) {
                 _sfContentStreamActive = true;
+                _sfResetContentJsonState();
                 const fileName = _sfContentFilePath.split(/[\\/]/).pop() || _sfContentFilePath;
                 const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
                 if (onStreamEvent) {
@@ -2845,7 +2802,8 @@ class ChatEngine extends EventEmitter {
           if (!_fcStreams.has(callIndex)) {
             _fcStreams.set(callIndex, {
               logBuf: '', buf: '', phase: 0, chunkCount: 0,
-              filePath: '', fileName: '', ext: '', escPending: false,
+              filePath: '', fileName: '', ext: '',
+              jsonState: _createJsonStringStreamState(),
               startEmitted: false, oldText: '',
             });
             // File stream ops use FileContentBlock / FileDiffBlock — others get tool-generating card
@@ -2948,14 +2906,14 @@ class ChatEngine extends EventEmitter {
               }
               const after = contentMatch[1];
               if (after) {
-                const { out, escPending, ended } = _jsonStringChunkDecode(after, false);
+                const { out, state, ended } = _jsonStringChunkDecode(after, s.jsonState);
+                s.jsonState = state;
                 if (out && onStreamEvent) onStreamEvent('file-content-token', out);
                 if (ended) {
                   if (onStreamEvent) onStreamEvent('file-content-end', { filePath: s.filePath, fileKey: s.filePath });
                   s.phase = 2;
                   return;
                 }
-                s.escPending = escPending;
               }
             }
 
@@ -2964,13 +2922,12 @@ class ChatEngine extends EventEmitter {
               s.phase = 2;
             }
           } else if (s.phase === 1) {
-            const { out, escPending, ended } = _jsonStringChunkDecode(paramsChunk, s.escPending);
+            const { out, state, ended } = _jsonStringChunkDecode(paramsChunk, s.jsonState);
+            s.jsonState = state;
             if (out && onStreamEvent) onStreamEvent('file-content-token', out);
             if (ended || done) {
               if (onStreamEvent) onStreamEvent('file-content-end', { filePath: s.filePath, fileKey: s.filePath });
               s.phase = 2;
-            } else {
-              s.escPending = escPending;
             }
           }
         };
@@ -3136,8 +3093,7 @@ class ChatEngine extends EventEmitter {
         _sfInStr = false; _sfEscaped = false; _sfLastCharWasNewlineOrStart = true;
         _sfInFence = false; _sfFenceBuf = ''; _sfFenceTickCount = 0;
         _sfFileWriteDetected = false; _sfContentStreamActive = false; _sfContentDone = false;
-        _sfContentEsc = false; _sfContentBuf = ''; _sfContentFilePath = '';
-        _sfUnicodeCount = 0; _sfUnicodeChars = '';
+        _sfResetContentJsonState(); _sfContentBuf = ''; _sfContentFilePath = '';
         _sfInThink = false; _sfThinkBuf = ''; _sfThinkTagMatch = '';
         _sfFenceInThink = false;
         _sfFenceStreamPlain = false; _sfFencePlainTick = 0;
@@ -3344,8 +3300,7 @@ class ChatEngine extends EventEmitter {
               _sfInStr = false; _sfEscaped = false; _sfLastCharWasNewlineOrStart = true;
               _sfInFence = false; _sfFenceBuf = ''; _sfFenceTickCount = 0;
               _sfFileWriteDetected = false; _sfContentStreamActive = false; _sfContentDone = false;
-              _sfContentEsc = false; _sfContentBuf = ''; _sfContentFilePath = '';
-              _sfUnicodeCount = 0; _sfUnicodeChars = '';
+              _sfResetContentJsonState(); _sfContentBuf = ''; _sfContentFilePath = '';
               _sfInThink = false; _sfThinkBuf = ''; _sfThinkTagMatch = '';
               _sfFenceInThink = false;
               _sfFenceStreamPlain = false; _sfFencePlainTick = 0;
@@ -4042,11 +3997,9 @@ class ChatEngine extends EventEmitter {
           _sfFileWriteDetected = false;
           _sfContentStreamActive = false;
           _sfContentDone = false;
-          _sfContentEsc = false;
+          _sfResetContentJsonState();
           _sfContentBuf = '';
           _sfContentFilePath = '';
-          _sfUnicodeCount = 0;
-          _sfUnicodeChars = '';
           // Keep cumulative visible count across tool-loop continuations (matches seamless continuation).
           _sfInThink = false;
           _sfThinkBuf = '';
