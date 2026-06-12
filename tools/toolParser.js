@@ -1474,5 +1474,4 @@ module.exports = {
   _recoverWriteFileContent,
   _inferFilePath,
   _looksLikeRealFilePath,
-  repairToolCalls,
 };
