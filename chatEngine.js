@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { pathToFileURL } = require('url');
-const { parseToolCalls, repairToolCalls, stripToolCallText, isVisibleToolArtifact, looksLikeToolAttempt, suggestClosestToolName } = require('./tools/toolParser');
+const { parseToolCalls, repairToolCalls, stripToolCallText, isVisibleToolArtifact, looksLikeToolAttempt, suggestClosestToolName, extractPartialWriteFileFromToolJson, normalizeStreamingFilePath } = require('./tools/toolParser');
 const { formatToolResultForInject, buildToolResultsUserMessage } = require('./tools/toolResultInjection');
 const { canonicalizeToolParams } = require('./tools/canonicalizeToolParams');
 const { visionServer } = require('./visionServer');
@@ -1800,9 +1800,12 @@ class ChatEngine extends EventEmitter {
       let _sfUnicodeCount = 0;
       let _sfUnicodeChars = '';
       let _sfContentJsonState = _createJsonStringStreamState();
+      let _sfFenceStreamedLen = 0;
+      let _sfFenceContentStreaming = false;
 
       const _sfContentStreamInProgress = () => (
         _sfContentStreamActive
+        || _sfFenceContentStreaming
         || _sfContentJsonState.quotePending
         || _sfContentJsonState.escPending
         || _sfContentJsonState.unicodeCount > 0
@@ -1878,7 +1881,8 @@ class ChatEngine extends EventEmitter {
       // Canonicalize paths for dedup — backslashes→forward-slashes, collapse dupes, lowercase drive letter.
       const _normalizePath = (p) => {
         if (!p) return '';
-        const n = String(p).trim().replace(/\\/g, '/').replace(/\/+/g, '/');
+        const trimmed = normalizeStreamingFilePath(p);
+        const n = trimmed.replace(/\\/g, '/').replace(/\/+/g, '/');
         if (!n) return '';
         return /^[a-z]:\//i.test(n) ? n.toLowerCase() : n;
       };
@@ -1935,7 +1939,7 @@ class ChatEngine extends EventEmitter {
       });
 
       const _sfOnToolJsonFenceClose = (fenceBuf) => {
-        if (!_sfContentStreamActive && !_sfEarlyFileStartEmitted) {
+        if (!_sfFenceContentStreaming && !_sfEarlyFileStartEmitted) {
           _sfBulkReplayFileContentFromFence(fenceBuf, _sfBulkReplayCtx());
         }
         _sfSwallowFenceDebris = true;
@@ -1982,15 +1986,16 @@ class ChatEngine extends EventEmitter {
         const fileToolLikely = _sfFileWriteDetected
           || (RE_FILE_STREAM_TOOLS.test(buf) && RE_FILE_PATH.test(buf) && _sfIsToolLikeJson(buf));
         if (_sfEarlyFileStartEmitted || !fileToolLikely || _sfContentDone || !onStreamEvent) return;
-        const fpM = buf.match(RE_FILE_PATH);
-        if (!fpM) return;
-        const filePath = _jsonUnescape(fpM[1]);
-        if (!filePath || !shouldStreamFileContentForAgent(options, filePath)) return;
+        const partial = extractPartialWriteFileFromToolJson(buf);
+        if (!partial?.filePath || !partial.content || partial.content.length === 0) return;
+        const filePath = partial.filePath;
+        if (!shouldStreamFileContentForAgent(options, filePath)) return;
         const np = _normalizePath(filePath);
         if (_sfStreamedFileWrites.has(np)) return;
         if (!_sfShouldAllowNewFileContentStart(filePath)) return;
         _sfEarlyFileStartEmitted = true;
         _sfContentFilePath = filePath;
+        _sfStreamIsEdit = !!partial.isEdit;
         if (_sfStreamIsEdit && !_sfContentOldText) {
           const oldM = buf.match(RE_OLD_TEXT_CAPTURE);
           if (oldM) _sfContentOldText = _jsonUnescape(oldM[1]);
@@ -2005,8 +2010,79 @@ class ChatEngine extends EventEmitter {
           op: _sfStreamIsEdit ? 'edit' : 'write',
           oldText: _sfContentOldText || undefined,
         });
+        onStreamEvent('file-content-token', partial.content);
         _sfStreamedFileWrites.add(np);
         _sfMarkFileContentStreamActive(filePath);
+      };
+
+      const _sfEmitFenceContentDelta = (opts = {}) => {
+        if (!_sfFileWriteDetected && !(RE_FILE_STREAM_TOOLS.test(_sfFenceBuf) && RE_FILE_PATH.test(_sfFenceBuf))) {
+          return;
+        }
+        const partial = extractPartialWriteFileFromToolJson(_sfFenceBuf, {
+          stripCompleteSuffix: !!opts.stripCompleteSuffix,
+        });
+        if (!partial?.filePath) return;
+        const filePath = partial.filePath;
+        const content = partial.content ?? '';
+        if (!shouldStreamFileContentForAgent(options, filePath)) return;
+        if (content.length === 0) return;
+        const np = _normalizePath(filePath);
+        if (!_sfFenceContentStreaming) {
+          if (_sfStreamedFileWrites.has(np)) return;
+          if (!_sfShouldAllowNewFileContentStart(filePath)) return;
+          _sfFenceContentStreaming = true;
+          _sfContentFilePath = filePath;
+          _sfStreamIsEdit = !!partial.isEdit;
+          if (_sfStreamIsEdit && !_sfContentOldText) {
+            const oldM = _sfFenceBuf.match(RE_OLD_TEXT_CAPTURE);
+            if (oldM) _sfContentOldText = _jsonUnescape(oldM[1]);
+          }
+          const fileName = filePath.split(/[\\/]/).pop() || filePath;
+          const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+          if (onStreamEvent) {
+            _trace('sf-content-start', { filePath, phase: 'fence-delta' });
+            onStreamEvent('file-content-start', {
+              filePath,
+              fileName,
+              language: ext,
+              fileKey: filePath,
+              op: _sfStreamIsEdit ? 'edit' : 'write',
+              oldText: _sfContentOldText || undefined,
+            });
+          }
+          _sfStreamedFileWrites.add(np);
+          _sfMarkFileContentStreamActive(filePath);
+          _sfEarlyFileStartEmitted = true;
+        }
+        if (content.length > _sfFenceStreamedLen) {
+          const delta = content.slice(_sfFenceStreamedLen);
+          _sfFenceStreamedLen = content.length;
+          if (onStreamEvent && delta) {
+            _trace('sf-content-token-emit', { filePath, textLen: delta.length, phase: 'fence-delta' });
+            onStreamEvent('file-content-token', delta);
+          }
+        }
+      };
+
+      const _sfFinalizeFenceContentStream = () => {
+        if (!_sfFenceContentStreaming || !onStreamEvent) return;
+        _sfEmitFenceContentDelta({ stripCompleteSuffix: true });
+        const info = _sfExtractFileWriteFromToolFence(_sfFenceBuf);
+        if (info?.filePath && info.content != null) {
+          const full = String(info.content);
+          if (full.length > _sfFenceStreamedLen) {
+            onStreamEvent('file-content-token', full.slice(_sfFenceStreamedLen));
+            _sfFenceStreamedLen = full.length;
+          }
+        }
+        _trace('sf-content-end', { reason: 'fence-close', filePath: _sfContentFilePath, sf: _traceSfState() });
+        onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
+        _sfContentEndCompleted.add(_normalizePath(_sfContentFilePath));
+        _sfMarkFileContentStreamActive(null);
+        _sfFenceContentStreaming = false;
+        _sfFenceStreamedLen = 0;
+        _sfContentDone = true;
       };
 
       const _sfForward = (text) => {
@@ -2343,40 +2419,9 @@ class ChatEngine extends EventEmitter {
               // Tool-fence languages (json/tool/…) or tool-shaped body — keep buffering until close.
             }
 
-            // Real-time content streaming from WITHIN a fenced tool call.
-            if (_sfContentStreamActive) {
-              _sfProcessContentStreamChar(ch, 'fence-stream');
-            } else if (_sfFileWriteDetected && !_sfContentDone) {
-              const _startRe = _sfStreamIsEdit ? RE_NEW_TEXT_START : RE_CONTENT_START;
-              if (ch === '"' && _startRe.test(_sfFenceBuf)) {
-                const fpMatch = _sfFenceBuf.match(RE_FILE_PATH);
-                _sfContentFilePath = fpMatch ? fpMatch[1] : '';
-                if (_sfStreamIsEdit) {
-                  const oldM = _sfFenceBuf.match(RE_OLD_TEXT_CAPTURE);
-                  if (oldM) _sfContentOldText = _jsonUnescape(oldM[1]);
-                }
-                if (shouldStreamFileContentForAgent(options, _sfContentFilePath)
-                  && _sfShouldAllowNewFileContentStart(_sfContentFilePath)) {
-                  _sfContentStreamActive = true;
-                  _sfResetContentJsonState();
-                  const fileName = _sfContentFilePath.split(/[\\/]/).pop() || _sfContentFilePath;
-                  const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
-                  if (onStreamEvent) {
-                    onStreamEvent('file-content-start', {
-                      filePath: _sfContentFilePath,
-                      fileName,
-                      language: ext,
-                      fileKey: _sfContentFilePath,
-                      op: _sfStreamIsEdit ? 'edit' : 'write',
-                      oldText: _sfContentOldText || undefined,
-                    });
-                  }
-                  _sfStreamedFileWrites.add(_normalizePath(_sfContentFilePath));
-                  _sfMarkFileContentStreamActive(_sfContentFilePath);
-                } else {
-                  _sfContentDone = true;
-                }
-              }
+            // Real-time content streaming from WITHIN a fenced tool call (fence-buffer delta).
+            if (_sfFileWriteDetected || (RE_FILE_STREAM_TOOLS.test(_sfFenceBuf) && RE_FILE_PATH.test(_sfFenceBuf))) {
+              _sfEmitFenceContentDelta();
             }
             // Emit tool-generating for ANY tool call inside a fence (not just file-write)
             if (!_sfToolCallNotified && _sfFenceBuf.length > 30) {
@@ -2409,9 +2454,6 @@ class ChatEngine extends EventEmitter {
                 _sfStreamIsEdit = RE_FILE_EDIT_TOOLS.test(_sfFenceBuf);
               }
             }
-            if (!_sfContentDone && (_sfFileWriteDetected || (RE_FILE_STREAM_TOOLS.test(_sfFenceBuf) && RE_FILE_PATH.test(_sfFenceBuf)))) {
-              _tryEarlyFileContentStart(_sfFenceBuf);
-            }
 
             // Detect closing ``` — but NOT while inside the content string
             if (_sfContentStreamInProgress()) {
@@ -2424,7 +2466,9 @@ class ChatEngine extends EventEmitter {
 
             if (_sfFenceTickCount >= 3) {
               // Closing fence found — flush any pending content
-              if (_sfContentStreamActive && onStreamEvent) {
+              if (_sfFenceContentStreaming) {
+                _sfFinalizeFenceContentStream();
+              } else if (_sfContentStreamActive && onStreamEvent) {
                 if (_sfContentBuf) {
                   onStreamEvent('file-content-token', _sfContentBuf);
                   _sfContentBuf = '';
@@ -2472,6 +2516,8 @@ class ChatEngine extends EventEmitter {
               _sfToolGeneratingStart = 0;
               _sfLastToolProgressAt = 0;
               _sfContentDone = false;
+              _sfFenceContentStreaming = false;
+              _sfFenceStreamedLen = 0;
               _sfResetContentJsonState();
               _sfLastCharWasNewlineOrStart = true;
               continue;

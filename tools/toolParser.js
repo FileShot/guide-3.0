@@ -1452,6 +1452,118 @@ function addValidTool(name) {
   }
 }
 
+const FILE_STREAM_TOOLS_RE = /write_file|create_file|append_to_file|edit_file|replace_in_file/;
+const FILE_EDIT_TOOLS_RE = /edit_file|replace_in_file/;
+
+function _tpJsonUnescapeQuoted(s) {
+  if (!s) return '';
+  try { return JSON.parse(`"${s}"`); } catch { return s; }
+}
+
+/** Trim trailing path separators and collapse doubled backslashes from JSON path values. */
+function normalizeStreamingFilePath(filePath) {
+  if (!filePath) return '';
+  let p = String(filePath).trim();
+  p = p.replace(/[\\/]+$/, '');
+  return p;
+}
+
+function _tpExtractPathFromPartialToolJson(slice) {
+  const complete = slice.match(/"(?:filePath|path)"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  if (complete) return normalizeStreamingFilePath(_tpJsonUnescapeQuoted(complete[1]));
+  const partial = slice.match(/"(?:filePath|path)"\s*:\s*"((?:\\.|[^"\\])*)$/);
+  if (partial) return normalizeStreamingFilePath(_tpJsonUnescapeQuoted(partial[1]));
+  return null;
+}
+
+function _tpDecodeJsonEscapeChar(ch) {
+  switch (ch) {
+    case 'n': return '\n';
+    case 't': return '\t';
+    case 'r': return '\r';
+    case '"': return '"';
+    case '\\': return '\\';
+    case '/': return '/';
+    case 'b': return '\b';
+    case 'f': return '\f';
+    default: return `\\${ch}`;
+  }
+}
+
+function _tpFindContentValueStart(slice, contentKey) {
+  const fieldRe = new RegExp(`\\\\*"${contentKey}\\\\*"\\s*:\\s*\\\\*"`);
+  const escaped = slice.match(fieldRe);
+  if (escaped) return escaped.index + escaped[0].length;
+  const plainRe = new RegExp(`"${contentKey}"\\s*:\\s*"`);
+  const plain = slice.match(plainRe);
+  if (plain) return plain.index + plain[0].length;
+  return -1;
+}
+
+/**
+ * Decode a partial JSON string body (no opening quote). Never treats interior `"` as end —
+ * scans to buffer end so JS/HTML like keys["left"], stays intact during live streaming.
+ */
+function _tpDecodePartialJsonStringRaw(raw, stripCompleteSuffix) {
+  let work = raw;
+  if (stripCompleteSuffix) {
+    work = work.replace(/"\s*\}\s*\}\s*\]?\s*$/, '');
+    work = work.replace(/"\s*\}\s*$/, '');
+  }
+  let out = '';
+  let i = 0;
+  while (i < work.length) {
+    const ch = work[i];
+    if (ch === '\\') {
+      if (i + 1 >= work.length) break;
+      if (work[i + 1] === 'u') {
+        if (i + 5 < work.length) {
+          const hex = work.slice(i + 2, i + 6);
+          if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+            out += String.fromCharCode(parseInt(hex, 16));
+            i += 6;
+            continue;
+          }
+        }
+        break;
+      }
+      out += _tpDecodeJsonEscapeChar(work[i + 1]);
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * Extract filePath + partial content from an in-progress write_file tool JSON fence buffer.
+ * Safe on truncated/malformed JSON — forward-scans after content opening quote.
+ */
+function extractPartialWriteFileFromToolJson(text, options = {}) {
+  if (!text || typeof text !== 'string') return null;
+  const toolMatch = text.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
+  if (!toolMatch) return null;
+  const toolName = TOOL_NAME_ALIASES[toolMatch[1].toLowerCase()] || toolMatch[1].toLowerCase();
+  if (!FILE_STREAM_TOOLS_RE.test(toolName)) return null;
+
+  const filePath = _tpExtractPathFromPartialToolJson(text);
+  if (!filePath) return null;
+
+  const isEdit = FILE_EDIT_TOOLS_RE.test(toolName);
+  const contentKey = isEdit ? 'newText' : 'content';
+  const contentStart = _tpFindContentValueStart(text, contentKey);
+  if (contentStart < 0) return null;
+
+  const content = _tpDecodePartialJsonStringRaw(
+    text.slice(contentStart),
+    !!options.stripCompleteSuffix,
+  );
+
+  return { filePath, content, isEdit };
+}
+
 module.exports = {
   TOOL_NAME_ALIASES,
   VALID_TOOLS,
@@ -1474,4 +1586,6 @@ module.exports = {
   _recoverWriteFileContent,
   _inferFilePath,
   _looksLikeRealFilePath,
+  extractPartialWriteFileFromToolJson,
+  normalizeStreamingFilePath,
 };

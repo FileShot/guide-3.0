@@ -111,6 +111,8 @@ function canonicalizeStreamingFilePath(filePath) {
 
     .trim()
 
+    .replace(/[\\/]+$/, '')
+
     .replace(/\\/g, '/')
 
     .replace(/\/+/g, '/');
