@@ -4,7 +4,7 @@
  */
 import useAppStore from '../stores/appStore';
 import { installUpdateNow, updateVersionLabel } from '../lib/updateStatus';
-import { GitBranch, AlertTriangle, AlertCircle, Cpu, Zap, HardDrive, Radio, Download, Loader2, ImageIcon } from 'lucide-react';
+import { GitBranch, AlertTriangle, AlertCircle, Cpu, Zap, HardDrive, Radio, Download, Loader2, ImageIcon, Info } from 'lucide-react';
 import { useEffect, useState, useRef } from 'react';
 
 export default function StatusBar() {
@@ -46,6 +46,9 @@ export default function StatusBar() {
   const liveServerUrl = useAppStore(s => s.liveServerUrl);
   const setLiveServerStatus = useAppStore(s => s.setLiveServerStatus);
   const addNotification = useAppStore(s => s.addNotification);
+  const statusBarMessage = useAppStore(s => s.statusBarMessage);
+  const clearStatusBarMessage = useAppStore(s => s.clearStatusBarMessage);
+  const activeMediaModel = useAppStore(s => s.activeMediaModel);
   const vramWarning = useAppStore(s => s.vramWarning);
   const clearVramWarning = useAppStore(s => s.clearVramWarning);
   const updateStatus = useAppStore(s => s.updateStatus);
@@ -274,7 +277,7 @@ export default function StatusBar() {
           </div>
         )}
 
-        {mediaStatus?.message && (
+        {mediaStatus?.message ? (
           <button
             type="button"
             className={`statusbar-item shrink-0 max-w-[280px] truncate flex items-center gap-1.5 ${
@@ -290,7 +293,24 @@ export default function StatusBar() {
             {mediaStatus.phase === 'error' && <AlertCircle size={11} className="shrink-0" />}
             <span className="truncate">{mediaStatus.message}</span>
           </button>
-        )}
+        ) : statusBarMessage?.message ? (
+          <button
+            type="button"
+            className={`statusbar-item shrink-0 max-w-[320px] truncate flex items-center gap-1.5 ${
+              statusBarMessage.type === 'error' ? 'text-vsc-error'
+                : statusBarMessage.type === 'warning' ? 'text-vsc-warning'
+                : statusBarMessage.type === 'success' ? 'text-vsc-success'
+                : 'text-vsc-info'
+            }`}
+            title={statusBarMessage.message}
+            onClick={() => clearStatusBarMessage()}
+          >
+            {statusBarMessage.type === 'error' ? <AlertCircle size={11} className="shrink-0" />
+              : statusBarMessage.type === 'warning' ? <AlertTriangle size={11} className="shrink-0" />
+              : <Info size={11} className="shrink-0" />}
+            <span className="truncate">{statusBarMessage.message}</span>
+          </button>
+        ) : null}
 
         {projectPath && !hideLeftGit && (
           <div className="relative shrink-0" ref={branchMenuRef}>
@@ -483,11 +503,27 @@ export default function StatusBar() {
             </div>
           </div>
         ) : (
-          <button className="statusbar-item" onClick={() => setActiveActivity('settings')} title={modelInfo ? `${modelInfo.name} (${modelInfo.contextSize?.toLocaleString?.() ?? modelInfo.contextSize} ctx${modelInfo.contextSizeRequested === 'auto' && modelInfo.contextTrainMax ? `, train max ${modelInfo.contextTrainMax.toLocaleString()}` : ''})` : 'No model'}>
-            <Cpu size={12} className="mr-1" />
+          <button className="statusbar-item" onClick={() => setActiveActivity('settings')} title={
+            modelLoaded && modelInfo
+              ? `${modelInfo.name} (${modelInfo.contextSize?.toLocaleString?.() ?? modelInfo.contextSize} ctx${modelInfo.contextSizeRequested === 'auto' && modelInfo.contextTrainMax ? `, train max ${modelInfo.contextTrainMax.toLocaleString()}` : ''})`
+              : activeMediaModel?.modelPath
+                ? `${activeMediaModel.modelType === 'video' ? 'Video' : 'Image'}: ${activeMediaModel.modelPath.split(/[/\\]/).pop()}`
+                : 'No model'
+          }>
+            {activeMediaModel?.modelPath && !modelLoaded ? (
+              <ImageIcon size={12} className="mr-1" />
+            ) : (
+              <Cpu size={12} className="mr-1" />
+            )}
             {modelLoaded && modelInfo ? (
               !hideModelName && (
                 <span className="truncate max-w-[120px]">{modelInfo.name || modelInfo.family}</span>
+              )
+            ) : activeMediaModel?.modelPath ? (
+              !hideModelName && (
+                <span className="truncate max-w-[140px]">
+                  {activeMediaModel.modelType === 'video' ? 'Video' : 'Image'}: {activeMediaModel.modelPath.split(/[/\\]/).pop()}
+                </span>
               )
             ) : (
               <span className="opacity-70">No Model</span>

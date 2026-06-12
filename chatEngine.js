@@ -10,7 +10,7 @@ const { formatToolResultForInject, buildToolResultsUserMessage } = require('./to
 const { canonicalizeToolParams } = require('./tools/canonicalizeToolParams');
 const { visionServer } = require('./visionServer');
 const { detectFamily, detectFamilyFromArch, detectParamSize } = require('./modelDetection');
-const { getModelProfile } = require('./modelProfiles');
+const { getModelProfile, resolveSamplingProfile, resolveAgentDryRepeatPenalty } = require('./modelProfiles');
 const {
   PLAN_MODE_ALLOWED_TOOLS,
   filterPlanModeToolCalls,
@@ -2673,23 +2673,15 @@ class ChatEngine extends EventEmitter {
         else if (reasoningEffort === 'medium') thinkBudget = 2048;
         else if (reasoningEffort === 'high') thinkBudget = 8192;
       }
-      // Fix C: Adaptive sampling — when thinking is NOT active (budget=0 or mode=none),
-      // use samplingInstruct profile if the model family provides one. This ensures
-      // Qwen models get presencePenalty=1.5 in instruct mode (preventing loops) and
-      // presencePenalty=0 in thinking mode (per official vendor recommendations).
       const _thinkingActive = thinkBudget > 0 && profileThinkMode !== 'none';
-      let _samplingProfile = (!_thinkingActive && this._modelProfile?.samplingInstruct)
-        ? this._modelProfile.samplingInstruct
-        : this._modelProfile?.sampling;
       const _agentToolLoop = _toolsEnabled && !options.askOnly;
-      if (_agentToolLoop && _thinkingActive && this._modelProfile?.samplingCoding) {
-        _samplingProfile = { ..._samplingProfile, ...this._modelProfile.samplingCoding };
-      }
+      const _samplingProfile = resolveSamplingProfile(this._modelProfile, {
+        agentToolLoop: _agentToolLoop,
+        thinkingActive: _thinkingActive,
+      });
       const genOptions = {
         signal: this._abortController.signal,
         stopOnAbortSignal: true,
-        // P3 + Fix C: Per-family/tier sampling defaults from modelProfiles.js. Caller's options override.
-        // When thinking is off, samplingInstruct is used (if defined) for instruct-mode settings.
         temperature: (options.temperature != null && !options.temperatureIsDefault)
           ? options.temperature
           : (_samplingProfile?.temperature ?? options.temperature ?? 0.4),
@@ -2703,6 +2695,7 @@ class ChatEngine extends EventEmitter {
           presencePenalty: options.presencePenalty ?? _samplingProfile?.presencePenalty ?? 0,
           lastTokens: _samplingProfile?.lastTokensPenaltyCount ?? 128,
         },
+        dryRepeatPenalty: resolveAgentDryRepeatPenalty(_agentToolLoop),
         seed: options.seed ?? undefined,
         contextShift: { strategy: this._contextShiftStrategy.bind(this) },
         onTextChunk: (chunk) => {

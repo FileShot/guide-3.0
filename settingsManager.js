@@ -102,6 +102,7 @@ const SETTINGS_DEFAULTS = {
   mediaTaePath: null,
   mediaClipPath: null,
   mediaClipGPath: null,
+  mediaHfToken: null,
   mediaT5Path: null,
   mediaOffloadPolicy: 'auto', // auto | max | off — maps to sd.cpp CPU offload flags (not llama gpuLayers)
   mediaVideoFrames: 0, // 0 = auto by VRAM tier

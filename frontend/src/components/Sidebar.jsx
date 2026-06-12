@@ -1638,6 +1638,17 @@ function MediaSettings({ settings, updateSetting, addNotification }) {
         <div className="text-[11px] mb-2 text-vsc-text-dim">No media model loaded — pick a diffusion/video GGUF from the model menu.</div>
       )}
       <div className="mb-2">
+        <label className="text-[11px] text-vsc-text-dim block mb-1">Hugging Face token (optional)</label>
+        <input
+          type="password"
+          className="w-full text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text focus:outline-none focus:border-vsc-accent/50"
+          value={settings.mediaHfToken || ''}
+          onChange={e => updateSetting('mediaHfToken', e.target.value)}
+          placeholder="For gated diffusion weights — or set HF_TOKEN env var"
+          autoComplete="off"
+        />
+      </div>
+      <div className="mb-2">
         <span className="text-[11px] text-vsc-text-dim">Bundled sd.exe: </span>
         <span className={sdStatus?.sdBinaryFound ? 'text-vsc-success text-[11px]' : 'text-vsc-warning text-[11px]'}>
           {sdStatus?.sdBinaryFound ? 'found' : 'missing — run node scripts/fetch-sd-cpp.js'}

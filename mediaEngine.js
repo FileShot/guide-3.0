@@ -12,7 +12,7 @@ const {
   is5dTensorStderr,
 } = require('./mediaAssetsCatalog');
 const { needs5dFix, apply5dFix, is5dCompatArch } = require('./gguf5dCompat');
-const { VRAM_TIGHT_MB, VRAM_LOW_MB, WIN_DLL_NOT_FOUND } = require('./mediaConstants');
+const { VRAM_TIGHT_MB, VRAM_LOW_MB, WIN_DLL_NOT_FOUND, WIN_STACK_OVERRUN } = require('./mediaConstants');
 const streamTrace = require('./streamTrace');
 
 function queryGpuVramMB() {
@@ -166,6 +166,11 @@ function formatSdExitError(code, stderr) {
 
   const excerpt = (errorLines.length ? errorLines.slice(-5) : lines.slice(-6)).join('\n');
 
+  if (code === WIN_STACK_OVERRUN || code === -1073740791) {
+    return 'stable-diffusion.cpp crashed (stack buffer overrun). '
+      + 'Try a smaller resolution, fewer steps, or Settings → Media → Max save VRAM policy.'
+      + (excerpt ? `\n\n${excerpt}` : '');
+  }
   if (code === WIN_DLL_NOT_FOUND || code === -1073741515) {
     return 'stable-diffusion.cpp could not start (missing GPU runtime DLLs). '
       + 'Reinstall guIDE or set Settings → Media → sd.cpp path to a local sd.exe with its DLLs.'
@@ -177,6 +182,8 @@ function formatSdExitError(code, stderr) {
 }
 
 function _isLaunchFailure(code) {
+  if (code == null) return false;
+  if (code === WIN_STACK_OVERRUN || code === -1073740791) return false;
   return code === WIN_DLL_NOT_FOUND || code === -1073741515;
 }
 
@@ -667,6 +674,7 @@ module.exports = {
   formatSdExitError,
   WAN_VIDEO_FPS,
   WIN_DLL_NOT_FOUND,
+  WIN_STACK_OVERRUN,
   VRAM_LOW_MB,
   VRAM_TIGHT_MB,
 };

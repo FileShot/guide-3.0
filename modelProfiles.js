@@ -1,6 +1,6 @@
 'use strict';
 
-const { getGenerationProfile } = require('./generationProfiles');
+const { getGenerationProfile, buildStructuredOutputSampling, STRUCTURED_OUTPUT_FLOORS } = require('./generationProfiles');
 const { detectFamilyFromArch } = require('./modelDetection');
 
 // ─── Tier Boundaries ───
@@ -32,6 +32,12 @@ const BASE_DEFAULTS = {
     frequencyPenalty: 0,
     presencePenalty: 0,
     lastTokensPenaltyCount: 128,
+  },
+  samplingStructuredOutput: {
+    repeatPenalty: STRUCTURED_OUTPUT_FLOORS.repeatPenalty,
+    presencePenalty: STRUCTURED_OUTPUT_FLOORS.presencePenalty,
+    lastTokensPenaltyCount: STRUCTURED_OUTPUT_FLOORS.lastTokensPenaltyCount,
+    frequencyPenalty: 0,
   },
   context: {
     // Default to generous context — hardware limits (_computeMaxContext) will cap based on actual RAM
@@ -518,9 +524,6 @@ function getModelProfile(ggufArchOrFamily, paramSize, options = {}) {
 
   if (genProfile) {
     profile = deepMerge(profile, genProfile);
-    if (options.agentMode && genProfile.samplingCoding) {
-      profile.sampling = deepMerge(profile.sampling || {}, genProfile.samplingCoding);
-    }
   } else if (familyDef) {
     profile = deepMerge(profile, familyDef.base || {});
     console.warn(`[modelProfiles] No GENERATION_PROFILES entry for arch="${arch}" — using legacy family bucket "${family}"`);
@@ -541,6 +544,13 @@ function getModelProfile(ggufArchOrFamily, paramSize, options = {}) {
     if (!genProfile) profile = deepMerge(profile, basePatch);
   }
 
+  if (!profile.samplingStructuredOutput) {
+    profile.samplingStructuredOutput = buildStructuredOutputSampling(
+      profile.sampling,
+      profile.samplingInstruct,
+    );
+  }
+
   profile._meta = {
     arch: arch || 'unknown',
     family: family || 'unknown',
@@ -552,6 +562,34 @@ function getModelProfile(ggufArchOrFamily, paramSize, options = {}) {
   };
 
   return profile;
+}
+
+/**
+ * Pick sampling params for a generation call.
+ * Agent tool loops use structured-output anti-loop profile; ask-only keeps vendor thinking/chat.
+ */
+function resolveSamplingProfile(modelProfile, { agentToolLoop, thinkingActive } = {}) {
+  if (!modelProfile) return { ...BASE_DEFAULTS.samplingStructuredOutput };
+  if (agentToolLoop) {
+    return modelProfile.samplingStructuredOutput
+      || modelProfile.samplingInstruct
+      || modelProfile.sampling
+      || BASE_DEFAULTS.samplingStructuredOutput;
+  }
+  if (!thinkingActive && modelProfile.samplingInstruct) {
+    return modelProfile.samplingInstruct;
+  }
+  return modelProfile.sampling || BASE_DEFAULTS.sampling;
+}
+
+/** DRY sampler config for agent structured output (node-llama-cpp). */
+function resolveAgentDryRepeatPenalty(agentToolLoop) {
+  if (!agentToolLoop) return undefined;
+  return {
+    strength: 0.8,
+    allowedLength: 2,
+    lastTokens: 512,
+  };
 }
 
 function getModelSamplingParams(family, paramSize) {
@@ -577,6 +615,8 @@ module.exports = {
   getSizeTier,
   getAvailableFamilies,
   isFamilyKnown,
+  resolveSamplingProfile,
+  resolveAgentDryRepeatPenalty,
   deepMerge,
   BASE_DEFAULTS,
   FAMILY_PROFILES,

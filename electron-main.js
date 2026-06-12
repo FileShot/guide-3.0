@@ -366,7 +366,10 @@ const longTermMemory = new LongTermMemory();
 const rulesManager = new RulesManager();
 const modelManager = new ModelManager(modelsBasePath);
 const { MediaAuxResolver } = require('./mediaAuxResolver');
-const mediaAuxResolver = new MediaAuxResolver({ userDataPath });
+const mediaAuxResolver = new MediaAuxResolver({
+  userDataPath,
+  getSettings: () => settingsManager.getAll(),
+});
 const { getInstallVariant } = require('./updateVariant');
 const mediaEngine = new MediaEngine({
   userDataPath,

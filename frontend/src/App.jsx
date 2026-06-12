@@ -768,10 +768,15 @@ export default function App() {
       case 'media-model-loaded': {
         s.setActiveMediaModel(data);
         s.setModelState({ modelLoaded: false, modelLoading: false, modelInfo: null });
-        s.addNotification({
-          type: 'info',
-          message: `Media model loaded (${data?.ggufArchitecture || data?.modelType || 'diffusion'}) — chat generates ${data?.modelType === 'video' ? 'video' : 'images'}`,
-        });
+        if (data?.mediaReadiness && data.mediaReadiness.ready === false) {
+          const missing = (data.mediaReadiness.missing || []).join(', ');
+          s.setMediaStatus({
+            phase: 'error',
+            message: missing
+              ? `${data.ggufArchitecture || 'Media'}: needs ${missing} — HF token may be required (Settings → Media)`
+              : `${data.ggufArchitecture || 'Media'}: companions missing — check Settings → Media`,
+          });
+        }
         break;
       }
 
@@ -881,23 +886,6 @@ export default function App() {
           });
           lastSyncedSettingsJsonRef.current = JSON.stringify(next);
         }
-
-        const layerStr = typeof data?.gpuLayers === 'number' && data?.totalLayers
-          ? `${data.gpuLayers}/${data.totalLayers} GPU layers`
-          : typeof data?.gpuLayers === 'number'
-            ? `${data.gpuLayers} GPU layers`
-            : '';
-        const vramStr = typeof data?.vramFreeAfterLoadGB === 'number'
-          ? `${data.vramFreeAfterLoadGB} GB VRAM free after load`
-          : '';
-        const ctxCapStr = typeof data?.contextPctOfCap === 'number'
-          ? `${data.contextPctOfCap}% of context cap used`
-          : '';
-        const extras = [layerStr, vramStr, ctxCapStr].filter(Boolean).join(' · ');
-        s.addNotification({
-          type: 'info',
-          message: `Model loaded: ${data?.name || 'unknown'} — ${(data?.contextSize || 0).toLocaleString()} ctx${extras ? ` · ${extras}` : ''}`,
-        });
 
         break;
       }

@@ -101,6 +101,53 @@ function findSdBinary(dir) {
   return null;
 }
 
+async function fetchCompanionCudaDlls(release, cudaAssetName, outDir, tmpDir) {
+  const cudaVer = cudaAssetName.match(/cuda-?(\d+)(?:\.(\d+))?/i);
+  const verDot = cudaVer ? `${cudaVer[1]}.${cudaVer[2] || '4'}` : '12.4';
+  const patterns = [
+    new RegExp(`cudart.*cuda-${verDot.replace('.', '\\.')}.*x64\\.zip$`, 'i'),
+    /cudart.*win.*cuda.*x64\.zip$/i,
+  ];
+  let cudartAsset = null;
+  for (const pat of patterns) {
+    cudartAsset = (release.assets || []).find((a) => pat.test(a.name));
+    if (cudartAsset) break;
+  }
+  if (!cudartAsset) {
+    log('No cudart zip in sd release — trying llama.cpp companion DLLs');
+    const llamaRelease = await fetchJson('https://api.github.com/repos/ggml-org/llama.cpp/releases/latest');
+    cudartAsset = (llamaRelease.assets || []).find((a) =>
+      new RegExp(`^cudart-llama-bin-win-cuda-${verDot.replace('.', '\\.')}-x64\\.zip$`, 'i').test(a.name)
+      || /^cudart-llama-bin-win-cuda-\d+\.\d+-x64\.zip$/i.test(a.name),
+    );
+  }
+  if (!cudartAsset) {
+    log('WARN: Could not find companion CUDA DLL zip');
+    return;
+  }
+  const zipPath = path.join(tmpDir, cudartAsset.name);
+  if (!fs.existsSync(zipPath)) {
+    log(`Downloading companion CUDA DLLs: ${cudartAsset.name} (${Math.round(cudartAsset.size / 1e6)}MB)...`);
+    await downloadFile(cudartAsset.browser_download_url, zipPath, cudartAsset.size);
+  }
+  const extractDir = path.join(tmpDir, `extract-cudart-${cudartAsset.name}`);
+  if (fs.existsSync(extractDir)) fs.rmSync(extractDir, { recursive: true, force: true });
+  extractZip(zipPath, extractDir);
+  const copyDlls = (dir) => {
+    for (const name of fs.readdirSync(dir)) {
+      const full = path.join(dir, name);
+      if (fs.statSync(full).isDirectory()) {
+        copyDlls(full);
+        continue;
+      }
+      if (/\.dll$/i.test(name)) {
+        fs.copyFileSync(full, path.join(outDir, name));
+      }
+    }
+  };
+  copyDlls(extractDir);
+}
+
 function flattenToOut(extractRoot, outDir) {
   const sdBinary = findSdBinary(extractRoot);
   if (!sdBinary) throw new Error(`sd-cli.exe / sd.exe not found under ${extractRoot}`);
@@ -152,7 +199,15 @@ async function main() {
     }
     log(`Installed ${variant.name} → ${variant.outDir} (${dllCount} DLLs beside sd.exe)`);
     if (variant.name === 'cuda' && dllCount === 0) {
-      log('WARN: CUDA bundle has no DLLs — installs may hit STATUS_DLL_NOT_FOUND');
+      await fetchCompanionCudaDlls(release, asset.name, variant.outDir, tmp);
+      const after = fs.existsSync(variant.outDir)
+        ? fs.readdirSync(variant.outDir).filter((n) => /\.dll$/i.test(n)).length
+        : 0;
+      if (after === 0) {
+        log('WARN: CUDA bundle still has no DLLs — installs may hit STATUS_DLL_NOT_FOUND');
+      } else {
+        log(`Companion CUDA DLLs installed (${after} DLLs beside sd.exe)`);
+      }
     }
   }
 

@@ -37,6 +37,54 @@ const TOKEN_STREAM_EVTS = new Set([
   'llm-token',
 ]);
 
+const SF_CONTENT_BATCH_MIN_CHARS = 50;
+const SF_CONTENT_BATCH_HEARTBEAT_MS = 2000;
+const _sfContentBatch = { pending: '', totalLen: 0, lastFlushAt: 0, meta: {} };
+let _sfContentBatchTimer = null;
+
+function resetSfContentBatch() {
+  _sfContentBatch.pending = '';
+  _sfContentBatch.totalLen = 0;
+  _sfContentBatch.lastFlushAt = 0;
+  _sfContentBatch.meta = {};
+  if (_sfContentBatchTimer) {
+    clearTimeout(_sfContentBatchTimer);
+    _sfContentBatchTimer = null;
+  }
+}
+
+function flushSfContentBatch(channel, force = false) {
+  if (!_sfContentBatch.pending && !force) return;
+  const text = _sfContentBatch.pending;
+  if (!text) return;
+  const preview = text.length > 120 ? `${text.slice(0, 80)}…` : text;
+  const line = JSON.stringify({
+    ts: new Date().toISOString(),
+    seq: _seq,
+    turnId: _turnId,
+    channel,
+    evt: 'sf-content-token-emit',
+    len: text.length,
+    totalLen: _sfContentBatch.totalLen,
+    batched: true,
+    text: preview,
+    ..._sfContentBatch.meta,
+  }) + '\n';
+  if (!_pending.has(channel)) _pending.set(channel, []);
+  _pending.get(channel).push(line);
+  _sfContentBatch.pending = '';
+  _sfContentBatch.lastFlushAt = Date.now();
+  scheduleFlush();
+}
+
+function scheduleSfContentBatchFlush(channel) {
+  if (_sfContentBatchTimer) return;
+  _sfContentBatchTimer = setTimeout(() => {
+    _sfContentBatchTimer = null;
+    flushSfContentBatch(channel);
+  }, SF_CONTENT_BATCH_HEARTBEAT_MS);
+}
+
 function ensureDir() {
   try {
     if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -159,6 +207,23 @@ function shouldTraceEvt(channel, evt) {
 function trace(channel, evt, fields = {}) {
   if (!shouldTraceEvt(channel, evt)) return _seq;
   const seq = ++_seq;
+  if (_level === 'tokens' && evt === 'sf-content-token-emit' && typeof fields.text === 'string') {
+    _sfContentBatch.pending += fields.text;
+    _sfContentBatch.totalLen += fields.text.length;
+    _sfContentBatch.meta = {
+      filePath: fields.filePath,
+      phase: fields.phase,
+    };
+    const now = Date.now();
+    const due = _sfContentBatch.pending.length >= SF_CONTENT_BATCH_MIN_CHARS
+      || (now - _sfContentBatch.lastFlushAt >= SF_CONTENT_BATCH_HEARTBEAT_MS && _sfContentBatch.pending.length > 0);
+    if (due) {
+      flushSfContentBatch(channel);
+    } else {
+      scheduleSfContentBatchFlush(channel);
+    }
+    return seq;
+  }
   const record = {
     ts: new Date().toISOString(),
     seq,
@@ -210,6 +275,8 @@ function getLevel() {
 }
 
 function setTurnId(id) {
+  flushSfContentBatch('stream', true);
+  resetSfContentBatch();
   _turnId = id == null ? null : String(id);
 }
 
@@ -241,6 +308,8 @@ function syncFromSettings(settings) {
 }
 
 function clearAll() {
+  flushSfContentBatch('stream', true);
+  resetSfContentBatch();
   flushAll();
   close();
   _pending.clear();

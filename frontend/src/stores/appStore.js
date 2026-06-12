@@ -2727,36 +2727,42 @@ const useAppStore = create((set, get) => ({
 
   clearMediaStatus: () => set({ mediaStatus: null }),
 
-  // ─── Notifications ─────────────────────────────────────
+  // ─── Footer status message (replaces floating toasts) ───
 
-  notifications: [],
+  statusBarMessage: null,
 
-  addNotification: (notification) => {
-
-    const id = `notif-${Date.now()}`;
-
-    const { notifications } = get();
-
-    set({ notifications: [...notifications, { ...notification, id }] });
-
-    // Auto-dismiss after 5s
-
+  setStatusBarMessage: (message, type = 'info', durationMs) => {
+    if (!message) {
+      set({ statusBarMessage: null });
+      return;
+    }
+    const id = `sbm-${Date.now()}`;
+    const ttl = durationMs ?? (type === 'error' ? 8000 : 5000);
+    set({
+      statusBarMessage: {
+        id,
+        type,
+        title: null,
+        message: String(message),
+      },
+    });
     setTimeout(() => {
-
-      const { notifications: current } = get();
-
-      set({ notifications: current.filter(n => n.id !== id) });
-
-    }, notification.duration || 5000);
-
+      const cur = get().statusBarMessage;
+      if (cur?.id === id) set({ statusBarMessage: null });
+    }, ttl);
   },
 
-  dismissNotification: (id) => {
+  clearStatusBarMessage: () => set({ statusBarMessage: null }),
 
-    const { notifications } = get();
+  addNotification: (notification) => {
+    if (!notification) return;
+    const type = notification.type || 'info';
+    const text = [notification.title, notification.message].filter(Boolean).join(': ');
+    get().setStatusBarMessage(text, type, notification.duration);
+  },
 
-    set({ notifications: notifications.filter(n => n.id !== id) });
-
+  dismissNotification: () => {
+    get().clearStatusBarMessage();
   },
 
 

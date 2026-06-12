@@ -27,7 +27,6 @@ import ActivityBar from './ActivityBar';
 import Sidebar from './Sidebar';
 import EditorArea from './EditorArea';
 import StatusBar from './StatusBar';
-import Notifications from './Notifications';
 import ComposerPanel from './ComposerPanel';
 import { lazy, Suspense, useEffect, useRef } from 'react';
 
@@ -61,7 +60,6 @@ function DesktopLayout() {
   const commandPaletteOpen = useAppStore(s => s.commandPaletteOpen);
   const zoomLevel = useAppStore(s => s.zoomLevel);
   const setUpdateStatus = useAppStore(s => s.setUpdateStatus);
-  const addNotification = useAppStore(s => s.addNotification);
   const prevUpdateStatusRef = useRef(null);
 
   useEffect(() => {
@@ -80,20 +78,10 @@ function DesktopLayout() {
     if (!window.electronAPI?.updater?.onStatus) return undefined;
 
     return window.electronAPI.updater.onStatus((payload) => {
-      const normalized = normalizeUpdateStatus(payload);
-      const prev = prevUpdateStatusRef.current;
       setUpdateStatus(payload);
-      if (normalized?.status === 'available' && prev?.status !== 'available') {
-        addNotification({
-          type: 'info',
-          title: 'Update available',
-          message: `v${updateVersionLabel(normalized)} — downloading in background`,
-          duration: 5000,
-        });
-      }
-      prevUpdateStatusRef.current = normalized;
+      prevUpdateStatusRef.current = normalizeUpdateStatus(payload);
     });
-  }, [setUpdateStatus, addNotification]);
+  }, [setUpdateStatus]);
 
   return (
     <div
@@ -173,7 +161,6 @@ function DesktopLayout() {
 
       {/* Overlays */}
       {commandPaletteOpen && <Suspense fallback={null}><CommandPalette /></Suspense>}
-      <Notifications />
     </div>
   );
 }

@@ -331,8 +331,17 @@ function getProfileGen(profileId) {
   return MEDIA_ASSET_PROFILES[profileId]?.gen || {};
 }
 
+function withMirrorUrls(asset) {
+  if (!asset?.url || asset.mirrorUrls?.length) return asset;
+  if (!/huggingface\.co/i.test(asset.url)) return asset;
+  return {
+    ...asset,
+    mirrorUrls: [asset.url.replace('https://huggingface.co/', 'https://hf-mirror.com/')],
+  };
+}
+
 function listAssetsForProfile(profileId) {
-  return MEDIA_ASSET_PROFILES[profileId]?.assets || [];
+  return (MEDIA_ASSET_PROFILES[profileId]?.assets || []).map(withMirrorUrls);
 }
 
 function listProfileIds() {

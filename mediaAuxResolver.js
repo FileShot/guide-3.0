@@ -10,7 +10,7 @@ const {
   getAuxKeyFallbacks,
   getRequiredAuxKeys,
 } = require('./mediaAssetsCatalog');
-const { downloadFileWithRetry } = require('./mediaAssetsManager');
+const { downloadFileWithMirrorRetry } = require('./mediaAssetsManager');
 const { VRAM_LOW_MB } = require('./mediaConstants');
 
 const SETTING_KEYS = {
@@ -34,9 +34,27 @@ const SAME_DIR_PATTERNS = {
     /vae.*\.safetensors$/i,
   ],
   tae: [/taew2_2\.safetensors$/i],
-  t5: [/umt5.*\.gguf$/i, /umt5.*\.safetensors$/i, /t5xxl.*\.safetensors$/i],
-  clip_l: [/clip_l\.safetensors$/i, /clip-l\.safetensors$/i],
-  clip_g: [/clip_g\.safetensors$/i, /clip-g\.safetensors$/i],
+  t5: [
+    /umt5.*\.gguf$/i,
+    /umt5.*\.safetensors$/i,
+    /t5xxl.*\.safetensors$/i,
+    /t5.*xxl.*fp16.*\.safetensors$/i,
+    /sd3.*t5.*\.safetensors$/i,
+  ],
+  clip_l: [
+    /clip_l\.safetensors$/i,
+    /clip-l\.safetensors$/i,
+    /sd3.*clip.?l.*\.safetensors$/i,
+    /sdxl.*clip.?l.*\.safetensors$/i,
+    /text_encoder.*clip.?l.*\.safetensors$/i,
+  ],
+  clip_g: [
+    /clip_g\.safetensors$/i,
+    /clip-g\.safetensors$/i,
+    /sd3.*clip.?g.*\.safetensors$/i,
+    /sdxl.*clip.?g.*\.safetensors$/i,
+    /text_encoder.*clip.?g.*\.safetensors$/i,
+  ],
   clip: [/clip_l\.safetensors$/i, /clip-l\.safetensors$/i],
   llm: [
     /qwen_3_4b\.safetensors$/i,
@@ -116,6 +134,7 @@ function _auxDownloadMessage(asset) {
 class MediaAuxResolver {
   constructor(options = {}) {
     this.userDataPath = options.userDataPath || require('os').tmpdir();
+    this.getSettings = options.getSettings || (() => ({}));
     this._cacheDir = path.join(this.userDataPath, 'media-cache');
     this._inflight = new Map();
   }
@@ -166,10 +185,14 @@ class MediaAuxResolver {
           message,
         });
       }
+      const settings = this.getSettings();
+      const hfToken = settings.mediaHfToken || null;
+      const urls = [asset.url, ...(asset.mirrorUrls || [])].filter(Boolean);
       console.log(`[MediaAux] Downloading ${asset.relPath} (${label})`);
-      await downloadFileWithRetry(asset.url, dest, {
+      await downloadFileWithMirrorRetry(urls, dest, {
         expectedBytes: asset.bytes || undefined,
         retries: 3,
+        hfToken,
         onProgress: ({ received, total }) => {
           if (onProgress && total > 0) {
             onProgress({

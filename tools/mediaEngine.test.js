@@ -11,6 +11,7 @@ const {
   estimateVideoDurationSec,
   formatSdExitError,
   WIN_DLL_NOT_FOUND,
+  WIN_STACK_OVERRUN,
   VRAM_LOW_MB,
 } = require('../mediaEngine');
 
@@ -219,6 +220,8 @@ function testResolveSdOutputPath() {
 }
 
 function testFormatSdExitError() {
+  const stackMsg = formatSdExitError(WIN_STACK_OVERRUN, '');
+  assert.ok(stackMsg.includes('stack buffer overrun'));
   const msg = formatSdExitError(WIN_DLL_NOT_FOUND, '');
   assert.ok(msg.includes('could not start'));
   const vulkanSpam = 'ggml_vulkan: Found 2 Vulkan devices\n[ERROR] stable-diffusion.cpp:410 - get sd version from file failed';

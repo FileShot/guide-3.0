@@ -6,7 +6,6 @@ import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import useAppStore from '../stores/appStore';
 import Sidebar from './Sidebar';
 import EditorArea from './EditorArea';
-import Notifications from './Notifications';
 import ComposerPanel from './ComposerPanel';
 import { Files, MessageSquare, Terminal, Settings, Globe, X, ChevronLeft } from 'lucide-react';
 
@@ -229,7 +228,6 @@ export default function PocketMobileLayout() {
         {sidebarVisible && <button type="button" className="pocket-mobile-backdrop" onClick={closeDrawer} aria-label="Close panel overlay" />}
       </div>
       {commandPaletteOpen && <Suspense fallback={null}><CommandPalette /></Suspense>}
-      <Notifications />
     </div>
   );
 }

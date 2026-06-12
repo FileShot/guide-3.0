@@ -5,6 +5,32 @@
  * Key = metadata.general.architecture (lowercase).
  */
 
+const STRUCTURED_OUTPUT_FLOORS = {
+  repeatPenalty: 1.12,
+  presencePenalty: 1.0,
+  lastTokensPenaltyCount: 512,
+};
+
+function buildStructuredOutputSampling(sampling, samplingInstruct) {
+  const base = { ...(samplingInstruct || sampling || {}) };
+  return {
+    ...base,
+    repeatPenalty: Math.max(
+      samplingInstruct?.repeatPenalty ?? sampling?.repeatPenalty ?? 1.0,
+      STRUCTURED_OUTPUT_FLOORS.repeatPenalty,
+    ),
+    presencePenalty: Math.max(
+      samplingInstruct?.presencePenalty ?? sampling?.presencePenalty ?? 0,
+      STRUCTURED_OUTPUT_FLOORS.presencePenalty,
+    ),
+    lastTokensPenaltyCount: Math.max(
+      samplingInstruct?.lastTokensPenaltyCount ?? sampling?.lastTokensPenaltyCount ?? 128,
+      STRUCTURED_OUTPUT_FLOORS.lastTokensPenaltyCount,
+    ),
+    frequencyPenalty: samplingInstruct?.frequencyPenalty ?? sampling?.frequencyPenalty ?? 0,
+  };
+}
+
 function profile(sampling, samplingInstruct, meta, extras = {}) {
   const base = {
     sampling: {
@@ -28,6 +54,7 @@ function profile(sampling, samplingInstruct, meta, extras = {}) {
       ...samplingInstruct,
     };
   }
+  base.samplingStructuredOutput = buildStructuredOutputSampling(base.sampling, base.samplingInstruct);
   if (extras.samplingCoding) {
     base.samplingCoding = { repeatPenalty: 1.0, frequencyPenalty: 0, ...extras.samplingCoding };
     delete extras.samplingCoding;
@@ -490,4 +517,6 @@ function getGenerationProfile(arch) {
 module.exports = {
   GENERATION_PROFILES,
   getGenerationProfile,
+  buildStructuredOutputSampling,
+  STRUCTURED_OUTPUT_FLOORS,
 };

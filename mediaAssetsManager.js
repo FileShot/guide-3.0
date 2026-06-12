@@ -8,19 +8,27 @@ const {
   listAssetsForProfile,
 } = require('./mediaAssetsCatalog');
 
-function downloadHeaders(url) {
+function downloadHeaders(url, hfToken) {
   const headers = { 'User-Agent': 'guIDE-media-assets' };
-  if (process.env.HF_TOKEN && /huggingface\.co/i.test(url)) {
-    headers.Authorization = `Bearer ${process.env.HF_TOKEN}`;
+  const token = hfToken || process.env.HF_TOKEN;
+  if (token && /huggingface\.co/i.test(url)) {
+    headers.Authorization = `Bearer ${token}`;
   }
   return headers;
 }
 
-async function downloadFileWithRetry(url, dest, { onProgress, expectedBytes, retries = 3 } = {}) {
+function http401Hint(url) {
+  if (/huggingface\.co/i.test(url)) {
+    return ' Add your Hugging Face token in Settings → Media (or set HF_TOKEN).';
+  }
+  return '';
+}
+
+async function downloadFileWithRetry(url, dest, { onProgress, expectedBytes, retries = 3, hfToken } = {}) {
   let lastErr;
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      return await downloadFile(url, dest, { onProgress, expectedBytes });
+      return await downloadFile(url, dest, { onProgress, expectedBytes, hfToken });
     } catch (err) {
       lastErr = err;
       if (attempt < retries - 1) {
@@ -34,7 +42,28 @@ async function downloadFileWithRetry(url, dest, { onProgress, expectedBytes, ret
   throw lastErr;
 }
 
-async function downloadFile(url, dest, { onProgress, expectedBytes } = {}) {
+async function downloadFileWithMirrorRetry(urls, dest, opts = {}) {
+  const list = (Array.isArray(urls) ? urls : [urls]).filter(Boolean);
+  let lastErr;
+  for (let i = 0; i < list.length; i++) {
+    const url = list[i];
+    try {
+      return await downloadFileWithRetry(url, dest, opts);
+    } catch (err) {
+      lastErr = err;
+      const is401 = /HTTP 401/i.test(String(err.message));
+      if (is401 && i === list.length - 1) {
+        throw new Error(`${err.message}.${http401Hint(url)}`);
+      }
+      if (i < list.length - 1) {
+        console.warn(`[MediaAssets] Mirror fallback for ${path.basename(dest)}: ${err.message}`);
+      }
+    }
+  }
+  throw lastErr;
+}
+
+async function downloadFile(url, dest, { onProgress, expectedBytes, hfToken } = {}) {
   const { Readable } = require('stream');
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   const tmp = `${dest}.part`;
@@ -59,7 +88,7 @@ async function downloadFile(url, dest, { onProgress, expectedBytes } = {}) {
   let received = startAt;
   let lastPct = -1;
   try {
-    const headers = downloadHeaders(url);
+    const headers = downloadHeaders(url, hfToken);
     if (startAt > 0) headers.Range = `bytes=${startAt}-`;
 
     const res = await fetch(url, {
@@ -71,7 +100,7 @@ async function downloadFile(url, dest, { onProgress, expectedBytes } = {}) {
     if (startAt > 0 && res.status === 416) {
       if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
       startAt = 0;
-      return downloadFile(url, dest, { onProgress, expectedBytes });
+      return downloadFile(url, dest, { onProgress, expectedBytes, hfToken });
     }
     if (!res.ok && res.status !== 206) {
       throw new Error(`Download failed HTTP ${res.status}: ${url}`);
@@ -300,4 +329,10 @@ class MediaAssetsManager {
   }
 }
 
-module.exports = { MediaAssetsManager, downloadFile, downloadFileWithRetry };
+module.exports = {
+  MediaAssetsManager,
+  downloadFile,
+  downloadFileWithRetry,
+  downloadFileWithMirrorRetry,
+  downloadHeaders,
+};
