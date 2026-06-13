@@ -201,8 +201,13 @@ const SF_TOOL_FENCE_LANGS = new Set(['json', 'tool', 'tool_call', 'text', 'plain
 function _sfIsToolFenceLang(lang) {
   const l = (lang || '').toLowerCase();
   if (!l) return false;
-  return SF_TOOL_FENCE_LANGS.has(l);
+  if (SF_TOOL_FENCE_LANGS.has(l)) return true;
+  if (l.includes('json') || l.includes('tool')) return true;
+  if (/^j+s*o?n/.test(l)) return true;
+  return false;
 }
+
+const SF_FENCE_PLAIN_MIN_BODY = 24;
 
 /**
  * Whether a fence buffer at header detection should stream to prose chat.
@@ -215,6 +220,7 @@ function _sfFenceHeaderShouldStreamPlain(fenceBuf) {
   const lang = (hm[1] || '').toLowerCase();
   const afterHeader = fenceBuf.slice(hm[0].length);
   if (_sfIsToolFenceLang(lang)) return false;
+  if (afterHeader.length < SF_FENCE_PLAIN_MIN_BODY) return false;
   const looksLikeToolBody = _sfFenceBufferLooksLikeToolJson(afterHeader.slice(0, 8000))
     || _sfIsToolLikeJson(afterHeader.slice(0, 6000));
   if (looksLikeToolBody) return false;
@@ -251,7 +257,7 @@ function _sfIsToolLikeJson(buf) {
 function _sfFenceBufferLooksLikeToolJson(buf) {
   if (!buf) return false;
   if (_sfIsToolLikeJson(buf)) return true;
-  if (/^```(?:json|tool|tool_call)\s/i.test(buf.trimStart())) return true;
+  if (/^```(?:json|tool|tool_call|jjson)\s/i.test(buf.trimStart())) return true;
   if (/"tool"\s*:\s*"/.test(buf)) return true;
   return false;
 }
@@ -1783,6 +1789,8 @@ class ChatEngine extends EventEmitter {
       /** When true, fence body is plain markdown code (html, etc.) — stream to UI instead of buffering until ``` */
       let _sfFenceStreamPlain = false;
       let _sfFencePlainTick = 0; // backticks while streaming plain fence (closing ```)
+      let _sfFencePlainHeader = ''; // header through newline — kept when aborting plain → buffer
+      let _sfFencePlainBody = ''; // body chars forwarded or pending abort re-check
 
       // Real-time file content streaming state — detects write_file/create_file/append_to_file
       // content fields inside tool call JSON and streams them to the UI as they arrive
@@ -1926,6 +1934,21 @@ class ChatEngine extends EventEmitter {
         streamTrace.trace('stream', 'sf-char', { ch, sf: _traceSfState() });
       };
 
+      const _sfAbortPlainFenceStream = () => {
+        _sfFenceStreamPlain = false;
+        _sfFencePlainTick = 0;
+        _sfFenceBuf = _sfFencePlainHeader + _sfFencePlainBody;
+        _sfFencePlainHeader = '';
+        _sfFencePlainBody = '';
+      };
+
+      const _sfResetPlainFenceStream = () => {
+        _sfFenceStreamPlain = false;
+        _sfFencePlainTick = 0;
+        _sfFencePlainHeader = '';
+        _sfFencePlainBody = '';
+      };
+
       const _sfResetPerGenerationTurn = () => {
         _sfStreamedFileWrites.clear();
         _sfProsedFileWrites.clear();
@@ -2028,7 +2051,7 @@ class ChatEngine extends EventEmitter {
           return;
         }
         const partial = extractPartialWriteFileFromToolJson(_sfFenceBuf, {
-          stripCompleteSuffix: !!opts.stripCompleteSuffix,
+          stripCompleteSuffix: true,
         });
         if (!partial?.filePath) return;
         const filePath = partial.filePath;
@@ -2075,10 +2098,10 @@ class ChatEngine extends EventEmitter {
 
       const _sfFinalizeFenceContentStream = () => {
         if (!_sfFenceContentStreaming || !onStreamEvent) return;
-        _sfEmitFenceContentDelta({ stripCompleteSuffix: true });
-        const info = _sfExtractFileWriteFromToolFence(_sfFenceBuf);
-        if (info?.filePath && info.content != null) {
-          const full = String(info.content);
+        _sfEmitFenceContentDelta();
+        const partial = extractPartialWriteFileFromToolJson(_sfFenceBuf, { stripCompleteSuffix: true });
+        if (partial?.content != null) {
+          const full = String(partial.content);
           if (full.length > _sfFenceStreamedLen) {
             onStreamEvent('file-content-token', full.slice(_sfFenceStreamedLen));
             _sfFenceStreamedLen = full.length;
@@ -2172,8 +2195,7 @@ class ChatEngine extends EventEmitter {
           _sfFenceBuf = '';
         }
         _sfInFence = false;
-        _sfFenceStreamPlain = false;
-        _sfFencePlainTick = 0;
+        _sfResetPlainFenceStream();
         _sfFenceTickCount = 0;
         _sfFileWriteDetected = false;
         _sfToolCallNotified = false;
@@ -2228,8 +2250,7 @@ class ChatEngine extends EventEmitter {
               if (/^`{3,}[a-z0-9_-]*\s*$/i.test(hdr)) {
                 _sfInFence = true;
                 _sfFenceBuf = _sfPendingFenceLine;
-                _sfFenceStreamPlain = false;
-                _sfFencePlainTick = 0;
+                _sfResetPlainFenceStream();
               } else {
                 _sfForward(_sfPendingFenceLine);
               }
@@ -2309,7 +2330,7 @@ class ChatEngine extends EventEmitter {
               _sfThinkBuf = '';
               _sfInFence = true;
               _sfFenceBuf = '```';
-              _sfFenceStreamPlain = false;
+              _sfResetPlainFenceStream();
               _sfFenceTickCount = 0;
               continue;
             }
@@ -2397,30 +2418,42 @@ class ChatEngine extends EventEmitter {
             // Stream normal markdown code fences (```html, ```css, …) to the UI immediately.
             // Only JSON tool-call fences stay buffered until close (so we can strip/suppress).
             if (_sfFenceStreamPlain) {
+              let abortToBuffer = false;
               if (ch === '`') {
                 _sfFencePlainTick++;
                 if (_sfFencePlainTick >= 3) {
                   _sfForward('```');
                   _sfInFence = false;
-                  _sfFenceStreamPlain = false;
-                  _sfFencePlainTick = 0;
+                  _sfResetPlainFenceStream();
                   _sfFenceBuf = '';
                   _sfLastCharWasNewlineOrStart = true;
                 }
               } else {
                 if (_sfFencePlainTick > 0) {
-                  _sfForward('`'.repeat(_sfFencePlainTick));
+                  const ticks = '`'.repeat(_sfFencePlainTick);
+                  _sfForward(ticks);
+                  _sfFencePlainBody += ticks;
                   _sfFencePlainTick = 0;
                 }
-                _sfForward(ch);
+                _sfFencePlainBody += ch;
+                if (_sfFencePlainBody.length <= 200
+                  && (_sfIsToolLikeJson(_sfFencePlainBody) || /"tool"\s*:\s*"/.test(_sfFencePlainBody))) {
+                  _sfAbortPlainFenceStream();
+                  abortToBuffer = true;
+                } else {
+                  _sfForward(ch);
+                }
               }
-              continue;
+              if (!abortToBuffer) continue;
             }
 
             _sfFenceBuf += ch;
 
             if (!_sfFenceStreamPlain && !_sfFileWriteDetected && !_sfContentStreamActive && RE_FENCE_HEADER.test(_sfFenceBuf)) {
               if (_sfFenceHeaderShouldStreamPlain(_sfFenceBuf)) {
+                const hm = _sfFenceBuf.match(RE_FENCE_HEADER);
+                _sfFencePlainHeader = hm ? _sfFenceBuf.slice(0, hm.index + hm[0].length) : '';
+                _sfFencePlainBody = hm ? _sfFenceBuf.slice(hm.index + hm[0].length) : _sfFenceBuf;
                 _sfFenceStreamPlain = true;
                 _sfForward(_sfFenceBuf);
                 _sfFenceBuf = '';
@@ -3152,7 +3185,7 @@ class ChatEngine extends EventEmitter {
         _sfResetContentJsonState(); _sfContentBuf = ''; _sfContentFilePath = '';
         _sfInThink = false; _sfThinkBuf = ''; _sfThinkTagMatch = '';
         _sfFenceInThink = false;
-        _sfFenceStreamPlain = false; _sfFencePlainTick = 0;
+        _sfResetPlainFenceStream();
         _sfNativeThinkActive = false;
         this._nativeThinkLogged = false;
         _sfRestoreContentContinuationAfterReset();
@@ -3359,7 +3392,7 @@ class ChatEngine extends EventEmitter {
               _sfResetContentJsonState(); _sfContentBuf = ''; _sfContentFilePath = '';
               _sfInThink = false; _sfThinkBuf = ''; _sfThinkTagMatch = '';
               _sfFenceInThink = false;
-              _sfFenceStreamPlain = false; _sfFencePlainTick = 0;
+              _sfResetPlainFenceStream();
               _sfNativeThinkActive = false;
               this._nativeThinkLogged = false;
               _sfRestoreContentContinuationAfterReset();
@@ -4061,8 +4094,7 @@ class ChatEngine extends EventEmitter {
           _sfThinkBuf = '';
           _sfThinkTagMatch = '';
           _sfFenceInThink = false;
-          _sfFenceStreamPlain = false;
-          _sfFencePlainTick = 0;
+          _sfResetPlainFenceStream();
           _sfNativeThinkActive = false;
 
           // Generate continuation — model sees tool results and can issue more tool calls

@@ -30,21 +30,48 @@ assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```tool_call\n'), false);
 assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```text\n'), false);
 assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```plaintext\n'), false);
 
+// jjson typo — never plain-stream (lang or body)
+assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```jjson\n{'), false);
+assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```jjson\n{"tool":"write_file"'), false);
+
 // Closed tool fence — buffer/discards, not prose
 const toolFence = '```json\n{"tool":"create_directory","params":{"path":".guide/plans"}}\n```';
 assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```json\n{"tool":"create_directory"'), false);
 assert.ok(_sfFenceBufferLooksLikeToolJson(toolFence), 'closed tool fence is tool JSON');
 
-// Code fences (html, css, js, …) stream live to chat
-assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```html\n<!DOCTYPE html>'), true);
-assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```css\nbody { margin: 0; }'), true);
-assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```javascript\nconst x = 1;'), true);
-assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```markdown\n# Title'), true);
-assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```foo\nhello world'), true);
+// Code fences (html, css, js, …) stream live once body is classifiable (≥24 chars)
+assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```html\n<!DOCTYPE html>'), false);
+assert.strictEqual(
+  _sfFenceHeaderShouldStreamPlain('```html\n<!DOCTYPE html><html lang="en">'),
+  true,
+);
+assert.strictEqual(
+  _sfFenceHeaderShouldStreamPlain('```css\nbody { margin: 0; color: red; }'),
+  true,
+);
+assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```javascript\nconst x = 1;'), false);
+assert.strictEqual(
+  _sfFenceHeaderShouldStreamPlain('```javascript\nconst answer = 42;'),
+  true,
+);
+assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```markdown\n# Title'), false);
+assert.strictEqual(
+  _sfFenceHeaderShouldStreamPlain('```markdown\n# Title with enough body'),
+  true,
+);
+assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```foo\nhello world'), false);
+assert.strictEqual(
+  _sfFenceHeaderShouldStreamPlain('```foo\nhello world and more text'),
+  true,
+);
 
-// Empty-lang fence: stream unless body is tool JSON
-assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```\n'), true);
-assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```\nhello'), true);
+// Empty-lang fence: defer until body long enough; block tool JSON
+assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```\n'), false);
+assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```\nhello'), false);
+assert.strictEqual(
+  _sfFenceHeaderShouldStreamPlain('```\nhello world with enough chars'),
+  true,
+);
 assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```foo\n{"tool":"read_file","params":{"filePath":"x"}}'), false);
 
 console.log('fenceFlush.test.js OK');

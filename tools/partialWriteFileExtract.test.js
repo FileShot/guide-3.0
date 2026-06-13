@@ -79,4 +79,20 @@ describe('extractPartialWriteFileFromToolJson', () => {
     assert.ok(r);
     assert.equal(r.content, '');
   });
+
+  it('strips JSON close suffix and fence backticks from HTML tail', () => {
+    const partial = `${prefix}</div>"},\n\`\`\``;
+    const r = extractPartialWriteFileFromToolJson(partial, { stripCompleteSuffix: true });
+    assert.ok(r);
+    assert.equal(r.content, '</div>');
+    assert.ok(!r.content.includes('"},'));
+    assert.ok(!r.content.includes('`'));
+  });
+
+  it('stops at structural JSON close without strip flag during live delta', () => {
+    const partial = `${prefix}</div>"},`;
+    const r = extractPartialWriteFileFromToolJson(partial);
+    assert.ok(r);
+    assert.equal(r.content, '</div>');
+  });
 });

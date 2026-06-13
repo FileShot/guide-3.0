@@ -1503,8 +1503,10 @@ function _tpFindContentValueStart(slice, contentKey) {
 function _tpIsStructuralContentEnd(raw, i) {
   const tail = raw.slice(i);
   if (/^"\s*,\s*"(?:reason|tool|params|name)"/.test(tail)) return true;
+  if (/^"\s*,\s*\}/.test(tail)) return true;
   if (/^"\s*\}\s*\}/.test(tail)) return true;
   if (/^"\s*\}\s*\]/.test(tail)) return true;
+  if (/^"\s*\n\s*`{3,}/.test(tail)) return true;
   return false;
 }
 
@@ -1523,8 +1525,10 @@ function _tpIsMetadataOnlyWriteContent(content) {
 function _tpDecodePartialJsonStringRaw(raw, stripCompleteSuffix) {
   let work = raw;
   if (stripCompleteSuffix) {
+    work = work.replace(/"\s*,\s*\}\s*"?\s*$/, '');
     work = work.replace(/"\s*\}\s*\}\s*\]?\s*$/, '');
     work = work.replace(/"\s*\}\s*$/, '');
+    work = work.replace(/\n?`{3,}\s*$/, '');
   }
   let out = '';
   let i = 0;
@@ -1553,7 +1557,7 @@ function _tpDecodePartialJsonStringRaw(raw, stripCompleteSuffix) {
     out += ch;
     i += 1;
   }
-  return out;
+  return out.replace(/\n?`{3,}\s*$/, '');
 }
 
 /**
