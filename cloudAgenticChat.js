@@ -7,7 +7,7 @@ const {
   looksLikeToolAttempt,
   suggestClosestToolName,
 } = require('./tools/toolParser');
-const { buildCloudSystemPrompt, buildAgentSystemPromptLayers } = require('./chatEngine');
+const { buildCloudSystemPrompt, buildAgentSystemPromptLayers, buildTodoProgressHint } = require('./chatEngine');
 const {
   formatToolResultForInject,
   buildToolResultsUserMessage,
@@ -308,11 +308,9 @@ async function runCloudAgenticChat({
 
     if (!toolResultLines.length) break;
 
-    let todoListPrefix = '';
     const activeTodos = typeof getActiveTodos === 'function' ? getActiveTodos() : [];
-    if (Array.isArray(activeTodos) && activeTodos.length > 0 && activeTodos.some((t) => t.status === 'in-progress')) {
-      todoListPrefix = '[Active todo list: mark completed items with update_todo(id, "done").]\n\n';
-    }
+    const executedToolNames = parsedCalls.map((c) => c.tool);
+    const todoListPrefix = buildTodoProgressHint(activeTodos, executedToolNames, 0);
     const injectText = buildToolResultsUserMessage(toolResultLines, { interruptPrefix: todoListPrefix });
     conversationHistory.push({ role: 'user', content: injectText });
     console.log(`[CloudAgentic] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s)`);

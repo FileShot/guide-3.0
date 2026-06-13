@@ -1,0 +1,15 @@
+---
+description: Required structure for every plan — current vs proposed, not bug-specific band-aids
+alwaysApply: true
+---
+
+# Plan structure (mandatory)
+
+Every plan MUST include these sections, concisely:
+
+1. **Problem (user words)** — one short paragraph
+2. **Current implementation** — what it does, what problem it was meant to solve, what it does right/wrong (general, not one-off)
+3. **Proposed change** — what changes, outcome if kept vs applied, edge cases
+4. **Validation** — how to verify across cases; bare-wrapper or log comparison when pipeline vs model is disputed
+
+Rules: correct fix over line-count bias; no arbitrary caps without approval; no strip/hide as primary fix when root cause is injection/routing.

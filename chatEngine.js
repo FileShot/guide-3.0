@@ -4164,8 +4164,6 @@ class ChatEngine extends EventEmitter {
           );
           if (todoProgressHint) {
             todoListPrefix = todoProgressHint;
-          } else if (Array.isArray(activeTodos) && activeTodos.length > 0) {
-            todoListPrefix = '[Active todo list: mark completed items with update_todo(id, "done").]\n\n';
           }
 
           if (this._sessionId !== sessionAtStart) {
