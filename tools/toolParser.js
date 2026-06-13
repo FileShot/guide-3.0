@@ -959,8 +959,8 @@ function repairToolCalls(toolCalls, responseText) {
     const { tool, params } = call;
 
     if (tool === 'write_file') {
-      // Empty content recovery
-      if (!params.content || String(params.content).length < 5) {
+      // Empty or metadata-only content recovery
+      if (!params.content || _tpIsMetadataOnlyWriteContent(params.content)) {
         const recovered = _recoverWriteFileContent(responseText, params.filePath);
         if (recovered) {
           repaired.push(recovered);
@@ -1500,6 +1500,22 @@ function _tpFindContentValueStart(slice, contentKey) {
   return -1;
 }
 
+function _tpIsStructuralContentEnd(raw, i) {
+  const tail = raw.slice(i);
+  if (/^"\s*,\s*"(?:reason|tool|params|name)"/.test(tail)) return true;
+  if (/^"\s*\}\s*\}/.test(tail)) return true;
+  if (/^"\s*\}\s*\]/.test(tail)) return true;
+  return false;
+}
+
+function _tpIsMetadataOnlyWriteContent(content) {
+  const s = String(content ?? '').trim();
+  if (s.length < 5) return true;
+  if (/^",\s*"reason"\s*:/.test(s)) return true;
+  if (/^\\?",\\"reason\\":/.test(s)) return true;
+  return false;
+}
+
 /**
  * Decode a partial JSON string body (no opening quote). Never treats interior `"` as end —
  * scans to buffer end so JS/HTML like keys["left"], stays intact during live streaming.
@@ -1530,6 +1546,9 @@ function _tpDecodePartialJsonStringRaw(raw, stripCompleteSuffix) {
       out += _tpDecodeJsonEscapeChar(work[i + 1]);
       i += 2;
       continue;
+    }
+    if (ch === '"' && _tpIsStructuralContentEnd(work, i)) {
+      break;
     }
     out += ch;
     i += 1;

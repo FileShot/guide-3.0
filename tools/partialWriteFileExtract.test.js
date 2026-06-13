@@ -64,4 +64,19 @@ describe('extractPartialWriteFileFromToolJson', () => {
     const r = extractPartialWriteFileFromToolJson('{"tool":"write_file","params":{"filePath":"a.txt"');
     assert.equal(r, null);
   });
+
+  it('stops at merged JSON reason field boundary', () => {
+    const partial = `${prefix}body{color:red}","reason":"Creating full HTML file"}]`;
+    const r = extractPartialWriteFileFromToolJson(partial);
+    assert.ok(r);
+    assert.equal(r.content, 'body{color:red}');
+    assert.ok(!r.content.includes('reason'));
+  });
+
+  it('stops at merged tool field boundary in script.js blob', () => {
+    const partial = '{"tool":"write_file","params":{"filePath":"script.js","content":"","reason":"Creating main game logic"}';
+    const r = extractPartialWriteFileFromToolJson(partial);
+    assert.ok(r);
+    assert.equal(r.content, '');
+  });
 });

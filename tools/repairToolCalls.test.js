@@ -46,4 +46,12 @@ assert.strictEqual(inferredCalls[0].params.filePath, 'index.html');
 const { repaired: dropped } = repairToolCalls([{ tool: 'write_file', params: { content: 'x' } }], '');
 assert.strictEqual(dropped.length, 0);
 
+// Metadata-only merged JSON blob → dropped (not executed as file body)
+const metadataBlob = '","reason":"Creating main game logic file with three parts"}]\n';
+const { repaired: metaDropped } = repairToolCalls(
+  [writeCall('script.js', metadataBlob)],
+  'tool json fragment',
+);
+assert.strictEqual(metaDropped.length, 0);
+
 console.log('repairToolCalls.test.js: all passed');

@@ -133,6 +133,33 @@ function canonicalizeFilePath(filePath) {
   return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 
+function isMetadataOnlyToolFileContent(content) {
+  const s = String(content ?? '').trim();
+  if (s.length < 5) return true;
+  if (/^",\s*"reason"\s*:/.test(s)) return true;
+  if (/^\\?",\\"reason\\":/.test(s)) return true;
+  return false;
+}
+
+/** Append streamed file blocks missing from finalized message (streaming path = display path). */
+function salvageOrphanStreamingFileBlocks(streamingBlocks, messageSegments, messageFileBlocks) {
+  if (!Array.isArray(streamingBlocks) || streamingBlocks.length === 0) return;
+  const inMessage = new Set(messageFileBlocks.map((b) => canonicalizeFilePath(b.filePath)));
+  for (const block of streamingBlocks) {
+    if (!block?.content || block.content.length === 0) continue;
+    const np = canonicalizeFilePath(block.filePath);
+    if (!np || inMessage.has(np)) continue;
+    inMessage.add(np);
+    messageSegments.push({ type: 'file', index: messageFileBlocks.length });
+    messageFileBlocks.push({
+      filePath: block.filePath,
+      language: block.language,
+      fileName: block.fileName,
+      content: block.content,
+    });
+  }
+}
+
 /** Safety net: rebuild file segments from write_file tool params when IPC file blocks were lost. */
 function synthesizeFileBlocksFromToolCalls(toolCalls, messageSegments, messageFileBlocks) {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) return;
@@ -144,6 +171,7 @@ function synthesizeFileBlocksFromToolCalls(toolCalls, messageSegments, messageFi
     const content = isEdit ? tc.params?.newText : tc.params?.content;
     const rawFilePath = tc.params?.filePath || tc.params?.path || '';
     if (content == null || !rawFilePath) continue;
+    if (isMetadataOnlyToolFileContent(content)) continue;
     const normalizedFilePath = canonicalizeFilePath(rawFilePath);
     if (existingPaths.has(normalizedFilePath)) continue;
     existingPaths.add(normalizedFilePath);
@@ -2063,12 +2091,30 @@ export default function ChatPanel() {
             if (block) {
 
               // Dedup: if a file block with this filePath already exists, update it instead of creating duplicate
-              const existingFileIdx = messageFileBlocks.findIndex(b => canonicalizeFilePath(b.filePath) === canonicalizeFilePath(block.filePath));
+              const blockPath = canonicalizeFilePath(block.filePath);
+              const existingFileIdx = messageFileBlocks.findIndex(
+                (b) => canonicalizeFilePath(b.filePath) === blockPath,
+              );
               if (existingFileIdx !== -1) {
-                messageFileBlocks[existingFileIdx] = {
-                  ...messageFileBlocks[existingFileIdx],
-                  content: block.content,
-                };
+                const existing = messageFileBlocks[existingFileIdx];
+                if (canonicalizeFilePath(existing.filePath) === blockPath) {
+                  const keepContent = (block.content?.length || 0) >= (existing.content?.length || 0)
+                    ? block.content
+                    : existing.content;
+                  messageFileBlocks[existingFileIdx] = {
+                    ...existing,
+                    content: keepContent,
+                  };
+                } else {
+                  messageContent += `\n\`\`\`${block.language || 'text'}\n${block.content}\n\`\`\`\n`;
+                  messageSegments.push({ type: 'file', index: messageFileBlocks.length });
+                  messageFileBlocks.push({
+                    filePath: block.filePath,
+                    language: block.language,
+                    fileName: block.fileName,
+                    content: block.content,
+                  });
+                }
               } else {
                 // Text fallback: still include as markdown fence for content field
                 messageContent += `\n\`\`\`${block.language || 'text'}\n${block.content}\n\`\`\`\n`;
@@ -2151,6 +2197,8 @@ export default function ChatPanel() {
 
       }
 
+      salvageOrphanStreamingFileBlocks(fileBlocks, messageSegments, messageFileBlocks);
+
       synthesizeFileBlocksFromToolCalls(finalToolCalls, messageSegments, messageFileBlocks);
 
       // R54-Diag: Log if multiple segments reference files with the same display name
@@ -2158,12 +2206,6 @@ export default function ChatPanel() {
       const dupFilePaths = fileSegPaths.filter((item, index) => fileSegPaths.indexOf(item) !== index);
       if (dupFilePaths.length > 0) {
         console.warn('[ChatPanel] R54-Diag: Duplicate file segments detected:', dupFilePaths);
-      }
-
-      if (fileBlocks.length > 0) {
-
-        useAppStore.getState().clearFileContentBlocks();
-
       }
 
       messageContent = messageSegments
@@ -2341,6 +2383,10 @@ export default function ChatPanel() {
             : (useAppStore.getState().modelInfo?.name || undefined),
 
         });
+
+        if (fileBlocks.length > 0) {
+          useAppStore.getState().clearFileContentBlocks();
+        }
 
       } else if (state.chatStreamingText && state.chatStreamingText.trim()) {
 

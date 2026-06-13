@@ -1811,6 +1811,14 @@ class ChatEngine extends EventEmitter {
         || _sfContentJsonState.unicodeCount > 0
       );
 
+      /** Block fence-close ``` tick count only during char-FSM escape states — not fence-delta streaming. */
+      const _sfFenceCloseTickBlocked = () => (
+        _sfContentStreamActive
+        || _sfContentJsonState.quotePending
+        || _sfContentJsonState.escPending
+        || _sfContentJsonState.unicodeCount > 0
+      );
+
       const _sfResetContentJsonState = () => {
         _sfContentJsonState = _createJsonStringStreamState();
         _sfContentEsc = false;
@@ -2140,7 +2148,9 @@ class ChatEngine extends EventEmitter {
       };
 
       const _sfFlushFence = () => {
-        if (_sfContentStreamActive && onStreamEvent) {
+        if (_sfFenceContentStreaming && onStreamEvent) {
+          _sfFinalizeFenceContentStream();
+        } else if (_sfContentStreamActive && onStreamEvent) {
           if (_sfContentBuf) {
             onStreamEvent('file-content-token', _sfContentBuf);
             _sfContentBuf = '';
@@ -2455,8 +2465,8 @@ class ChatEngine extends EventEmitter {
               }
             }
 
-            // Detect closing ``` — but NOT while inside the content string
-            if (_sfContentStreamInProgress()) {
+            // Detect closing ``` — but NOT while char-FSM is mid-escape inside JSON string
+            if (_sfFenceCloseTickBlocked()) {
               _sfFenceTickCount = 0;
             } else if (ch === '`') {
               _sfFenceTickCount++;

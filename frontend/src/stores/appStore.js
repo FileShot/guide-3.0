@@ -1671,17 +1671,10 @@ const useAppStore = create((set, get) => ({
       }
     }
 
-    let existingIdx = store.streamingFileBlocks.findIndex(
-      b => b.fileKey === normalizedKey,
+    const existingIdx = store.streamingFileBlocks.findIndex(
+      (b) => b.fileKey === normalizedKey
+        || canonicalizeStreamingFilePath(b.filePath) === normalizedKey,
     );
-    if (existingIdx === -1) {
-      existingIdx = findActiveStreamingFileBlockIndex(store.streamingFileBlocks, normalizedKey);
-    }
-    if (existingIdx === -1 && fileName) {
-      existingIdx = store.streamingFileBlocks.findIndex(
-        b => !b.complete && (b.fileName === fileName || (b.filePath && b.filePath.endsWith(fileName))),
-      );
-    }
     let newBlocks;
     let fileIndex;
     let newSegs = currentSegs;
@@ -1784,7 +1777,10 @@ const useAppStore = create((set, get) => ({
 
     }
 
-    const targetIdx = findActiveStreamingFileBlockIndex(streamingFileBlocks, targetKey);
+    const targetIdx = streamingFileBlocks.findIndex(
+      (b) => b.fileKey === targetKey
+        || canonicalizeStreamingFilePath(b.filePath) === targetKey,
+    );
 
     if (targetIdx === -1) {
 
