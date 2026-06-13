@@ -302,6 +302,11 @@ function _sfRerouteThinkContentToFile(text, options, contextText = '') {
   return null;
 }
 
+function _sfStripPlainCodeFencesFromProse(text) {
+  if (!text) return text;
+  return text.replace(/```(?!markdown\b|md\b)[\w-]*\s*\n[\s\S]*?```/gi, '').trim();
+}
+
 /** Keep fence markers; append closing ``` when generation ended mid-fence. */
 function _sfPreparePlainFenceFlushPayload(fenceBuf) {
   if (!fenceBuf) return '';
@@ -1979,6 +1984,13 @@ class ChatEngine extends EventEmitter {
       let _sfAgentFenceStreaming = false;
       let _sfAgentFenceStreamedLen = 0;
       let _sfAgentFenceFilePath = '';
+      let _sfHadAgentFenceRoute = false;
+
+      const _sfEmitFileContentToken = (text) => {
+        if (!text || !onStreamEvent) return;
+        if (text.length) _sfVisibleChars += text.length;
+        onStreamEvent('file-content-token', text);
+      };
 
       const _sfResetAgentFenceStream = () => {
         _sfAgentFenceStreaming = false;
@@ -2012,6 +2024,9 @@ class ChatEngine extends EventEmitter {
           _sfAgentFenceStreaming = true;
           _sfAgentFenceFilePath = filePath;
           _sfAgentFenceStreamedLen = 0;
+          _sfHadAgentFenceRoute = true;
+          const hm = fenceBuf.match(RE_FENCE_HEADER);
+          if (hm) _sfVisibleChars += hm[0].length;
         }
         if (body.length > _sfAgentFenceStreamedLen) {
           const delta = body.slice(_sfAgentFenceStreamedLen);
@@ -2035,8 +2050,15 @@ class ChatEngine extends EventEmitter {
         }
       };
 
-      const _sfFinalizeAgentCodeFenceStream = () => {
+      const _sfFinalizeAgentCodeFenceStream = (fenceBuf = '') => {
         if (!_sfAgentFenceStreaming || !onStreamEvent) return;
+        if (fenceBuf) {
+          const hm = fenceBuf.match(RE_FENCE_HEADER);
+          const body = _sfExtractAgentFenceBody(fenceBuf);
+          const hdrLen = hm ? hm[0].length : 0;
+          const wrapperTail = fenceBuf.length - hdrLen - body.length;
+          if (wrapperTail > 0) _sfVisibleChars += wrapperTail;
+        }
         const fileKey = _normalizePath(_sfAgentFenceFilePath);
         _trace('sf-content-end', { reason: 'agent-fence-close', filePath: _sfAgentFenceFilePath, sf: _traceSfState() });
         onStreamEvent('file-content-end', { filePath: _sfAgentFenceFilePath, fileKey });
@@ -2109,6 +2131,7 @@ class ChatEngine extends EventEmitter {
         _sfSwallowFenceDebris = false;
         _sfDebrisBuf = '';
         _sfResetAgentFenceStream();
+        _sfHadAgentFenceRoute = false;
       };
 
       const _sfBulkReplayCtx = () => ({
@@ -2341,7 +2364,7 @@ class ChatEngine extends EventEmitter {
       const _sfFlushFence = () => {
         if (_sfAgentFenceStreaming && onStreamEvent) {
           _sfEmitAgentFenceBodyDelta(_sfFenceBuf);
-          _sfFinalizeAgentCodeFenceStream();
+          _sfFinalizeAgentCodeFenceStream(_sfFenceBuf);
         } else if (_sfFenceContentStreaming && onStreamEvent) {
           _sfFinalizeFenceContentStream();
         } else if (_sfContentStreamActive && onStreamEvent) {
@@ -2381,13 +2404,22 @@ class ChatEngine extends EventEmitter {
       const _sfCatchUpVisibleProse = () => {
         _sfFlush();
         _sfFlushFence();
-        const cleanTarget = stripToolCallText(fullResponse);
+        let cleanTarget = stripToolCallText(fullResponse);
+        if (_sfHadAgentFenceRoute) {
+          const before = cleanTarget.length;
+          cleanTarget = _sfStripPlainCodeFencesFromProse(cleanTarget);
+          if (cleanTarget.length < before) {
+            console.log(`[ChatEngine] Prose catch-up: stripped ${before - cleanTarget.length} agent-routed fence chars from prose target`);
+          }
+        }
         if (cleanTarget.length > _sfVisibleChars) {
           const delta = cleanTarget.slice(_sfVisibleChars);
           if (delta) {
             console.log(`[ChatEngine] Prose stream catch-up: ${_sfVisibleChars} → ${cleanTarget.length} visible chars (${delta.length} forwarded)`);
             _sfForward(delta);
           }
+        } else if (_sfHadAgentFenceRoute) {
+          console.log(`[ChatEngine] Prose catch-up skipped — file-routed fence already accounted (${cleanTarget.length} <= ${_sfVisibleChars})`);
         }
       };
 
@@ -2600,7 +2632,7 @@ class ChatEngine extends EventEmitter {
               }
               if (_sfFenceTickCount >= 3) {
                 _sfEmitAgentFenceBodyDelta(_sfFenceBuf);
-                _sfFinalizeAgentCodeFenceStream();
+                _sfFinalizeAgentCodeFenceStream(_sfFenceBuf);
                 _sfFenceBuf = '';
                 _sfInFence = false;
                 _sfFenceTickCount = 0;
@@ -5922,4 +5954,5 @@ module.exports = {
   _sfIsAgentFileFenceMode,
   _sfRerouteThinkContentToFile,
   _sfExtractAgentFenceBody,
+  _sfStripPlainCodeFencesFromProse,
 };

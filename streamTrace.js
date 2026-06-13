@@ -42,7 +42,53 @@ const SF_CONTENT_BATCH_HEARTBEAT_MS = 2000;
 const _sfContentBatch = { pending: '', totalLen: 0, lastFlushAt: 0, meta: {} };
 let _sfContentBatchTimer = null;
 
+const _ipcFileContentBatch = { pending: '', totalLen: 0, lastFlushAt: 0 };
+let _ipcFileContentBatchTimer = null;
+
+function flushIpcFileContentBatch(force = false) {
+  if (!_ipcFileContentBatch.pending && !force) return;
+  const text = _ipcFileContentBatch.pending;
+  if (!text) return;
+  const preview = text.length > 120 ? `${text.slice(0, 80)}…` : text;
+  const line = JSON.stringify({
+    ts: new Date().toISOString(),
+    seq: _seq,
+    turnId: _turnId,
+    channel: 'ipc',
+    evt: 'ipc-send',
+    batched: true,
+    channelName: 'file-content-token',
+    len: text.length,
+    totalLen: _ipcFileContentBatch.totalLen,
+    data: preview,
+  }) + '\n';
+  if (!_pending.has('ipc')) _pending.set('ipc', []);
+  _pending.get('ipc').push(line);
+  _ipcFileContentBatch.pending = '';
+  _ipcFileContentBatch.lastFlushAt = Date.now();
+  scheduleFlush();
+}
+
+function scheduleIpcFileContentBatchFlush() {
+  if (_ipcFileContentBatchTimer) return;
+  _ipcFileContentBatchTimer = setTimeout(() => {
+    _ipcFileContentBatchTimer = null;
+    flushIpcFileContentBatch();
+  }, SF_CONTENT_BATCH_HEARTBEAT_MS);
+}
+
+function resetIpcFileContentBatch() {
+  _ipcFileContentBatch.pending = '';
+  _ipcFileContentBatch.totalLen = 0;
+  _ipcFileContentBatch.lastFlushAt = 0;
+  if (_ipcFileContentBatchTimer) {
+    clearTimeout(_ipcFileContentBatchTimer);
+    _ipcFileContentBatchTimer = null;
+  }
+}
+
 function resetSfContentBatch() {
+  resetIpcFileContentBatch();
   _sfContentBatch.pending = '';
   _sfContentBatch.totalLen = 0;
   _sfContentBatch.lastFlushAt = 0;
@@ -207,6 +253,19 @@ function shouldTraceEvt(channel, evt) {
 function trace(channel, evt, fields = {}) {
   if (!shouldTraceEvt(channel, evt)) return _seq;
   const seq = ++_seq;
+  if (_level === 'tokens' && channel === 'ipc' && evt === 'ipc-send' && fields.channel === 'file-content-token' && typeof fields.data === 'string') {
+    _ipcFileContentBatch.pending += fields.data;
+    _ipcFileContentBatch.totalLen += fields.data.length;
+    const now = Date.now();
+    const due = _ipcFileContentBatch.pending.length >= SF_CONTENT_BATCH_MIN_CHARS
+      || (now - (_ipcFileContentBatch.lastFlushAt || 0) >= SF_CONTENT_BATCH_HEARTBEAT_MS && _ipcFileContentBatch.pending.length > 0);
+    if (due) {
+      flushIpcFileContentBatch();
+    } else {
+      scheduleIpcFileContentBatchFlush();
+    }
+    return seq;
+  }
   if (_level === 'tokens' && evt === 'sf-content-token-emit' && typeof fields.text === 'string') {
     _sfContentBatch.pending += fields.text;
     _sfContentBatch.totalLen += fields.text.length;
@@ -309,6 +368,7 @@ function syncFromSettings(settings) {
 
 function clearAll() {
   flushSfContentBatch('stream', true);
+  flushIpcFileContentBatch(true);
   resetSfContentBatch();
   flushAll();
   close();

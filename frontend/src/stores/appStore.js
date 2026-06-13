@@ -141,6 +141,40 @@ function normalizeTabPath(filePath) {
   return String(filePath || '').replace(/\\/g, '/').toLowerCase();
 }
 
+const FILE_TOKEN_FLUSH_MS = 16;
+const EDITOR_SYNC_DEBOUNCE_MS = 100;
+
+/** Debounced Monaco tab sync — FileContentBlock still updates every 16ms flush. */
+const _editorSyncPending = new Map();
+
+function flushPendingEditorSync(normPath) {
+  const entry = _editorSyncPending.get(normPath);
+  if (!entry) return;
+  if (entry.timer) clearTimeout(entry.timer);
+  _editorSyncPending.delete(normPath);
+  syncStreamingFileToEditor(entry.get, entry.filePath, entry.content, entry.meta);
+}
+
+function scheduleEditorSync(get, filePath, content, meta) {
+  const norm = normalizeTabPath(filePath);
+  let entry = _editorSyncPending.get(norm);
+  if (!entry) {
+    entry = { get, filePath, content, meta, timer: null };
+    _editorSyncPending.set(norm, entry);
+  } else {
+    entry.get = get;
+    entry.filePath = filePath;
+    entry.content = content;
+    entry.meta = meta;
+  }
+  if (entry.timer) clearTimeout(entry.timer);
+  entry.timer = setTimeout(() => flushPendingEditorSync(norm), EDITOR_SYNC_DEBOUNCE_MS);
+}
+
+function flushEditorSyncForPath(filePath) {
+  flushPendingEditorSync(normalizeTabPath(filePath));
+}
+
 /** Mirror streaming file content into an open editor tab (Monaco dirty diff). */
 function syncStreamingFileToEditor(get, filePath, content, { op, oldText, newText, language, fileName, openIfMissing } = {}) {
   if (!filePath) return;
@@ -167,6 +201,47 @@ function syncStreamingFileToEditor(get, filePath, content, { op, oldText, newTex
       : content;
   }
   get().updateTabContent(tab.id, nextContent);
+}
+
+/** Flush accumulated file-content tokens into streamingFileBlocks (16ms coalesce). */
+function flushFileContentTokenBuffer(get, set) {
+  const store = get();
+  if (!store._fileTokenBuffer) {
+    if (store._fileTokenTimer) set({ _fileTokenTimer: null });
+    return;
+  }
+  const buf = store._fileTokenBuffer;
+  const targetIdx = findActiveStreamingFileBlockIndex(store.streamingFileBlocks, store.activeStreamingFileKey);
+  if (targetIdx === -1) {
+    set({ _fileTokenBuffer: null, _fileTokenTimer: null });
+    return;
+  }
+  const updated = [...store.streamingFileBlocks];
+  const last = { ...updated[targetIdx] };
+  last.content += buf;
+  if (last.op === 'edit') last.newText = (last.newText || '') + buf;
+  updated[targetIdx] = last;
+
+  traceUi('appendFileContentToken', {
+    chunkLen: buf.length,
+    tail: buf.length > 80 ? buf.slice(-40) : buf,
+    blockIndex: targetIdx,
+    fileKey: last.fileKey,
+    totalContentLen: last.content.length,
+  });
+
+  set({ streamingFileBlocks: updated, _fileTokenBuffer: null, _fileTokenTimer: null });
+
+  if (last.filePath) {
+    scheduleEditorSync(get, last.filePath, last.content, {
+      op: last.op || 'write',
+      oldText: last.oldText,
+      newText: last.newText || last.content,
+      language: last.language,
+      fileName: last.fileName,
+      openIfMissing: false,
+    });
+  }
 }
 
 
@@ -1596,33 +1671,12 @@ const useAppStore = create((set, get) => ({
       return;
     }
 
-    traceUi('appendFileContentToken', {
-      chunk,
-      blockIndex: targetIdx,
-      fileKey: block.fileKey,
-      totalContentLen: (block.content?.length || 0) + chunk.length,
-    });
-
-    // Per-token flush for smooth file-content streaming (plan/file write blocks only).
-    if (store._fileTokenTimer) {
-      clearTimeout(store._fileTokenTimer);
-    }
-    const updated = [...store.streamingFileBlocks];
-    const last = { ...updated[targetIdx] };
-    last.content += chunk;
-    if (last.op === 'edit') last.newText = (last.newText || '') + chunk;
-    updated[targetIdx] = last;
-    set({ streamingFileBlocks: updated, _fileTokenBuffer: null, _fileTokenTimer: null });
-
-    if (last.filePath) {
-      syncStreamingFileToEditor(get, last.filePath, last.content, {
-        op: last.op || 'write',
-        oldText: last.oldText,
-        newText: last.newText || last.content,
-        language: last.language,
-        fileName: last.fileName,
-        openIfMissing: false,
-      });
+    // Coalesce IPC chars into 16ms batches (same as appendStreamToken) — smooth UI, ~60 paints/sec.
+    if (!store._fileTokenBuffer) {
+      const timer = setTimeout(() => flushFileContentTokenBuffer(get, set), FILE_TOKEN_FLUSH_MS);
+      set({ _fileTokenBuffer: chunk, _fileTokenTimer: timer });
+    } else {
+      store._fileTokenBuffer += chunk;
     }
   },
 
@@ -1766,12 +1820,11 @@ const useAppStore = create((set, get) => ({
       || store.activeStreamingFileKey;
 
     if (store._fileTokenTimer) {
-
       clearTimeout(store._fileTokenTimer);
-
     }
+    flushFileContentTokenBuffer(get, set);
 
-    const { streamingFileBlocks } = store;
+    const streamingFileBlocks = get().streamingFileBlocks;
 
     if (streamingFileBlocks.length === 0) {
 
@@ -1798,12 +1851,6 @@ const useAppStore = create((set, get) => ({
 
     const last = { ...updated[targetIdx] };
 
-    if (store._fileTokenBuffer) {
-
-      last.content += store._fileTokenBuffer;
-
-    }
-
     if (payload?.incomplete) {
       updated[targetIdx] = last;
       set({
@@ -1822,6 +1869,8 @@ const useAppStore = create((set, get) => ({
     const endNorm = normalizeTabPath(last.filePath);
     const streamPaths = (store.streamingTabPaths || []).filter((p) => p !== endNorm);
     const dismissed = (store.dismissedStreamingTabPaths || []).filter((p) => p !== endNorm);
+
+    if (last.filePath) flushEditorSyncForPath(last.filePath);
 
     set({
       activeStreamingFileKey: null,
