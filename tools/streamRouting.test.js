@@ -12,9 +12,17 @@ const {
 } = require('../chatEngine');
 const { stripToolCallText, collapseOrphanMarkdownFences } = require('./toolParser');
 
-// Phi-4: html fence must stream char-by-char (not buffer until close)
-assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```html\n<!DOCTYPE html>'), true);
-assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```html\n<div>'), true);
+// Phi-4: html fence must stream char-by-char once body is classifiable (≥24 chars)
+assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```html\n<!DOCTYPE html>'), false);
+assert.strictEqual(
+  _sfFenceHeaderShouldStreamPlain('```html\n<!DOCTYPE html><html lang="en">'),
+  true,
+);
+assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```html\n<div>'), false);
+assert.strictEqual(
+  _sfFenceHeaderShouldStreamPlain('```html\n<div class="container">x'),
+  true,
+);
 
 // Unclosed html fence gets synthetic close for MarkdownRenderer pairing
 const streamingHtml = '```html\n<div>hello';
