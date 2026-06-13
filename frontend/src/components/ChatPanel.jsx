@@ -1520,6 +1520,12 @@ export default function ChatPanel() {
   // A wheel-up or pointer-driven scroll sets this flag; reaching the bottom clears it.
 
   const userScrolledAwayRef = useRef(false);
+  const scrollThrottleRef = useRef({ raf: null, timer: null, last: 0 });
+
+  useEffect(() => {
+    userScrolledAwayRef.current = false;
+    atBottomRef.current = true;
+  }, [chatGenerationEpoch]);
 
   useEffect(() => {
 
@@ -1541,43 +1547,54 @@ export default function ChatPanel() {
 
 
 
-  // Auto-scroll during streaming.
+  const scrollChatToEnd = useCallback((behavior = 'auto') => {
+    if (userScrolledAwayRef.current) return;
+    if (virtuosoRef.current) {
+      virtuosoRef.current.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior });
+    }
+  }, []);
 
-  // Uses rAF to avoid layout thrashing. Does NOT fire if the user deliberately
-
-  // scrolled up. Clears the flag when the user scrolls back to the bottom.
-
+  // Auto-scroll during streaming (throttled to max 1 rAF per 100ms during token bursts).
   useEffect(() => {
 
     if (!chatStreaming) return;
 
     if (userScrolledAwayRef.current) return;
 
-    requestAnimationFrame(() => {
-
-      if (virtuosoRef.current && !userScrolledAwayRef.current) {
-
-        virtuosoRef.current.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: 'auto' });
-
+    const throttleMs = 100;
+    const now = Date.now();
+    const run = () => {
+      scrollThrottleRef.current.raf = null;
+      scrollThrottleRef.current.last = Date.now();
+      scrollChatToEnd('auto');
+    };
+    if (now - scrollThrottleRef.current.last >= throttleMs) {
+      if (!scrollThrottleRef.current.raf) {
+        scrollThrottleRef.current.raf = requestAnimationFrame(run);
       }
+    } else if (!scrollThrottleRef.current.raf && !scrollThrottleRef.current.timer) {
+      scrollThrottleRef.current.timer = setTimeout(() => {
+        scrollThrottleRef.current.timer = null;
+        scrollThrottleRef.current.raf = requestAnimationFrame(run);
+      }, throttleMs - (now - scrollThrottleRef.current.last));
+    }
 
-    });
+    return () => {
+      if (scrollThrottleRef.current.raf) {
+        cancelAnimationFrame(scrollThrottleRef.current.raf);
+        scrollThrottleRef.current.raf = null;
+      }
+      if (scrollThrottleRef.current.timer) {
+        clearTimeout(scrollThrottleRef.current.timer);
+        scrollThrottleRef.current.timer = null;
+      }
+    };
 
-  }, [chatStreaming, chatStreamingText, streamingSegments, streamingToolCalls]);
+  }, [chatStreaming, chatStreamingText, streamingSegments, streamingToolCalls, scrollChatToEnd]);
 
 
 
   // Scroll to the newly finalized assistant message.
-
-  // When streaming ends, the streaming state is cleared on the same frame that
-
-  // chatMessages grows by one. The streaming-scroll effect above early-returns
-
-  // (chatStreaming is now false), so the new message can land below the fold
-
-  // and the panel appears blank until the user clicks or scrolls. Scrolling
-
-  // when chatMessages.length changes keeps the new message visible.
 
   useEffect(() => {
 
@@ -1587,13 +1604,21 @@ export default function ChatPanel() {
 
       if (virtuosoRef.current && !userScrolledAwayRef.current) {
 
-        virtuosoRef.current.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: 'auto' });
+        if (!chatStreaming && chatMessages.length > 0) {
+          virtuosoRef.current.scrollToIndex({
+            index: chatMessages.length - 1,
+            align: 'end',
+            behavior: 'auto',
+          });
+        } else {
+          virtuosoRef.current.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: 'auto' });
+        }
 
       }
 
     });
 
-  }, [chatMessages.length]);
+  }, [chatStreaming, chatMessages.length]);
 
 
 
@@ -1694,6 +1719,8 @@ export default function ChatPanel() {
       }
 
       live.bumpChatGenerationEpoch();
+      userScrolledAwayRef.current = false;
+      atBottomRef.current = true;
       try {
         if (window.electronAPI?.agentPause) {
           await window.electronAPI.agentPause();
@@ -1702,7 +1729,12 @@ export default function ChatPanel() {
         }
       } catch (_) {}
       live.materializePartialAssistant();
-      addChatMessage({ role: 'user', content: text });
+      const userIdx = addChatMessage({ role: 'user', content: text });
+      requestAnimationFrame(() => {
+        if (virtuosoRef.current != null && userIdx >= 0) {
+          virtuosoRef.current.scrollToIndex({ index: userIdx, align: 'end', behavior: 'auto' });
+        }
+      });
       const revertMsgs = useAppStore.getState().chatMessages.map((m) => ({
         role: m.role,
         content: messageContentForRevert(m),

@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { pathToFileURL } = require('url');
-const { parseToolCalls, repairToolCalls, stripToolCallText, isVisibleToolArtifact, looksLikeToolAttempt, suggestClosestToolName, extractPartialWriteFileFromToolJson, normalizeStreamingFilePath } = require('./tools/toolParser');
+const { parseToolCalls, repairToolCalls, stripToolCallText, isVisibleToolArtifact, looksLikeToolAttempt, suggestClosestToolName, extractPartialWriteFileFromToolJson, normalizeStreamingFilePath, resolveStreamingFileKey, _inferFilePath } = require('./tools/toolParser');
 const { formatToolResultForInject, buildToolResultsUserMessage } = require('./tools/toolResultInjection');
 const { canonicalizeToolParams } = require('./tools/canonicalizeToolParams');
 const { visionServer } = require('./visionServer');
@@ -99,7 +99,13 @@ function _sfBulkReplayFileContentFromFence(fenceBuf, ctx) {
   if (!info?.filePath || info.content == null) return false;
   if (!shouldStreamFileContentForAgent(options, info.filePath)) return false;
   const np = normalizePath(info.filePath);
-  if (streamedSet.has(np) || endCompleted.has(np)) return false;
+  if (streamedSet.has(np)) {
+    if (endCompleted.has(np)) {
+      endCompleted.delete(np);
+    } else {
+      return false;
+    }
+  }
   if (!allowNewStart(info.filePath)) return false;
 
   const fileName = info.filePath.split(/[\\/]/).pop() || info.filePath;
@@ -109,7 +115,7 @@ function _sfBulkReplayFileContentFromFence(fenceBuf, ctx) {
     filePath: info.filePath,
     fileName,
     language: ext,
-    fileKey: info.filePath,
+    fileKey: np,
     op: info.isEdit ? 'edit' : 'write',
     oldText: info.oldText != null ? String(info.oldText) : undefined,
   });
@@ -119,7 +125,7 @@ function _sfBulkReplayFileContentFromFence(fenceBuf, ctx) {
   for (let i = 0; i < content.length; i += CHUNK) {
     onStreamEvent('file-content-token', content.slice(i, i + CHUNK));
   }
-  onStreamEvent('file-content-end', { filePath: info.filePath, fileKey: info.filePath });
+  onStreamEvent('file-content-end', { filePath: info.filePath, fileKey: np });
   endCompleted.add(np);
   markActive(null);
   return true;
@@ -132,11 +138,12 @@ function emitCompleteFileContentBlock(onStreamEvent, filePath, content, options,
   const fp = filePath || '';
   const fn = fp.split(/[\\/]/).pop() || fp;
   const ext = fn.includes('.') ? fn.split('.').pop().toLowerCase() : '';
+  const fileKey = resolveStreamingFileKey(fp, options?.projectPath);
   onStreamEvent('file-content-block-complete', {
     filePath: fp,
     fileName: fn,
     language: ext,
-    fileKey: fp,
+    fileKey,
     content: String(content),
     op: meta.op || 'write',
     oldText: meta.oldText != null ? String(meta.oldText) : undefined,
@@ -225,6 +232,74 @@ function _sfFenceHeaderShouldStreamPlain(fenceBuf) {
     || _sfIsToolLikeJson(afterHeader.slice(0, 6000));
   if (looksLikeToolBody) return false;
   return true;
+}
+
+/** Agent/build mode where code fences should route to FileContentBlock instead of prose. */
+function _sfIsAgentFileFenceMode(options) {
+  if (!options) return false;
+  if (options.askOnly || options.chatMode === 'ask') return false;
+  if ((options.planMode || options.chatMode === 'plan') && options.agentPhase !== 'building') return false;
+  return true;
+}
+
+/** Whether an in-progress fence should stream to FileContentBlock (agent mode, non-md, non-tool). */
+function _sfShouldRouteAgentCodeFence(fenceBuf, options) {
+  if (!_sfIsAgentFileFenceMode(options)) return false;
+  if (!RE_FENCE_HEADER.test(fenceBuf)) return false;
+  const hm = fenceBuf.match(RE_FENCE_HEADER);
+  const lang = (hm[1] || '').toLowerCase();
+  if (_sfIsToolFenceLang(lang)) return false;
+  if (SF_PLAIN_FENCE_LANGS.has(lang)) return false;
+  const afterHeader = fenceBuf.slice(hm[0].length);
+  if (afterHeader.length < SF_FENCE_PLAIN_MIN_BODY) return false;
+  const looksLikeToolBody = _sfFenceBufferLooksLikeToolJson(afterHeader.slice(0, 8000))
+    || _sfIsToolLikeJson(afterHeader.slice(0, 6000));
+  if (looksLikeToolBody) return false;
+  return true;
+}
+
+function _sfExtractAgentFenceBody(fenceBuf) {
+  const hm = String(fenceBuf || '').match(RE_FENCE_HEADER);
+  if (!hm) return '';
+  let body = fenceBuf.slice(hm[0].length);
+  const closeMatch = body.match(/\n?`{3,}\s*$/);
+  if (closeMatch) body = body.slice(0, -closeMatch[0].length);
+  return body;
+}
+
+/** Infer project file path for a plain code fence in agent mode. */
+function _sfInferAgentFenceFilePath(fenceBuf, contextText = '') {
+  const hm = String(fenceBuf || '').match(RE_FENCE_HEADER);
+  const lang = hm ? (hm[1] || '').toLowerCase() : '';
+  const body = _sfExtractAgentFenceBody(fenceBuf);
+  return _inferFilePath(`${contextText}\n${fenceBuf}`, body, lang);
+}
+
+/** Re-route think-buffer content that is really file/tool payload (not reasoning prose). */
+function _sfRerouteThinkContentToFile(text, options, contextText = '') {
+  if (!text || !_sfIsAgentFileFenceMode(options)) return null;
+  const sample = String(text);
+  if (_sfIsToolLikeJson(sample)) {
+    const partial = extractPartialWriteFileFromToolJson(sample, { stripCompleteSuffix: true });
+    if (partial?.filePath && partial.content != null) {
+      return { filePath: partial.filePath, content: partial.content, op: partial.isEdit ? 'edit' : 'write', oldText: partial.oldText };
+    }
+  }
+  const fenceRe = /```(\w*)\s*\n([\s\S]*)/;
+  const fm = sample.match(fenceRe);
+  if (fm) {
+    const lang = (fm[1] || '').toLowerCase();
+    if (!_sfIsToolFenceLang(lang) && !SF_PLAIN_FENCE_LANGS.has(lang)) {
+      const body = fm[2].replace(/\n?`{3,}\s*$/, '');
+      const filePath = _inferFilePath(`${contextText}\n${sample}`, body, lang);
+      if (filePath) return { filePath, content: body, op: 'write' };
+    }
+  }
+  if (/<!DOCTYPE|<html[\s>]/i.test(sample)) {
+    const filePath = _inferFilePath(`${contextText}\n${sample}`, sample);
+    if (filePath) return { filePath, content: sample, op: 'write' };
+  }
+  return null;
 }
 
 /** Keep fence markers; append closing ``` when generation ended mid-fence. */
@@ -1855,7 +1930,7 @@ class ChatEngine extends EventEmitter {
             : `${phase}-close-quote`;
           if (onStreamEvent) {
             _trace('sf-content-end', { reason, filePath: _sfContentFilePath, sf: _traceSfState() });
-            onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
+            onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _normalizePath(_sfContentFilePath) });
             _sfContentEndCompleted.add(_normalizePath(_sfContentFilePath));
             _sfMarkFileContentStreamActive(null);
           }
@@ -1895,18 +1970,94 @@ class ChatEngine extends EventEmitter {
       const _sfStreamedFileWrites = new Set();
       const _sfProsedFileWrites = new Set(); // files whose write_file JSON was flushed as prose (not streamed)
       // Canonicalize paths for dedup — backslashes→forward-slashes, collapse dupes, lowercase drive letter.
-      const _normalizePath = (p) => {
-        if (!p) return '';
-        const trimmed = normalizeStreamingFilePath(p);
-        const n = trimmed.replace(/\\/g, '/').replace(/\/+/g, '/');
-        if (!n) return '';
-        return /^[a-z]:\//i.test(n) ? n.toLowerCase() : n;
-      };
+      const _normalizePath = (p) => resolveStreamingFileKey(p, this._projectPath);
       let _sfVisibleChars = 0; // tracks chars forwarded to frontend (after filter removes tool JSON)
       let _sfFenceInThink = false; // fence that opened inside think mode
       let _sfEarlyFileStartEmitted = false;
       let _sfContentContinuation = null;
       const _sfContentEndCompleted = new Set();
+      let _sfAgentFenceStreaming = false;
+      let _sfAgentFenceStreamedLen = 0;
+      let _sfAgentFenceFilePath = '';
+
+      const _sfResetAgentFenceStream = () => {
+        _sfAgentFenceStreaming = false;
+        _sfAgentFenceStreamedLen = 0;
+        _sfAgentFenceFilePath = '';
+      };
+
+      const _sfResetContentEndForFile = (filePath) => {
+        const np = _normalizePath(filePath);
+        if (np) _sfContentEndCompleted.delete(np);
+      };
+
+      const _sfStartAgentCodeFenceStream = (filePath, fenceBuf) => {
+        if (!filePath || !onStreamEvent) return;
+        const np = _normalizePath(filePath);
+        _sfResetContentEndForFile(filePath);
+        const body = _sfExtractAgentFenceBody(fenceBuf);
+        const fileName = filePath.split(/[\\/]/).pop() || filePath;
+        const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+        if (!_sfAgentFenceStreaming || _sfAgentFenceFilePath !== filePath) {
+          _trace('sf-content-start', { filePath, phase: 'agent-fence' });
+          onStreamEvent('file-content-start', {
+            filePath,
+            fileName,
+            language: ext,
+            fileKey: np,
+            op: 'write',
+          });
+          _sfStreamedFileWrites.add(np);
+          _sfMarkFileContentStreamActive(filePath);
+          _sfAgentFenceStreaming = true;
+          _sfAgentFenceFilePath = filePath;
+          _sfAgentFenceStreamedLen = 0;
+        }
+        if (body.length > _sfAgentFenceStreamedLen) {
+          const delta = body.slice(_sfAgentFenceStreamedLen);
+          _sfAgentFenceStreamedLen = body.length;
+          if (delta) {
+            _trace('sf-content-token-emit', { filePath, textLen: delta.length, phase: 'agent-fence' });
+            onStreamEvent('file-content-token', delta);
+          }
+        }
+      };
+
+      const _sfEmitAgentFenceBodyDelta = (fenceBuf) => {
+        if (!_sfAgentFenceStreaming || !_sfAgentFenceFilePath) return;
+        const body = _sfExtractAgentFenceBody(fenceBuf);
+        if (body.length > _sfAgentFenceStreamedLen) {
+          const delta = body.slice(_sfAgentFenceStreamedLen);
+          _sfAgentFenceStreamedLen = body.length;
+          if (onStreamEvent && delta) {
+            onStreamEvent('file-content-token', delta);
+          }
+        }
+      };
+
+      const _sfFinalizeAgentCodeFenceStream = () => {
+        if (!_sfAgentFenceStreaming || !onStreamEvent) return;
+        const fileKey = _normalizePath(_sfAgentFenceFilePath);
+        _trace('sf-content-end', { reason: 'agent-fence-close', filePath: _sfAgentFenceFilePath, sf: _traceSfState() });
+        onStreamEvent('file-content-end', { filePath: _sfAgentFenceFilePath, fileKey });
+        _sfContentEndCompleted.add(fileKey);
+        _sfMarkFileContentStreamActive(null);
+        _sfResetAgentFenceStream();
+      };
+
+      const _sfEmitReroutedThinkFile = (reroute) => {
+        if (!reroute?.filePath || !onStreamEvent) return;
+        if (!shouldStreamFileContentForAgent(options, reroute.filePath)) return;
+        if (reroute.op === 'edit') {
+          emitCompleteFileContentBlock(onStreamEvent, reroute.filePath, reroute.content, options, {
+            op: 'edit',
+            oldText: reroute.oldText || '',
+            newText: reroute.content,
+          });
+        } else {
+          emitCompleteFileContentBlock(onStreamEvent, reroute.filePath, reroute.content, options);
+        }
+      };
 
       const _traceSfState = () => ({
         active: _sfActive,
@@ -1957,6 +2108,7 @@ class ChatEngine extends EventEmitter {
         _sfEarlyFileStartEmitted = false;
         _sfSwallowFenceDebris = false;
         _sfDebrisBuf = '';
+        _sfResetAgentFenceStream();
       };
 
       const _sfBulkReplayCtx = () => ({
@@ -2005,7 +2157,10 @@ class ChatEngine extends EventEmitter {
       const _sfShouldAllowNewFileContentStart = (filePath) => {
         if (_sfContentContinuation) return false;
         const np = _normalizePath(filePath);
-        if (_sfContentEndCompleted.has(np)) return false;
+        if (_sfContentEndCompleted.has(np)) {
+          // Same-turn rewrite: allow reopen after prior stream session ended.
+          _sfContentEndCompleted.delete(np);
+        }
         return true;
       };
 
@@ -2022,7 +2177,13 @@ class ChatEngine extends EventEmitter {
         const filePath = partial.filePath;
         if (!shouldStreamFileContentForAgent(options, filePath)) return;
         const np = _normalizePath(filePath);
-        if (_sfStreamedFileWrites.has(np)) return;
+        if (_sfStreamedFileWrites.has(np)) {
+          if (_sfContentEndCompleted.has(np)) {
+            _sfResetContentEndForFile(filePath);
+          } else {
+            return;
+          }
+        }
         if (!_sfShouldAllowNewFileContentStart(filePath)) return;
         _sfEarlyFileStartEmitted = true;
         _sfContentFilePath = filePath;
@@ -2037,7 +2198,7 @@ class ChatEngine extends EventEmitter {
           filePath,
           fileName,
           language: ext,
-          fileKey: filePath,
+          fileKey: np,
           op: _sfStreamIsEdit ? 'edit' : 'write',
           oldText: _sfContentOldText || undefined,
         });
@@ -2060,7 +2221,14 @@ class ChatEngine extends EventEmitter {
         if (content.length === 0) return;
         const np = _normalizePath(filePath);
         if (!_sfFenceContentStreaming) {
-          if (_sfStreamedFileWrites.has(np)) return;
+          if (_sfStreamedFileWrites.has(np)) {
+            if (_sfContentEndCompleted.has(np)) {
+              _sfResetContentEndForFile(filePath);
+              _sfFenceStreamedLen = 0;
+            } else {
+              return;
+            }
+          }
           if (!_sfShouldAllowNewFileContentStart(filePath)) return;
           _sfFenceContentStreaming = true;
           _sfContentFilePath = filePath;
@@ -2077,7 +2245,7 @@ class ChatEngine extends EventEmitter {
               filePath,
               fileName,
               language: ext,
-              fileKey: filePath,
+              fileKey: np,
               op: _sfStreamIsEdit ? 'edit' : 'write',
               oldText: _sfContentOldText || undefined,
             });
@@ -2108,7 +2276,7 @@ class ChatEngine extends EventEmitter {
           }
         }
         _trace('sf-content-end', { reason: 'fence-close', filePath: _sfContentFilePath, sf: _traceSfState() });
-        onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
+        onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _normalizePath(_sfContentFilePath) });
         _sfContentEndCompleted.add(_normalizePath(_sfContentFilePath));
         _sfMarkFileContentStreamActive(null);
         _sfFenceContentStreaming = false;
@@ -2135,7 +2303,7 @@ class ChatEngine extends EventEmitter {
             onStreamEvent('file-content-token', _sfContentBuf);
             _sfContentBuf = '';
           }
-          onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
+          onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _normalizePath(_sfContentFilePath) });
           _sfContentStreamActive = false;
         } else if (_sfBuf) {
           // Flush-guard: if the buffer contains tool-call JSON, discard it.
@@ -2171,14 +2339,17 @@ class ChatEngine extends EventEmitter {
       };
 
       const _sfFlushFence = () => {
-        if (_sfFenceContentStreaming && onStreamEvent) {
+        if (_sfAgentFenceStreaming && onStreamEvent) {
+          _sfEmitAgentFenceBodyDelta(_sfFenceBuf);
+          _sfFinalizeAgentCodeFenceStream();
+        } else if (_sfFenceContentStreaming && onStreamEvent) {
           _sfFinalizeFenceContentStream();
         } else if (_sfContentStreamActive && onStreamEvent) {
           if (_sfContentBuf) {
             onStreamEvent('file-content-token', _sfContentBuf);
             _sfContentBuf = '';
           }
-          onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
+          onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _normalizePath(_sfContentFilePath) });
           _sfContentStreamActive = false;
         }
         if (_sfFenceBuf) {
@@ -2297,8 +2468,11 @@ class ChatEngine extends EventEmitter {
             // Check for close tag </think> first.
             if (_sfThinkBuf.length >= 8 && _sfThinkBuf.endsWith('</think>')) {
               const thinkContent = _sfThinkBuf.slice(0, -8);
-              // B4: Suppress raw-text emit if native segment path already handled this content.
-              if (thinkContent && onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
+              const reroute = _sfRerouteThinkContentToFile(thinkContent, options, fullResponse);
+              if (reroute) {
+                _sfEmitReroutedThinkFile(reroute);
+                console.log(`[ChatEngine] </think> closed — rerouted ${reroute.filePath} to file-content (${thinkContent.length} chars)`);
+              } else if (thinkContent && onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
                 _sfNativeThinkChars += thinkContent.length; // B03: count raw-text thinking
                 onStreamEvent('llm-thinking-token', thinkContent);
                 onStreamEvent('llm-thinking-end', {
@@ -2307,7 +2481,7 @@ class ChatEngine extends EventEmitter {
                   content: thinkContent
                 });
               }
-              console.log(`[ChatEngine] </think> closed — thinking block: ${(thinkContent || '').length} chars${_sfNativeThinkActive ? ' (raw-text emit suppressed by B4 — native segment active)' : ''}`);
+              console.log(`[ChatEngine] </think> closed — thinking block: ${(thinkContent || '').length} chars${_sfNativeThinkActive ? ' (raw-text emit suppressed by B4 — native segment active)' : ''}${reroute ? ' (file reroute)' : ''}`);
               _sfInThink = false;
               _sfThinkBuf = '';
               continue;
@@ -2415,6 +2589,28 @@ class ChatEngine extends EventEmitter {
 
           // ── Fence mode: accumulating content inside ```...``` ──
           if (_sfInFence) {
+            if (_sfAgentFenceStreaming) {
+              _sfFenceBuf += ch;
+              if (_sfFenceCloseTickBlocked()) {
+                _sfFenceTickCount = 0;
+              } else if (ch === '`') {
+                _sfFenceTickCount++;
+              } else {
+                _sfFenceTickCount = 0;
+              }
+              if (_sfFenceTickCount >= 3) {
+                _sfEmitAgentFenceBodyDelta(_sfFenceBuf);
+                _sfFinalizeAgentCodeFenceStream();
+                _sfFenceBuf = '';
+                _sfInFence = false;
+                _sfFenceTickCount = 0;
+                _sfLastCharWasNewlineOrStart = true;
+                continue;
+              }
+              _sfEmitAgentFenceBodyDelta(_sfFenceBuf);
+              continue;
+            }
+
             // Stream normal markdown code fences (```html, ```css, …) to the UI immediately.
             // Only JSON tool-call fences stay buffered until close (so we can strip/suppress).
             if (_sfFenceStreamPlain) {
@@ -2451,6 +2647,13 @@ class ChatEngine extends EventEmitter {
 
             if (!_sfFenceStreamPlain && !_sfFileWriteDetected && !_sfContentStreamActive && RE_FENCE_HEADER.test(_sfFenceBuf)) {
               if (_sfFenceHeaderShouldStreamPlain(_sfFenceBuf)) {
+                if (_sfShouldRouteAgentCodeFence(_sfFenceBuf, options)) {
+                  const agentPath = _sfInferAgentFenceFilePath(_sfFenceBuf, fullResponse);
+                  if (agentPath && shouldStreamFileContentForAgent(options, agentPath)) {
+                    _sfStartAgentCodeFenceStream(agentPath, _sfFenceBuf);
+                    continue;
+                  }
+                }
                 const hm = _sfFenceBuf.match(RE_FENCE_HEADER);
                 _sfFencePlainHeader = hm ? _sfFenceBuf.slice(0, hm.index + hm[0].length) : '';
                 _sfFencePlainBody = hm ? _sfFenceBuf.slice(hm.index + hm[0].length) : _sfFenceBuf;
@@ -2516,7 +2719,7 @@ class ChatEngine extends EventEmitter {
                   onStreamEvent('file-content-token', _sfContentBuf);
                   _sfContentBuf = '';
                 }
-                onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _sfContentFilePath });
+                onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _normalizePath(_sfContentFilePath) });
                 _sfContentStreamActive = false;
               }
               // Fix 4: If this fence opened inside a thinking block, decide based on content.
@@ -2535,13 +2738,20 @@ class ChatEngine extends EventEmitter {
                   _sfThinkBuf = '';
                   _sfFenceBuf = '';
                 } else {
-                  // Case (b): prose fence inside think — emit as thinking content, stay in think
-                  console.log('[ChatEngine] fence-in-think: non-tool fence — emitting as thinking content');
-                  if (onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
-                    _sfNativeThinkChars += _sfFenceBuf.length; // B03: count raw-text thinking
-                    onStreamEvent('llm-thinking-token', _sfFenceBuf);
+                  const reroute = _sfRerouteThinkContentToFile(_sfFenceBuf, options, fullResponse);
+                  if (reroute) {
+                    console.log('[ChatEngine] fence-in-think: file fence — rerouting to file-content');
+                    _sfEmitReroutedThinkFile(reroute);
+                    _sfFenceBuf = '';
+                  } else {
+                    // Case (b): prose fence inside think — emit as thinking content, stay in think
+                    console.log('[ChatEngine] fence-in-think: non-tool fence — emitting as thinking content');
+                    if (onStreamEvent && !_thinkingFilterEnabled && !_sfNativeThinkActive) {
+                      _sfNativeThinkChars += _sfFenceBuf.length; // B03: count raw-text thinking
+                      onStreamEvent('llm-thinking-token', _sfFenceBuf);
+                    }
+                    _sfFenceBuf = '';
                   }
-                  _sfFenceBuf = '';
                   // Stay in think mode — _sfInThink remains true
                 }
               } else {
@@ -2633,7 +2843,7 @@ class ChatEngine extends EventEmitter {
                     filePath: _sfContentFilePath,
                     fileName,
                     language: ext,
-                    fileKey: _sfContentFilePath,
+                    fileKey: _normalizePath(_sfContentFilePath),
                     op: _sfStreamIsEdit ? 'edit' : 'write',
                     oldText: _sfContentOldText || undefined,
                   });
@@ -3561,12 +3771,7 @@ class ChatEngine extends EventEmitter {
             }
             if (FILE_EDIT_OPS.has(call.tool) && call.params?.newText != null && onStreamEvent) {
               const filePath = call.params.filePath || call.params.path || '';
-              const _np = _normalizePath(filePath);
-              if (
-                shouldStreamFileContentForAgent(options, filePath)
-                && !_sfStreamedFileWrites.has(_np)
-                && !_sfProsedFileWrites.has(_np)
-              ) {
+              if (shouldStreamFileContentForAgent(options, filePath)) {
                 emitCompleteFileContentBlock(onStreamEvent, filePath, call.params.newText, options, {
                   op: 'edit',
                   oldText: call.params.oldText || '',
@@ -5712,4 +5917,9 @@ module.exports = {
   _sfIsPlainMarkdownFence,
   _sfFenceHeaderShouldStreamPlain,
   _sfFenceBufferLooksLikeToolJson,
+  _sfShouldRouteAgentCodeFence,
+  _sfInferAgentFenceFilePath,
+  _sfIsAgentFileFenceMode,
+  _sfRerouteThinkContentToFile,
+  _sfExtractAgentFenceBody,
 };

@@ -25,6 +25,7 @@
 import { create } from 'zustand';
 import { normalizeUpdateStatus } from '../lib/updateStatus';
 import { traceUi } from '../lib/traceUi';
+import { resolveStreamingFileKey } from '../../../tools/toolParser';
 
 function _uiLog(msg) {
   try { window.electronAPI?.uiLog?.(String(msg)); } catch (_) {}
@@ -101,28 +102,15 @@ function chatMessageTextForRevert(msg) {
 
 
 
-function canonicalizeStreamingFilePath(filePath) {
+function canonicalizeStreamingFilePath(filePath, projectPath) {
+  return resolveStreamingFileKey(filePath, projectPath);
+}
 
-  if (!filePath) return '';
-
-
-
-  const normalized = String(filePath)
-
-    .trim()
-
-    .replace(/[\\/]+$/, '')
-
-    .replace(/\\/g, '/')
-
-    .replace(/\/+/g, '/');
-
-
-
-  if (!normalized) return '';
-
-  return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
-
+function streamingFileKey(filePath, fileKey, projectPath) {
+  return canonicalizeStreamingFilePath(filePath, projectPath)
+    || canonicalizeStreamingFilePath(fileKey, projectPath)
+    || fileKey
+    || '';
 }
 
 
@@ -1428,7 +1416,7 @@ const useAppStore = create((set, get) => ({
     // Always canonicalize filePath for dedup — the fileKey from events may be raw
     // (e.g., regex-captured path with double backslashes from JSON text) which would
     // mismatch the canonicalized key used by addCompleteFileContentBlock.
-    const normalizedKey = canonicalizeStreamingFilePath(filePath) || fileKey || '';
+    const normalizedKey = streamingFileKey(filePath, fileKey, store.projectPath);
 
     if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
 
@@ -1458,17 +1446,28 @@ const useAppStore = create((set, get) => ({
 
     }
 
-    // R37-Step4: If a block with the same filePath already exists, resume into it
-
-    // instead of creating a new block. This prevents multiple blocks appearing
-
-    // for the same file across continuation iterations.
-
-    const existingIdx = store.streamingFileBlocks.findIndex(b => b.fileKey === normalizedKey && !b.complete);
+    const proj = store.projectPath;
+    const existingIdx = store.streamingFileBlocks.findIndex(
+      (b) => b.fileKey === normalizedKey
+        || canonicalizeStreamingFilePath(b.filePath, proj) === normalizedKey,
+    );
 
     if (existingIdx !== -1) {
 
-      // Block already exists — just update text/timer state, don't create new block or segment
+      const reopened = [...store.streamingFileBlocks];
+      const prev = reopened[existingIdx];
+      reopened[existingIdx] = {
+        ...prev,
+        filePath: filePath || prev.filePath,
+        fileKey: normalizedKey,
+        fileName: fileName || prev.fileName,
+        language: language || prev.language,
+        complete: false,
+        content: (op === 'edit') ? prev.content : '',
+        op: op || prev.op || 'write',
+        oldText: oldText != null ? String(oldText) : (prev.oldText || ''),
+        newText: newText != null ? String(newText) : (prev.newText || ''),
+      };
 
       const streamNorm = normalizeTabPath(filePath);
       const streamPaths = store.streamingTabPaths || [];
@@ -1479,6 +1478,8 @@ const useAppStore = create((set, get) => ({
       set({
 
         activeStreamingFileKey: normalizedKey,
+
+        streamingFileBlocks: reopened,
 
         chatStreamingText: currentText,
 
@@ -1650,7 +1651,7 @@ const useAppStore = create((set, get) => ({
     // Always canonicalize filePath for dedup — the fileKey from events may be raw
     // (e.g., regex-captured path with double backslashes from JSON text) which would
     // mismatch the canonicalized key used by startFileContentBlock.
-    const normalizedKey = canonicalizeStreamingFilePath(filePath) || fileKey || '';
+    const normalizedKey = streamingFileKey(filePath, fileKey, store.projectPath);
     if (!normalizedKey || content == null) return;
 
     if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
@@ -1671,9 +1672,10 @@ const useAppStore = create((set, get) => ({
       }
     }
 
+    const proj = store.projectPath;
     const existingIdx = store.streamingFileBlocks.findIndex(
       (b) => b.fileKey === normalizedKey
-        || canonicalizeStreamingFilePath(b.filePath) === normalizedKey,
+        || canonicalizeStreamingFilePath(b.filePath, proj) === normalizedKey,
     );
     let newBlocks;
     let fileIndex;
@@ -1759,7 +1761,9 @@ const useAppStore = create((set, get) => ({
 
     // R33-Phase2: Flush any pending buffered tokens before marking complete
 
-    const targetKey = payload?.fileKey || canonicalizeStreamingFilePath(payload?.filePath) || store.activeStreamingFileKey;
+    const targetKey = payload?.fileKey
+      || streamingFileKey(payload?.filePath, null, store.projectPath)
+      || store.activeStreamingFileKey;
 
     if (store._fileTokenTimer) {
 
@@ -1779,7 +1783,7 @@ const useAppStore = create((set, get) => ({
 
     const targetIdx = streamingFileBlocks.findIndex(
       (b) => b.fileKey === targetKey
-        || canonicalizeStreamingFilePath(b.filePath) === targetKey,
+        || canonicalizeStreamingFilePath(b.filePath, store.projectPath) === targetKey,
     );
 
     if (targetIdx === -1) {
@@ -1889,7 +1893,7 @@ const useAppStore = create((set, get) => ({
 
     // Find the block matching this filePath, or fall back to last block
 
-    const normalizedKey = fileKey || canonicalizeStreamingFilePath(filePath);
+    const normalizedKey = streamingFileKey(filePath, fileKey, get().projectPath);
 
     let idx = updated.findIndex(b => b.fileKey === normalizedKey);
 

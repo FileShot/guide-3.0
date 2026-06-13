@@ -38,7 +38,7 @@ const FileContentBlock = React.memo(function FileContentBlock({
 
   const displayNew = newText || content || '';
   const isEdit = op === 'edit';
-  const useDiffLines = showLineDiff && !complete && !!displayNew;
+  const useDiffLines = showLineDiff && !!displayNew && (!complete || isEdit);
   const diffLines = useMemo(() => {
     if (!useDiffLines) return null;
     if (!isEdit || !oldText) {

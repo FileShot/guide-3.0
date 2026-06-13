@@ -2,10 +2,10 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const { resolveStreamingFileKey } = require('./toolParser');
 
-function canonicalizeStreamingFilePath(filePath) {
-  if (!filePath) return '';
-  return String(filePath).trim().replace(/[\\/]+$/, '').replace(/\\/g, '/').replace(/\/+/g, '/');
+function canonicalizeStreamingFilePath(filePath, projectPath) {
+  return resolveStreamingFileKey(filePath, projectPath);
 }
 
 function findActiveStreamingFileBlockIndex(blocks, fileKey) {
@@ -20,8 +20,8 @@ function findActiveStreamingFileBlockIndex(blocks, fileKey) {
   return -1;
 }
 
-function addCompleteLegacy(blocks, segs, { filePath, fileName, content }) {
-  const normalizedKey = canonicalizeStreamingFilePath(filePath);
+function addCompleteLegacy(blocks, segs, { filePath, fileName, content }, projectPath) {
+  const normalizedKey = canonicalizeStreamingFilePath(filePath, projectPath);
   let existingIdx = blocks.findIndex((b) => b.fileKey === normalizedKey);
   if (existingIdx === -1) {
     existingIdx = findActiveStreamingFileBlockIndex(blocks, normalizedKey);
@@ -54,11 +54,11 @@ function addCompleteLegacy(blocks, segs, { filePath, fileName, content }) {
   return fileIndex;
 }
 
-function addCompleteFixed(blocks, segs, { filePath, fileName, content }) {
-  const normalizedKey = canonicalizeStreamingFilePath(filePath);
+function addCompleteFixed(blocks, segs, { filePath, fileName, content }, projectPath) {
+  const normalizedKey = canonicalizeStreamingFilePath(filePath, projectPath);
   const existingIdx = blocks.findIndex(
     (b) => b.fileKey === normalizedKey
-      || canonicalizeStreamingFilePath(b.filePath) === normalizedKey,
+      || canonicalizeStreamingFilePath(b.filePath, projectPath) === normalizedKey,
   );
   if (existingIdx !== -1) {
     blocks[existingIdx] = {
@@ -84,6 +84,34 @@ function addCompleteFixed(blocks, segs, { filePath, fileName, content }) {
 }
 
 describe('streamingBlockPreserve', () => {
+  it('resolveStreamingFileKey unifies relative and absolute paths', () => {
+    const proj = 'D:/sunkdink';
+    const rel = resolveStreamingFileKey('src/main.js', proj);
+    const abs = resolveStreamingFileKey('D:\\sunkdink\\src\\main.js', proj);
+    assert.equal(rel, abs);
+    assert.equal(rel, 'd:/sunkdink/src/main.js');
+  });
+
+  it('fixed addComplete resumes same block for relative then absolute path', () => {
+    const proj = 'D:/sunkdink';
+    const blocks = [{
+      filePath: 'src/main.js',
+      fileKey: 'd:/sunkdink/src/main.js',
+      fileName: 'main.js',
+      content: 'round one',
+      complete: true,
+    }];
+    const segs = [{ type: 'file', index: 0 }];
+    addCompleteFixed(blocks, segs, {
+      filePath: 'D:\\sunkdink\\src\\main.js',
+      fileName: 'main.js',
+      content: 'round two',
+    }, proj);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].content, 'round two');
+    assert.equal(blocks[0].fileKey, 'd:/sunkdink/src/main.js');
+  });
+
   it('legacy addComplete overwrites unrelated in-progress index.html with style.css', () => {
     const blocks = [{
       filePath: 'index.html',

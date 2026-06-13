@@ -89,6 +89,14 @@ describe('extractPartialWriteFileFromToolJson', () => {
     assert.ok(!r.content.includes('`'));
   });
 
+  it('stops at quote-comma tail without closing brace', () => {
+    const partial = `${prefix}</div>",`;
+    const r = extractPartialWriteFileFromToolJson(partial);
+    assert.ok(r);
+    assert.equal(r.content, '</div>');
+    assert.ok(!r.content.includes('",'));
+  });
+
   it('stops at structural JSON close without strip flag during live delta', () => {
     const partial = `${prefix}</div>"},`;
     const r = extractPartialWriteFileFromToolJson(partial);
