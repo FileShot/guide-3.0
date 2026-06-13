@@ -25,7 +25,7 @@
 import { create } from 'zustand';
 import { normalizeUpdateStatus } from '../lib/updateStatus';
 import { traceUi } from '../lib/traceUi';
-import { resolveStreamingFileKey } from '../../../tools/toolParser';
+import { resolveStreamingFileKey } from '../lib/streamingFileKey';
 
 function _uiLog(msg) {
   try { window.electronAPI?.uiLog?.(String(msg)); } catch (_) {}
