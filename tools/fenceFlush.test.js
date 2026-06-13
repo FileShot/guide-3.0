@@ -51,7 +51,7 @@ assert.strictEqual(
 );
 assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```javascript\nconst x = 1;'), false);
 assert.strictEqual(
-  _sfFenceHeaderShouldStreamPlain('```javascript\nconst answer = 42;'),
+  _sfFenceHeaderShouldStreamPlain('```javascript\nconst answer = 42; // ok'),
   true,
 );
 assert.strictEqual(_sfFenceHeaderShouldStreamPlain('```markdown\n# Title'), false);
