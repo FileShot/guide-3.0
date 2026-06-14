@@ -1530,7 +1530,13 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       console.log(`[Settings] model-load START path=${modelPath} thinkingMode=${loadSettings.thinkingMode} toolsEnabled=${settingsManager.get('toolsEnabled')} enableThinking=${loadSettings.enableThinking}`);
       try { llmEngine.cancelGeneration('model-load'); } catch (_) {}
       _send('model-loading', { path: modelPath });
-      await llmEngine.initialize(modelPath, loadSettings);
+      try {
+        await llmEngine.initialize(modelPath, loadSettings);
+      } catch (loadErr) {
+        console.error(`[Settings] model-load FAIL path=${modelPath} err=${loadErr.message}`);
+        _send('model-load-error', { path: modelPath, error: loadErr.message });
+        return apiReturn({ _status: 400, success: false, error: loadErr.message });
+      }
       const info = llmEngine.modelInfo;
       if (info) info.runtimeThinkingMode = settingsManager.get('thinkingMode');
       settingsManager.set('lastModelPath', modelPath);

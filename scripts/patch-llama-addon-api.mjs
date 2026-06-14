@@ -25,8 +25,13 @@ for (const name of fs.readdirSync(ADDON_DIR)) {
   if (!/\.(cpp|h|hpp)$/.test(name)) continue;
   const filePath = path.join(ADDON_DIR, name);
   const src = fs.readFileSync(filePath, 'utf8');
-  if (!src.includes('cpu_get_num_math')) continue;
-  fs.writeFileSync(filePath, src.replaceAll('cpu_get_num_math', 'common_cpu_get_num_math'));
+  let next = src.replace(/common_common_cpu_get_num_math/g, 'common_cpu_get_num_math');
+  if (!next.includes('cpu_get_num_math')) {
+    if (next !== src) fs.writeFileSync(filePath, next);
+    continue;
+  }
+  next = next.replace(/\b(?<!common_)cpu_get_num_math\b/g, 'common_cpu_get_num_math');
+  fs.writeFileSync(filePath, next);
   files += 1;
   log(`patched ${name}`);
 }

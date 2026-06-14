@@ -18,16 +18,22 @@ window.fetch = function(url, options) {
       headers: options?.headers || {},
     }).then(result => {
       const status = result?._status || 200;
-      if (status >= 400) {
-        return _originalFetch.apply(this, arguments);
-      }
       return {
         ok: status >= 200 && status < 300,
         status,
         json: () => Promise.resolve(result),
         text: () => Promise.resolve(typeof result === 'string' ? result : JSON.stringify(result)),
       };
-    }).catch(() => _originalFetch.apply(this, arguments));
+    }).catch((err) => {
+      const status = err?.status || err?._status || 500;
+      const body = err?.body ?? err?.message ?? String(err);
+      return {
+        ok: false,
+        status,
+        json: () => Promise.resolve(typeof body === 'object' ? body : { error: body }),
+        text: () => Promise.resolve(typeof body === 'string' ? body : JSON.stringify(body)),
+      };
+    });
   }
   return _originalFetch.apply(this, arguments);
 };

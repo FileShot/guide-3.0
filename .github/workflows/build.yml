@@ -20,6 +20,7 @@ permissions:
 
 env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  LLAMA_CPP_RELEASE: b9253
 
 jobs:
   prepare:
@@ -84,6 +85,15 @@ jobs:
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
+      - name: Install CMake
+        run: choco install cmake --yes
+
+      - name: Compile llama.cpp (b9253, CPU)
+        run: node scripts/rebuild-llama-runtime.mjs --profile default --legacy
+
+      - name: Wire compiled llama runtime
+        run: node scripts/install-compiled-llama.mjs
+
       - name: Verify bundled TypeScript LSP
         run: npx typescript-language-server --version
 
@@ -116,8 +126,11 @@ jobs:
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/playwright-browsers
 
-      - name: Prune llama backends (CPU package)
-        run: node scripts/prune-llama-backends.js --cpu
+      - name: Verify compiled llama runtime
+        shell: pwsh
+        run: |
+          if (-not (Test-Path node_modules/node-llama-cpp/llama/lastBuild.json)) { throw "missing lastBuild.json" }
+          if (-not (Test-Path node_modules/node-llama-cpp/llama/localBuilds)) { throw "missing localBuilds" }
 
       - name: Build Windows CPU installer
         run: npx electron-builder --win --x64 --config electron-builder.nosign.json --publish never
@@ -166,6 +179,15 @@ jobs:
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
+      - name: Install CMake
+        run: choco install cmake --yes
+
+      - name: Compile llama.cpp (b9253, CUDA)
+        run: node scripts/rebuild-llama-runtime.mjs --profile cuda --legacy
+
+      - name: Wire compiled llama runtime
+        run: node scripts/install-compiled-llama.mjs
+
       - name: Verify bundled TypeScript LSP
         run: npx typescript-language-server --version
 
@@ -198,8 +220,11 @@ jobs:
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/playwright-browsers
 
-      - name: Prune llama backends (CUDA package)
-        run: node scripts/prune-llama-backends.js --cuda
+      - name: Verify compiled llama runtime
+        shell: pwsh
+        run: |
+          if (-not (Test-Path node_modules/node-llama-cpp/llama/lastBuild.json)) { throw "missing lastBuild.json" }
+          if (-not (Test-Path node_modules/node-llama-cpp/llama/localBuilds)) { throw "missing localBuilds" }
 
       - name: Build Windows CUDA installer
         timeout-minutes: 60
@@ -238,10 +263,16 @@ jobs:
           node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
 
       - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y build-essential unzip
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake unzip
 
       - name: Install root dependencies
         run: npm ci --ignore-scripts
+
+      - name: Compile llama.cpp (b9253, CPU)
+        run: node scripts/rebuild-llama-runtime.mjs --profile default --legacy
+
+      - name: Wire compiled llama runtime
+        run: node scripts/install-compiled-llama.mjs
 
       - name: Verify bundled TypeScript LSP
         run: npx typescript-language-server --version
@@ -256,10 +287,10 @@ jobs:
       - name: Convert icon to PNG
         run: bash scripts/convert-icon-linux.sh
 
-      - name: Verify node-llama-cpp Linux CPU backends
+      - name: Verify compiled llama runtime
         run: |
-          test -d node_modules/@node-llama-cpp/linux-x64 || (echo "Missing @node-llama-cpp/linux-x64" && exit 1)
-          test -d node_modules/@node-llama-cpp/linux-x64-vulkan || echo "warn: linux-x64-vulkan not installed (CPU fallback may be limited)"
+          test -f node_modules/node-llama-cpp/llama/lastBuild.json || (echo "missing lastBuild.json" && exit 1)
+          test -d node_modules/node-llama-cpp/llama/localBuilds || (echo "missing localBuilds" && exit 1)
 
       - name: Build Linux CPU AppImage
         run: npx electron-builder --linux --x64 --config electron-builder.nosign.linux.json --publish never
@@ -293,7 +324,7 @@ jobs:
           node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
 
       - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y build-essential unzip
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake unzip
 
       - uses: Jimver/cuda-toolkit@v0.2.15
         with:
@@ -301,6 +332,12 @@ jobs:
 
       - name: Install root dependencies
         run: npm ci --ignore-scripts
+
+      - name: Compile llama.cpp (b9253, CUDA)
+        run: node scripts/rebuild-llama-runtime.mjs --profile cuda --legacy
+
+      - name: Wire compiled llama runtime
+        run: node scripts/install-compiled-llama.mjs
 
       - name: Verify bundled TypeScript LSP
         run: npx typescript-language-server --version
@@ -315,10 +352,10 @@ jobs:
       - name: Convert icon to PNG
         run: bash scripts/convert-icon-linux.sh
 
-      - name: Verify node-llama-cpp Linux CUDA backends
+      - name: Verify compiled llama runtime
         run: |
-          test -d node_modules/@node-llama-cpp/linux-x64-cuda || (echo "Missing @node-llama-cpp/linux-x64-cuda" && exit 1)
-          test -d node_modules/@node-llama-cpp/linux-x64 || echo "warn: linux-x64 CPU fallback not installed"
+          test -f node_modules/node-llama-cpp/llama/lastBuild.json || (echo "missing lastBuild.json" && exit 1)
+          test -d node_modules/node-llama-cpp/llama/localBuilds || (echo "missing localBuilds" && exit 1)
 
       - name: Build Linux CUDA AppImage
         run: npx electron-builder --linux --x64 --config electron-builder.nosign.cuda.linux.json --publish never
@@ -367,6 +404,12 @@ jobs:
       - name: Install root dependencies
         run: npm ci --ignore-scripts
 
+      - name: Compile llama.cpp (b9253, CPU)
+        run: node scripts/rebuild-llama-runtime.mjs --profile default --legacy
+
+      - name: Wire compiled llama runtime
+        run: node scripts/install-compiled-llama.mjs
+
       - name: Verify bundled TypeScript LSP
         run: npx typescript-language-server --version
 
@@ -399,6 +442,11 @@ jobs:
           cp build/icon_512.png build/icon.iconset/icon_512x512.png
           iconutil -c icns build/icon.iconset -o build/icon.icns
 
+      - name: Verify compiled llama runtime
+        run: |
+          test -f node_modules/node-llama-cpp/llama/lastBuild.json || (echo "missing lastBuild.json" && exit 1)
+          test -d node_modules/node-llama-cpp/llama/localBuilds || (echo "missing localBuilds" && exit 1)
+
       - name: Build macOS DMG (CPU, x64 + arm64)
         run: npx electron-builder --mac --x64 --arm64 --config electron-builder.nosign.json --publish never
         env:
@@ -426,6 +474,9 @@ jobs:
       needs.prepare.result == 'success' &&
       needs.build-windows-cpu.result == 'success' &&
       needs.build-windows-cuda.result == 'success' &&
+      needs.build-linux-cpu.result == 'success' &&
+      needs.build-linux-cuda.result == 'success' &&
+      needs.build-mac.result == 'success' &&
       (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v'))
     steps:
       - name: Download all artifacts

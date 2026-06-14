@@ -1063,7 +1063,11 @@ class ChatEngine extends EventEmitter {
     }
   }
 
-  async _doInitialize(modelPath, rawLoadSettings) {
+  async _doInitialize(modelPath, rawLoadSettings, { isRollback = false } = {}) {
+    const rollback = !isRollback && this.modelInfo?.path && this._loadState === 'ready'
+      ? { path: this.modelInfo.path, settings: rawLoadSettings }
+      : null;
+
     this._loadState = 'loading';
     this.isLoading = true;
     this.isReady = false;
@@ -1625,6 +1629,15 @@ class ChatEngine extends EventEmitter {
         console.error(`[ChatEngine] Unsupported architecture detected: ${arch}`);
       }
       this.emit('status', { state: 'error', message: userMessage });
+      if (rollback) {
+        console.warn(`[ChatEngine] Load failed — restoring previous model: ${rollback.path}`);
+        try {
+          await this._doInitialize(rollback.path, rollback.settings, { isRollback: true });
+          console.log('[ChatEngine] Rollback restore OK');
+        } catch (rollbackErr) {
+          console.error(`[ChatEngine] Rollback restore failed: ${rollbackErr.message}`);
+        }
+      }
       throw err;
     }
   }
@@ -5807,10 +5820,13 @@ class ChatEngine extends EventEmitter {
     return prompt;
   }
 
+  _compiledLlamaBuildPath() {
+    return path.join(__dirname, 'node_modules', 'node-llama-cpp', 'llama', 'lastBuild.json');
+  }
+
   /** Legacy installers ship source-built llama only (no @node-llama-cpp prebuilts). */
   _usesSourceBuiltLlama() {
-    const lastBuildJson = path.join(__dirname, 'node_modules', 'node-llama-cpp', 'llama', 'lastBuild.json');
-    if (!fs.existsSync(lastBuildJson)) return false;
+    if (!fs.existsSync(this._compiledLlamaBuildPath())) return false;
     const prebuiltRoot = path.join(__dirname, 'node_modules', '@node-llama-cpp');
     if (!fs.existsSync(prebuiltRoot)) return true;
     try {
@@ -5821,6 +5837,10 @@ class ChatEngine extends EventEmitter {
   }
 
   async _createLlamaRuntime(getLlama, gpuOpt) {
+    if (fs.existsSync(this._compiledLlamaBuildPath())) {
+      console.log('[ChatEngine] getLlama(lastBuild) — compiled llama.cpp (b9253+ pipeline)');
+      return getLlama('lastBuild', { gpu: gpuOpt });
+    }
     if (this._usesSourceBuiltLlama()) {
       console.log('[ChatEngine] getLlama(lastBuild) — legacy/source-built binary');
       return getLlama('lastBuild', { gpu: gpuOpt });
