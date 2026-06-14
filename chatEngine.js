@@ -748,6 +748,23 @@ function preferCompactToolCatalogForTier(sizeTier) {
   return sizeTier === 'tiny' || sizeTier === 'small';
 }
 
+/** Prefer compact tool catalog when prefill is crowded or full catalog won't fit. */
+function shouldPreferCompactToolCatalog({
+  contextTokens,
+  basePromptChars,
+  historyChars = 0,
+  userMessageChars = 0,
+  fullToolPromptChars = 0,
+  sizeTier = 'large',
+}) {
+  if (preferCompactToolCatalogForTier(sizeTier)) return true;
+  const consumed = basePromptChars + historyChars + userMessageChars;
+  const prefillPressure = contextTokens > 0 ? consumed / contextTokens : 0;
+  const reservedTokens = Math.floor(contextTokens * 0.22) + 512;
+  const remainingChars = Math.max(0, (contextTokens - reservedTokens) * TOOL_PROMPT_CHARS_PER_TOKEN - consumed);
+  return prefillPressure > 0.35 || (fullToolPromptChars > 0 && fullToolPromptChars > remainingChars);
+}
+
 function buildBudgetProportionalToolPrompt({
   contextTokens,
   basePromptChars,
@@ -786,12 +803,12 @@ function buildBudgetProportionalToolPrompt({
     return { prompt: toolPrompt, mode: 'full', budgetTokens: maxToolTokens, usedTokens: fullToolTokens, tier0Ok: true };
   }
 
-  if (parts.length > 0 && (preferCompactCatalog || agentMode)) {
+  if (parts.length > 0 && preferCompactCatalog) {
     const built = parts.join('');
     const tier0Ok = !agentMode || (built.includes('browser_navigate') && built.includes('browser_snapshot'));
     return {
       prompt: built,
-      mode: preferCompactCatalog ? 'compact-all' : 'agent-all-parts',
+      mode: 'compact-all',
       budgetTokens: maxToolTokens,
       partsUsed: parts.length,
       usedTokens: Math.ceil(built.length / TOOL_PROMPT_CHARS_PER_TOKEN),
@@ -1801,6 +1818,14 @@ class ChatEngine extends EventEmitter {
       const userMessageChars = effectiveUserMessage.length;
       const agentMode = _toolsEnabled && !options.askOnly;
       const agentSizeTier = this._modelProfile?._meta?.tier || 'large';
+      const preferCompactCatalog = agentMode && shouldPreferCompactToolCatalog({
+        contextTokens,
+        basePromptChars: basePrompt.length,
+        historyChars,
+        userMessageChars,
+        fullToolPromptChars: toolPrompt?.length || 0,
+        sizeTier: agentSizeTier,
+      });
       const budgetResult = buildBudgetProportionalToolPrompt({
         contextTokens,
         basePromptChars: basePrompt.length,
@@ -1811,7 +1836,7 @@ class ChatEngine extends EventEmitter {
         compactToolPrompt,
         agentMode,
         agentMinToolPromptChars: resolveAgentMinToolPromptChars(agentSizeTier),
-        preferCompactCatalog: agentMode && preferCompactToolCatalogForTier(agentSizeTier),
+        preferCompactCatalog,
       });
       effectiveToolPrompt = budgetResult.prompt;
       useCompact = budgetResult.mode !== 'full';
@@ -2023,10 +2048,14 @@ class ChatEngine extends EventEmitter {
       let _sfAgentFenceStreamedLen = 0;
       let _sfAgentFenceFilePath = '';
       let _sfHadAgentFenceRoute = false;
+      let _sfFileRoutedChars = 0;
 
       const _sfEmitFileContentToken = (text) => {
         if (!text || !onStreamEvent) return;
-        if (text.length) _sfVisibleChars += text.length;
+        if (text.length) {
+          _sfVisibleChars += text.length;
+          _sfFileRoutedChars += text.length;
+        }
         onStreamEvent('file-content-token', text);
       };
 
@@ -2071,7 +2100,7 @@ class ChatEngine extends EventEmitter {
           _sfAgentFenceStreamedLen = body.length;
           if (delta) {
             _trace('sf-content-token-emit', { filePath, textLen: delta.length, phase: 'agent-fence' });
-            onStreamEvent('file-content-token', delta);
+            _sfEmitFileContentToken(delta);
           }
         }
       };
@@ -2082,8 +2111,8 @@ class ChatEngine extends EventEmitter {
         if (body.length > _sfAgentFenceStreamedLen) {
           const delta = body.slice(_sfAgentFenceStreamedLen);
           _sfAgentFenceStreamedLen = body.length;
-          if (onStreamEvent && delta) {
-            onStreamEvent('file-content-token', delta);
+          if (delta) {
+            _sfEmitFileContentToken(delta);
           }
         }
       };
@@ -2443,11 +2472,12 @@ class ChatEngine extends EventEmitter {
         _sfFlush();
         _sfFlushFence();
         let cleanTarget = stripToolCallText(fullResponse);
-        if (_sfHadAgentFenceRoute) {
+        const fileRouted = _sfHadAgentFenceRoute || _sfFileRoutedChars > 0;
+        if (fileRouted) {
           const before = cleanTarget.length;
           cleanTarget = _sfStripPlainCodeFencesFromProse(cleanTarget);
           if (cleanTarget.length < before) {
-            console.log(`[ChatEngine] Prose catch-up: stripped ${before - cleanTarget.length} agent-routed fence chars from prose target`);
+            console.log(`[ChatEngine] Prose catch-up: stripped ${before - cleanTarget.length} file-routed fence chars from prose target`);
           }
         }
         if (cleanTarget.length > _sfVisibleChars) {
@@ -2456,8 +2486,8 @@ class ChatEngine extends EventEmitter {
             console.log(`[ChatEngine] Prose stream catch-up: ${_sfVisibleChars} → ${cleanTarget.length} visible chars (${delta.length} forwarded)`);
             _sfForward(delta);
           }
-        } else if (_sfHadAgentFenceRoute) {
-          console.log(`[ChatEngine] Prose catch-up skipped — file-routed fence already accounted (${cleanTarget.length} <= ${_sfVisibleChars})`);
+        } else if (fileRouted) {
+          console.log(`[ChatEngine] Prose catch-up skipped — file-routed content already accounted (${cleanTarget.length} <= ${_sfVisibleChars})`);
         }
       };
 
@@ -2990,8 +3020,11 @@ class ChatEngine extends EventEmitter {
       // No thought budget on models that don't support thinking (template + profile gate at load)
       if (!this._thinkingCapable || profileThinkMode === 'none') {
         thinkBudget = 0;
-      } else if ((!thinkBudget || thinkBudget === 0) && profileThinkMode === 'budget' && profileThinkBudget) {
-        // Use profile's budget as default when user hasn't set one
+      } else if (thinkBudget == null) {
+        thinkBudget = 0;
+      } else if (thinkBudget === 0) {
+        // Explicit auto — do not override with profile budget
+      } else if (!thinkBudget && profileThinkMode === 'budget' && profileThinkBudget) {
         thinkBudget = profileThinkBudget;
       }
       if ((!thinkBudget || thinkBudget === 0) && reasoningEffort && profileThinkMode !== 'none') {
@@ -4566,6 +4599,9 @@ class ChatEngine extends EventEmitter {
       }
 
       visibleResponse = stripToolCallText(fullResponse);
+      if (_sfHadAgentFenceRoute || _sfFileRoutedChars > 0) {
+        visibleResponse = _sfStripPlainCodeFencesFromProse(visibleResponse);
+      }
       console.log(`[ChatEngine] chat() returning: textLen=${visibleResponse.length}, stopReason=${stopReason}, toolCalls=${totalToolCalls}`);
       if (onComplete) onComplete(fullResponse);
       _chatStopReason = stopReason;
@@ -5977,6 +6013,7 @@ module.exports = {
   buildBudgetProportionalToolPrompt,
   resolveAgentMinToolPromptChars,
   preferCompactToolCatalogForTier,
+  shouldPreferCompactToolCatalog,
   computeUnifiedVramBudget,
   SYSTEM_PROMPT,
   buildCloudSystemPrompt,

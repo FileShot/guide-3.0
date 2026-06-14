@@ -14,4 +14,10 @@ const mdKept = _sfStripPlainCodeFencesFromProse(mdFence);
 assert.ok(mdKept.includes('# Notes'), 'markdown fences stay in prose catch-up target');
 assert.ok(mdKept.includes('After'), 'prose after md fence kept');
 
+const agentRouted = 'Brief intro.\n\n```html\n<!DOCTYPE html><html><body>Game</body></html>\n```\n\nNote.';
+const afterRoute = _sfStripPlainCodeFencesFromProse(agentRouted);
+assert.ok(!afterRoute.includes('<!DOCTYPE'), 'agent-routed html must not appear in catch-up prose');
+assert.ok(afterRoute.includes('Brief intro'), 'leading prose preserved');
+assert.ok(afterRoute.includes('Note'), 'trailing prose preserved');
+
 console.log('catchUpProse.test.js OK');

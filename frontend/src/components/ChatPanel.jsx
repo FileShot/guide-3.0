@@ -23,6 +23,7 @@ import MediaBlock from './chat/MediaBlock';
 import MentionPicker from './MentionPicker';
 import { blobToWav } from '../utils/audioToWav';
 import { openFileFromReadResponse } from '../utils/openFileFromRead';
+import { stripPlainCodeFencesFromProse } from '../utils/markdownFenceUtils';
 
 import { Virtuoso } from 'react-virtuoso';
 
@@ -2138,7 +2139,6 @@ export default function ChatPanel() {
                     content: keepContent,
                   };
                 } else {
-                  messageContent += `\n\`\`\`${block.language || 'text'}\n${block.content}\n\`\`\`\n`;
                   messageSegments.push({ type: 'file', index: messageFileBlocks.length });
                   messageFileBlocks.push({
                     filePath: block.filePath,
@@ -2148,10 +2148,6 @@ export default function ChatPanel() {
                   });
                 }
               } else {
-                // Text fallback: still include as markdown fence for content field
-                messageContent += `\n\`\`\`${block.language || 'text'}\n${block.content}\n\`\`\`\n`;
-
-                // Structured data: reference into messageFileBlocks array
                 messageSegments.push({ type: 'file', index: messageFileBlocks.length });
 
                 messageFileBlocks.push({
@@ -2197,11 +2193,13 @@ export default function ChatPanel() {
 
         messageContent = state.chatStreamingText || result?.text || '';
 
+        if (fileBlocks.length > 0 && messageContent) {
+          messageContent = stripPlainCodeFencesFromProse(messageContent);
+        }
+
         if (fileBlocks.length > 0) {
 
           for (const block of fileBlocks) {
-
-            messageContent += `\n\`\`\`${block.language || 'text'}\n${block.content}\n\`\`\`\n`;
 
             messageSegments.push({ type: 'file', index: messageFileBlocks.length });
 
@@ -2259,7 +2257,10 @@ export default function ChatPanel() {
       // in the same message as the reply and is never subject to IPC event lag.
       {
 
-        const _backendProse = result?.text || '';
+        let _backendProse = result?.text || '';
+        if (messageFileBlocks.length > 0) {
+          _backendProse = stripPlainCodeFencesFromProse(_backendProse);
+        }
         const _backendTrim = _backendProse.trim();
         const _messageTrim = messageContent.trim();
 
@@ -2297,7 +2298,10 @@ export default function ChatPanel() {
 
           }
 
-          messageContent = _backendProse;
+          messageContent = messageSegments
+            .filter((s) => s.type === 'text')
+            .map((s) => s.content || '')
+            .join('');
 
         }
 

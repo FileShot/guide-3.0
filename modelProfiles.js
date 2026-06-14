@@ -6,8 +6,8 @@ const { detectFamilyFromArch } = require('./modelDetection');
 // ─── Tier Boundaries ───
 const TIER_BOUNDARIES = {
   tiny:   { min: 0,  max: 1 },
-  small:  { min: 1,  max: 4 },
-  medium: { min: 4,  max: 8 },
+  small:  { min: 1,  max: 4.5 },
+  medium: { min: 4.5,  max: 8 },
   large:  { min: 8,  max: 14 },
   xlarge: { min: 14, max: Infinity },
 };

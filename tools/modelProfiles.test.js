@@ -3,7 +3,7 @@
 const assert = require('assert');
 const { GGUF_ARCH_TO_FAMILY } = require('../modelDetection');
 const { GENERATION_PROFILES } = require('../generationProfiles');
-const { getModelProfile } = require('../modelProfiles');
+const { getModelProfile, getSizeTier } = require('../modelProfiles');
 
 // Every mapped arch has a generation profile with official source URL
 for (const arch of Object.keys(GGUF_ARCH_TO_FAMILY)) {
@@ -32,5 +32,9 @@ assert.notStrictEqual(phi2.sampling.repeatPenalty, phi3.sampling.repeatPenalty);
 const { detectModelTypeFromGguf } = require('../modelDetection');
 assert.strictEqual(detectModelTypeFromGguf({ general: { architecture: 'flux' } }), 'diffusion');
 assert.strictEqual(detectModelTypeFromGguf({ general: { architecture: 'qwen35' } }), 'llm');
+
+assert.strictEqual(getSizeTier(4), 'small');
+assert.strictEqual(getSizeTier(4.49), 'small');
+assert.strictEqual(getSizeTier(4.5), 'medium');
 
 console.log('modelProfiles.test.js OK');

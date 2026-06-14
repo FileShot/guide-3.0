@@ -6,6 +6,12 @@ export function isOrphanFenceChunk(text) {
   return false;
 }
 
+/** Remove non-markdown code fences from prose (file-routed content must not duplicate in text). */
+export function stripPlainCodeFencesFromProse(text) {
+  if (!text) return text;
+  return String(text).replace(/```(?!markdown\b|md\b)[\w-]*\s*\n[\s\S]*?```/gi, '').trim();
+}
+
 /**
  * Split markdown into alternating prose and fenced code chunks (closed + optional open tail).
  */

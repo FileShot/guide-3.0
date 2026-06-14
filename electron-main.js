@@ -258,7 +258,7 @@ log.installConsoleIntercepts();
 
 const streamTrace = require('./streamTrace');
 
-const { ChatEngine, buildEngineLoadSettings, preferCompactToolCatalogForTier } = require('./chatEngine');
+const { ChatEngine, buildEngineLoadSettings, shouldPreferCompactToolCatalog } = require('./chatEngine');
 const { resolveRuntimeDefaultsForModel } = require('./modelRuntimeDefaults');
 
 /** Apply per-model runtime defaults (e.g. GLM-4.6V → thinking off) before load. */
@@ -696,15 +696,23 @@ function buildAgentModeTooling(mcpToolServer, settings, enableSubAgents, options
   const allDefs = mcpToolServer.getToolDefinitions();
   const filteredDefs = filterToolDefinitions(allDefs, mode.allowedTools);
   const toolPromptOpts = { planning: mode.planning };
-  const compactDescriptions = !!options.compactDescriptions;
   let toolPrompt = mode.toolsActive ? mcpToolServer.getToolPromptForTools(filteredDefs, toolPromptOpts) : '';
+  if (enableSubAgents && toolPrompt) {
+    const subAgentTool = '\n- **spawn_subagent** — Delegate a focused sub-task to an isolated sub-agent that shares the same loaded model but runs in a fresh context. Use for long research tasks, code analysis, or any work that should not pollute the main context. Params: task (string, required) — description of what the sub-agent should do; contextSize (number, optional) — token budget for sub-agent.';
+    toolPrompt += subAgentTool;
+  }
+  let compactDescriptions = !!options.compactDescriptions;
+  if (options.contextPressure) {
+    compactDescriptions = shouldPreferCompactToolCatalog({
+      ...options.contextPressure,
+      fullToolPromptChars: toolPrompt.length,
+    });
+  }
   const compactToolParts = mode.toolsActive
     ? mcpToolServer.getCompactToolHint('default', { toolDefs: filteredDefs, planning: mode.planning, compactDescriptions })
     : [];
   let compactToolPrompt = compactToolParts.join('');
   if (enableSubAgents && toolPrompt) {
-    const subAgentTool = '\n- **spawn_subagent** — Delegate a focused sub-task to an isolated sub-agent that shares the same loaded model but runs in a fresh context. Use for long research tasks, code analysis, or any work that should not pollute the main context. Params: task (string, required) — description of what the sub-agent should do; contextSize (number, optional) — token budget for sub-agent.';
-    toolPrompt += subAgentTool;
     compactToolPrompt += '\n- spawn_subagent(task): run focused sub-task in fresh context\n';
     compactToolParts.push('\n- spawn_subagent(task): run focused sub-task in fresh context\n');
   }
@@ -926,12 +934,27 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     const autoLintFix = settings.autoLintFix !== false; // default true
 
     const modelTier = llmEngine.modelInfo?.tier || 'large';
-    const compactDescriptions = preferCompactToolCatalogForTier(modelTier);
+    const contextTokens = llmEngine._context?.contextSize || llmEngine.modelInfo?.contextSize || 8192;
+    const historyChars = (llmEngine._chatHistory || []).slice(1).reduce(
+      (sum, m) => sum + String(m.text || '').length,
+      0,
+    );
+    const basePromptChars = 3200
+      + String(settings.systemPrompt || '').length
+      + String(settings.customInstructions || '').length;
     const { mode, toolPrompt, compactToolParts, compactToolPrompt, functions } = buildAgentModeTooling(
       mcpToolServer,
       settings,
       enableSubAgents,
-      { compactDescriptions },
+      {
+        contextPressure: {
+          contextTokens,
+          basePromptChars,
+          historyChars,
+          userMessageChars: effectiveMessage.length,
+          sizeTier: modelTier,
+        },
+      },
     );
 
     // Inject current file context into the user message so the model can see the active file

@@ -924,7 +924,6 @@ const useAppStore = create((set, get) => ({
       } else if (seg.type === 'file') {
         const block = fileBlocks[seg.index];
         if (block) {
-          messageContent += `\n\`\`\`${block.language || 'text'}\n${block.content}\n\`\`\`\n`;
           messageSegments.push({ type: 'file', index: messageFileBlocks.length });
           messageFileBlocks.push({
             filePath: block.filePath,
@@ -2888,7 +2887,7 @@ const useAppStore = create((set, get) => ({
 
       // Thinking & Reasoning
 
-      thinkingBudget: 2048,     // 0 = auto (node-llama-cpp default), -1 = unlimited, >0 = exact cap
+      thinkingBudget: 0,     // 0 = auto (node-llama-cpp default), -1 = unlimited, >0 = exact cap
 
       reasoningEffort: 'medium', // 'low' | 'medium' | 'high'
 
@@ -3048,7 +3047,7 @@ const useAppStore = create((set, get) => ({
 
       topP: 0.95, topK: 40, repeatPenalty: 1.1, seed: -1,
 
-      thinkingBudget: 2048, reasoningEffort: 'medium',
+      thinkingBudget: 0, reasoningEffort: 'medium',
 
       maxIterations: 0, generationTimeoutSec: 0, snapshotMaxChars: 8000,
 

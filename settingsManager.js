@@ -27,7 +27,7 @@ const SETTINGS_DEFAULTS = {
   repeatPenalty: 1.1,
   seed: -1,
   // Thinking & Reasoning
-  thinkingBudget: 2048,
+  thinkingBudget: 0,
   reasoningEffort: 'medium',
   enableThinking: true,        // Pass enable_thinking=true to chat template (Qwen 3.5 small models disable thinking by default; this activates it)
   enableThinkingFilter: false,
