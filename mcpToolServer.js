@@ -23,6 +23,11 @@ const {
   VALID_TOOLS,
 } = require('./tools/toolParser');
 const { canonicalizeToolParams } = require('./tools/canonicalizeToolParams');
+const {
+  formatCompactToolLine,
+  getAgentToolPromptHeader,
+  getAgentToolCatalogRules,
+} = require('./agentModeResolver');
 const streamTrace = require('./streamTrace');
 
 /** run_command / terminal_run timing (ms) */
@@ -4684,22 +4689,9 @@ class MCPToolServer {
 
     const parts = [];
     const planning = !!(options && options.planning);
+    const compactDescriptions = !!(options && options.compactDescriptions);
 
-    // Part 0: Format header with concrete example — teaches the model the EXACT
-    // JSON format for calling tools.
-    let header = '## Tools\n';
-    header += 'To call a tool, output a ```json block:\n```json\n{"tool":"<name>","params":{...}}\n```\n';
-    if (planning) {
-      header += 'Plan mode examples (build requests):\n';
-      header += '```json\n{"tool":"create_directory","params":{"path":".guide/plans"}}\n```\n';
-      header += '```json\n{"tool":"write_file","params":{"filePath":".guide/plans/my-feature.plan.md","content":"---\\ntitle: My Feature\\noverview: ...\\n---\\n\\n## Summary\\n..."}}\n```\n';
-      header += '```json\n{"tool":"write_todos","params":{"items":[{"text":"First step","status":"pending"}]}}\n```\n';
-      header += '```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n\n';
-    } else {
-      header += 'Examples:\n```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
-      header += '```json\n{"tool":"edit_file","params":{"filePath":"src/app.js","oldText":"const x = 1","newText":"const x = 2"}}\n```\n';
-      header += '```json\n{"tool":"list_directory","params":{"dirPath":"."}}\n```\n\n';
-    }
+    let header = getAgentToolPromptHeader({ planning, compact: true });
     if (this.projectPath) {
       header += `Project: ${this.projectPath}\n\n`;
     }
@@ -4710,17 +4702,19 @@ class MCPToolServer {
     const categoryOrder = [
       ['Browser', ['browser_navigate', 'browser_snapshot', 'viewport_browser_snapshot', 'browser_click', 'browser_type', 'browser_screenshot']],
       ['Core Files', ['read_file', 'list_directory', 'grep_search', 'find_files', 'get_file_info']],
-      ['Terminal', ['run_command', 'check_port', 'install_packages']],
+      ['Terminal', ['run_command', 'terminal_run', 'check_port', 'install_packages']],
       ['File Operations', ['write_file', 'edit_file', 'append_to_file', 'delete_file', 'rename_file', 'copy_file', 'create_directory', 'get_project_structure', 'open_file_in_editor', 'diff_files']],
       ['Search', ['search_in_file', 'search_codebase', 'replace_in_files']],
-      ['Web', ['web_search', 'fetch_webpage', 'http_request']],
+      ['Web', ['web_search', 'fetch_webpage', 'http_request', 'download_file']],
       ['Planning', ['write_todos', 'update_todo', 'ask_question']],
       ['Memory', ['save_memory', 'get_memory', 'list_memories']],
       ['Scratchpad', ['write_scratchpad', 'read_scratchpad']],
       ['Rules', ['save_rule', 'list_rules']],
-      ['Code Analysis', ['analyze_error']],
-      ['Undo', ['undo_edit', 'list_undoable']],
-      ['Git', ['git_status', 'git_commit', 'git_diff', 'git_log', 'git_branch', 'git_stash', 'git_reset']],
+      ['Code Analysis', ['analyze_error', 'run_linter', 'run_tests', 'run_formatter']],
+      ['Undo', ['undo_edit', 'list_undoable', 'list_checkpoints', 'restore_checkpoint']],
+      ['Git', ['git_status', 'git_commit', 'git_diff', 'git_log', 'git_branch', 'git_branch_delete', 'git_push', 'git_stash', 'git_reset']],
+      ['System', ['list_processes', 'kill_process', 'get_system_info', 'get_env_var', 'set_env_var', 'ping_host', 'dns_lookup', 'open_terminal']],
+      ['Editor', ['switch_file', 'get_diagnostics', 'get_selection', 'read_doc', 'search_docs']],
       ['Image Generation', ['generate_image']],
       ['Browser Extended', ['browser_fill_form', 'browser_select_option', 'browser_evaluate', 'browser_scroll', 'browser_back', 'browser_press_key', 'browser_hover', 'browser_drag', 'browser_get_content', 'browser_get_url', 'browser_get_links', 'browser_tabs', 'browser_handle_dialog', 'browser_console_messages', 'browser_file_upload', 'browser_resize', 'browser_wait', 'browser_wait_for', 'browser_close']],
     ];
@@ -4742,40 +4736,33 @@ class MCPToolServer {
       return parts;
     }
 
-    // Each category becomes a separate part — prompt assembler adds categories
-    // one by one until the token budget is exhausted. No all-or-nothing.
+    // Each category becomes a separate part — agent mode injects all parts (no dropping).
+    const listed = new Set();
     for (const [category, names] of categoryOrder) {
       const catTools = names.filter(n => toolMap[n]);
       if (catTools.length === 0) continue;
+      for (const name of catTools) listed.add(name);
       let catStr = `### ${category}\n`;
       for (const name of catTools) {
         const tool = toolMap[name];
-        const params = tool.parameters ? Object.entries(tool.parameters)
-          .map(([n, info]) => `${n}${info.required ? '' : '?'}`)
-          .join(', ') : '';
-        catStr += `- **${name}**(${params}) — ${tool.description}\n`;
+        catStr += formatCompactToolLine(tool, { compactDescriptions });
       }
       catStr += '\n';
       parts.push(catStr);
     }
 
-    // Rules section — last priority
-    let rules = '### Rules\n';
-    if (planning) {
-      rules += '- Build/plan requests: create_directory(.guide/plans) → write_file(.guide/plans/{slug}.plan.md) → write_todos — then STOP\n';
-      rules += '- write_file and edit_file ONLY for `.guide/plans/*.plan.md` during planning\n';
-      rules += '- Do not paste implementation source in chat — put the plan in the plan file\n';
-      rules += '- update_todo: text changes only until the user clicks Build\n';
-    } else {
-      rules += '- Use write_file to create new files, append_to_file to add to existing files\n';
-      rules += '- For edits: read_file first, then edit_file with exact oldText\n';
-      rules += '- For large files: write_file for first section, then append_to_file for remaining sections\n';
-      rules += '- Web: after web_search, in the same continuation, call fetch_webpage on the first and second ranked result URLs before answering (or each returned URL if fewer than two). Do not ask the user to confirm fetching. Do not call list_directory in the same tool round as web_search/fetch_webpage unless the user asked about the project\n';
-      rules += '- Browser workflow: browser_navigate (auto-returns snapshot) → interact using [ref=N] IDs with browser_click/browser_type (auto-return snapshot after action). Use viewport_browser_snapshot when the user asks about the page open in the viewport browser.\n';
-      rules += '- If browser_navigate fails, retry it or use fetch_webpage. Do NOT launch chrome.exe, firefox.exe, Tor Browser, or debug Playwright/geckodriver via run_command.\n';
-      rules += '- After write_todos: call update_todo(in-progress) when starting each step and update_todo(done) when finishing — never leave 0/N checked during implementation.\n';
+    const remaining = Object.values(toolMap).filter((t) => !listed.has(t.name));
+    if (remaining.length > 0) {
+      let otherStr = '### Other\n';
+      for (const tool of remaining) {
+        otherStr += formatCompactToolLine(tool, { compactDescriptions });
+      }
+      otherStr += '\n';
+      parts.push(otherStr);
     }
-    parts.push(rules);
+
+    // Rules section — last priority
+    parts.push(getAgentToolCatalogRules({ planning, compact: true }));
 
     // header + Browser + Core Files + Terminal = tier-0 (always inject in Agent mode)
     parts._tier0PartCount = 4;
@@ -4823,27 +4810,7 @@ class MCPToolServer {
 
   _buildToolPrompt(tools, options = {}) {
     const planning = !!options.planning;
-    let prompt = '## Tools\nCall tools with one ```json fenced block per action:\n```json\n{"tool":"tool_name","params":{"param":"value"}}\n```\n';
-    prompt += 'Examples (use exact parameter names shown in each tool listing below):\n';
-    if (planning) {
-      prompt += '```json\n{"tool":"create_directory","params":{"path":".guide/plans"}}\n```\n';
-      prompt += '```json\n{"tool":"write_file","params":{"filePath":".guide/plans/my-feature.plan.md","content":"---\\ntitle: My Feature\\noverview: ...\\n---\\n\\n## Summary\\n..."}}\n```\n';
-      prompt += '```json\n{"tool":"write_todos","params":{"items":[{"text":"First step","status":"pending"}]}}\n```\n';
-      prompt += '```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
-      prompt += 'Plan mode: write_file and edit_file ONLY for `.guide/plans/*.plan.md`. Do not create application source files until Build.\n';
-    } else {
-      prompt += '```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
-      prompt += '```json\n{"tool":"write_file","params":{"filePath":"index.html","content":"<html><body>Hello</body></html>"}}\n```\n';
-      prompt += '```json\n{"tool":"edit_file","params":{"filePath":"src/app.js","oldText":"const x = 1","newText":"const x = 2"}}\n```\n';
-      prompt += '```json\n{"tool":"list_directory","params":{"dirPath":"."}}\n```\n';
-      prompt += 'You HAVE the tools listed below — use them. Do not say you cannot access files, the terminal, or the network when a tool can perform the task.\n';
-      prompt += 'Do not output full file content as chat prose — use write_file, edit_file, or append_to_file.\n';
-      prompt += 'Do not give manual step-by-step instructions when a tool can perform the action.\n';
-    }
-    prompt += '\n### Tool-call formatting\n';
-    prompt += 'Each tool call is ONE ```json block with ONE JSON object. All arguments go under `params`. Use plain double quotes. To perform N actions, emit N separate blocks.\n';
-    prompt += '```json\n{"tool":"create_directory","params":{"path":"src"}}\n```\n';
-    prompt += '```json\n{"tool":"write_file","params":{"filePath":".gitignore","content":"node_modules\\n.env\\n"}}\n```\n\n';
+    let prompt = getAgentToolPromptHeader({ planning, compact: false });
     if (this.projectPath) {
       prompt += `Project directory: ${this.projectPath}\nUse relative paths (e.g. "src/main.js") for project files. Absolute paths are allowed for files outside the project when under home, documents, downloads, desktop, or app data (e.g. logs in AppData).\n\n`;
     }
@@ -4903,32 +4870,9 @@ class MCPToolServer {
     }
 
     if (planning) {
-      prompt += `### Plan workflow
-- **New build request**: create_directory(.guide/plans) → write_file(.guide/plans/{slug}.plan.md) → write_todos → short prose summary only
-- **Explore first** (optional): read_file, list_directory, grep_search, search_codebase, git_status
-- **Revise plan**: edit_file or write_file on existing .guide/plans/*.plan.md only
-
-### Rules
-- Use tool results as ground truth; do not fabricate tool output
-- If a tool fails, read the error and retry once with corrected parameters
-- Do not output implementation source in chat — write the plan to the plan file
-- Do not run terminal commands, browser, or web tools in Plan mode
-`;
+      prompt += getAgentToolCatalogRules({ planning: true, compact: false });
     } else {
-      prompt += `### Common patterns
-- **Web lookup**: web_search → fetch_webpage for top result URL(s) → answer from fetched text in the same continuation
-- **Project files**: read_file (known path), grep_search or search_codebase (unknown location), list_directory (folder listing)
-- **Edit existing file**: read_file → edit_file with exact oldText/newText from the file
-- **Browser**: browser_navigate → interact using refs from the snapshot (browser_click, browser_type, etc.). If browser_navigate fails, retry it or use fetch_webpage — do NOT shell-debug Chrome/Playwright via run_command.
-- **New file**: write_file with full content in params; append_to_file for additional sections
-- **Large rules**: write_file to \`.guide/rules/<name>.md\` instead of embedding multi-KB content in save_rule JSON
-
-### Rules
-- Use tool results as ground truth; do not fabricate tool output
-- After web_search, fetch page content before answering from snippets alone
-- If a tool fails, read the error and retry once with corrected parameters
-- Do not output substantive file content as chat prose — use file tools
-`;
+      prompt += getAgentToolCatalogRules({ planning: false, compact: false });
     }
     return prompt;
   }

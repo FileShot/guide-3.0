@@ -258,7 +258,7 @@ log.installConsoleIntercepts();
 
 const streamTrace = require('./streamTrace');
 
-const { ChatEngine, buildEngineLoadSettings } = require('./chatEngine');
+const { ChatEngine, buildEngineLoadSettings, preferCompactToolCatalogForTier } = require('./chatEngine');
 const { resolveRuntimeDefaultsForModel } = require('./modelRuntimeDefaults');
 
 /** Apply per-model runtime defaults (e.g. GLM-4.6V → thinking off) before load. */
@@ -682,7 +682,7 @@ ipcMain.handle('rules-save', (_e, name, content) => rulesManager.saveRule(name, 
 ipcMain.handle('rules-delete', (_e, name) => rulesManager.deleteRule(name));
 
 // Register ai-chat handler for basic model chat
-function buildAgentModeTooling(mcpToolServer, settings, enableSubAgents) {
+function buildAgentModeTooling(mcpToolServer, settings, enableSubAgents, options = {}) {
   const mode = resolveAgentMode({
     askOnly: settings.askOnly,
     planMode: settings.planMode,
@@ -696,9 +696,10 @@ function buildAgentModeTooling(mcpToolServer, settings, enableSubAgents) {
   const allDefs = mcpToolServer.getToolDefinitions();
   const filteredDefs = filterToolDefinitions(allDefs, mode.allowedTools);
   const toolPromptOpts = { planning: mode.planning };
+  const compactDescriptions = !!options.compactDescriptions;
   let toolPrompt = mode.toolsActive ? mcpToolServer.getToolPromptForTools(filteredDefs, toolPromptOpts) : '';
   const compactToolParts = mode.toolsActive
-    ? mcpToolServer.getCompactToolHint('default', { toolDefs: filteredDefs, planning: mode.planning })
+    ? mcpToolServer.getCompactToolHint('default', { toolDefs: filteredDefs, planning: mode.planning, compactDescriptions })
     : [];
   let compactToolPrompt = compactToolParts.join('');
   if (enableSubAgents && toolPrompt) {
@@ -924,10 +925,13 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     const enableSubAgents = settings.enableSubAgents !== false;
     const autoLintFix = settings.autoLintFix !== false; // default true
 
+    const modelTier = llmEngine.modelInfo?.tier || 'large';
+    const compactDescriptions = preferCompactToolCatalogForTier(modelTier);
     const { mode, toolPrompt, compactToolParts, compactToolPrompt, functions } = buildAgentModeTooling(
       mcpToolServer,
       settings,
       enableSubAgents,
+      { compactDescriptions },
     );
 
     // Inject current file context into the user message so the model can see the active file

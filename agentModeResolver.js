@@ -176,6 +176,111 @@ function getAskModePromptAddition() {
   return '';
 }
 
+/** One-line tool listing for compact catalog (small models). */
+function formatCompactToolLine(tool, options = {}) {
+  const params = tool.parameters ? Object.entries(tool.parameters)
+    .map(([n, info]) => `${n}${info.required ? '*' : ''}`)
+    .join(', ') : '';
+  if (options.compactDescriptions) {
+    const desc = String(tool.description || '').split(/[.!?\n]/)[0].trim();
+    const short = desc.length > 72 ? `${desc.slice(0, 69)}…` : desc;
+    return short ? `- ${tool.name}(${params}) — ${short}\n` : `- ${tool.name}(${params})\n`;
+  }
+  return `- **${tool.name}**(${params}) — ${tool.description}\n`;
+}
+
+/** Shared tool-call format header — used by mcpToolServer full and compact catalogs. */
+function getAgentToolPromptHeader(options = {}) {
+  const planning = !!options.planning;
+  const compact = !!options.compact;
+  let header = '## Tools\n';
+  if (compact) {
+    header += 'To call a tool, output a ```json block:\n```json\n{"tool":"<name>","params":{...}}\n```\n';
+  } else {
+    header += 'Call tools with one ```json fenced block per action:\n```json\n{"tool":"tool_name","params":{"param":"value"}}\n```\n';
+    header += 'Examples (use exact parameter names shown in each tool listing below):\n';
+  }
+  if (planning) {
+    header += '```json\n{"tool":"create_directory","params":{"path":".guide/plans"}}\n```\n';
+    header += '```json\n{"tool":"write_file","params":{"filePath":".guide/plans/my-feature.plan.md","content":"---\\ntitle: My Feature\\noverview: ...\\n---\\n\\n## Summary\\n..."}}\n```\n';
+    header += '```json\n{"tool":"write_todos","params":{"items":[{"text":"First step","status":"pending"}]}}\n```\n';
+    header += '```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
+    if (!compact) {
+      header += 'Plan mode: write_file and edit_file ONLY for `.guide/plans/*.plan.md`. Do not create application source files until Build.\n';
+    } else {
+      header += 'Plan mode examples (build requests):\n\n';
+    }
+  } else {
+    header += '```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
+    if (compact) {
+      header += '```json\n{"tool":"edit_file","params":{"filePath":"src/app.js","oldText":"const x = 1","newText":"const x = 2"}}\n```\n';
+      header += '```json\n{"tool":"list_directory","params":{"dirPath":"."}}\n```\n\n';
+    } else {
+      header += '```json\n{"tool":"write_file","params":{"filePath":"index.html","content":"<html><body>Hello</body></html>"}}\n```\n';
+      header += '```json\n{"tool":"edit_file","params":{"filePath":"src/app.js","oldText":"const x = 1","newText":"const x = 2"}}\n```\n';
+      header += '```json\n{"tool":"list_directory","params":{"dirPath":"."}}\n```\n';
+      header += 'You HAVE the tools listed below — use them. Do not say you cannot access files, the terminal, or the network when a tool can perform the task.\n';
+      header += 'Do not output full file content as chat prose — use write_file, edit_file, or append_to_file.\n';
+      header += 'Do not give manual step-by-step instructions when a tool can perform the action.\n';
+    }
+  }
+  if (!compact) {
+    header += '\n### Tool-call formatting\n';
+    header += 'Each tool call is ONE ```json block with ONE JSON object. All arguments go under `params`. Use plain double quotes. To perform N actions, emit N separate blocks.\n';
+    header += '```json\n{"tool":"create_directory","params":{"path":"src"}}\n```\n';
+    header += '```json\n{"tool":"write_file","params":{"filePath":".gitignore","content":"node_modules\\n.env\\n"}}\n```\n\n';
+  }
+  return header;
+}
+
+/** Shared rules footer for tool catalogs — single source for agent/plan tool prompts. */
+function getAgentToolCatalogRules(options = {}) {
+  const planning = !!options.planning;
+  const compact = !!options.compact;
+  if (planning) {
+    if (compact) {
+      return '### Rules\n'
+        + '- Build/plan requests: create_directory(.guide/plans) → write_file(.guide/plans/{slug}.plan.md) → write_todos — then STOP\n'
+        + '- write_file and edit_file ONLY for `.guide/plans/*.plan.md` during planning\n'
+        + '- Do not paste implementation source in chat — put the plan in the plan file\n'
+        + '- update_todo: text changes only until the user clicks Build\n';
+    }
+    return `### Plan workflow
+- **New build request**: create_directory(.guide/plans) → write_file(.guide/plans/{slug}.plan.md) → write_todos → short prose summary only
+- **Explore first** (optional): read_file, list_directory, grep_search, search_codebase, git_status
+- **Revise plan**: edit_file or write_file on existing .guide/plans/*.plan.md only
+
+### Rules
+- Use tool results as ground truth; do not fabricate tool output
+- If a tool fails, read the error and retry once with corrected parameters
+- Do not output implementation source in chat — write the plan to the plan file
+- Do not run terminal commands, browser, or web tools in Plan mode
+`;
+  }
+  if (compact) {
+    return '### Rules\n'
+      + '- Use write_file to create new files, append_to_file to add to existing files\n'
+      + '- For edits: read_file first, then edit_file with exact oldText\n'
+      + '- Web: after web_search, fetch_webpage on top result URLs before answering\n'
+      + '- Browser: browser_navigate → interact using refs from snapshot; retry or use fetch_webpage on failure\n'
+      + '- After write_todos: update_todo(in-progress/done) as you work each step\n';
+  }
+  return `### Common patterns
+- **Web lookup**: web_search → fetch_webpage for top result URL(s) → answer from fetched text in the same continuation
+- **Project files**: read_file (known path), grep_search or search_codebase (unknown location), list_directory (folder listing)
+- **Edit existing file**: read_file → edit_file with exact oldText/newText from the file
+- **Browser**: browser_navigate → interact using refs from the snapshot (browser_click, browser_type, etc.). If browser_navigate fails, retry it or use fetch_webpage — do NOT shell-debug Chrome/Playwright via run_command.
+- **New file**: write_file with full content in params; append_to_file for additional sections
+- **Large rules**: write_file to \`.guide/rules/<name>.md\` instead of embedding multi-KB content in save_rule JSON
+
+### Rules
+- Use tool results as ground truth; do not fabricate tool output
+- After web_search, fetch page content before answering from snippets alone
+- If a tool fails, read the error and retry once with corrected parameters
+- Do not output substantive file content as chat prose — use file tools
+`;
+}
+
 function getAgentSystemPrompt() {
   return 'You are guIDE, an AI assistant embedded in a general-purpose IDE. You help users with software projects: reading and writing code, running commands, searching the web, using the browser, and answering questions.\n\n'
     + '## How to respond\n'
@@ -488,6 +593,9 @@ module.exports = {
   getAskModePromptAddition,
   getPlanModePromptAddition,
   getBuildingPhasePromptAddition,
+  formatCompactToolLine,
+  getAgentToolPromptHeader,
+  getAgentToolCatalogRules,
   parsePlanFileContent,
   relativePlanPath,
   shouldStreamFileContentForAgent,

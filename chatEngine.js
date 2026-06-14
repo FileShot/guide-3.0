@@ -728,7 +728,25 @@ const TOOL_PROMPT_CHARS_PER_TOKEN = 3.5;
  */
 /** Tier-0 tool parts: header + Browser + Core Files + Terminal — never dropped in Agent mode. */
 const AGENT_TOOL_TIER0_PART_COUNT = 4;
+/** Legacy default — use resolveAgentMinToolPromptChars(tier) for agent mode. */
 const AGENT_MIN_TOOL_PROMPT_CHARS = 10000;
+
+/** Minimum tool-catalog chars reserved in agent prefill, scaled by model size tier. */
+function resolveAgentMinToolPromptChars(sizeTier) {
+  switch (sizeTier) {
+    case 'tiny': return 0;
+    case 'small': return 2048;
+    case 'medium': return 4096;
+    case 'large': return 8192;
+    case 'xlarge': return AGENT_MIN_TOOL_PROMPT_CHARS;
+    default: return AGENT_MIN_TOOL_PROMPT_CHARS;
+  }
+}
+
+/** Small models use compact tool parts only — skip injecting the full prose catalog. */
+function preferCompactToolCatalogForTier(sizeTier) {
+  return sizeTier === 'tiny' || sizeTier === 'small';
+}
 
 function buildBudgetProportionalToolPrompt({
   contextTokens,
@@ -742,12 +760,15 @@ function buildBudgetProportionalToolPrompt({
   maxToolBudgetPct = 0.35,
   maxToolBudgetTokens = 4096,
   agentMode = false,
+  agentMinToolPromptChars = AGENT_MIN_TOOL_PROMPT_CHARS,
+  preferCompactCatalog = false,
 }) {
   const tier0PartCount = (Array.isArray(compactToolParts) && compactToolParts._tier0PartCount) || AGENT_TOOL_TIER0_PART_COUNT;
 
   const fullToolTokens = Math.ceil((toolPrompt?.length || 0) / TOOL_PROMPT_CHARS_PER_TOKEN);
+  const minToolChars = agentMode ? Math.max(0, agentMinToolPromptChars) : 0;
   const reservedToolTokens = agentMode
-    ? Math.min(fullToolTokens, Math.max(Math.floor(AGENT_MIN_TOOL_PROMPT_CHARS / TOOL_PROMPT_CHARS_PER_TOKEN), Math.floor(contextTokens * 0.22)))
+    ? Math.min(fullToolTokens, Math.max(Math.floor(minToolChars / TOOL_PROMPT_CHARS_PER_TOKEN), Math.floor(contextTokens * 0.22)))
     : 0;
 
   const consumedTokens = Math.ceil((basePromptChars + historyChars + userMessageChars) / TOOL_PROMPT_CHARS_PER_TOKEN);
@@ -757,13 +778,27 @@ function buildBudgetProportionalToolPrompt({
     : Math.min(Math.floor(promptBudgetTokens * maxToolBudgetPct), maxToolBudgetTokens);
   let maxToolChars = Math.floor(maxToolTokens * TOOL_PROMPT_CHARS_PER_TOKEN);
 
-  if (toolPrompt && fullToolTokens <= maxToolTokens) {
-    return { prompt: toolPrompt, mode: 'full', budgetTokens: maxToolTokens, usedTokens: fullToolTokens, tier0Ok: true };
-  }
-
   const parts = Array.isArray(compactToolParts) && compactToolParts.length > 0
     ? compactToolParts
     : (compactToolPrompt ? [compactToolPrompt] : []);
+
+  if (!preferCompactCatalog && toolPrompt && fullToolTokens <= maxToolTokens) {
+    return { prompt: toolPrompt, mode: 'full', budgetTokens: maxToolTokens, usedTokens: fullToolTokens, tier0Ok: true };
+  }
+
+  if (parts.length > 0 && (preferCompactCatalog || agentMode)) {
+    const built = parts.join('');
+    const tier0Ok = !agentMode || (built.includes('browser_navigate') && built.includes('browser_snapshot'));
+    return {
+      prompt: built,
+      mode: preferCompactCatalog ? 'compact-all' : 'agent-all-parts',
+      budgetTokens: maxToolTokens,
+      partsUsed: parts.length,
+      usedTokens: Math.ceil(built.length / TOOL_PROMPT_CHARS_PER_TOKEN),
+      tier0Ok,
+      reservedToolTokens,
+    };
+  }
 
   if (parts.length === 0) {
     const trimmed = toolPrompt && toolPrompt.length > maxToolChars
@@ -1765,6 +1800,7 @@ class ChatEngine extends EventEmitter {
       const historyChars = this._chatHistory.slice(1).reduce((sum, m) => sum + (String(m.text || '').length), 0);
       const userMessageChars = effectiveUserMessage.length;
       const agentMode = _toolsEnabled && !options.askOnly;
+      const agentSizeTier = this._modelProfile?._meta?.tier || 'large';
       const budgetResult = buildBudgetProportionalToolPrompt({
         contextTokens,
         basePromptChars: basePrompt.length,
@@ -1774,6 +1810,8 @@ class ChatEngine extends EventEmitter {
         compactToolParts,
         compactToolPrompt,
         agentMode,
+        agentMinToolPromptChars: resolveAgentMinToolPromptChars(agentSizeTier),
+        preferCompactCatalog: agentMode && preferCompactToolCatalogForTier(agentSizeTier),
       });
       effectiveToolPrompt = budgetResult.prompt;
       useCompact = budgetResult.mode !== 'full';
@@ -3982,9 +4020,7 @@ class ChatEngine extends EventEmitter {
               const allTodos = toolResult?.allTodos || toolResult?.created;
               if (Array.isArray(allTodos) && allTodos.length > 0) {
                 const idList = allTodos.map((t) => `id ${t.id}: ${(t.text || '').slice(0, 60)}`).join('; ');
-                injectResult += `\n[Reminder: Call update_todo(id, status) when you start (in-progress) and finish (done) each todo item. Todo list: ${idList}. Example: {"tool":"update_todo","params":{"id":1,"status":"done"}}]`;
-              } else {
-                injectResult += '\n[Reminder: Call update_todo(id, "in-progress") when starting each step and update_todo(id, "done") when finishing — required for live todo list progress.]';
+                injectResult += `\nTodos: ${idList}. Use update_todo(id, status) in-progress/done as you work.`;
               }
             }
             if (call.tool === 'read_file' && toolResult?.success !== false) {
@@ -5938,6 +5974,9 @@ module.exports = {
   ChatEngine,
   buildEngineLoadSettings,
   buildTodoProgressHint,
+  buildBudgetProportionalToolPrompt,
+  resolveAgentMinToolPromptChars,
+  preferCompactToolCatalogForTier,
   computeUnifiedVramBudget,
   SYSTEM_PROMPT,
   buildCloudSystemPrompt,

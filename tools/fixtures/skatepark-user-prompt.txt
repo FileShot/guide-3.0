@@ -1,0 +1,49 @@
+Create a COMPLETE, FULLY PLAYABLE standalone 3D skateboarding game in HTML, CSS, and JavaScript using Three.js and a modern physics engine (Rapier preferred).
+
+The game must be a third-person skateboarding game inspired by classic arcade skateboarding games. The player controls a skater in a detailed 3D skate park, performing tricks, completing challenges, and unlocking content.
+
+GAMEPLAY
+- Third-person camera following the skater.
+- Real-time trick system with at least 25 unique tricks.
+- Combo system with multipliers.
+- Score tracking and high scores.
+- Challenge mode with objectives.
+- Time attack mode.
+- Free skate mode.
+- Save and load progress using local storage.
+
+WORLD
+- Large detailed skate park with multiple interconnected areas.
+- Half pipes, quarter pipes, bowls, rails, stair sets, ledges, gaps, fun boxes.
+- Grindable objects, hidden collectibles, spawn points.
+
+PHYSICS
+- Real gravity, collision detection, grind physics, manual balancing.
+- Air rotation controls, momentum preservation, smooth trick transitions.
+
+VISUALS
+- Full 3D graphics using Three.js, dynamic lighting, shadows, particle effects.
+- Wheel effects, grind sparks, skybox, day/night cycle, professional HUD.
+
+AUDIO
+- Rolling, grinding, landing, trick, crash, and ambient sounds with volume controls.
+
+UI
+- Main menu, pause menu, controls menu, mission menu, statistics, score/combo/timer, minimap.
+
+CONTENT
+- At least 25 unique tricks, multiple challenge types, collectibles, achievements.
+- Unlockable boards and cosmetics, multiple skate park sections.
+
+TECHNICAL REQUIREMENTS
+- Must run locally by opening index.html. No backend or external servers.
+- Organize code cleanly. No placeholder systems, TODO comments, or fake functionality.
+- Every advertised feature must actually work. Optimize for smooth gameplay.
+
+DELIVERABLES
+- index.html
+- style.css
+- script.js
+- Any additional JS modules required.
+
+The final result should feel like a complete indie skateboarding game rather than a demo. The player should be able to launch the game, skate immediately, complete challenges, perform tricks, earn scores, unlock content, and continue playing for extended periods without encountering unfinished systems.
