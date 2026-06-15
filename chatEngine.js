@@ -881,16 +881,43 @@ function buildBudgetProportionalToolPrompt({
  * minimum — used only as a last resort; the normal path computes from architecture.
  */
 const CONTEXT_MAX_FALLBACK_NO_GGUF_FLOOR = 2048;
+/** When KV bytes/token cannot be derived, do not use train context (e.g. 131072) for auto sizing. */
+const CONTEXT_MAX_WHEN_KV_UNKNOWN = 8192;
+
+/** Parse GGUF per-layer int metadata (scalar, comma-string, or array). */
+function parsePerLayerInts(raw) {
+  if (raw == null) return null;
+  if (typeof raw === 'number') return Number.isFinite(raw) ? [raw] : null;
+  if (Array.isArray(raw)) {
+    const nums = raw.map((v) => Number(v)).filter((n) => Number.isFinite(n));
+    return nums.length ? nums : null;
+  }
+  if (typeof raw === 'string') {
+    const nums = raw.split(',').map((s) => parseFloat(s.trim())).filter((n) => Number.isFinite(n));
+    return nums.length ? nums : null;
+  }
+  return null;
+}
+
+function kvBytesPerElement(kvCacheType) {
+  return kvCacheType === 'q3_0' ? 0.375
+    : kvCacheType === 'q4_0' ? 0.5
+    : kvCacheType === 'q4_1' ? 0.5625
+    : kvCacheType === 'q5_0' ? 0.625
+    : kvCacheType === 'q5_1' ? 0.6875
+    : kvCacheType === 'q8_0' ? 1
+    : 2; // f16 or default
+}
 
 /**
  * Estimate KV-cache bytes per token from GGUF architecture metadata.
  * Transformer-standard, architecture-agnostic:
  *   KV per token = n_layer * n_head_kv * (key_length + value_length) * bytes_per_element
- * Assumes fp16 KV cache (2 bytes/element), the llama.cpp default.
+ *   (or sum over layers when head_count_kv is per-layer)
  *
  * GGUF metadata shape (llama.cpp convention):
  *   architectureMetadata.block_count        → n_layer
- *   architectureMetadata.attention.head_count_kv   → n_head_kv
+ *   architectureMetadata.attention.head_count_kv   → n_head_kv (scalar or per-layer list)
  *   architectureMetadata.attention.head_count      → n_head (fallback)
  *   architectureMetadata.attention.key_length      → head_dim_k
  *   architectureMetadata.attention.value_length    → head_dim_v
@@ -901,31 +928,34 @@ function estimateKvBytesPerToken(am, kvCacheType) {
   const nLayer = am.block_count;
   if (!nLayer) return null;
   const att = am.attention || {};
-  const nHeadKv = att.head_count_kv || att.head_count;
-  if (!nHeadKv) return null;
   let keyLen = att.key_length;
   let valLen = att.value_length;
   // Fallback: derive head_dim from embedding_length / head_count if per-head lengths missing
-  if ((!keyLen || !valLen) && am.embedding_length && att.head_count) {
-    const headDim = am.embedding_length / att.head_count;
+  const headCountScalar = parsePerLayerInts(att.head_count);
+  const headCountForDim = headCountScalar?.length === 1 ? headCountScalar[0] : att.head_count;
+  if ((!keyLen || !valLen) && am.embedding_length && headCountForDim) {
+    const headDim = am.embedding_length / Number(headCountForDim);
     if (Number.isFinite(headDim) && headDim > 0) {
       if (!keyLen) keyLen = headDim;
       if (!valLen) valLen = headDim;
     }
   }
   if (!keyLen || !valLen) return null;
-  // Bytes per element depends on KV cache quantization type:
-  //   f16  = 2 bytes/element (no compression)
-  //   q8_0 = 1 byte/element  (2x compression)
-  //   q4_0 = 0.5 bytes/element (4x compression)
-  const bytesPerElement = kvCacheType === 'q3_0' ? 0.375
-    : kvCacheType === 'q4_0' ? 0.5
-    : kvCacheType === 'q4_1' ? 0.5625
-    : kvCacheType === 'q5_0' ? 0.625
-    : kvCacheType === 'q5_1' ? 0.6875
-    : kvCacheType === 'q8_0' ? 1
-    : 2; // f16 or default
-  return nLayer * nHeadKv * (keyLen + valLen) * bytesPerElement;
+  const bytesPerElement = kvBytesPerElement(kvCacheType);
+  const headDimSum = keyLen + valLen;
+
+  const perLayerHeadKv = parsePerLayerInts(att.head_count_kv);
+  if (perLayerHeadKv && perLayerHeadKv.length > 1) {
+    const totalHeadKv = perLayerHeadKv.reduce((a, b) => a + b, 0);
+    const result = totalHeadKv * headDimSum * bytesPerElement;
+    return Number.isFinite(result) && result > 0 ? result : null;
+  }
+
+  const scalarHeadKv = perLayerHeadKv?.[0] ?? att.head_count_kv ?? att.head_count;
+  const nHeadKv = Number(scalarHeadKv);
+  if (!Number.isFinite(nHeadKv) || nHeadKv <= 0) return null;
+  const result = nLayer * nHeadKv * headDimSum * bytesPerElement;
+  return Number.isFinite(result) && result > 0 ? result : null;
 }
 
 function buildEngineLoadSettings(raw = {}) {
@@ -1192,7 +1222,10 @@ class ChatEngine extends EventEmitter {
         } else if (hardwareCap != null) {
           desiredMax = hardwareCap;
         } else if (trainMaxContext != null) {
-          desiredMax = trainMaxContext;
+          const kvMissing = kvBytesPerToken == null || !Number.isFinite(kvBytesPerToken);
+          desiredMax = kvMissing
+            ? Math.min(trainMaxContext, CONTEXT_MAX_WHEN_KV_UNKNOWN)
+            : trainMaxContext;
         } else {
           desiredMax = CONTEXT_MAX_FALLBACK_NO_GGUF_FLOOR;
         }
@@ -1311,11 +1344,7 @@ class ChatEngine extends EventEmitter {
       else batchSize = 4096;
       console.log(`[ChatEngine] Perf: cpuMathCores=${cpuMathCores} (threads=${threadCount}), vramFreeAfterModel=${(vramFreeAfterModel/1e9).toFixed(2)}GB, batchSize=${batchSize}`);
 
-      // P5: SWA models (Gemma, Mistral with sliding window) — set swaFullCache to enable
-      // prefix reuse on multi-turn chats. Without this, multi-turn re-evaluates entire history.
       const swaSize = this._model?.fileInsights?.swaSize || 0;
-      const swaFullCache = swaSize > 0;
-      if (swaFullCache) console.log(`[ChatEngine] P5: SWA detected (swaSize=${swaSize}) — swaFullCache enabled for prefix reuse`);
 
       // Compute exact context size after model loading.
       // node-llama-cpp's createContext with { min, max } uses f16 for KV estimation,
@@ -1345,6 +1374,25 @@ class ChatEngine extends EventEmitter {
         computedCtxSize = postBudget.contextSize;
         console.log(`[ChatEngine] Post-load unified context: vramFreeAfterModel=${(vramFreeAfterModel/1e9).toFixed(2)}GB, kvBpt=${kvBytesPerToken}, gpuRatio=${gpuLayerRatio.toFixed(2)}, computedCtxSize=${computedCtxSize}${this._preLoadContextEstimate != null ? `, preLoadEst=${this._preLoadContextEstimate}` : ''}`);
         this._preLoadContextEstimate = null;
+      }
+
+      // P5: SWA models (Gemma, Mistral) — swaFullCache enables prefix reuse on multi-turn chats.
+      // Only enable when the full KV cache fits available memory (avoids 40GB allocation failures).
+      let swaFullCache = swaSize > 0;
+      if (swaFullCache && kvBytesPerToken > 0) {
+        const RAM_RUNTIME_OVERHEAD = 1.5 * 1024 * 1024 * 1024;
+        const ramAvail = Math.max(0, os.totalmem() - modelStats.size - RAM_RUNTIME_OVERHEAD);
+        const kvBudget = ramAvail / 2;
+        const estimatedKv = kvBytesPerToken * computedCtxSize;
+        if (estimatedKv > kvBudget) {
+          swaFullCache = false;
+          console.log(`[ChatEngine] P5: SWA detected (swaSize=${swaSize}) — swaFullCache disabled (estimated KV ${(estimatedKv / 1e9).toFixed(2)}GB > budget ${(kvBudget / 1e9).toFixed(2)}GB)`);
+        } else {
+          console.log(`[ChatEngine] P5: SWA detected (swaSize=${swaSize}) — swaFullCache enabled for prefix reuse`);
+        }
+      } else if (swaFullCache) {
+        swaFullCache = false;
+        console.log(`[ChatEngine] P5: SWA detected (swaSize=${swaSize}) — swaFullCache disabled (KV estimate unavailable)`);
       }
 
       // Build createContext options. Only attach experimentalKvCacheKeyType / ValueType when
@@ -6028,6 +6076,8 @@ function buildAgentSystemPromptLayers({
 
 module.exports = {
   ChatEngine,
+  estimateKvBytesPerToken,
+  parsePerLayerInts,
   buildEngineLoadSettings,
   buildTodoProgressHint,
   buildBudgetProportionalToolPrompt,
