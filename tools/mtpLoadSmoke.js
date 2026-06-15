@@ -16,7 +16,9 @@ const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = process.env.MTP_APP_ROOT
+  ? path.resolve(process.env.MTP_APP_ROOT)
+  : path.join(__dirname, '..');
 const MTP_4B = process.env.MTP_MODEL_4B || 'D:\\Qwopus3.5-4B-Coder-MTP-Q4_K_M.gguf';
 const MTP_9B = process.env.MTP_MODEL_9B || 'D:\\Qwopus3.5-9B-Coder-MTP-Q4_K_M.gguf';
 const REGRESSION =
@@ -68,7 +70,7 @@ async function tryLoad(getLlama, label, modelPath, gpu) {
 }
 
 async function main() {
-  const llamaCppPath = require.resolve('node-llama-cpp');
+  const llamaCppPath = require.resolve('node-llama-cpp', { paths: [ROOT] });
   const { getLlama } = await import(pathToFileURL(llamaCppPath).href);
   const gpu = process.env.MTP_SMOKE_GPU || 'cuda';
 

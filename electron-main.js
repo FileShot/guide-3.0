@@ -933,6 +933,29 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     const enableSubAgents = settings.enableSubAgents !== false;
     const autoLintFix = settings.autoLintFix !== false; // default true
 
+    // Build effective message before tooling — contextPressure needs final length
+    const currentFile = chatContext?.currentFile;
+    let effectiveMessage = userMessage;
+    if (currentFile?.path && currentFile?.content != null) {
+      const MAX_FILE_CONTEXT = 4000;
+      const truncated = currentFile.content.length > MAX_FILE_CONTEXT
+        ? currentFile.content.slice(0, MAX_FILE_CONTEXT) + `\n… [truncated — use read_file to see the full file]`
+        : currentFile.content;
+      effectiveMessage = userMessage + `\n\n[Current file: ${currentFile.path}]\n${truncated}`;
+    }
+
+    const mentionResolved = await resolveMentions(effectiveMessage, {
+      projectPath: currentProjectPath,
+      ragEngine,
+      docsIndexService,
+      selection: chatContext?.selection?.text || chatContext?.editorSelection,
+    });
+    effectiveMessage = mentionResolved.message;
+
+    if (settings.planContext && settings.agentPhase === 'building') {
+      effectiveMessage = `[Build approved]\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
+    }
+
     const modelTier = llmEngine.modelInfo?.tier || 'large';
     const contextTokens = llmEngine._context?.contextSize || llmEngine.modelInfo?.contextSize || 8192;
     const historyChars = (llmEngine._chatHistory || []).slice(1).reduce(
@@ -956,30 +979,6 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         },
       },
     );
-
-    // Inject current file context into the user message so the model can see the active file
-    // Truncate to avoid consuming all context — model can use read_file for the full content
-    const currentFile = chatContext?.currentFile;
-    let effectiveMessage = userMessage;
-    if (currentFile?.path && currentFile?.content != null) {
-      const MAX_FILE_CONTEXT = 4000;
-      const truncated = currentFile.content.length > MAX_FILE_CONTEXT
-        ? currentFile.content.slice(0, MAX_FILE_CONTEXT) + `\n… [truncated — use read_file to see the full file]`
-        : currentFile.content;
-      effectiveMessage = userMessage + `\n\n[Current file: ${currentFile.path}]\n${truncated}`;
-    }
-
-    const mentionResolved = await resolveMentions(effectiveMessage, {
-      projectPath: currentProjectPath,
-      ragEngine,
-      docsIndexService,
-      selection: chatContext?.selection?.text || chatContext?.editorSelection,
-    });
-    effectiveMessage = mentionResolved.message;
-
-    if (settings.planContext && settings.agentPhase === 'building') {
-      effectiveMessage = `[Build approved]\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
-    }
 
     _send('llm-stream-config', { paceDisplay: false, paceTokensPerSec: 50 });
     let localTokenSendCount = 0;

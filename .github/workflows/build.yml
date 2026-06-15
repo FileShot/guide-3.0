@@ -188,6 +188,9 @@ jobs:
       - name: Wire compiled llama runtime
         run: node scripts/install-compiled-llama.mjs
 
+      - name: Bundle CUDA runtime DLLs for llama
+        run: node scripts/bundle-llama-cuda-dlls.mjs
+
       - name: Verify bundled TypeScript LSP
         run: npx typescript-language-server --version
 
