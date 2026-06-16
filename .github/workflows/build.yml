@@ -97,15 +97,6 @@ jobs:
       - name: Verify bundled TypeScript LSP
         run: npx typescript-language-server --version
 
-      - name: Bundle whisper.cpp (Windows)
-        run: node scripts/fetch-whisper-bin.js
-        env:
-          WHISPER_PLATFORM: win32
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Bundle stable-diffusion.cpp (Windows CPU)
-        run: node scripts/fetch-sd-cpp.js
-
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)
         working-directory: frontend
@@ -119,12 +110,6 @@ jobs:
       - name: Generate multi-size app icon
         shell: pwsh
         run: ./scripts/generate-icon.ps1
-
-      - name: Install Playwright Chromium for bundling
-        shell: pwsh
-        run: npx playwright install chromium
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/playwright-browsers
 
       - name: Verify compiled llama runtime
         shell: pwsh
@@ -194,15 +179,6 @@ jobs:
       - name: Verify bundled TypeScript LSP
         run: npx typescript-language-server --version
 
-      - name: Bundle whisper.cpp (Windows)
-        run: node scripts/fetch-whisper-bin.js
-        env:
-          WHISPER_PLATFORM: win32
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Bundle stable-diffusion.cpp (Windows CUDA)
-        run: node scripts/fetch-sd-cpp.js
-
       - name: Install frontend dependencies
         run: npm ci --force || (sleep 5 && npm ci --force)
         working-directory: frontend
@@ -217,12 +193,6 @@ jobs:
         shell: pwsh
         run: ./scripts/generate-icon.ps1
 
-      - name: Install Playwright Chromium for bundling
-        shell: pwsh
-        run: npx playwright install chromium
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/playwright-browsers
-
       - name: Verify compiled llama runtime
         shell: pwsh
         run: |
@@ -235,6 +205,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: CUDA installer size gate
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist-electron/guIDE-*-cuda-x64-setup.exe | Select-Object -First 1
+          if (-not $exe) { throw "CUDA installer exe not found" }
+          $mb = [math]::Round($exe.Length / 1MB, 1)
+          Write-Host "CUDA installer size: $mb MB ($($exe.Name))"
+          if ($exe.Length -gt 838860800) { throw "CUDA installer exceeds 800 MB ceiling ($mb MB)" }
 
       - name: Ensure CUDA update feed
         run: node scripts/ensure-update-feed.js --channel cuda --platform win --glob "guIDE-*-cuda-x64-setup.exe"
@@ -415,12 +394,6 @@ jobs:
 
       - name: Verify bundled TypeScript LSP
         run: npx typescript-language-server --version
-
-      - name: Bundle whisper.cpp (macOS)
-        run: node scripts/fetch-whisper-bin.js
-        env:
-          WHISPER_PLATFORM: darwin
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install frontend dependencies
         run: npm ci --force

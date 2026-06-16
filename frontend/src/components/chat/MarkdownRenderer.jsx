@@ -161,8 +161,8 @@ function MarkdownRendererImpl({ content, streaming }) {
         }
         return null;
       })}
-      {openCode && openCode.text.trim() && (
-        isProseTextFence(openCode.lang, openCode.text) ? (
+      {openCode && (
+        isProseTextFence(openCode.lang, openCode.text) && openCode.text.trim() ? (
           <p className="my-1.5 leading-relaxed">{openCode.text.trim()}</p>
         ) : (
           <CodeBlock language={openCode.lang || 'text'} streaming>

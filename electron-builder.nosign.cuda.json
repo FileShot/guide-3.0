@@ -63,26 +63,6 @@
     {
       "from": "resources/install-variant-cuda.json",
       "to": "install-variant.json"
-    },
-    {
-      "from": "playwright-browsers",
-      "to": "playwright-browsers",
-      "filter": ["**/*"]
-    },
-    {
-      "from": "resources/whisper",
-      "to": "whisper",
-      "filter": ["**/*"]
-    },
-    {
-      "from": "resources/sd-cpp/win-x64-cuda",
-      "to": "sd-cpp",
-      "filter": ["**/*"]
-    },
-    {
-      "from": "resources/sd-cpp/win-x64-cpu",
-      "to": "sd-cpp-cpu",
-      "filter": ["**/*"]
     }
   ],
   "mac": {

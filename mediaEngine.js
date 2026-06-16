@@ -14,6 +14,10 @@ const {
 const { needs5dFix, apply5dFix, is5dCompatArch } = require('./gguf5dCompat');
 const { VRAM_TIGHT_MB, VRAM_LOW_MB, WIN_DLL_NOT_FOUND, WIN_STACK_OVERRUN } = require('./mediaConstants');
 const streamTrace = require('./streamTrace');
+const {
+  resolveSdCppDir,
+  COMPONENT_IDS,
+} = require('./optionalComponentPaths');
 
 function queryGpuVramMB() {
   try {
@@ -205,6 +209,7 @@ class MediaEngine {
     this.resourcesPath = options.resourcesPath || null;
     this.installVariant = options.installVariant || 'cpu';
     this.auxResolver = options.auxResolver || null;
+    this.optionalComponentsManager = options.optionalComponentsManager || null;
     this.onAuxProgress = options.onAuxProgress || null;
     this.onGenProgress = options.onGenProgress || null;
     this.modelPath = null;
@@ -288,6 +293,15 @@ class MediaEngine {
     if (settings.sdCppPath) push(settings.sdCppPath);
     if (process.env.GUIDE_SD_CPP_PATH) push(process.env.GUIDE_SD_CPP_PATH);
 
+    if (this.userDataPath) {
+      for (const variant of ['cuda', 'cpu']) {
+        const dir = resolveSdCppDir(this.userDataPath, this.resourcesPath, variant);
+        for (const name of ['sd.exe', 'sd-cli.exe', 'sd']) {
+          push(path.join(dir, name));
+        }
+      }
+    }
+
     const rootDir = path.resolve(this.rootDir);
     const binDir = path.join(rootDir, 'bin');
     for (const name of [process.platform === 'win32' ? 'sd.exe' : 'sd', 'sd-cli.exe']) {
@@ -350,6 +364,12 @@ class MediaEngine {
         if (fs.existsSync(d)) dirs.add(d);
       }
     }
+    if (this.userDataPath) {
+      for (const variant of ['cuda', 'cpu']) {
+        const d = resolveSdCppDir(this.userDataPath, this.resourcesPath, variant);
+        if (fs.existsSync(d)) dirs.add(d);
+      }
+    }
     return [...dirs];
   }
 
@@ -407,6 +427,14 @@ class MediaEngine {
     }
     if (this._generating) {
       return { success: false, error: 'Generation already in progress — wait for the current job to finish.' };
+    }
+
+    if (this.optionalComponentsManager) {
+      const primaryId = this.installVariant === 'cuda' ? COMPONENT_IDS.SD_CUDA : COMPONENT_IDS.SD_CPU;
+      let ready = await this.optionalComponentsManager.ensureReady(primaryId);
+      if (!ready && this.installVariant === 'cuda') {
+        ready = await this.optionalComponentsManager.ensureReady(COMPONENT_IDS.SD_CPU);
+      }
     }
 
     const sdCandidates = this._resolveSdBinaryCandidates();

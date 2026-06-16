@@ -8,30 +8,31 @@ const path = require('path');
 const { spawn, execSync } = require('child_process');
 const os = require('os');
 const https = require('https');
+const {
+  resolveWhisperModelPath,
+  resolveWhisperCliPath,
+  COMPONENT_IDS,
+} = require('./optionalComponentPaths');
 
 const MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin';
 
 class VoiceService {
-  constructor(userDataPath, settingsManager) {
+  constructor(userDataPath, settingsManager, optionalComponentsManager = null) {
     this.userDataPath = userDataPath;
     this.settingsManager = settingsManager;
+    this.optionalComponentsManager = optionalComponentsManager;
     this.modelsDir = path.join(userDataPath, 'whisper-models');
     this._whisperBin = null;
     this._modelPath = null;
     this._detectWhisper();
   }
 
-  _appRoots() {
-    const roots = [];
+  _resourcesPath() {
     try {
-      if (process.resourcesPath) {
-        roots.push(path.join(process.resourcesPath, 'whisper'));
-        roots.push(path.join(process.resourcesPath, 'app', 'resources', 'whisper'));
-      }
-    } catch (_) {}
-    roots.push(path.join(__dirname, 'resources', 'whisper'));
-    roots.push(path.join(__dirname, 'whisper'));
-    return [...new Set(roots)];
+      return process.resourcesPath || null;
+    } catch {
+      return null;
+    }
   }
 
   _detectWhisper() {
@@ -40,24 +41,9 @@ class VoiceService {
       ? ['whisper-cli.exe', 'whisper.exe', 'main.exe']
       : ['whisper-cli', 'whisper', 'main'];
 
-    for (const root of this._appRoots()) {
-      const platDir = path.join(root, process.platform === 'win32' ? 'win32' : process.platform);
-      for (const name of binNames) {
-        const p = path.join(platDir, name);
-        if (fs.existsSync(p)) {
-          this._whisperBin = p;
-          break;
-        }
-      }
-      if (this._whisperBin) break;
-      for (const name of binNames) {
-        const p = path.join(root, name);
-        if (fs.existsSync(p)) {
-          this._whisperBin = p;
-          break;
-        }
-      }
-      if (this._whisperBin) break;
+    const cachedCli = resolveWhisperCliPath(this.userDataPath, this._resourcesPath());
+    if (cachedCli) {
+      this._whisperBin = cachedCli;
     }
 
     if (!this._whisperBin) {
@@ -65,29 +51,32 @@ class VoiceService {
         try {
           execSync(isWin ? `where ${name}` : `which ${name}`, { stdio: 'pipe' });
           this._whisperBin = name;
-          return;
+          break;
         } catch (_) {}
       }
     }
 
     const local = path.join(this.modelsDir, 'bin', isWin ? 'whisper-cli.exe' : 'whisper-cli');
-    if (fs.existsSync(local)) this._whisperBin = local;
+    if (!this._whisperBin && fs.existsSync(local)) this._whisperBin = local;
 
     this._modelPath = this._resolveModelPath();
   }
 
   _resolveModelPath() {
-    for (const root of this._appRoots()) {
-      const bundled = path.join(root, 'ggml-base.en.bin');
-      if (fs.existsSync(bundled)) return bundled;
-    }
-    const userModel = path.join(this.modelsDir, 'ggml-base.en.bin');
-    if (fs.existsSync(userModel)) return userModel;
+    const resolved = resolveWhisperModelPath(this.userDataPath, this._resourcesPath());
+    if (fs.existsSync(resolved)) return resolved;
     return null;
   }
 
   async _ensureModel() {
     if (this._modelPath && fs.existsSync(this._modelPath)) return this._modelPath;
+    if (this.optionalComponentsManager) {
+      const ok = await this.optionalComponentsManager.ensureReady(COMPONENT_IDS.WHISPER);
+      if (ok) {
+        this._detectWhisper();
+        if (this._modelPath && fs.existsSync(this._modelPath)) return this._modelPath;
+      }
+    }
     fs.mkdirSync(this.modelsDir, { recursive: true });
     const dest = path.join(this.modelsDir, 'ggml-base.en.bin');
     if (fs.existsSync(dest)) {
@@ -173,6 +162,10 @@ class VoiceService {
     }
 
     if (tryLocal) {
+      if (this.optionalComponentsManager && !this._whisperBin) {
+        await this.optionalComponentsManager.ensureReady(COMPONENT_IDS.WHISPER);
+        this._detectWhisper();
+      }
       const local = await this._transcribeLocal(audioBuffer, format);
       if (local.success) return local;
       if (provider === 'local') return local;

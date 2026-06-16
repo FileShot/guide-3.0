@@ -15,6 +15,7 @@
 
 const EventEmitter = require('events');
 const path = require('path');
+const { COMPONENT_IDS } = require('./optionalComponentPaths');
 
 class BrowserManager extends EventEmitter {
   /**
@@ -41,6 +42,7 @@ class BrowserManager extends EventEmitter {
     this._chromiumInstallTried = false;
     this._lastLaunchError = null;
     this._screencastClient = null;
+    this._optionalComponents = options.optionalComponentsManager || null;
     console.log('[BrowserManager] constructor DONE');
   }
 
@@ -326,12 +328,12 @@ class BrowserManager extends EventEmitter {
       () => this._playwright.chromium.launch({ headless: false }),
       async () => {
         if (this._chromiumInstallTried) return null;
-        // Packaged app ships Chromium in extraResources — do not download at runtime
-        try {
-          const { app } = require('electron');
-          if (app?.isPackaged && process.env.PLAYWRIGHT_BROWSERS_PATH) return null;
-        } catch (_) {}
         this._chromiumInstallTried = true;
+        if (this._optionalComponents) {
+          const ok = await this._optionalComponents.ensureReady(COMPONENT_IDS.PLAYWRIGHT);
+          if (!ok) throw new Error('Browser tools download failed or was skipped');
+          return this._playwright.chromium.launch({ headless: false });
+        }
         const install = await this._installBundledChromium();
         if (!install.success) throw new Error(install.error || 'Chromium install failed');
         return this._playwright.chromium.launch({ headless: false });

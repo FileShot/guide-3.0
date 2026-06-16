@@ -24,6 +24,7 @@
 
 import { create } from 'zustand';
 import { normalizeUpdateStatus } from '../lib/updateStatus';
+import { normalizeComponentBundleStatus } from '../lib/componentBundleStatus';
 import { traceUi } from '../lib/traceUi';
 import { resolveStreamingFileKey } from '../lib/streamingFileKey';
 
@@ -2822,6 +2823,14 @@ const useAppStore = create((set, get) => ({
   updateStatus: null,
 
   setUpdateStatus: (payload) => set({ updateStatus: normalizeUpdateStatus(payload) }),
+
+  // ─── Optional component downloads (footer only) ───────
+
+  componentBundleStatus: null,
+
+  setComponentBundleStatus: (payload) => set({
+    componentBundleStatus: normalizeComponentBundleStatus(payload),
+  }),
 
 
 

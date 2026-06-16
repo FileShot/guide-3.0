@@ -10,7 +10,7 @@ import useAppStore from '../../stores/appStore';
 const COLLAPSE_LINE_THRESHOLD = 10;
 const RENDERABLE_LANGUAGES = new Set(['html', 'css', 'javascript', 'js', 'jsx', 'svg', 'xml']);
 
-export default function CodeBlock({ language, children, className }) {
+export default function CodeBlock({ language, children, className, streaming }) {
   const [copied, setCopied] = useState(false);
   const [showLineNumbers, setShowLineNumbers] = useState(false);
   const [wordWrap, setWordWrap] = useState(false);
@@ -126,7 +126,7 @@ export default function CodeBlock({ language, children, className }) {
     };
   }, []);
   const isCollapsible = lineCount > COLLAPSE_LINE_THRESHOLD;
-  const isCollapsed = collapsed && isCollapsible;
+  const isCollapsed = collapsed && isCollapsible && !streaming;
 
   // Normalize language display
   const langDisplay = (language || '').replace(/^language-/, '');

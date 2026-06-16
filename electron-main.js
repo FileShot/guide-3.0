@@ -18,6 +18,8 @@ const { pathToFileURL } = require('url');
 const { Readable } = require('stream');
 const { buildAppMenu } = require('./appMenu');
 const { AutoUpdater } = require('./autoUpdater');
+const { OptionalComponentsManager } = require('./optionalComponentsManager');
+const { resolvePlaywrightBrowsersPath } = require('./optionalComponentPaths');
 
 // ─── GPU / V8 flags ─────────────────────────────────────────────────
 app.commandLine.appendSwitch('disable-gpu-sandbox');
@@ -44,13 +46,14 @@ const ROOT_DIR = __dirname;
 const MODELS_DIR = path.join(ROOT_DIR, 'models');
 const FRONTEND_DIST = path.join(ROOT_DIR, 'frontend', 'dist');
 
-function _configureBundledPlaywrightBrowsers() {
+function _configurePlaywrightBrowsersPath(userDataPath) {
   try {
-    const bundled = path.join(process.resourcesPath, 'playwright-browsers');
-    if (app.isPackaged && fs.existsSync(bundled)) {
-      process.env.PLAYWRIGHT_BROWSERS_PATH = bundled;
-      console.log(`[Main] Playwright browsers path: ${bundled}`);
-    }
+    const browsersPath = resolvePlaywrightBrowsersPath(
+      userDataPath,
+      app.isPackaged ? process.resourcesPath : null,
+    );
+    process.env.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
+    console.log(`[Main] Playwright browsers path: ${browsersPath}`);
   } catch (e) {
     console.warn('[Main] Playwright browsers path not configured:', e.message);
   }
@@ -318,6 +321,14 @@ const { TEMPLATES } = require('./server/templateHandlers');
 
 // ─── Initialize services ────────────────────────────────────────────
 const settingsManager = new SettingsManager(userDataPath);
+const { getInstallVariant } = require('./updateVariant');
+const installVariant = getInstallVariant();
+let optionalComponentsManager = new OptionalComponentsManager({
+  userDataPath,
+  resourcesPath: app.isPackaged ? process.resourcesPath : null,
+  installVariant,
+  settingsManager,
+});
 const llmEngine = new ChatEngine();
 const webSearch = new WebSearch();
 const ragEngine = new RAGEngine();
@@ -371,15 +382,15 @@ const mediaAuxResolver = new MediaAuxResolver({
   userDataPath,
   getSettings: () => settingsManager.getAll(),
 });
-const { getInstallVariant } = require('./updateVariant');
 const mediaEngine = new MediaEngine({
   userDataPath,
   rootDir: ROOT_DIR,
   getSettings: () => settingsManager.getAll(),
   isPackaged: app.isPackaged,
   resourcesPath: process.resourcesPath,
-  installVariant: getInstallVariant(),
+  installVariant,
   auxResolver: mediaAuxResolver,
+  optionalComponentsManager,
   onAuxProgress: (p) => _send('media-aux-progress', p),
   onGenProgress: (p) => _send('media-gen-progress', p),
 });
@@ -394,7 +405,7 @@ const languageServerManager = new LanguageServerManager();
 const lspBundleManager = new LspBundleManager(userDataPath);
 languageServerManager.setBundleManager(lspBundleManager);
 const fimCompletionService = new FimCompletionService(llmEngine);
-const voiceService = new VoiceService(userDataPath, settingsManager);
+const voiceService = new VoiceService(userDataPath, settingsManager, optionalComponentsManager);
 const extensionHost = new ExtensionHost(extensionManager);
 const debugService = new DebugService();
 const multiRootWorkspace = new MultiRootWorkspace(userDataPath);
@@ -405,6 +416,7 @@ const devContainerManager = new DevContainerManager();
 const browserManager = new BrowserManager({
   liveServer,
   parentWindow: { webContents: { send: (e, d) => _send(e, d) }, isDestroyed: () => !mainWindow },
+  optionalComponentsManager,
 });
 
 const browserRouter = new BrowserRouter({
@@ -3083,7 +3095,7 @@ app.whenReady().then(async () => {
     }
   });
 
-  _configureBundledPlaywrightBrowsers();
+  _configurePlaywrightBrowsersPath(userDataPath);
 
   const { session } = require('electron');
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
@@ -3097,6 +3109,14 @@ app.whenReady().then(async () => {
 
   createWindow();
   buildAppMenu(mainWindow);
+
+  optionalComponentsManager.setMainWindow(mainWindow);
+  optionalComponentsManager.registerIPC(ipcMain);
+  setTimeout(() => {
+    optionalComponentsManager.startBackgroundQueue().catch((e) => {
+      console.error('[OptionalComponents] background queue failed:', e.message);
+    });
+  }, 3000);
 
   // Auto-updater: checks on startup, auto-downloads, footer prompts restart when ready.
   autoUpdater = new AutoUpdater(mainWindow, {

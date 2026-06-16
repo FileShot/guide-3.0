@@ -1,4 +1,4 @@
-﻿/**
+/**
 
  * ChatPanel — AI chat interface with streaming markdown rendering.
 

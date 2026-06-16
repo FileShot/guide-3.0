@@ -4,6 +4,7 @@
  */
 import useAppStore from '../stores/appStore';
 import { installUpdateNow, updateVersionLabel } from '../lib/updateStatus';
+import { componentBundleLabel, retryComponentBundle } from '../lib/componentBundleStatus';
 import { GitBranch, AlertTriangle, AlertCircle, Cpu, Zap, HardDrive, Radio, Download, Loader2, ImageIcon, Info } from 'lucide-react';
 import { useEffect, useState, useRef } from 'react';
 
@@ -52,6 +53,7 @@ export default function StatusBar() {
   const vramWarning = useAppStore(s => s.vramWarning);
   const clearVramWarning = useAppStore(s => s.clearVramWarning);
   const updateStatus = useAppStore(s => s.updateStatus);
+  const componentBundleStatus = useAppStore(s => s.componentBundleStatus);
   const mediaStatus = useAppStore(s => s.mediaStatus);
 
   // Tokens per second tracking
@@ -258,7 +260,7 @@ export default function StatusBar() {
       modelLoading ? 'bg-vsc-statusbar-debug' : 'bg-vsc-statusbar'
     } text-vsc-text-bright`}
     >
-      {/* Left section — git/errors hidden before right-side GPU/context */}
+      {/* Left section — priority: update > componentBundle > mediaStatus > statusBarMessage */}
       <div className="flex items-center flex-1 min-w-0 overflow-hidden">
         {updateStatus?.status === 'downloaded' && (
           <button
@@ -277,7 +279,47 @@ export default function StatusBar() {
           </div>
         )}
 
-        {mediaStatus?.message ? (
+        {!updateStatus?.status?.match?.(/downloaded|downloading/) && componentBundleStatus?.needsRestart && (
+          <button
+            type="button"
+            className="statusbar-item shrink-0 text-vsc-accent font-medium hover:underline"
+            onClick={() => window.electronAPI?.componentBundle?.retry?.()}
+            title="Restart guIDE to finish optional component setup"
+          >
+            <Download size={12} className="mr-1" />
+            Restart to finish setup
+          </button>
+        )}
+        {!updateStatus?.status?.match?.(/downloaded|downloading/) && !componentBundleStatus?.needsRestart && (
+          componentBundleStatus?.phase === 'downloading' ? (
+            <div
+              className="statusbar-item shrink-0 text-vsc-text-dim flex items-center gap-1.5 max-w-[320px] truncate"
+              title={componentBundleLabel(componentBundleStatus)}
+            >
+              <Loader2 size={11} className="animate-spin shrink-0" />
+              <span className="truncate">{componentBundleLabel(componentBundleStatus)}</span>
+            </div>
+          ) : componentBundleStatus?.phase === 'done' ? (
+            <div className="statusbar-item shrink-0 text-vsc-success" title="Optional components ready">
+              {componentBundleLabel(componentBundleStatus)}
+            </div>
+          ) : componentBundleStatus?.phase === 'error' ? (
+            <button
+              type="button"
+              className="statusbar-item shrink-0 text-vsc-error hover:underline flex items-center gap-1.5"
+              title={componentBundleStatus.error || 'Optional download failed'}
+              onClick={() => retryComponentBundle()}
+            >
+              <AlertCircle size={11} className="shrink-0" />
+              <span className="truncate">{componentBundleLabel(componentBundleStatus)}</span>
+            </button>
+          ) : null
+        )}
+
+        {!updateStatus?.status?.match?.(/downloaded|downloading/)
+          && !componentBundleStatus?.phase?.match?.(/downloading|done|error/)
+          && !componentBundleStatus?.needsRestart
+          && mediaStatus?.message ? (
           <button
             type="button"
             className={`statusbar-item shrink-0 max-w-[280px] truncate flex items-center gap-1.5 ${
@@ -293,7 +335,10 @@ export default function StatusBar() {
             {mediaStatus.phase === 'error' && <AlertCircle size={11} className="shrink-0" />}
             <span className="truncate">{mediaStatus.message}</span>
           </button>
-        ) : statusBarMessage?.message ? (
+        ) : !updateStatus?.status?.match?.(/downloaded|downloading/)
+          && !componentBundleStatus?.phase?.match?.(/downloading|done|error/)
+          && !componentBundleStatus?.needsRestart
+          && statusBarMessage?.message ? (
           <button
             type="button"
             className={`statusbar-item shrink-0 max-w-[320px] truncate flex items-center gap-1.5 ${

@@ -21,6 +21,7 @@ import useAppStore from '../stores/appStore';
 import isPocket from '../lib/isPocket';
 import useMobileViewport from '../lib/useMobileViewport';
 import { normalizeUpdateStatus, updateVersionLabel } from '../lib/updateStatus';
+import { normalizeComponentBundleStatus } from '../lib/componentBundleStatus';
 import PocketMobileLayout from './PocketMobileLayout';
 import TitleBar from './TitleBar';
 import ActivityBar from './ActivityBar';
@@ -60,7 +61,9 @@ function DesktopLayout() {
   const commandPaletteOpen = useAppStore(s => s.commandPaletteOpen);
   const zoomLevel = useAppStore(s => s.zoomLevel);
   const setUpdateStatus = useAppStore(s => s.setUpdateStatus);
+  const setComponentBundleStatus = useAppStore(s => s.setComponentBundleStatus);
   const prevUpdateStatusRef = useRef(null);
+  const componentDoneTimerRef = useRef(null);
 
   useEffect(() => {
     const hydrate = async () => {
@@ -82,6 +85,37 @@ function DesktopLayout() {
       prevUpdateStatusRef.current = normalizeUpdateStatus(payload);
     });
   }, [setUpdateStatus]);
+
+  useEffect(() => {
+    const hydrate = async () => {
+      try {
+        const status = window.electronAPI?.componentBundle?.getStatus
+          ? await window.electronAPI.componentBundle.getStatus()
+          : null;
+        if (status) setComponentBundleStatus(status);
+      } catch {
+        // Optional components unavailable in dev/web mode
+      }
+    };
+    hydrate();
+
+    if (!window.electronAPI?.componentBundle?.onStatus) return undefined;
+
+    return window.electronAPI.componentBundle.onStatus((payload) => {
+      const normalized = normalizeComponentBundleStatus(payload);
+      setComponentBundleStatus(normalized);
+      if (componentDoneTimerRef.current) {
+        clearTimeout(componentDoneTimerRef.current);
+        componentDoneTimerRef.current = null;
+      }
+      if (normalized?.phase === 'done') {
+        componentDoneTimerRef.current = setTimeout(() => {
+          setComponentBundleStatus({ phase: 'idle' });
+          componentDoneTimerRef.current = null;
+        }, 5000);
+      }
+    });
+  }, [setComponentBundleStatus]);
 
   return (
     <div

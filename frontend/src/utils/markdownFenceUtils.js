@@ -82,6 +82,22 @@ export function splitMarkdownFences(content, streaming = false) {
     flushCode();
   } else {
     flushProse();
+    if (streaming && proseLines.length) {
+      const lastIdx = proseLines.length - 1;
+      const lastLine = proseLines[lastIdx];
+      const partialOpen = lastLine.match(/^(`{3,})(\w*)$/);
+      if (partialOpen) {
+        const stableProse = proseLines.slice(0, lastIdx);
+        const stableText = stableProse.join('\n');
+        if (stableText && !isOrphanFenceChunk(stableText)) {
+          chunks.push({ type: 'prose', text: stableText });
+        }
+        return {
+          chunks,
+          openCode: { lang: partialOpen[2] || '', text: '' },
+        };
+      }
+    }
   }
 
   if (streaming) {

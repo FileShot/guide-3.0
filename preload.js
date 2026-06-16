@@ -106,6 +106,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onStatus:  (callback) => _on('update-status', callback),
   },
 
+  componentBundle: {
+    getStatus: () => ipcRenderer.invoke('component-bundle-status'),
+    retry:     () => ipcRenderer.invoke('component-bundle-retry'),
+    skip:      (id) => ipcRenderer.invoke('component-bundle-skip', id),
+    onStatus:  (callback) => _on('component-bundle-status', callback),
+  },
+
   // ── Diagnostics (editor → main process) ─────────────
   sendDiagnostics: (data) => ipcRenderer.send('editor-diagnostics', data),
 
