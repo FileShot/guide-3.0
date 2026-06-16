@@ -327,7 +327,13 @@ const GENERATION_PROFILES = {
     { temperature: 1.0, topP: 0.95, topK: 64, repeatPenalty: 1.0 },
     null,
     { source: GEMMA4 },
-    { thinkTokens: { mode: 'budget', budget: 2048 } },
+    {
+      thinkTokens: { mode: 'budget', budget: 2048 },
+      jinjaThoughtSegments: {
+        thoughtTemplate: '<|channel>thought\n{{content}}<channel|>',
+        reopenThoughtAfterFunctionCalls: false,
+      },
+    },
   ),
   'gemma-embedding': profile(
     { temperature: 0.0, topP: 1.0, topK: 1, repeatPenalty: 1.0 },

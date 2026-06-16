@@ -1575,18 +1575,32 @@ class ChatEngine extends EventEmitter {
       // (QwenChatWrapper, DeepSeekChatWrapper, etc.) unchanged.
       let chatWrapperOpt = 'auto';
       const needsThinkingJinja = ggufChatTemplate && _templateSupportsThinking && _chatTemplateKwargs.enable_thinking;
+      const _profileChannelSegments = this._modelProfile?.jinjaThoughtSegments;
       this._currentThinkingMode = s.thinkingMode;
 
-      if (needsThinkingJinja && s.thinkingMode !== 'auto') {
-        const jinjaOpts = {
-          template: ggufChatTemplate,
-          tokenizer: this._model.tokenizer,
-          additionalRenderParameters: { ..._chatTemplateKwargs, enable_thinking: s.thinkingMode !== 'off' },
-          segments: {
-            thoughtTemplate: '<think>{{content}}</think>',
-            reopenThoughtAfterFunctionCalls: false,
-          },
-        };
+      const _buildJinjaOpts = (segments) => ({
+        template: ggufChatTemplate,
+        tokenizer: this._model.tokenizer,
+        additionalRenderParameters: { ..._chatTemplateKwargs, enable_thinking: s.thinkingMode !== 'off' },
+        segments,
+      });
+
+      if (needsThinkingJinja && _profileChannelSegments && s.thinkingMode !== 'off') {
+        try {
+          chatWrapperOpt = new JinjaTemplateChatWrapper(_buildJinjaOpts(_profileChannelSegments));
+          const thoughtSeg = chatWrapperOpt.settings?.segments?.thought;
+          console.log(
+            `[ChatEngine] Channel segment Jinja wrapper wired (mode=${s.thinkingMode}): thoughtSegment=${!!thoughtSeg}, template=${JSON.stringify(_profileChannelSegments)}`,
+          );
+        } catch (jinjaErr) {
+          console.warn(`[ChatEngine] Channel segment Jinja wrapper failed — falling back to auto: ${jinjaErr.message}`);
+          chatWrapperOpt = 'auto';
+        }
+      } else if (needsThinkingJinja && s.thinkingMode !== 'auto') {
+        const jinjaOpts = _buildJinjaOpts({
+          thoughtTemplate: '<think>{{content}}</think>',
+          reopenThoughtAfterFunctionCalls: false,
+        });
         try {
           if (s.thinkingMode === 'B' || s.thinkingMode === 'off') {
             chatWrapperOpt = new JinjaTemplateChatWrapper(jinjaOpts);
@@ -2080,7 +2094,11 @@ class ChatEngine extends EventEmitter {
       // Raw <think> tag parser for all thinking-capable templates. Per-chunk B4 suppresses
       // when native onResponseChunk thought segments are active (_sfNativeThinkActive). GLM Jinja often
       // emits tags via onTextChunk without segment events — disabling the parser here caused tag leaks.
-      const _sfRawThinkTagsEnabled = !!this._templateSupportsThinking;
+      const _profileChannelSegments = !!this._modelProfile?.jinjaThoughtSegments;
+      const _sfRawThinkTagsEnabled = !!this._templateSupportsThinking && !_profileChannelSegments;
+      if (_profileChannelSegments && this._templateSupportsThinking) {
+        console.log('[ChatEngine] Raw redacted_thinking matcher disabled — channel segment protocol active');
+      }
 
       // Think-tag tracking for reasoning models.
       // These models output <think>...</think> in raw text (LlamaCompletion mode).
