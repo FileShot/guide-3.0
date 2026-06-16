@@ -176,6 +176,9 @@ jobs:
       - name: Bundle CUDA runtime DLLs for llama
         run: node scripts/bundle-llama-cuda-dlls.mjs
 
+      - name: Prune llama backends (CUDA package)
+        run: node scripts/prune-llama-backends.js --cuda
+
       - name: Verify bundled TypeScript LSP
         run: npx typescript-language-server --version
 

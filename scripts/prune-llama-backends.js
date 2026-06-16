@@ -15,7 +15,7 @@ const ROOT = path.join(__dirname, '..');
 const LLAMA_BACKENDS = path.join(ROOT, 'node_modules', '@node-llama-cpp');
 
 const PROFILES = {
-  cuda: ['win-x64-cuda', 'win-x64'],
+  cuda: ['win-x64-cuda'],
   cpu: ['win-x64', 'win-x64-vulkan'],
 };
 
