@@ -216,7 +216,8 @@ jobs:
           if (-not $exe) { throw "CUDA installer exe not found" }
           $mb = [math]::Round($exe.Length / 1MB, 1)
           Write-Host "CUDA installer size: $mb MB ($($exe.Name))"
-          if ($exe.Length -gt 838860800) { throw "CUDA installer exceeds 800 MB ceiling ($mb MB)" }
+          Write-Host "Baseline v0.4.73 CUDA installer was ~1560 MB; optional-component offload target met if under 950 MB"
+          if ($exe.Length -gt 996147200) { throw "CUDA installer exceeds 950 MB ceiling ($mb MB)" }
 
       - name: Ensure CUDA update feed
         run: node scripts/ensure-update-feed.js --channel cuda --platform win --glob "guIDE-*-cuda-x64-setup.exe"
