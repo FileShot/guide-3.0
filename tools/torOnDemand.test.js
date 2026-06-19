@@ -6,8 +6,16 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const { TOR_BROWSER_VERSION, getManagedTorRoot } = require('../browserBackends/torBrowserResolver');
 const { DEFAULT_GECKODRIVER_VERSION, resolveGeckodriver } = require('../browserBackends/geckodriverResolver');
+
+// Keep in sync with browserBackends/torBrowserResolver.js — do not require that module here
+// (it loads torBootstrap → selenium-webdriver, which prepare CI does not install).
+const TOR_BROWSER_VERSION = '14.5.8';
+
+function getManagedTorRoot(userDataPath) {
+  const base = userDataPath || path.join(process.env.APPDATA || os.homedir(), 'guide-ide');
+  return path.join(base, 'tor-browser');
+}
 
 describe('Tor on-demand path (smoke)', () => {
   it('pins a Tor Browser version with Windows download URL', () => {
