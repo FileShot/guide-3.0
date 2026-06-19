@@ -202,6 +202,10 @@ class OptionalComponentsManager extends EventEmitter {
     return catalogForVariant(this._installVariant);
   }
 
+  allComponentsBundled() {
+    return this.getCatalog().every((entry) => this._isComponentReadyOnDisk(entry.id));
+  }
+
   getStatus() {
     const catalog = this.getCatalog();
     const pending = catalog.filter((c) => !this._isComponentReadyOnDisk(c.id) && this._states[c.id]?.phase !== 'skipped');
@@ -378,7 +382,11 @@ class OptionalComponentsManager extends EventEmitter {
     const playwrightRoot = this._findPlaywrightPackageRoot();
     if (!playwrightRoot) throw new Error('Playwright package not found');
     const cli = path.join(playwrightRoot, 'cli.js');
-    const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: dest };
+    const env = {
+      ...process.env,
+      PLAYWRIGHT_BROWSERS_PATH: dest,
+      ELECTRON_RUN_AS_NODE: '1',
+    };
     log(`installing Chromium → ${dest}`);
     await execFileAsync(process.execPath, [cli, 'install', 'chromium'], {
       cwd: playwrightRoot,

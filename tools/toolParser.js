@@ -1584,6 +1584,8 @@ function _tpDecodePartialJsonStringRaw(raw, stripCompleteSuffix) {
  * Extract filePath + partial content from an in-progress write_file tool JSON fence buffer.
  * Safe on truncated/malformed JSON — forward-scans after content opening quote.
  */
+const PROVISIONAL_FILE_KEY = '__provisional_write__';
+
 function extractPartialWriteFileFromToolJson(text, options = {}) {
   if (!text || typeof text !== 'string') return null;
   const toolMatch = text.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
@@ -1592,19 +1594,22 @@ function extractPartialWriteFileFromToolJson(text, options = {}) {
   if (!FILE_STREAM_TOOLS_RE.test(toolName)) return null;
 
   const filePath = _tpExtractPathFromPartialToolJson(text);
-  if (!filePath) return null;
-
   const isEdit = FILE_EDIT_TOOLS_RE.test(toolName);
   const contentKey = isEdit ? 'newText' : 'content';
   const contentStart = _tpFindContentValueStart(text, contentKey);
-  if (contentStart < 0) return null;
+  if (contentStart < 0) {
+    if (!filePath) return null;
+    return { filePath, content: '', isEdit, provisional: false };
+  }
 
   const content = _tpDecodePartialJsonStringRaw(
     text.slice(contentStart),
     !!options.stripCompleteSuffix,
   );
 
-  return { filePath, content, isEdit };
+  if (!filePath && (!content || content.length === 0)) return null;
+
+  return { filePath: filePath || null, content, isEdit, provisional: !filePath };
 }
 
 module.exports = {
@@ -1630,6 +1635,7 @@ module.exports = {
   _inferFilePath,
   _looksLikeRealFilePath,
   extractPartialWriteFileFromToolJson,
+  PROVISIONAL_FILE_KEY,
   normalizeStreamingFilePath,
   resolveStreamingFileKey,
 };

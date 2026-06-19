@@ -18,6 +18,7 @@ const os = require('os');
 
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 let level = LEVELS[process.env.LOG_LEVEL?.toLowerCase()] ?? LEVELS.debug;
+let consoleInterceptsInstalled = false;
 
 // Log file path — derived from app name in package.json
 const LOG_DIR = path.join(
@@ -157,6 +158,8 @@ const logger = {
    * the persistent log file. Call once at startup from electron-main.js.
    */
   installConsoleIntercepts() {
+    if (consoleInterceptsInstalled) return;
+    consoleInterceptsInstalled = true;
     const origLog = console.log.bind(console);
     const origWarn = console.warn.bind(console);
     const origError = console.error.bind(console);
@@ -187,6 +190,10 @@ const logger = {
       const msg = reason instanceof Error ? (reason.stack || reason.message) : String(reason);
       writeLine(`${new Date().toISOString()} ERROR [UnhandledRejection] ${msg}`);
     });
+  },
+
+  uninstallConsoleIntercepts() {
+    consoleInterceptsInstalled = false;
   },
 };
 

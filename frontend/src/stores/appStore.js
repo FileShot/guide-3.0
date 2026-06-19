@@ -28,6 +28,8 @@ import { normalizeComponentBundleStatus } from '../lib/componentBundleStatus';
 import { traceUi } from '../lib/traceUi';
 import { resolveStreamingFileKey } from '../lib/streamingFileKey';
 
+const PROVISIONAL_FILE_KEY = '__provisional_write__';
+
 function _uiLog(msg) {
   try { window.electronAPI?.uiLog?.(String(msg)); } catch (_) {}
 }
@@ -181,7 +183,7 @@ function syncStreamingFileToEditor(get, filePath, content, { op, oldText, newTex
   if (!filePath) return;
   const norm = normalizeTabPath(filePath);
   const dismissed = get().dismissedStreamingTabPaths || [];
-  const autoOpen = get().settings?.autoOpenAgentFiles !== false;
+  const autoOpen = get().settings?.autoOpenAgentFiles === true;
   const shouldOpen = openIfMissing && autoOpen && !dismissed.includes(norm);
   let tab = get().openTabs.find((t) => normalizeTabPath(t.path) === norm);
   if (!tab && shouldOpen) {
@@ -431,9 +433,11 @@ const useAppStore = create((set, get) => ({
 
 
 
-  openFile: (fileInfo) => {
+  openFile: (fileInfo, { forceFocus } = {}) => {
 
-    const { openTabs } = get();
+    const { openTabs, activeTabId } = get();
+    const activeTab = openTabs.find((t) => t.id === activeTabId);
+    const preserveBrowserTab = !forceFocus && activeTab?.type === 'browser';
 
     if (fileInfo.path) {
       const norm = normalizeTabPath(fileInfo.path);
@@ -464,8 +468,11 @@ const useAppStore = create((set, get) => ({
           ...(fileInfo.dataUrl != null ? { dataUrl: fileInfo.dataUrl } : {}),
           ...(fileInfo.isBinary != null ? { isBinary: fileInfo.isBinary } : {}),
         } : t);
-        set({ openTabs: updated, activeTabId: existing.id });
-      } else {
+        set({
+          openTabs: updated,
+          ...(preserveBrowserTab ? {} : { activeTabId: existing.id }),
+        });
+      } else if (!preserveBrowserTab) {
         set({ activeTabId: existing.id });
       }
 
@@ -503,7 +510,10 @@ const useAppStore = create((set, get) => ({
 
     };
 
-    set({ openTabs: [...openTabs, tab], activeTabId: id });
+    set({
+      openTabs: [...openTabs, tab],
+      ...(preserveBrowserTab ? {} : { activeTabId: id }),
+    });
 
   },
 
@@ -518,12 +528,13 @@ const useAppStore = create((set, get) => ({
   openBrowserTab: () => {
 
     const { openTabs } = get();
+    get().closeDiff();
 
     const existing = openTabs.find(t => t.type === 'browser');
 
     if (existing) {
 
-      set({ activeTabId: existing.id });
+      set({ activeTabId: existing.id, diffState: null });
 
       return;
 
@@ -1467,7 +1478,7 @@ const useAppStore = create((set, get) => ({
 
 
 
-  startFileContentBlock: ({ filePath, fileKey, language, fileName, op, oldText, newText }) => {
+  startFileContentBlock: ({ filePath, fileKey, language, fileName, op, oldText, newText, provisional }) => {
 
     console.log('[appStore] startFileContentBlock:', fileKey || filePath);
 
@@ -1491,7 +1502,15 @@ const useAppStore = create((set, get) => ({
     // Always canonicalize filePath for dedup — the fileKey from events may be raw
     // (e.g., regex-captured path with double backslashes from JSON text) which would
     // mismatch the canonicalized key used by addCompleteFileContentBlock.
-    const normalizedKey = streamingFileKey(filePath, fileKey, store.projectPath);
+    const normalizedKey = provisional
+      ? PROVISIONAL_FILE_KEY
+      : streamingFileKey(filePath, fileKey, store.projectPath);
+
+    const provisionalIdx = store.streamingFileBlocks.findIndex((b) => b.fileKey === PROVISIONAL_FILE_KEY);
+    if (!provisional && provisionalIdx !== -1) {
+      get().bindProvisionalFileContentBlock({ filePath, fileKey: normalizedKey, language, fileName, op, oldText, newText });
+      return;
+    }
 
     if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
 
@@ -1574,17 +1593,19 @@ const useAppStore = create((set, get) => ({
 
     const newBlocks = [...store.streamingFileBlocks, {
 
-      filePath,
+      filePath: provisional ? '' : filePath,
 
       fileKey: normalizedKey,
 
       language,
 
-      fileName,
+      fileName: provisional ? (fileName || 'Writing file…') : fileName,
 
       content: '',
 
       complete: false,
+
+      provisional: !!provisional,
 
       op: op || 'write',
 
@@ -1620,15 +1641,58 @@ const useAppStore = create((set, get) => ({
 
     });
 
-    syncStreamingFileToEditor(get, filePath, '', {
-      op: op || 'write',
+    if (!provisional) {
+      syncStreamingFileToEditor(get, filePath, '', {
+        op: op || 'write',
+        oldText,
+        newText,
+        language,
+        fileName,
+        openIfMissing: true,
+      });
+    }
+
+  },
+
+  bindProvisionalFileContentBlock: ({ filePath, fileKey, language, fileName, op, oldText, newText }) => {
+    const store = get();
+    const idx = store.streamingFileBlocks.findIndex((b) => b.fileKey === PROVISIONAL_FILE_KEY);
+    if (idx === -1) {
+      get().startFileContentBlock({ filePath, fileKey, language, fileName, op, oldText, newText });
+      return;
+    }
+    const normalizedKey = streamingFileKey(filePath, fileKey, store.projectPath);
+    const updated = [...store.streamingFileBlocks];
+    const prev = updated[idx];
+    updated[idx] = {
+      ...prev,
+      filePath,
+      fileKey: normalizedKey,
+      fileName: fileName || filePath.split(/[\\/]/).pop(),
+      language: language || prev.language,
+      provisional: false,
+      op: op || prev.op || 'write',
+      oldText: oldText != null ? String(oldText) : (prev.oldText || ''),
+      newText: newText != null ? String(newText) : (prev.newText || ''),
+    };
+    const streamNorm = normalizeTabPath(filePath);
+    const streamPaths = store.streamingTabPaths || [];
+    const nextStreamPaths = streamNorm && !streamPaths.includes(streamNorm)
+      ? [...streamPaths, streamNorm]
+      : streamPaths;
+    set({
+      streamingFileBlocks: updated,
+      activeStreamingFileKey: normalizedKey,
+      streamingTabPaths: nextStreamPaths,
+    });
+    syncStreamingFileToEditor(get, filePath, prev.content || '', {
+      op: op || prev.op || 'write',
       oldText,
       newText,
       language,
       fileName,
       openIfMissing: true,
     });
-
   },
 
   appendFileContentToken: (chunk) => {
@@ -2918,7 +2982,9 @@ const useAppStore = create((set, get) => ({
 
       autoLintFix: true,       // Plan F: auto-inject lint correction after file writes
 
-      autoOpenAgentFiles: true, // Auto-open Monaco tab when agent streams a new file
+      autoOpenAgentFiles: false,
+
+      debugLogging: false,
 
       enableSubAgents: true,  // Plan G: allow model to spawn isolated sub-agents
 

@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { pathToFileURL } = require('url');
-const { parseToolCalls, repairToolCalls, stripToolCallText, isVisibleToolArtifact, looksLikeToolAttempt, suggestClosestToolName, extractPartialWriteFileFromToolJson, normalizeStreamingFilePath, resolveStreamingFileKey, _inferFilePath } = require('./tools/toolParser');
+const { parseToolCalls, repairToolCalls, stripToolCallText, isVisibleToolArtifact, looksLikeToolAttempt, suggestClosestToolName, extractPartialWriteFileFromToolJson, PROVISIONAL_FILE_KEY, normalizeStreamingFilePath, resolveStreamingFileKey, _inferFilePath } = require('./tools/toolParser');
 const { formatToolResultForInject, buildToolResultsUserMessage } = require('./tools/toolResultInjection');
 const { canonicalizeToolParams } = require('./tools/canonicalizeToolParams');
 const { visionServer } = require('./visionServer');
@@ -2339,11 +2339,30 @@ class ChatEngine extends EventEmitter {
 
       const _tryEarlyFileContentStart = (buf) => {
         const fileToolLikely = _sfFileWriteDetected
-          || (RE_FILE_STREAM_TOOLS.test(buf) && RE_FILE_PATH.test(buf) && _sfIsToolLikeJson(buf));
+          || (RE_FILE_STREAM_TOOLS.test(buf) && RE_FILE_PATH.test(buf) && _sfIsToolLikeJson(buf))
+          || (RE_FILE_STREAM_TOOLS.test(buf) && /"content"\s*:\s*"/.test(buf) && _sfIsToolLikeJson(buf));
         if (_sfEarlyFileStartEmitted || !fileToolLikely || _sfContentDone || !onStreamEvent) return;
         const partial = extractPartialWriteFileFromToolJson(buf);
-        if (!partial?.filePath || !partial.content || partial.content.length === 0) return;
+        if (!partial?.content || partial.content.length === 0) return;
+        if (partial.provisional) {
+          if (_sfFenceContentStreaming) return;
+          _sfEarlyFileStartEmitted = true;
+          _sfFenceContentStreaming = true;
+          _sfContentFilePath = null;
+          onStreamEvent('file-content-start', {
+            filePath: '',
+            fileName: 'Writing file…',
+            language: '',
+            fileKey: PROVISIONAL_FILE_KEY,
+            op: partial.isEdit ? 'edit' : 'write',
+            provisional: true,
+          });
+          onStreamEvent('file-content-token', partial.content);
+          _sfFenceStreamedLen = partial.content.length;
+          return;
+        }
         const filePath = partial.filePath;
+        if (!filePath) return;
         if (!shouldStreamFileContentForAgent(options, filePath)) return;
         const np = _normalizePath(filePath);
         if (_sfStreamedFileWrites.has(np)) {
@@ -2377,15 +2396,45 @@ class ChatEngine extends EventEmitter {
       };
 
       const _sfEmitFenceContentDelta = (opts = {}) => {
-        if (!_sfFileWriteDetected && !(RE_FILE_STREAM_TOOLS.test(_sfFenceBuf) && RE_FILE_PATH.test(_sfFenceBuf))) {
+        const hasContentField = /"content"\s*:\s*"/.test(_sfFenceBuf) || /"newText"\s*:\s*"/.test(_sfFenceBuf);
+        if (!_sfFileWriteDetected && !(RE_FILE_STREAM_TOOLS.test(_sfFenceBuf) && (RE_FILE_PATH.test(_sfFenceBuf) || hasContentField))) {
           return;
         }
         const partial = extractPartialWriteFileFromToolJson(_sfFenceBuf, {
           stripCompleteSuffix: true,
         });
-        if (!partial?.filePath) return;
-        const filePath = partial.filePath;
+        if (!partial) return;
         const content = partial.content ?? '';
+        if (content.length === 0 && !partial.filePath) return;
+
+        if (partial.provisional) {
+          if (!_sfFenceContentStreaming) {
+            _sfFenceContentStreaming = true;
+            _sfContentFilePath = null;
+            if (onStreamEvent) {
+              _trace('sf-content-start', { filePath: null, phase: 'fence-delta-provisional' });
+              onStreamEvent('file-content-start', {
+                filePath: '',
+                fileName: 'Writing file…',
+                language: '',
+                fileKey: PROVISIONAL_FILE_KEY,
+                op: partial.isEdit ? 'edit' : 'write',
+                provisional: true,
+              });
+            }
+            _sfEarlyFileStartEmitted = true;
+            _sfFenceStreamedLen = 0;
+          }
+          if (content.length > _sfFenceStreamedLen && onStreamEvent) {
+            const delta = content.slice(_sfFenceStreamedLen);
+            _sfFenceStreamedLen = content.length;
+            if (delta) onStreamEvent('file-content-token', delta);
+          }
+          return;
+        }
+
+        const filePath = partial.filePath;
+        if (!filePath) return;
         if (!shouldStreamFileContentForAgent(options, filePath)) return;
         if (content.length === 0) return;
         const np = _normalizePath(filePath);
@@ -2422,6 +2471,17 @@ class ChatEngine extends EventEmitter {
           _sfStreamedFileWrites.add(np);
           _sfMarkFileContentStreamActive(filePath);
           _sfEarlyFileStartEmitted = true;
+        } else if (_sfContentFilePath !== filePath && onStreamEvent) {
+          const fileName = filePath.split(/[\\/]/).pop() || filePath;
+          const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+          onStreamEvent('file-content-bind', {
+            filePath,
+            fileName,
+            language: ext,
+            fileKey: np,
+            op: _sfStreamIsEdit ? 'edit' : 'write',
+          });
+          _sfContentFilePath = filePath;
         }
         if (content.length > _sfFenceStreamedLen) {
           const delta = content.slice(_sfFenceStreamedLen);

@@ -2124,6 +2124,12 @@ function SettingsPanel() {
         <SettingToggle label="Auto Lint Fix" value={settings.autoLintFix !== false}
           onChange={v => updateSetting('autoLintFix', v)}
           hint="Auto-inject lint correction into model context after file writes detect errors." />
+        <SettingToggle label="Auto-open agent files in editor" value={settings.autoOpenAgentFiles === true}
+          onChange={v => updateSetting('autoOpenAgentFiles', v)}
+          hint="When on, Monaco opens automatically while the agent streams a new file. Off by default — click the file block header to open." />
+        <SettingToggle label="Debug logging" value={settings.debugLogging === true}
+          onChange={v => updateSetting('debugLogging', v)}
+          hint="Mirror all console output to guide-main.log. Off by default for performance." />
         <SettingToggle label="Sub-Agents" value={!!settings.enableSubAgents}
           onChange={v => updateSetting('enableSubAgents', v)}
           hint="Allow model to spawn focused sub-agents using a fresh context window. Off by default — uses extra VRAM." />

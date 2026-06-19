@@ -379,9 +379,9 @@ class MCPToolServer {
       },
       {
         name: 'write_file',
-        description: 'Create or overwrite a file with the provided content. Replaces the entire file. For large files, use write_file for the initial content, then append_to_file for subsequent sections.',
+        description: 'Create or overwrite a file with the provided content. Replaces the entire file. For large files, use write_file for the initial content, then append_to_file for subsequent sections. IMPORTANT: In JSON tool output, always emit filePath before content so the UI can stream the file live.',
         parameters: {
-          filePath: { type: 'string', description: 'File path', required: true },
+          filePath: { type: 'string', description: 'File path (must appear before content in JSON)', required: true },
           content: { type: 'string', description: 'File content', required: true },
           reason: { type: 'string', description: 'One sentence explaining why you are writing this file', required: false },
         },

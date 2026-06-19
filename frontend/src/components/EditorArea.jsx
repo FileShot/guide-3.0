@@ -986,10 +986,10 @@ export default function EditorArea() {
 
       {/* Monaco Editor, Diff Viewer, Preview, or Browser */}
       <div className="flex-1 min-h-0">
-        {diffState && !(activeTab && previewMode[activeTab.id]) ? (
-          <DiffViewer />
-        ) : activeTab && activeTab.type === 'browser' ? (
+        {activeTab && activeTab.type === 'browser' ? (
           <BrowserPanel />
+        ) : diffState && !(activeTab && previewMode[activeTab.id]) ? (
+          <DiffViewer />
         ) : activeTab && previewMode[activeTab.id] && getPreviewType(activeTab.path) ? (
           (() => {
             const type = getPreviewType(activeTab.path);

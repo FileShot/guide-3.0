@@ -158,6 +158,28 @@ async function main() {
     throw new Error('fetch-sd-cpp.js failed — cannot bundle media inference');
   }
 
+  log('Fetching Whisper binaries...');
+  const fetchWhisper = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'fetch-whisper-bin.js')], {
+    cwd: ROOT,
+    stdio: 'inherit',
+    env: { ...process.env, WHISPER_PLATFORM: 'win32' },
+  });
+  if (fetchWhisper.status !== 0) {
+    throw new Error('fetch-whisper-bin.js failed — cannot bundle voice transcription');
+  }
+
+  log('Installing Playwright Chromium for bundling...');
+  const browsersPath = path.join(ROOT, 'playwright-browsers');
+  const fetchPw = spawnSync('npx', ['playwright', 'install', 'chromium'], {
+    cwd: ROOT,
+    stdio: 'inherit',
+    shell: true,
+    env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browsersPath },
+  });
+  if (fetchPw.status !== 0) {
+    throw new Error('playwright install chromium failed — cannot bundle browser tools');
+  }
+
   // ── CUDA installer ──────────────────────────────────────────────────────────
   if (buildCuda) {
     log('═══════════════════════════════════════');

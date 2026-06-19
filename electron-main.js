@@ -257,7 +257,6 @@ for (const dir of [MODELS_DIR, userDataPath, path.join(userDataPath, 'sessions')
 }
 
 const log = require('./logger');
-log.installConsoleIntercepts();
 
 const streamTrace = require('./streamTrace');
 
@@ -321,6 +320,18 @@ const { TEMPLATES } = require('./server/templateHandlers');
 
 // ─── Initialize services ────────────────────────────────────────────
 const settingsManager = new SettingsManager(userDataPath);
+
+function applyLoggingSettings() {
+  const debugLogging = settingsManager.get('debugLogging') === true;
+  if (debugLogging) {
+    log.setLevel('debug');
+    log.installConsoleIntercepts();
+  } else {
+    log.setLevel(app.isPackaged ? 'warn' : 'info');
+  }
+}
+applyLoggingSettings();
+
 const { getInstallVariant } = require('./updateVariant');
 const installVariant = getInstallVariant();
 let optionalComponentsManager = new OptionalComponentsManager({
@@ -3112,11 +3123,15 @@ app.whenReady().then(async () => {
 
   optionalComponentsManager.setMainWindow(mainWindow);
   optionalComponentsManager.registerIPC(ipcMain);
-  setTimeout(() => {
-    optionalComponentsManager.startBackgroundQueue().catch((e) => {
-      console.error('[OptionalComponents] background queue failed:', e.message);
-    });
-  }, 3000);
+  if (!optionalComponentsManager.allComponentsBundled()) {
+    setTimeout(() => {
+      optionalComponentsManager.startBackgroundQueue().catch((e) => {
+        console.error('[OptionalComponents] background queue failed:', e.message);
+      });
+    }, 3000);
+  } else {
+    console.log('[OptionalComponents] all components bundled — skipping background download queue');
+  }
 
   // Auto-updater: checks on startup, auto-downloads, footer prompts restart when ready.
   autoUpdater = new AutoUpdater(mainWindow, {
@@ -3143,6 +3158,9 @@ app.whenReady().then(async () => {
     }
     if (key === 'browserEngine' || key === 'torBrowserPath' || key === 'geckodriverPath' || key === 'debugTorBrowser' || key === null) {
       syncBrowserRouterFromSettings();
+    }
+    if (key === 'debugLogging' || key === null) {
+      applyLoggingSettings();
     }
   });
 

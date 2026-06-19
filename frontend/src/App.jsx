@@ -211,6 +211,12 @@ export default function App() {
 
         break;
 
+      case 'file-content-bind':
+
+        s.bindProvisionalFileContentBlock(data);
+
+        break;
+
       case 'file-content-token':
 
         s.appendFileContentToken(data);

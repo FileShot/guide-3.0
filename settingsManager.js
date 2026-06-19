@@ -40,6 +40,7 @@ const SETTINGS_DEFAULTS = {
   enableNativeFC: false,         // Default OFF: models use prose tool calls parsed by toolParser.js unless user enables native FC.
   enableContextSummarizer: true,  // When true, generates a progress summary from dropped context during context shifts using the loaded model (sub-context pattern)
   debugStreamDiag: false,         // When true, logs verbose [StreamDiag] token/FC traces to guide-main.log (no effect on generation)
+  debugLogging: false,            // When true, mirror all console output to guide-main.log (off by default for performance)
   streamTraceEnabled: false,      // Diagnostic trace to stream/ipc/ui/api-trace.log files (off by default)
   streamTraceLevel: 'tokens',     // off | tokens (compact per-token) | full (includes sf-char)
   // Command Execution Policy
@@ -50,6 +51,7 @@ const SETTINGS_DEFAULTS = {
   // When true, destructive tools and policy-blocked commands show the approval banner.
   requireToolApproval: false,
   enableSubAgents: true,
+  autoOpenAgentFiles: false,      // When true, auto-open Monaco tab while agent streams a new file
   // Browser automation engine for agent browser_* tools
   browserEngine: 'chromium', // 'chromium' | 'tor'
   torBrowserPath: '',

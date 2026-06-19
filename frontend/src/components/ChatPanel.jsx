@@ -848,7 +848,9 @@ function StreamingFooter() {
 
           if (!tc) return null;
 
-          if (i > 0) {
+          const collapseSameTool = tc.functionName !== 'create_directory';
+
+          if (collapseSameTool && i > 0) {
 
             const prev = streamingSegments[i - 1];
 
@@ -864,18 +866,20 @@ function StreamingFooter() {
 
           let count = 1;
 
-          for (let j = i + 1; j < streamingSegments.length; j++) {
+          if (collapseSameTool) {
+            for (let j = i + 1; j < streamingSegments.length; j++) {
 
-            const next = streamingSegments[j];
+              const next = streamingSegments[j];
 
-            if (next.type !== 'tool') break;
+              if (next.type !== 'tool') break;
 
-            const nextTc = streamingToolCalls[next.toolIndex];
+              const nextTc = streamingToolCalls[next.toolIndex];
 
-            if (!nextTc || nextTc.functionName !== tc.functionName) break;
+              if (!nextTc || nextTc.functionName !== tc.functionName) break;
 
-            count++;
+              count++;
 
+            }
           }
 
           return <ToolCallCard key={`seg-tool-${seg.toolIndex}`} toolCall={tc} count={count} />;
@@ -3509,9 +3513,9 @@ export default function ChatPanel() {
 
                             if (!tc) return null;
 
-                            // Duplicate collapse: skip if previous segment is same tool name
+                            const collapseSameTool = tc.functionName !== 'create_directory';
 
-                            if (i > 0) {
+                            if (collapseSameTool && i > 0) {
 
                               const prev = msg.segments[i - 1];
 
@@ -3527,18 +3531,20 @@ export default function ChatPanel() {
 
                             let count = 1;
 
-                            for (let j = i + 1; j < msg.segments.length; j++) {
+                            if (collapseSameTool) {
+                              for (let j = i + 1; j < msg.segments.length; j++) {
 
-                              const next = msg.segments[j];
+                                const next = msg.segments[j];
 
-                              if (next.type !== 'tool') break;
+                                if (next.type !== 'tool') break;
 
-                              const nextTc = msg.toolCalls?.[next.toolIndex];
+                                const nextTc = msg.toolCalls?.[next.toolIndex];
 
-                              if (!nextTc || nextTc.functionName !== tc.functionName) break;
+                                if (!nextTc || nextTc.functionName !== tc.functionName) break;
 
-                              count++;
+                                count++;
 
+                              }
                             }
 
                             return <ToolCallCard key={`tool-${i}`} toolCall={tc} count={count} />;

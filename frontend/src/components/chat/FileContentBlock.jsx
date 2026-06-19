@@ -29,6 +29,7 @@ const FileContentBlock = React.memo(function FileContentBlock({
   // Auto-fix toggle is the real global setting — toggling it here changes backend behaviour for ALL future file writes
   const autoFixEnabled = useAppStore(s => s.settings.autoLintFix !== false);
   const updateSetting = useAppStore(s => s.updateSetting);
+  const openFile = useAppStore(s => s.openFile);
   const scrollContainerRef = useRef(null);
   const contentRef = useRef(null);
 
@@ -86,6 +87,16 @@ const FileContentBlock = React.memo(function FileContentBlock({
     URL.revokeObjectURL(url);
   }, [content, displayNew, fileName, filePath]);
 
+  const handleOpenInEditor = useCallback(() => {
+    if (!filePath) return;
+    openFile({
+      path: filePath,
+      name: fileName || filePath.split(/[/\\]/).pop(),
+      extension: language || filePath.split('.').pop(),
+      content: displayNew || content || '',
+    }, { forceFocus: true });
+  }, [content, displayNew, fileName, filePath, language, openFile]);
+
   const handleExpand = useCallback((e) => {
     e.stopPropagation();
     e.preventDefault();
@@ -132,7 +143,11 @@ const FileContentBlock = React.memo(function FileContentBlock({
   return (
     <div className="guide-code-block code-block-container group relative my-2 rounded-lg overflow-hidden flex flex-col">
       {/* Header */}
-      <div className="code-block-header flex items-center justify-between px-3 py-1 bg-vsc-sidebar/80 border-b border-vsc-panel-border/15">
+      <div
+        className="code-block-header flex items-center justify-between px-3 py-1 bg-vsc-sidebar/80 border-b border-vsc-panel-border/15 cursor-pointer hover:bg-vsc-list-hover/40"
+        onClick={handleOpenInEditor}
+        title={filePath ? 'Open in editor' : undefined}
+      >
         <div className="flex items-center gap-1.5">
           <FileCode size={12} className="text-vsc-accent" />
           <span className="text-[11px] text-vsc-text font-medium">{displayName}</span>

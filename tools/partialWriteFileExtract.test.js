@@ -60,9 +60,20 @@ describe('extractPartialWriteFileFromToolJson', () => {
     assert.equal(r.content, 'body{');
   });
 
-  it('returns null when content field not started', () => {
+  it('returns path-only stub when content field not started', () => {
     const r = extractPartialWriteFileFromToolJson('{"tool":"write_file","params":{"filePath":"a.txt"');
-    assert.equal(r, null);
+    assert.ok(r);
+    assert.equal(r.filePath, 'a.txt');
+    assert.equal(r.content, '');
+  });
+
+  it('streams content when filePath follows content in JSON (provisional)', () => {
+    const partial = '{"tool":"write_file","params":{"content":"import os\\nimport sys\\n';
+    const r = extractPartialWriteFileFromToolJson(partial);
+    assert.ok(r);
+    assert.equal(r.provisional, true);
+    assert.equal(r.filePath, null);
+    assert.equal(r.content, 'import os\nimport sys\n');
   });
 
   it('stops at merged JSON reason field boundary', () => {
@@ -97,10 +108,12 @@ describe('extractPartialWriteFileFromToolJson', () => {
     assert.ok(!r.content.includes('",'));
   });
 
-  it('stops at structural JSON close without strip flag during live delta', () => {
-    const partial = `${prefix}</div>"},`;
+  it('binds path once filePath key arrives after content', () => {
+    const partial = '{"tool":"write_file","params":{"content":"body","filePath":"server.py"';
     const r = extractPartialWriteFileFromToolJson(partial);
     assert.ok(r);
-    assert.equal(r.content, '</div>');
+    assert.equal(r.provisional, false);
+    assert.equal(r.filePath, 'server.py');
+    assert.equal(r.content, 'body');
   });
 });
