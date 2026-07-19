@@ -31,8 +31,8 @@ function githubHeaders() {
 function download(url, dest) {
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    const file = fs.createWriteStream(dest);
     const req = (u) => {
+      const file = fs.createWriteStream(dest);
       https.get(u, { headers: githubHeaders() }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           file.close();
@@ -46,6 +46,7 @@ function download(url, dest) {
         }
         res.pipe(file);
         file.on('finish', () => file.close(() => resolve(dest)));
+        file.on('error', reject);
       }).on('error', reject);
     };
     req(url);
@@ -74,7 +75,7 @@ function fetchJson(url) {
 }
 
 async function fetchRelease() {
-  return fetchJson('https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest');
+  return fetchJson('https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest');
 }
 
 function pickAsset(release, platform) {
@@ -156,15 +157,46 @@ async function buildFromSource(platform) {
   console.log(`[whisper-fetch] ${platform}: installed ${destName} (source build)`);
 }
 
+function hasWinRuntimeDlls(dir) {
+  if (!fs.existsSync(dir)) return false;
+  return fs.readdirSync(dir).some((name) => {
+    const lower = name.toLowerCase();
+    return lower.endsWith('.dll') && (lower.startsWith('ggml') || lower === 'whisper.dll');
+  });
+}
+
+function copyWhisperRuntime(foundBin, platDir, platform) {
+  const binNames = platform === 'win32'
+    ? ['whisper-cli.exe', 'whisper.exe', 'main.exe']
+    : ['whisper-cli', 'whisper', 'main'];
+  const destName = platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
+  fs.mkdirSync(platDir, { recursive: true });
+  const srcDir = path.dirname(foundBin);
+  for (const name of fs.readdirSync(srcDir)) {
+    const src = path.join(srcDir, name);
+    if (!fs.statSync(src).isFile()) continue;
+    const lower = name.toLowerCase();
+    if (binNames.includes(name) || lower.endsWith('.dll') || lower.endsWith('.so') || lower.endsWith('.dylib')) {
+      const dest = path.join(platDir, binNames.includes(name) ? destName : name);
+      fs.copyFileSync(src, dest);
+    }
+  }
+  if (platform !== 'win32') fs.chmodSync(path.join(platDir, destName), 0o755);
+  console.log(`[whisper-fetch] ${platform}: installed ${destName}` + (platform === 'win32' ? ' + runtime DLLs' : ''));
+}
+
 async function fetchBinaryForPlatform(platform) {
   const platDir = path.join(OUT, PLATFORM_DIRS[platform] || platform);
   const binNames = platform === 'win32'
     ? ['whisper-cli.exe', 'whisper.exe', 'main.exe']
     : ['whisper-cli', 'whisper', 'main'];
   const existing = findBinary(platDir, binNames);
-  if (existing) {
+  if (existing && (platform !== 'win32' || hasWinRuntimeDlls(platDir))) {
     console.log(`[whisper-fetch] ${platform}: already have ${existing}`);
     return;
+  }
+  if (existing && platform === 'win32' && !hasWinRuntimeDlls(platDir)) {
+    console.log(`[whisper-fetch] ${platform}: exe present but runtime DLLs missing — re-fetching`);
   }
 
   const release = await fetchRelease();
@@ -189,11 +221,7 @@ async function fetchBinaryForPlatform(platform) {
   const found = findBinary(tmp, binNames);
   if (!found) throw new Error(`Binary not found after extracting ${asset.name}`);
 
-  fs.mkdirSync(platDir, { recursive: true });
-  const destName = platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli';
-  fs.copyFileSync(found, path.join(platDir, destName));
-  if (platform !== 'win32') fs.chmodSync(path.join(platDir, destName), 0o755);
-  console.log(`[whisper-fetch] ${platform}: installed ${destName}`);
+  copyWhisperRuntime(found, platDir, platform);
 }
 
 async function fetchModel() {

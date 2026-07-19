@@ -21,9 +21,9 @@ import SlideDown from './SlideDown';
 import FileContentBlock from './chat/FileContentBlock';
 import MediaBlock from './chat/MediaBlock';
 import MentionPicker from './MentionPicker';
-import { blobToWav } from '../utils/audioToWav';
 import { openFileFromReadResponse } from '../utils/openFileFromRead';
 import { stripPlainCodeFencesFromProse } from '../utils/markdownFenceUtils';
+import { createOfflineVoiceStream } from '../lib/offlineVoiceStream';
 
 import { Virtuoso } from 'react-virtuoso';
 
@@ -1014,8 +1014,8 @@ export default function ChatPanel() {
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionType, setMentionType] = useState('file');
   const [voiceListening, setVoiceListening] = useState(false);
-  const speechRecognitionRef = useRef(null);
-  const voiceRecorderRef = useRef(null);
+  const [voiceStatusText, setVoiceStatusText] = useState(null);
+  const offlineVoiceRef = useRef(null);
   const voiceWhisperAvailableRef = useRef(false);
 
   const [editingMessageId, setEditingMessageId] = useState(null);
@@ -1364,129 +1364,47 @@ export default function ChatPanel() {
     });
   }, [input]);
 
-  const toggleVoiceInput = useCallback(() => {
+  const toggleVoiceInput = useCallback(async () => {
     const appendTranscript = (transcript) => {
       if (!transcript?.trim()) return;
       setInput((prev) => (prev ? `${prev.trimEnd()} ${transcript.trim()}` : transcript.trim()));
     };
-
-    const notify = (type, message) => useAppStore.getState().addNotification({ type, message });
-
-    const startWebSpeech = () => {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SpeechRecognition) {
-        notify('warning', 'Speech recognition is not supported in this environment.');
-        return;
-      }
-      const recognition = new SpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.lang = navigator.language || 'en-US';
-      recognition.onresult = (event) => {
-        let transcript = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          transcript += event.results[i][0].transcript;
-        }
-        appendTranscript(transcript);
-      };
-      recognition.onerror = (ev) => {
-        setVoiceListening(false);
-        notify('warning', `Speech recognition error: ${ev.error || 'unknown'}`);
-      };
-      recognition.onend = () => {
-        setVoiceListening(false);
-        speechRecognitionRef.current = null;
-      };
-      speechRecognitionRef.current = recognition;
-      setVoiceListening(true);
-      try { recognition.start(); } catch (e) {
-        setVoiceListening(false);
-        notify('warning', e.message || 'Could not start speech recognition');
-      }
-    };
-
-    const startMediaRecorder = () => {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        startWebSpeech();
-        return;
-      }
-      navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
-        let recorder;
-        try {
-          recorder = new MediaRecorder(stream);
-        } catch (e) {
-          stream.getTracks().forEach((t) => t.stop());
-          notify('warning', e.message || 'MediaRecorder not supported');
-          startWebSpeech();
-          return;
-        }
-        const chunks = [];
-        recorder.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
-        recorder.onstop = async () => {
-          stream.getTracks().forEach((t) => t.stop());
-          voiceRecorderRef.current = null;
-          setVoiceListening(false);
-          if (!chunks.length) return;
-          try {
-            const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-            const wavBuffer = await blobToWav(blob);
-            let r;
-            if (window.electronAPI?.voiceTranscribe) {
-              r = await window.electronAPI.voiceTranscribe(wavBuffer, { format: 'wav' });
-            } else {
-              const bytes = Array.from(new Uint8Array(wavBuffer));
-              r = await fetch('/api/voice/transcribe', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ _audioBuffer: bytes, format: 'wav' }),
-              }).then((res) => res.json());
-            }
-            if (r?.success && r.text) {
-              appendTranscript(r.text);
-              if (r.source === 'cloud') notify('info', 'Transcribed via cloud STT', 2000);
-            } else if (r?.useWebSpeech) {
-              startWebSpeech();
-            } else {
-              notify('warning', r?.error || 'Transcription failed');
-            }
-          } catch (e) {
-            notify('warning', e.message || 'Voice input failed');
-            if (!window.electronAPI?.voiceTranscribe) startWebSpeech();
-          }
-        };
-        recorder.onerror = () => {
-          stream.getTracks().forEach((t) => t.stop());
-          voiceRecorderRef.current = null;
-          setVoiceListening(false);
-          notify('warning', 'Recording failed');
-        };
-        voiceRecorderRef.current = { recorder, stream };
-        setVoiceListening(true);
-        recorder.start();
-        notify('info', 'Recording… click mic again when finished.', 2500);
-      }).catch((e) => {
-        notify('warning', e.message || 'Microphone access denied');
-        startWebSpeech();
-      });
-    };
+    const notify = (type, message, duration) =>
+      useAppStore.getState().addNotification({ type, message, duration });
 
     if (voiceListening) {
-      if (voiceRecorderRef.current?.recorder?.state === 'recording') {
-        voiceRecorderRef.current.recorder.stop();
-        return;
-      }
-      if (speechRecognitionRef.current) {
-        speechRecognitionRef.current.stop();
-        setVoiceListening(false);
-      }
+      setVoiceListening(false);
+      setVoiceStatusText('Finishing…');
+      try {
+        await offlineVoiceRef.current?.stop();
+      } catch (_) {}
+      offlineVoiceRef.current = null;
+      setVoiceStatusText(null);
       return;
     }
 
-    if (window.electronAPI?.voiceTranscribe) {
-      startMediaRecorder();
+    if (!window.electronAPI?.voiceTranscribe) {
+      notify('warning', 'Voice input requires the guIDE desktop app with local Whisper.');
       return;
     }
-    startWebSpeech();
+
+    const stream = createOfflineVoiceStream({
+      onFinalText: appendTranscript,
+      onStatus: (msg) => setVoiceStatusText(msg),
+      onError: (msg) => notify('warning', msg || 'Whisper transcription failed'),
+      transcribe: (wavBuffer) => window.electronAPI.voiceTranscribe(wavBuffer, { format: 'wav', provider: 'local' }),
+    });
+    offlineVoiceRef.current = stream;
+    try {
+      await stream.start();
+      setVoiceListening(true);
+      notify('info', 'Listening offline — speak freely, click mic to stop.', 2500);
+    } catch (e) {
+      offlineVoiceRef.current = null;
+      setVoiceListening(false);
+      setVoiceStatusText(null);
+      notify('warning', e.message || 'Could not start microphone');
+    }
   }, [voiceListening]);
 
   useEffect(() => {
@@ -1495,21 +1413,14 @@ export default function ChatPanel() {
       : (url, opts) => fetch(url, opts).then((r) => r.json());
     api('/api/voice/status', { method: 'GET' })
       .then((d) => {
-        voiceWhisperAvailableRef.current = !!(d?.localWhisper || d?.modelReady || d?.cloudAvailable);
+        voiceWhisperAvailableRef.current = !!(d?.localWhisper && d?.modelReady);
       })
       .catch(() => {});
   }, []);
 
   useEffect(() => () => {
-    if (voiceRecorderRef.current?.recorder?.state === 'recording') {
-      try { voiceRecorderRef.current.recorder.stop(); } catch (_) {}
-    }
-    if (voiceRecorderRef.current?.stream) {
-      voiceRecorderRef.current.stream.getTracks().forEach((t) => t.stop());
-    }
-    if (speechRecognitionRef.current) {
-      try { speechRecognitionRef.current.stop(); } catch (_) {}
-    }
+    try { offlineVoiceRef.current?.stop(); } catch (_) {}
+    offlineVoiceRef.current = null;
   }, []);
 
 
@@ -4520,14 +4431,19 @@ export default function ChatPanel() {
 
             <div className="flex-1" />
 
-            {/* Mic — left of send */}
+            {/* Mic — offline chunked Whisper */}
+            {voiceStatusText && (
+              <span className="text-[10px] text-vsc-accent mr-1 max-w-[120px] truncate" title={voiceStatusText}>
+                {voiceStatusText}
+              </span>
+            )}
             <button
               className={`p-1.5 rounded-md transition-colors ${
                 voiceListening
                   ? 'bg-vsc-error/20 text-vsc-error animate-pulse'
                   : 'hover:bg-vsc-list-hover text-vsc-text-dim hover:text-vsc-text'
               }`}
-              title={voiceListening ? 'Stop voice input' : 'Voice input (local Whisper or Web Speech)'}
+              title={voiceListening ? 'Stop offline voice input' : 'Voice input (offline Whisper streaming)'}
               onClick={toggleVoiceInput}
             >
               <Mic size={14} />

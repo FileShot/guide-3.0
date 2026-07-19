@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * VoiceService — bundled whisper.cpp (offline-first) + OpenAI Whisper cloud fallback.
+ * VoiceService — offline-only whisper.cpp STT (chunked streaming from renderer).
+ * No cloud / Web Speech fallback.
  */
 const fs = require('fs');
 const path = require('path');
@@ -11,6 +12,7 @@ const https = require('https');
 const {
   resolveWhisperModelPath,
   resolveWhisperCliPath,
+  hasWhisperRuntime,
   COMPONENT_IDS,
 } = require('./optionalComponentPaths');
 
@@ -24,6 +26,7 @@ class VoiceService {
     this.modelsDir = path.join(userDataPath, 'whisper-models');
     this._whisperBin = null;
     this._modelPath = null;
+    this._queue = Promise.resolve();
     this._detectWhisper();
   }
 
@@ -68,15 +71,17 @@ class VoiceService {
     return null;
   }
 
-  async _ensureModel() {
-    if (this._modelPath && fs.existsSync(this._modelPath)) return this._modelPath;
-    if (this.optionalComponentsManager) {
-      const ok = await this.optionalComponentsManager.ensureReady(COMPONENT_IDS.WHISPER);
-      if (ok) {
-        this._detectWhisper();
-        if (this._modelPath && fs.existsSync(this._modelPath)) return this._modelPath;
-      }
+  async _ensureReady() {
+    const runtimeOk = !!(this._whisperBin && hasWhisperRuntime(this._whisperBin));
+    if (this.optionalComponentsManager && (!runtimeOk || !this._modelPath)) {
+      await this.optionalComponentsManager.ensureReady(COMPONENT_IDS.WHISPER);
+      this._detectWhisper();
     }
+    if (!this._whisperBin || !hasWhisperRuntime(this._whisperBin)) {
+      throw new Error('Local Whisper binary not found (or missing runtime DLLs). Retry Voice component install.');
+    }
+    if (this._modelPath && fs.existsSync(this._modelPath)) return this._modelPath;
+
     fs.mkdirSync(this.modelsDir, { recursive: true });
     const dest = path.join(this.modelsDir, 'ggml-base.en.bin');
     if (fs.existsSync(dest)) {
@@ -112,115 +117,65 @@ class VoiceService {
     });
   }
 
-  _voiceProvider() {
-    return this.settingsManager?.get?.('voiceProvider') || 'auto';
-  }
-
-  async _isOnline() {
-    return new Promise((resolve) => {
-      const req = https.request(
-        { hostname: 'api.openai.com', port: 443, path: '/', method: 'HEAD', timeout: 3000 },
-        () => resolve(true),
-      );
-      req.on('error', () => resolve(false));
-      req.on('timeout', () => { req.destroy(); resolve(false); });
-      req.end();
-    });
-  }
-
   getStatus() {
     return {
       localWhisper: !!this._whisperBin,
       whisperPath: this._whisperBin,
       modelReady: !!(this._modelPath && fs.existsSync(this._modelPath)),
-      voiceProvider: this._voiceProvider(),
-      cloudAvailable: !!(this.settingsManager?.hasApiKey?.('openai')),
-      webSpeechFallback: true,
+      voiceProvider: 'local',
+      cloudAvailable: false,
+      webSpeechFallback: false,
+      streaming: true,
     };
   }
 
   async transcribe(audioBuffer, opts = {}) {
-    const provider = opts.provider || this._voiceProvider();
+    // Serialize chunked streaming jobs so whisper-cli isn't flooded.
+    const run = this._queue.then(() => this._transcribeLocal(audioBuffer, opts));
+    this._queue = run.catch(() => {});
+    return run;
+  }
+
+  async _transcribeLocal(audioBuffer, opts = {}) {
     const format = opts.format || 'wav';
-    const tryCloud = provider === 'cloud' || provider === 'auto';
-    const tryLocal = provider === 'local' || provider === 'auto';
-
-    if (tryCloud && this.settingsManager?.hasApiKey?.('openai')) {
-      const online = await this._isOnline();
-      if (online) {
-        try {
-          const cloud = await this._transcribeCloud(audioBuffer, format);
-          if (cloud.success) return cloud;
-        } catch (e) {
-          if (provider === 'cloud') {
-            return { success: false, error: e.message, useWebSpeech: true };
-          }
-        }
-      } else if (provider === 'cloud') {
-        return { success: false, error: 'Offline — cloud STT unavailable', useWebSpeech: false };
-      }
-    }
-
-    if (tryLocal) {
-      if (this.optionalComponentsManager && !this._whisperBin) {
-        await this.optionalComponentsManager.ensureReady(COMPONENT_IDS.WHISPER);
-        this._detectWhisper();
-      }
-      const local = await this._transcribeLocal(audioBuffer, format);
-      if (local.success) return local;
-      if (provider === 'local') return local;
-    }
-
-    return { success: false, error: 'Transcription unavailable', useWebSpeech: true };
-  }
-
-  async _transcribeCloud(audioBuffer, format) {
-    const key = this.settingsManager.getApiKey('openai');
-    if (!key) return { success: false, error: 'No OpenAI API key configured' };
-
-    const ext = format === 'webm' ? 'webm' : 'wav';
-    const blob = new Blob([audioBuffer], { type: ext === 'webm' ? 'audio/webm' : 'audio/wav' });
-    const form = new FormData();
-    form.append('file', blob, `audio.${ext}`);
-    form.append('model', 'whisper-1');
-
-    const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${key}` },
-      body: form,
-    });
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      return { success: false, error: `Cloud STT failed (${res.status}): ${errText.slice(0, 200)}` };
-    }
-    const data = await res.json();
-    return { success: true, text: (data.text || '').trim(), source: 'cloud' };
-  }
-
-  async _transcribeLocal(audioBuffer, format) {
-    if (!this._whisperBin) {
-      return { success: false, error: 'Local Whisper binary not found', useWebSpeech: true };
-    }
-
     let model;
     try {
-      model = await this._ensureModel();
+      model = await this._ensureReady();
     } catch (e) {
-      return { success: false, error: `Model download failed: ${e.message}`, useWebSpeech: true };
+      return { success: false, error: e.message };
+    }
+
+    if (!this._whisperBin) {
+      return { success: false, error: 'Local Whisper binary not found' };
     }
 
     const ext = format === 'webm' ? 'webm' : 'wav';
-    const inFile = path.join(os.tmpdir(), `guide-voice-${Date.now()}.${ext}`);
-    const outBase = path.join(os.tmpdir(), `guide-voice-out-${Date.now()}`);
-    fs.writeFileSync(inFile, audioBuffer);
+    const inFile = path.join(os.tmpdir(), `guide-voice-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${ext}`);
+    const outBase = path.join(os.tmpdir(), `guide-voice-out-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+    fs.writeFileSync(inFile, Buffer.from(audioBuffer));
 
+    const binDir = path.dirname(path.resolve(this._whisperBin));
     try {
-      const args = ['-m', model, '-f', inFile, '-otxt', '-of', outBase, '--no-timestamps'];
+      const args = ['-m', model, '-f', inFile, '-otxt', '-of', outBase, '--no-timestamps', '-t', '2'];
       await new Promise((resolve, reject) => {
-        const proc = spawn(this._whisperBin, args, { stdio: 'pipe' });
+        const proc = spawn(this._whisperBin, args, {
+          stdio: 'pipe',
+          cwd: binDir,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}`,
+          },
+        });
         let stderr = '';
         proc.stderr?.on('data', (d) => { stderr += d.toString(); });
-        proc.on('error', reject);
+        proc.on('error', (err) => {
+          reject(new Error(
+            err.code === 'ENOENT'
+              ? 'Whisper executable missing'
+              : `Whisper failed to start: ${err.message}. Missing DLL beside whisper-cli?`,
+          ));
+        });
         proc.on('close', (code) => {
           if (code === 0) resolve();
           else reject(new Error(stderr.trim() || `whisper exit ${code}`));
@@ -231,7 +186,7 @@ class VoiceService {
       try { fs.unlinkSync(txtPath); } catch (_) {}
       return { success: true, text, source: 'local' };
     } catch (e) {
-      return { success: false, error: e.message, useWebSpeech: true };
+      return { success: false, error: e.message };
     } finally {
       try { fs.unlinkSync(inFile); } catch (_) {}
     }

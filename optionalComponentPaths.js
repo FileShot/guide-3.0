@@ -113,25 +113,41 @@ function resolveWhisperModelPath(userDataPath, resourcesPath) {
   return cached;
 }
 
+/** Windows whisper-cli needs ggml*/whisper DLLs beside the exe (STATUS_DLL_NOT_FOUND otherwise). */
+function hasWhisperRuntime(cliPath) {
+  if (!cliPath || !fs.existsSync(cliPath)) return false;
+  if (process.platform !== 'win32') return true;
+  const dir = path.dirname(cliPath);
+  try {
+    return fs.readdirSync(dir).some((name) => {
+      const lower = name.toLowerCase();
+      return lower.endsWith('.dll') && (lower.startsWith('ggml') || lower === 'whisper.dll');
+    });
+  } catch {
+    return false;
+  }
+}
+
 function resolveWhisperCliPath(userDataPath, resourcesPath) {
   const isWin = process.platform === 'win32';
   const names = isWin ? ['whisper-cli.exe', 'whisper.exe', 'main.exe'] : ['whisper-cli', 'whisper', 'main'];
+  const candidates = [];
   const cachedRoot = getWhisperDir(userDataPath);
   for (const name of names) {
-    const p = path.join(cachedRoot, name);
-    if (fs.existsSync(p)) return p;
+    candidates.push(path.join(cachedRoot, name));
   }
   const bundledRoot = _bundledWhisperDir(resourcesPath);
   if (bundledRoot) {
     for (const name of names) {
-      const p = path.join(bundledRoot, name);
-      if (fs.existsSync(p)) return p;
+      candidates.push(path.join(bundledRoot, name));
     }
     const platDir = path.join(bundledRoot, isWin ? 'win32' : process.platform);
     for (const name of names) {
-      const p = path.join(platDir, name);
-      if (fs.existsSync(p)) return p;
+      candidates.push(path.join(platDir, name));
     }
+  }
+  for (const p of candidates) {
+    if (fs.existsSync(p) && hasWhisperRuntime(p)) return p;
   }
   return null;
 }
@@ -168,6 +184,7 @@ module.exports = {
   isSdCppReady,
   resolveWhisperModelPath,
   resolveWhisperCliPath,
+  hasWhisperRuntime,
   isWhisperReady,
   catalogForVariant,
   _dirHasChromium,

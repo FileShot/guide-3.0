@@ -2345,7 +2345,7 @@ function SettingsPanel() {
 
       {/* Editor */}
       <LspLanguagesSettings addNotification={addNotification} />
-      <VoiceSettings addNotification={addNotification} />
+      <VoiceSettings />
 
       <SettingsSection title="Editor" icon={<FileCode size={13} />} keywords="editor font size family tab word wrap line numbers minimap bracket format">
         <SettingSlider label="Font Size" value={settings.fontSize} min={8} max={32} step={1}
@@ -2578,9 +2578,7 @@ function LspLanguagesSettings({ addNotification }) {
   );
 }
 
-function VoiceSettings({ addNotification }) {
-  const settings = useAppStore((s) => s.settings);
-  const updateSetting = useAppStore((s) => s.updateSetting);
+function VoiceSettings() {
   const [voiceStatus, setVoiceStatus] = useState(null);
 
   useEffect(() => {
@@ -2590,23 +2588,11 @@ function VoiceSettings({ addNotification }) {
   return (
     <SettingsSection title="Voice input" icon={<Mic size={13} />}>
       <p className="text-[10px] text-vsc-text-dim mb-2">
-        Offline-first: bundled Whisper. Cloud fallback uses OpenAI when online and API key is set.
+        Offline only: chunked Whisper streams into the chat input while you speak. No cloud or Web Speech.
       </p>
-      <div className="py-0.5">
-        <label className="text-[11px] text-vsc-text-dim block mb-1">Voice provider</label>
-        <select
-          value={settings.voiceProvider || 'auto'}
-          onChange={(e) => updateSetting('voiceProvider', e.target.value)}
-          className="w-full bg-vsc-input border border-vsc-panel-border/30 rounded px-2 py-1 text-[11px] text-vsc-text"
-        >
-          <option value="auto">Auto (cloud when online, else local)</option>
-          <option value="local">Local Whisper only</option>
-          <option value="cloud">Cloud (OpenAI) only</option>
-        </select>
-      </div>
       <div className="text-[10px] text-vsc-text-dim mt-1 space-y-0.5">
-        <div>Local Whisper: {voiceStatus?.localWhisper ? 'Ready' : 'Will download model on first use'}</div>
-        <div>Cloud STT: {voiceStatus?.cloudAvailable ? 'OpenAI key configured' : 'Add OpenAI key in Cloud AI settings'}</div>
+        <div>Local Whisper: {voiceStatus?.localWhisper && voiceStatus?.modelReady ? 'Ready' : 'Downloads on first use'}</div>
+        <div>Streaming: {voiceStatus?.streaming ? 'Chunked PCM → whisper-cli' : 'Unavailable'}</div>
       </div>
     </SettingsSection>
   );

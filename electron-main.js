@@ -21,6 +21,11 @@ const { AutoUpdater } = require('./autoUpdater');
 const { OptionalComponentsManager } = require('./optionalComponentsManager');
 const { resolvePlaywrightBrowsersPath } = require('./optionalComponentPaths');
 
+// Match electron-builder appId so Windows taskbar/Start shortcuts share the same icon identity.
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.guide-ide.desktop');
+}
+
 // ─── GPU / V8 flags ─────────────────────────────────────────────────
 app.commandLine.appendSwitch('disable-gpu-sandbox');
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
@@ -92,13 +97,19 @@ html, body {
 // ─── Create window ───────────────────────────────────────────────────
 
 function createWindow() {
+  const appIcon = [
+    path.join(__dirname, 'build', 'icon.ico'),
+    path.join(process.resourcesPath || '', 'build', 'icon.ico'),
+    path.join(app.getAppPath(), 'build', 'icon.ico'),
+  ].find((p) => p && fs.existsSync(p));
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 900,
     minHeight: 600,
     title: 'guIDE',
-    icon: path.join(__dirname, 'build', 'icon.ico'),
+    ...(appIcon ? { icon: appIcon } : {}),
     backgroundColor: '#121212',
     frame: false,
     titleBarStyle: 'hidden',
@@ -113,6 +124,10 @@ function createWindow() {
       preload: path.join(app.getAppPath(), 'preload.js'),
     },
   });
+
+  if (appIcon && process.platform === 'win32') {
+    try { mainWindow.setIcon(appIcon); } catch (_) {}
+  }
 
   // Show loading screen while services initialize
   mainWindow.loadURL('data:text/html,' + encodeURIComponent(LOADING_HTML));
@@ -1255,9 +1270,9 @@ ipcMain.handle('cancel-pending-question', () => {
 ipcMain.handle('voice-transcribe', async (_e, audioBuffer, opts = {}) => {
   try {
     const buf = Buffer.from(audioBuffer);
-    return await voiceService.transcribe(buf, opts || {});
+    return await voiceService.transcribe(buf, { ...(opts || {}), provider: 'local' });
   } catch (e) {
-    return { success: false, error: e.message, useWebSpeech: true };
+    return { success: false, error: e.message };
   }
 });
 
@@ -2507,7 +2522,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         const buf = Buffer.from(body._audioBuffer);
         return apiReturn(await voiceService.transcribe(buf, { format: body.format || 'wav' }));
       }
-      return apiReturn({ success: false, error: 'audio buffer required', useWebSpeech: true });
+      return apiReturn({ success: false, error: 'audio buffer required' });
     }
 
     // ── Extension host commands ─────────────────────────

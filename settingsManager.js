@@ -85,7 +85,7 @@ const SETTINGS_DEFAULTS = {
   // Cloud AI
   lastCloudProvider: null,
   lastCloudModel: null,
-  voiceProvider: 'auto', // 'local' | 'cloud' | 'auto' — offline-first with cloud when online
+  voiceProvider: 'local', // offline Whisper only (chunked streaming)
   // Setup
   setupCompleted: false,
   // Account

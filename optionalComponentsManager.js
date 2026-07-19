@@ -449,14 +449,15 @@ class OptionalComponentsManager extends EventEmitter {
     const isWin = process.platform === 'win32';
     const cliName = isWin ? 'whisper-cli.exe' : 'whisper-cli';
     const cliDest = path.join(outDir, cliName);
-    if (!fs.existsSync(cliDest)) {
+    const { hasWhisperRuntime } = require('./optionalComponentPaths');
+    const needsRuntime = !fs.existsSync(cliDest) || !hasWhisperRuntime(cliDest);
+    if (needsRuntime) {
       const release = await fetchJson('https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest');
       const assets = release.assets || [];
       const asset = assets.find((a) => /whisper.*bin.*x64.*\.zip$/i.test(a.name))
         || assets.find((a) => /whisper.*x64.*\.zip$/i.test(a.name));
       if (!asset) {
-        log('whisper CLI zip not found — model only (cloud fallback available)');
-        return;
+        throw new Error('whisper CLI zip not found in latest whisper.cpp release');
       }
       const tmp = path.join(getComponentsRoot(this._userDataPath), '_tmp');
       fs.mkdirSync(tmp, { recursive: true });
@@ -475,9 +476,21 @@ class OptionalComponentsManager extends EventEmitter {
         }
       };
       walk(extractDir);
-      if (found) fs.copyFileSync(found, cliDest);
+      if (!found) throw new Error('whisper-cli binary not found in release zip');
+      // Copy CLI + sibling runtime DLLs (Windows whisper-cli needs ggml*.dll beside the exe).
+      const srcDir = path.dirname(found);
+      for (const name of fs.readdirSync(srcDir)) {
+        const src = path.join(srcDir, name);
+        if (!fs.statSync(src).isFile()) continue;
+        const lower = name.toLowerCase();
+        if (names.includes(name) || lower.endsWith('.dll') || lower.endsWith('.so') || lower.endsWith('.dylib')) {
+          fs.copyFileSync(src, path.join(outDir, names.includes(name) ? cliName : name));
+        }
+      }
+      log(`whisper runtime installed → ${outDir}`);
     }
     if (!fs.existsSync(modelDest)) throw new Error('Whisper model missing after download');
+    if (!fs.existsSync(cliDest)) throw new Error('Whisper CLI missing after install');
   }
 
   registerIPC(ipcMain) {
