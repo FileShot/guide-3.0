@@ -113,7 +113,7 @@ function resolveWhisperModelPath(userDataPath, resourcesPath) {
   return cached;
 }
 
-/** Windows whisper-cli needs ggml*/whisper DLLs beside the exe (STATUS_DLL_NOT_FOUND otherwise). */
+/** Windows whisper-cli needs ggml/whisper DLLs beside the exe (STATUS_DLL_NOT_FOUND otherwise). */
 function hasWhisperRuntime(cliPath) {
   if (!cliPath || !fs.existsSync(cliPath)) return false;
   if (process.platform !== 'win32') return true;
