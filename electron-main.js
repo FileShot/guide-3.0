@@ -20,11 +20,15 @@ const { buildAppMenu } = require('./appMenu');
 const { AutoUpdater } = require('./autoUpdater');
 const { OptionalComponentsManager } = require('./optionalComponentsManager');
 const { resolvePlaywrightBrowsersPath } = require('./optionalComponentPaths');
+const {
+  applyProductIdentity,
+  getInstallEdition,
+  getProductIdentity,
+  getInstallVariant,
+} = require('./updateVariant');
 
-// Match electron-builder appId so Windows taskbar/Start shortcuts share the same icon identity.
-if (process.platform === 'win32') {
-  app.setAppUserModelId('com.guide-ide.desktop');
-}
+// Isolate Lite AppData / taskbar identity before any getPath('userData') call.
+const productIdentity = applyProductIdentity(app);
 
 // ─── GPU / V8 flags ─────────────────────────────────────────────────
 app.commandLine.appendSwitch('disable-gpu-sandbox');
@@ -89,9 +93,9 @@ html, body {
 @keyframes spin { to { transform: rotate(360deg); } }
 .sub { font-size: 12px; color: #4b5563; font-family: -apple-system, sans-serif; }
 </style></head><body>
-  <div class="logo">gu<span>IDE</span></div>
+  <div class="logo">gu<span>IDE</span>${productIdentity.edition === 'lite' ? ' <span style="color:#9ca3af;font-size:16px">Lite</span>' : ''}</div>
   <div class="spinner"></div>
-  <div class="sub">Loading...</div>
+  <div class="sub">${productIdentity.edition === 'lite' ? (productIdentity.tagline || 'Loading Lite...') : 'Loading...'}</div>
 </body></html>`;
 
 // ─── Create window ───────────────────────────────────────────────────
@@ -108,7 +112,7 @@ function createWindow() {
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    title: 'guIDE',
+    title: productIdentity.productName || 'guIDE',
     ...(appIcon ? { icon: appIcon } : {}),
     backgroundColor: '#121212',
     frame: false,
@@ -347,12 +351,13 @@ function applyLoggingSettings() {
 }
 applyLoggingSettings();
 
-const { getInstallVariant } = require('./updateVariant');
 const installVariant = getInstallVariant();
+const installEdition = getInstallEdition();
 let optionalComponentsManager = new OptionalComponentsManager({
   userDataPath,
   resourcesPath: app.isPackaged ? process.resourcesPath : null,
   installVariant,
+  installEdition,
   settingsManager,
 });
 const llmEngine = new ChatEngine();
@@ -2027,11 +2032,21 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
 
     // ── Settings ────────────────────────────────────────
     if (p === '/api/settings' && method === 'GET') {
-      return apiReturn(settingsManager.getAll());
+      return apiReturn({
+        ...settingsManager.getAll(),
+        _product: {
+          edition: installEdition,
+          variant: installVariant,
+          productName: productIdentity.productName,
+          tagline: productIdentity.tagline,
+        },
+      });
     }
     if (p === '/api/settings' && method === 'POST') {
       console.log(`[Settings] POST /api/settings HANDLER START thinkingMode=${body?.thinkingMode} toolsEnabled=${body?.toolsEnabled} browserEngine=${body?.browserEngine}`);
-      settingsManager.setAll(body);
+      const patch = { ...(body || {}) };
+      delete patch._product;
+      settingsManager.setAll(patch);
       if (body?.debugStreamDiag === true) {
         settingsManager.set('debugStreamDiag', true);
       }
@@ -3138,14 +3153,16 @@ app.whenReady().then(async () => {
 
   optionalComponentsManager.setMainWindow(mainWindow);
   optionalComponentsManager.registerIPC(ipcMain);
-  if (!optionalComponentsManager.allComponentsBundled()) {
+  if (!optionalComponentsManager.allComponentsBundled() && optionalComponentsManager.shouldAutoDownload()) {
     setTimeout(() => {
       optionalComponentsManager.startBackgroundQueue().catch((e) => {
         console.error('[OptionalComponents] background queue failed:', e.message);
       });
     }, 3000);
-  } else {
+  } else if (optionalComponentsManager.allComponentsBundled()) {
     console.log('[OptionalComponents] all components bundled — skipping background download queue');
+  } else {
+    console.log('[OptionalComponents] Lite edition — add-ons install on demand (Settings → Add-ons)');
   }
 
   // Auto-updater: checks on startup, auto-downloads, footer prompts restart when ready.

@@ -1,0 +1,11 @@
+{
+  "variant": "cuda",
+  "edition": "lite",
+  "channel": "lite-cuda",
+  "gpuBackend": "cuda",
+  "appId": "com.guide-ide.lite",
+  "productName": "guIDE Lite",
+  "userDataName": "guide-ide-lite",
+  "appUserModelId": "com.guide-ide.lite",
+  "tagline": "guIDE Minus — not Plus"
+}

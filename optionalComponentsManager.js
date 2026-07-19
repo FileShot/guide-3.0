@@ -116,13 +116,14 @@ function flattenSdExtract(extractRoot, outDir) {
 
 class OptionalComponentsManager extends EventEmitter {
   /**
-   * @param {{ userDataPath: string, resourcesPath?: string|null, installVariant?: 'cuda'|'cpu', settingsManager?: object, mainWindow?: object }} opts
+   * @param {{ userDataPath: string, resourcesPath?: string|null, installVariant?: 'cuda'|'cpu', installEdition?: 'full'|'lite', settingsManager?: object, mainWindow?: object }} opts
    */
   constructor(opts) {
     super();
     this._userDataPath = opts.userDataPath;
     this._resourcesPath = opts.resourcesPath || null;
     this._installVariant = opts.installVariant || 'cpu';
+    this._installEdition = opts.installEdition === 'lite' ? 'lite' : 'full';
     this._settingsManager = opts.settingsManager || null;
     this._mainWindow = opts.mainWindow || null;
     this._states = {};
@@ -132,6 +133,11 @@ class OptionalComponentsManager extends EventEmitter {
     this._aggregate = { bytesDone: 0, bytesTotal: 0 };
     this._loadManifest();
     this._syncReadyFromDisk();
+  }
+
+  /** Full auto-fetches missing bundles; Lite waits for Quick Add / first use. */
+  shouldAutoDownload() {
+    return this._installEdition !== 'lite';
   }
 
   setMainWindow(win) {
@@ -235,9 +241,20 @@ class OptionalComponentsManager extends EventEmitter {
       bytesTotal: this._aggregate.bytesTotal,
       needsRestart: false,
       error: catalog.map((c) => this._states[c.id]?.error).find(Boolean) || null,
+      edition: this._installEdition,
+      installVariant: this._installVariant,
+      catalog: catalog.map((c) => ({
+        id: c.id,
+        label: c.label,
+        bytesEstimate: c.bytesEstimate || 0,
+        phase: this._isComponentReadyOnDisk(c.id) ? 'ready' : (this._states[c.id]?.phase || 'missing'),
+        error: this._states[c.id]?.error || null,
+      })),
       components: Object.fromEntries(catalog.map((c) => [c.id, {
         phase: this._isComponentReadyOnDisk(c.id) ? 'ready' : (this._states[c.id]?.phase || 'missing'),
         label: c.label,
+        bytesEstimate: c.bytesEstimate || 0,
+        error: this._states[c.id]?.error || null,
       }])),
     };
   }
@@ -496,6 +513,11 @@ class OptionalComponentsManager extends EventEmitter {
   registerIPC(ipcMain) {
     ipcMain.handle('component-bundle-status', () => this.getStatus());
     ipcMain.handle('component-bundle-retry', () => this.retry());
+    ipcMain.handle('component-bundle-install', async (_e, id) => {
+      if (!id) return { success: false, error: 'component id required', ...this.getStatus() };
+      const ok = await this.ensureReady(id);
+      return { success: ok, ...this.getStatus() };
+    });
     ipcMain.handle('component-bundle-skip', (_e, id) => {
       this.skip(id || null);
       return this.getStatus();

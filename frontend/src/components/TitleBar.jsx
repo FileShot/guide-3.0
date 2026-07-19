@@ -588,7 +588,20 @@ function executeMenuAction(action) {
     case 'showShortcuts': store.setActiveActivity('settings'); return;
     case 'about': {
       const v = store.appVersion || '...';
-      store.addNotification({ type: 'info', message: `guIDE ${v} — Local-first AI IDE. Built for offline inference.`, duration: 8000 });
+      fetch('/api/settings').then((r) => r.json()).then((d) => {
+        const product = d?._product;
+        const name = product?.productName || 'guIDE';
+        const tag = product?.tagline ? ` ${product.tagline}.` : '';
+        store.addNotification({
+          type: 'info',
+          message: product?.edition === 'lite'
+            ? `${name} ${v} — lean CUDA IDE.${tag} Add browser, voice, and image tools in Settings → Add-ons.`
+            : `${name} ${v} — Local-first AI IDE. Built for offline inference.`,
+          duration: 8000,
+        });
+      }).catch(() => {
+        store.addNotification({ type: 'info', message: `guIDE ${v} — Local-first AI IDE. Built for offline inference.`, duration: 8000 });
+      });
       return;
     }
 

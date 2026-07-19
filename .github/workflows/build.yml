@@ -256,6 +256,95 @@ jobs:
             dist-electron/*.blockmap
           retention-days: 30
 
+  # ─── Windows Lite CUDA (stripped extras, isolated SKU) ─
+  build-windows-lite:
+    needs: prepare
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set build version
+        shell: bash
+        run: |
+          node -e "const fs=require('fs'); const version='${{ needs.prepare.outputs.version }}'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=version; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
+
+      - name: Install setuptools (provides distutils for node-gyp)
+        run: pip install setuptools
+
+      - uses: Jimver/cuda-toolkit@v0.2.15
+        with:
+          cuda: '12.4.0'
+
+      - name: Install root dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install CMake
+        run: choco install cmake --yes
+
+      - name: Compile llama.cpp (b9253, CUDA)
+        run: node scripts/rebuild-llama-runtime.mjs --profile cuda --legacy
+
+      - name: Wire compiled llama runtime
+        run: node scripts/install-compiled-llama.mjs
+
+      - name: Bundle CUDA runtime DLLs for llama
+        run: node scripts/bundle-llama-cuda-dlls.mjs
+
+      - name: Prune llama backends (CUDA package)
+        run: node scripts/prune-llama-backends.js --cuda
+
+      - name: Verify bundled TypeScript LSP
+        run: npx typescript-language-server --version
+
+      - name: Install frontend dependencies
+        run: npm ci --force || (sleep 5 && npm ci --force)
+        working-directory: frontend
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Install ImageMagick
+        run: choco install imagemagick --yes
+
+      - name: Generate multi-size app icon
+        shell: pwsh
+        run: ./scripts/generate-icon.ps1
+
+      - name: Verify compiled llama runtime
+        shell: pwsh
+        run: |
+          if (-not (Test-Path node_modules/node-llama-cpp/llama/lastBuild.json)) { throw "missing lastBuild.json" }
+          if (-not (Test-Path node_modules/node-llama-cpp/llama/localBuilds)) { throw "missing localBuilds" }
+
+      - name: Build Windows Lite CUDA installer
+        timeout-minutes: 60
+        run: npx electron-builder --win --x64 --config electron-builder.nosign.lite.json --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Ensure Lite CUDA update feed
+        run: node scripts/ensure-update-feed.js --channel lite-cuda --platform win --glob "guIDE-*-lite-cuda-x64-setup.exe"
+
+      - name: Upload artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-lite
+          path: |
+            dist-electron/guIDE-*-lite-cuda-x64-setup.exe
+            dist-electron/lite-cuda.yml
+            dist-electron/*.blockmap
+          retention-days: 30
+
   # ─── Linux CPU ──────────────────────────────────────────────
   build-linux-cpu:
     needs: prepare
@@ -469,7 +558,7 @@ jobs:
 
   # ─── GitHub Release ─────────────────────────────────────────
   release:
-    needs: [prepare, build-windows-cpu, build-windows-cuda, build-linux-cpu, build-linux-cuda, build-mac]
+    needs: [prepare, build-windows-cpu, build-windows-cuda, build-windows-lite, build-linux-cpu, build-linux-cuda, build-mac]
     runs-on: ubuntu-latest
     if: >-
       always() &&
@@ -477,6 +566,7 @@ jobs:
       needs.prepare.result == 'success' &&
       needs.build-windows-cpu.result == 'success' &&
       needs.build-windows-cuda.result == 'success' &&
+      needs.build-windows-lite.result == 'success' &&
       needs.build-linux-cpu.result == 'success' &&
       needs.build-linux-cuda.result == 'success' &&
       needs.build-mac.result == 'success' &&
@@ -497,6 +587,7 @@ jobs:
           files: |
             artifacts/windows-cpu/*
             artifacts/windows-cuda/*
+            artifacts/windows-lite/*
             artifacts/linux-cpu/*
             artifacts/linux-cuda/*
             artifacts/mac-cpu/*

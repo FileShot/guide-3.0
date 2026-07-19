@@ -104,6 +104,21 @@ const mgr = new OptionalComponentsManager({
 const status = mgr.getStatus();
 assert.ok(['idle', 'done', 'error', 'downloading'].includes(status.phase));
 assert.strictEqual(status.needsRestart, false);
+assert.ok(Array.isArray(status.catalog));
+assert.strictEqual(mgr.shouldAutoDownload(), true);
+
+const liteMgr = new OptionalComponentsManager({
+  userDataPath: path.join(tmp, 'mgr-lite'),
+  resourcesPath: resources,
+  installVariant: 'cuda',
+  installEdition: 'lite',
+  settingsManager: settingsStub,
+});
+assert.strictEqual(liteMgr.shouldAutoDownload(), false);
+assert.strictEqual(liteMgr.getStatus().edition, 'lite');
+assert.ok(liteMgr.getStatus().catalog.some((c) => c.id === COMPONENT_IDS.PLAYWRIGHT));
+assert.ok(liteMgr.getStatus().catalog.some((c) => c.bytesEstimate > 0));
+
 mgr._states[COMPONENT_IDS.PLAYWRIGHT] = { phase: 'ready', installedAt: new Date().toISOString() };
 mgr._saveManifest();
 assert.ok(fs.existsSync(getManifestPath(path.join(tmp, 'mgr-user'))));

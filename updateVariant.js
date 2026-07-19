@@ -6,6 +6,24 @@ const path = require('path');
 const GITHUB_OWNER = 'FileShot';
 const GITHUB_REPO = 'guide-3.0';
 
+const FULL_IDENTITY = {
+  edition: 'full',
+  appId: 'com.guide-ide.desktop',
+  productName: 'guIDE',
+  userDataName: 'guide-ide',
+  appUserModelId: 'com.guide-ide.desktop',
+  tagline: null,
+};
+
+const LITE_IDENTITY = {
+  edition: 'lite',
+  appId: 'com.guide-ide.lite',
+  productName: 'guIDE Lite',
+  userDataName: 'guide-ide-lite',
+  appUserModelId: 'com.guide-ide.lite',
+  tagline: 'guIDE Minus — not Plus',
+};
+
 function _resourcesDir() {
   return process.resourcesPath || null;
 }
@@ -59,18 +77,73 @@ function _hasCudaBackendBinaries() {
 }
 
 /**
- * Installed variant: cpu (Vulkan/CPU inference) or cuda (NVIDIA CUDA).
+ * Product edition: full (bundled extras) or lite (add-on downloads).
+ * @returns {'full' | 'lite'}
+ */
+function getInstallEdition() {
+  const manifest = _readInstallManifest();
+  if (manifest?.edition === 'lite') return 'lite';
+  return 'full';
+}
+
+/**
+ * Display / identity metadata for the running install.
+ */
+function getProductIdentity() {
+  const manifest = _readInstallManifest();
+  if (manifest?.edition === 'lite') {
+    return {
+      ...LITE_IDENTITY,
+      appId: manifest.appId || LITE_IDENTITY.appId,
+      productName: manifest.productName || LITE_IDENTITY.productName,
+      userDataName: manifest.userDataName || LITE_IDENTITY.userDataName,
+      appUserModelId: manifest.appUserModelId || LITE_IDENTITY.appUserModelId,
+      tagline: manifest.tagline || LITE_IDENTITY.tagline,
+    };
+  }
+  return { ...FULL_IDENTITY };
+}
+
+/**
+ * Apply Lite vs Full identity before any userData path is read.
+ * Call once at process start (packaged Lite must not share Full AppData).
+ * @param {import('electron').App} electronApp
+ */
+function applyProductIdentity(electronApp) {
+  const identity = getProductIdentity();
+  if (identity.edition === 'lite') {
+    try {
+      electronApp.setName(identity.userDataName);
+    } catch (_) {}
+    try {
+      const appData = electronApp.getPath('appData');
+      electronApp.setPath('userData', path.join(appData, identity.userDataName));
+    } catch (_) {}
+  }
+  if (process.platform === 'win32') {
+    try {
+      electronApp.setAppUserModelId(identity.appUserModelId);
+    } catch (_) {}
+  }
+  return identity;
+}
+
+/**
+ * Installed GPU variant: cpu (Vulkan/CPU inference) or cuda (NVIDIA CUDA).
  * Priority: build manifest → app-update.yml channel → bundled CUDA binaries.
  * @returns {'cuda' | 'cpu'}
  */
 function getInstallVariant() {
   const manifest = _readInstallManifest();
+  if (manifest?.gpuBackend === 'cuda' || manifest?.gpuBackend === 'cpu') {
+    return manifest.gpuBackend;
+  }
   if (manifest?.variant === 'cuda' || manifest?.variant === 'cpu') {
     return manifest.variant;
   }
 
   const ymlChannel = _readAppUpdateYmlChannel();
-  if (ymlChannel === 'cuda') return 'cuda';
+  if (ymlChannel === 'cuda' || ymlChannel === 'lite-cuda') return 'cuda';
 
   if (_hasCudaBackendBinaries()) return 'cuda';
   return 'cpu';
@@ -78,7 +151,7 @@ function getInstallVariant() {
 
 /**
  * electron-updater channel.
- * null / unset → latest.yml (CPU). 'cuda' → cuda.yml / cuda-linux.yml.
+ * null / unset → latest.yml (CPU). 'cuda' → cuda.yml. 'lite-cuda' → lite-cuda.yml.
  * @returns {string|null}
  */
 function getUpdateChannel() {
@@ -86,6 +159,7 @@ function getUpdateChannel() {
   if (manifest?.channel && manifest.channel !== 'latest') {
     return manifest.channel;
   }
+  if (manifest?.edition === 'lite' && getInstallVariant() === 'cuda') return 'lite-cuda';
   if (manifest?.variant === 'cuda') return 'cuda';
 
   const ymlChannel = _readAppUpdateYmlChannel();
@@ -94,7 +168,7 @@ function getUpdateChannel() {
   return getInstallVariant() === 'cuda' ? 'cuda' : null;
 }
 
-/** Reject feed artifacts that do not match this install (e.g. CPU update on CUDA install). */
+/** Reject feed artifacts that do not match this install. */
 function isUpdateArtifactCompatible(updateInfo, installVariant = getInstallVariant()) {
   if (!updateInfo) return true;
   const names = [];
@@ -106,6 +180,13 @@ function isUpdateArtifactCompatible(updateInfo, installVariant = getInstallVaria
   }
   const blob = names.join(' ').toLowerCase();
   if (!blob) return true;
+
+  const edition = getInstallEdition();
+  const looksLite = blob.includes('-lite-');
+  if (edition === 'lite' && !looksLite && (blob.includes('-cuda-') || blob.includes('-cpu-'))) {
+    return false;
+  }
+  if (edition === 'full' && looksLite) return false;
 
   const looksCpu = blob.includes('-cpu-');
   const looksCuda = blob.includes('-cuda-');
@@ -125,6 +206,11 @@ function getGithubFeedConfig() {
 module.exports = {
   GITHUB_OWNER,
   GITHUB_REPO,
+  FULL_IDENTITY,
+  LITE_IDENTITY,
+  getInstallEdition,
+  getProductIdentity,
+  applyProductIdentity,
   getInstallVariant,
   getUpdateChannel,
   getGithubFeedConfig,

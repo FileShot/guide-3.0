@@ -109,6 +109,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   componentBundle: {
     getStatus: () => ipcRenderer.invoke('component-bundle-status'),
     retry:     () => ipcRenderer.invoke('component-bundle-retry'),
+    install:   (id) => ipcRenderer.invoke('component-bundle-install', id),
     skip:      (id) => ipcRenderer.invoke('component-bundle-skip', id),
     onStatus:  (callback) => _on('component-bundle-status', callback),
   },

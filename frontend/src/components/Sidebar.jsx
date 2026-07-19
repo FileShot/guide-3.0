@@ -2343,8 +2343,8 @@ function SettingsPanel() {
 
       <MediaSettings settings={settings} updateSetting={updateSetting} addNotification={addNotification} />
 
-      {/* Editor */}
       <LspLanguagesSettings addNotification={addNotification} />
+      <AddOnsSettings addNotification={addNotification} />
       <VoiceSettings />
 
       <SettingsSection title="Editor" icon={<FileCode size={13} />} keywords="editor font size family tab word wrap line numbers minimap bracket format">
@@ -2594,6 +2594,96 @@ function VoiceSettings() {
         <div>Local Whisper: {voiceStatus?.localWhisper && voiceStatus?.modelReady ? 'Ready' : 'Downloads on first use'}</div>
         <div>Streaming: {voiceStatus?.streaming ? 'Chunked PCM → whisper-cli' : 'Unavailable'}</div>
       </div>
+    </SettingsSection>
+  );
+}
+
+function formatAddonSize(bytes) {
+  if (!bytes || bytes <= 0) return '';
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1000) return `~${(mb / 1024).toFixed(1)} GB`;
+  return `~${Math.round(mb)} MB`;
+}
+
+function AddOnsSettings({ addNotification }) {
+  const componentBundleStatus = useAppStore((s) => s.componentBundleStatus);
+  const setComponentBundleStatus = useAppStore((s) => s.setComponentBundleStatus);
+  const [installingId, setInstallingId] = useState(null);
+  const [product, setProduct] = useState(null);
+
+  useEffect(() => {
+    fetch('/api/settings')
+      .then((r) => r.json())
+      .then((d) => setProduct(d?._product || null))
+      .catch(() => {});
+    if (window.electronAPI?.componentBundle?.getStatus) {
+      window.electronAPI.componentBundle.getStatus().then((status) => {
+        if (status) setComponentBundleStatus(status);
+      }).catch(() => {});
+    }
+  }, [setComponentBundleStatus]);
+
+  const catalog = componentBundleStatus?.catalog || [];
+  const isLite = product?.edition === 'lite' || componentBundleStatus?.edition === 'lite';
+
+  const install = async (id) => {
+    if (!window.electronAPI?.componentBundle?.install) {
+      addNotification?.({ type: 'warning', message: 'Add-ons require the desktop app.' });
+      return;
+    }
+    setInstallingId(id);
+    try {
+      const result = await window.electronAPI.componentBundle.install(id);
+      if (result) setComponentBundleStatus(result);
+      if (result?.success === false || result?.components?.[id]?.phase === 'error') {
+        addNotification?.({ type: 'error', message: result?.error || 'Add-on install failed' });
+      } else {
+        addNotification?.({ type: 'success', message: 'Add-on ready', duration: 2500 });
+      }
+    } catch (e) {
+      addNotification?.({ type: 'error', message: e.message || 'Add-on install failed' });
+    } finally {
+      setInstallingId(null);
+    }
+  };
+
+  return (
+    <SettingsSection title="Add-ons" icon={<Package size={13} />} defaultOpen={isLite} keywords="addons optional components browser whisper voice image playwright sd lite">
+      <p className="text-[10px] text-vsc-text-dim mb-2">
+        {isLite
+          ? 'guIDE Lite ships lean — install browser, voice, and image tools here when you need them. (guIDE Minus — not Plus.)'
+          : 'Optional components. Full builds usually include these; use Quick Add if something is missing.'}
+      </p>
+      {catalog.length === 0 ? (
+        <div className="text-[10px] text-vsc-text-dim">No optional components listed.</div>
+      ) : (
+        <div className="space-y-2">
+          {catalog.map((item) => {
+            const phase = item.phase || 'missing';
+            const busy = phase === 'downloading' || installingId === item.id;
+            const ready = phase === 'ready';
+            return (
+              <div key={item.id} className="flex items-center gap-2 py-1 border-b border-vsc-panel-border/20 last:border-0">
+                <div className="flex-1 min-w-0">
+                  <div className="text-[11px] text-vsc-text truncate">{item.label}</div>
+                  <div className="text-[10px] text-vsc-text-dim">
+                    {ready ? 'Ready' : busy ? 'Downloading…' : phase === 'error' ? (item.error || 'Error') : 'Not installed'}
+                    {item.bytesEstimate ? ` · ${formatAddonSize(item.bytesEstimate)}` : ''}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={ready || busy}
+                  onClick={() => install(item.id)}
+                  className="shrink-0 px-2 py-1 text-[10px] rounded border border-vsc-panel-border/40 hover:bg-vsc-list-hover disabled:opacity-40 disabled:cursor-not-allowed text-vsc-text"
+                >
+                  {ready ? 'Installed' : busy ? '…' : 'Quick Add'}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </SettingsSection>
   );
 }

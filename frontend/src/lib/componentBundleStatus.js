@@ -12,6 +12,10 @@ export function normalizeComponentBundleStatus(payload) {
     error: payload.error || null,
     bytesDone: payload.bytesDone || 0,
     bytesTotal: payload.bytesTotal || 0,
+    edition: payload.edition || 'full',
+    installVariant: payload.installVariant || null,
+    catalog: Array.isArray(payload.catalog) ? payload.catalog : [],
+    components: payload.components && typeof payload.components === 'object' ? payload.components : {},
   };
 }
 
@@ -27,9 +31,23 @@ export function componentBundleLabel(status) {
   return status.label || '';
 }
 
+export function formatBytesEstimate(bytes) {
+  if (!bytes || bytes <= 0) return '';
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1000) return `~${(mb / 1024).toFixed(1)} GB`;
+  return `~${Math.round(mb)} MB`;
+}
+
 export function retryComponentBundle() {
   if (window.electronAPI?.componentBundle?.retry) {
     return window.electronAPI.componentBundle.retry();
+  }
+  return Promise.resolve(null);
+}
+
+export function installComponentBundle(id) {
+  if (window.electronAPI?.componentBundle?.install) {
+    return window.electronAPI.componentBundle.install(id);
   }
   return Promise.resolve(null);
 }
