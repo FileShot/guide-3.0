@@ -47,7 +47,7 @@ import {
 
 // guIDE Cloud AI — bundled providers with pre-seeded keys, rotated for rate-limit avoidance
 
-const GUIDE_CLOUD_PROVIDERS = new Set(['cerebras', 'groq', 'sambanova', 'google', 'openrouter']);
+const GUIDE_CLOUD_PROVIDERS = new Set(['secrypt', 'cipher', 'graysoft']);
 
 function isQuotaLikeError(message) {
   const m = String(message || '').toLowerCase();
@@ -6000,7 +6000,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                   }`}
 
-                  onClick={() => selectCloudModel('cerebras', 'gpt-oss-120b')}
+                  onClick={() => selectCloudModel('secrypt', 'cipher')}
 
                 >
 
@@ -6010,7 +6010,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                     <div className="text-vsc-text font-medium">guIDE Cloud AI</div>
 
-                    <div className="text-[10px] text-vsc-text-dim">Auto-routes to fastest free provider</div>
+                    <div className="text-[10px] text-vsc-text-dim">Secrypt Cipher on GraySoft Cloud</div>
 
                   </div>
 

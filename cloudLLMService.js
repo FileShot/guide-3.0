@@ -18,7 +18,9 @@ const keepAliveAgent = new https.Agent({ keepAlive: true, maxSockets: 6, timeout
 
 // ─── Provider endpoint map ────────────────────────────────────────────────────
 const ENDPOINTS = {
-  graysoft:    { host: 'pocket.graysoft.dev',             path: '/api/v1/chat/completions' },
+  graysoft:    { host: 'graysoft.dev',                    path: '/api/ai/proxy' },
+  secrypt:     { host: 'graysoft.dev',                    path: '/api/ai/proxy' },
+  cipher:      { host: 'graysoft.dev',                    path: '/api/ai/proxy' },
   openai:      { host: 'api.openai.com',                  path: '/v1/chat/completions' },
   anthropic:   { host: 'api.anthropic.com',               path: '/v1/messages' },
   google:      { host: 'generativelanguage.googleapis.com', path: '/v1beta/openai/chat/completions' },
@@ -48,7 +50,8 @@ const ENDPOINTS = {
 
 // ─── Provider labels ──────────────────────────────────────────────────────────
 const PROVIDER_LABELS = {
-  graysoft: 'GraySoft Cloud', openai: 'OpenAI', anthropic: 'Anthropic',
+  graysoft: 'Secrypt (Cipher)', secrypt: 'Secrypt (Cipher)', cipher: 'Secrypt (Cipher)',
+  openai: 'OpenAI', anthropic: 'Anthropic',
   google: 'Google Gemini', xai: 'xAI Grok', openrouter: 'OpenRouter',
   groq: 'Groq', apifreellm: 'APIFreeLLM', cerebras: 'Cerebras',
   sambanova: 'SambaNova', together: 'Together AI', fireworks: 'Fireworks AI',
@@ -63,7 +66,15 @@ const PROVIDER_LABELS = {
 // ─── Provider model catalogs ─────────────────────────────────────────────────
 const PROVIDER_MODELS = {
   graysoft: [
-    { id: 'graysoft-cloud', name: 'GraySoft Cloud AI' },
+    { id: 'cipher', name: 'Secrypt Cipher (P40)' },
+    { id: 'graysoft-cloud', name: 'Secrypt Cipher (P40)' },
+  ],
+  secrypt: [
+    { id: 'cipher', name: 'Secrypt Cipher (P40)' },
+    { id: 'graysoft-cloud', name: 'Secrypt Cipher (P40)' },
+  ],
+  cipher: [
+    { id: 'cipher', name: 'Secrypt Cipher (P40)' },
   ],
   openai: [
     { id: 'gpt-4.1', name: 'GPT-4.1 (Flagship)' },
@@ -256,11 +267,12 @@ const VISION_MODELS = {
 };
 
 // ─── Fallback order + preferred fallback models ──────────────────────────────
-const FALLBACK_ORDER = ['cerebras', 'sambanova', 'google', 'nvidia', 'cohere', 'mistral',
+const FALLBACK_ORDER = ['secrypt', 'sambanova', 'google', 'nvidia', 'cohere', 'mistral',
   'huggingface', 'cloudflare', 'together', 'fireworks', 'openrouter', 'groq'];
 
 const PREFERRED_FALLBACK_MODEL = {
-  cerebras:   'gpt-oss-120b',
+  secrypt:    'cipher',
+  graysoft:   'cipher',
   sambanova:  'Meta-Llama-3.3-70B-Instruct',
   openrouter: 'meta-llama/llama-3.3-70b-instruct:free',
   groq:       'llama-3.3-70b-versatile',
@@ -269,16 +281,16 @@ const PREFERRED_FALLBACK_MODEL = {
 
 // ─── Default RPM per-key estimates for free tiers ────────────────────────────
 const DEFAULT_RPM = {
-  groq: 30, cerebras: 5, sambanova: 10, google: 15,
+  groq: 30, sambanova: 10, google: 15,
   openrouter: 20, openai: 3, anthropic: 5, xai: 60,
 };
 
 // ─── Bundled key constants ───────────────────────────────────────────────────
-const BUNDLED_PROVIDERS = new Set(['groq', 'cerebras', 'sambanova', 'google', 'openrouter']);
+// guIDE Cloud uses Secrypt (P40) via graysoft.dev/api/ai/proxy — Cerebras is BYOK only.
+const BUNDLED_PROVIDERS = new Set(['groq', 'sambanova', 'google', 'openrouter']);
 
 const BUNDLED_KEYS = {
   groq:       'PSkxBSo0Fg4QaREdEgstG21qajwdFi9jDR0+IzhpHAMAbTkoChQUHx4vEiMjaRIYMAoKAzIVDWI=',
-  cerebras:   'OSkxdzRvNDwuNyNpNz8/OSMqIm8jMDwtLSMxaCwtPi1jLSxiOWI/OWMqLTIxbzQyKGM5NA==',
   sambanova:  'Ozs/Pj9tOG53bmxoP3duaWhqdztrbmx3bTg8OG0+az9jbmlr',
   google:     'GxMgOwkjGDAKAgwSYygiKCBoETssDz4wGxcVKw4WFR0MIxQoFhwD',
   openrouter: 'KTF3NSh3LGt3bm1rP2xjYzs8az4/O2JrOD8+ajs8bm5tOz5ibTg/bWJvY2pvPGlpb2lrPmlpbGJja21pOT5qbjloaTs4Pz48Pg==',
@@ -337,7 +349,7 @@ class CloudLLMService extends EventEmitter {
     super();
 
     this.apiKeys = {
-      graysoft: '', openai: '', anthropic: '', google: '', xai: '',
+      graysoft: '', secrypt: '', cipher: '', openai: '', anthropic: '', google: '', xai: '',
       openrouter: '', groq: '', apifreellm: '', cerebras: '', sambanova: '',
       together: '', fireworks: '', nvidia: '', cohere: '', mistral: '',
       huggingface: '', cloudflare: '', perplexity: '', deepseek: '', ai21: '',
@@ -345,7 +357,7 @@ class CloudLLMService extends EventEmitter {
     };
 
     this.activeProvider = null;
-    this.activeModel = 'gpt-oss-120b';
+    this.activeModel = 'cipher';
 
     this._openRouterModelsCache = null;
     this._openRouterModelsFetchedAt = 0;
@@ -390,14 +402,11 @@ class CloudLLMService extends EventEmitter {
           this.apiKeys[provider] = decode(encoded);
         }
       }
-      for (const encoded of CEREBRAS_POOL_KEYS) {
-        this.addKeyToPool('cerebras', decode(encoded));
-      }
+      // Cerebras pool intentionally not seeded — guIDE Cloud is Secrypt only.
       for (const encoded of GROQ_POOL_KEYS) {
         this.addKeyToPool('groq', decode(encoded));
       }
-      const cerebrasPool = this._keyPools.cerebras || [];
-      console.log(`[CloudLLM] Cerebras key pool: ${cerebrasPool.length} keys loaded`);
+      console.log('[CloudLLM] Bundled free-tier pools seeded (Secrypt Cloud primary; no Cerebras bundle)');
     } catch (e) {
       console.warn('[CloudLLM] Key seed error:', e.message);
     }
@@ -562,10 +571,13 @@ class CloudLLMService extends EventEmitter {
         providers.push({ provider, label: PROVIDER_LABELS[provider] || provider });
       }
     }
-    // v2.2.10: GraySoft cloud is available when the user has a session token
+    // Secrypt Cipher always listed as guIDE Cloud (P40 via graysoft /api/ai/proxy)
+    if (!providers.find(p => p.provider === 'secrypt')) {
+      providers.unshift({ provider: 'secrypt', label: PROVIDER_LABELS.secrypt || 'Secrypt (Cipher)' });
+    }
     const sessionToken = this._licenseManager?.getSessionToken();
     if (sessionToken && !providers.find(p => p.provider === 'graysoft')) {
-      providers.push({ provider: 'graysoft', label: PROVIDER_LABELS['graysoft'] || 'GraySoft Cloud' });
+      providers.push({ provider: 'graysoft', label: PROVIDER_LABELS['graysoft'] || 'Secrypt (Cipher)' });
     }
     if (this._ollamaAvailable) {
       providers.push({ provider: 'ollama', label: 'Ollama (Local)' });
@@ -766,8 +778,22 @@ class CloudLLMService extends EventEmitter {
       { role: 'user', content: prompt },
     ];
 
+    // guIDE Cloud / Cerebras / GraySoft → Secrypt Cipher on P40 (same path as Pocket)
+    const useSecrypt =
+      provider === 'secrypt' ||
+      provider === 'cipher' ||
+      provider === 'graysoft' ||
+      provider === 'cerebras';
+    const proxyProvider = useSecrypt ? 'secrypt' : provider;
+    const proxyModel = useSecrypt
+      ? (model === 'gpt-oss-120b' || !model ? 'cipher' : model)
+      : model;
+
     const proxyBody = JSON.stringify({
-      provider, model, messages, systemPrompt,
+      provider: proxyProvider,
+      model: proxyModel,
+      messages,
+      systemPrompt,
       maxTokens: options.maxTokens || 2048,
       temperature: options.temperature || 0.7,
       stream: !!onToken,
@@ -776,16 +802,16 @@ class CloudLLMService extends EventEmitter {
     try {
       const result = await this._streamRequest(
         'graysoft.dev', '/api/ai/proxy', sessionToken, proxyBody,
-        'openai', onToken, {}, onThinkingToken, provider
+        'openai', onToken, {}, onThinkingToken, proxyProvider
       );
-      return { ...result, model, provider, viaProxy: true };
+      return { ...result, model: proxyModel, provider: proxyProvider, viaProxy: true };
     } catch (err) {
       if (err.message && (err.message.includes('quota_exceeded') || err.message.includes('429'))) {
         const e = new Error(err.message);
         e.isQuotaError = true;
         throw e;
       }
-      console.warn(`[CloudLLM] Proxy request failed for ${provider}, falling through to direct:`, err.message?.substring(0, 120));
+      console.warn(`[CloudLLM] Proxy request failed for ${proxyProvider}, falling through to direct:`, err.message?.substring(0, 120));
       throw err;
     }
   }
@@ -803,7 +829,7 @@ class CloudLLMService extends EventEmitter {
     const images = options.images || [];
     const noFallback = options.noFallback || false;
 
-    if (!provider || (!this.apiKeys[provider] && provider !== 'ollama' && provider !== 'graysoft')) {
+    if (!provider || (!this.apiKeys[provider] && provider !== 'ollama' && provider !== 'graysoft' && provider !== 'secrypt' && provider !== 'cipher')) {
       throw new Error(`No API key configured for ${provider}`);
     }
 
@@ -811,16 +837,25 @@ class CloudLLMService extends EventEmitter {
       return this._generateOllama(model, systemPrompt, prompt, options, onToken, conversationHistory, onThinkingToken, images);
     }
 
-    // v2.2.10: GraySoft uses session token as auth — set it as the API key for this request
+    // Secrypt / GraySoft Cloud — session token optional (anonymous proxy quota applies)
     const sessionToken = this._licenseManager?.getSessionToken();
-    if (provider === 'graysoft') {
-      if (!sessionToken) {
-        throw new Error('GraySoft Cloud requires a GraySoft account. Create one in Settings > Account.');
-      }
-      this.apiKeys['graysoft'] = sessionToken;
+    if (provider === 'graysoft' || provider === 'secrypt' || provider === 'cipher') {
+      if (sessionToken) this.apiKeys[provider] = sessionToken;
     }
 
-    if (sessionToken && (this._isBundledProvider(provider) || provider === 'graysoft') && !(images && images.length > 0) && !options.skipProxy) {
+    const forceSecryptCloud =
+      provider === 'graysoft' ||
+      provider === 'secrypt' ||
+      provider === 'cipher' ||
+      provider === 'cerebras';
+
+    if (forceSecryptCloud && !(images && images.length > 0) && !options.skipProxy) {
+      return await this._generateViaProxy(
+        provider, model, systemPrompt, prompt, options, onToken, conversationHistory, onThinkingToken, sessionToken || null
+      );
+    }
+
+    if (sessionToken && this._isBundledProvider(provider) && !(images && images.length > 0) && !options.skipProxy) {
       try {
         return await this._generateViaProxy(provider, model, systemPrompt, prompt, options, onToken, conversationHistory, onThinkingToken, sessionToken);
       } catch (err) {
