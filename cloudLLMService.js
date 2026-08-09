@@ -625,6 +625,16 @@ class CloudLLMService extends EventEmitter {
   }
 
   _getModelContextLimit(provider, model) {
+    // Secrypt P40 llama-server is configured with n_ctx=8192 (SECRYPT_CONTEXT_TOKENS)
+    if (
+      provider === 'secrypt' ||
+      provider === 'cipher' ||
+      provider === 'graysoft' ||
+      model === 'cipher' ||
+      model === 'graysoft-cloud'
+    ) {
+      return parseInt(process.env.SECRYPT_CONTEXT_TOKENS || '8192', 10) || 8192;
+    }
     return CONTEXT_LIMITS[model] || 32768;
   }
 
@@ -773,11 +783,6 @@ class CloudLLMService extends EventEmitter {
   // ─── Proxy routing ──────────────────────────────────────────────────────────
 
   async _generateViaProxy(provider, model, systemPrompt, prompt, options, onToken, conversationHistory, onThinkingToken, sessionToken) {
-    const messages = [
-      ...conversationHistory.map(m => ({ role: m.role, content: m.content })),
-      { role: 'user', content: prompt },
-    ];
-
     // guIDE Cloud / Cerebras / GraySoft → Secrypt Cipher on P40 (same path as Pocket)
     const useSecrypt =
       provider === 'secrypt' ||
@@ -789,12 +794,38 @@ class CloudLLMService extends EventEmitter {
       ? (model === 'gpt-oss-120b' || !model ? 'cipher' : model)
       : model;
 
+    let sys = typeof systemPrompt === 'string' ? systemPrompt : '';
+    // Cap system prompt for Secrypt 8k context (tools dump otherwise overflows n_ctx)
+    if (useSecrypt && sys.length > 7000) {
+      sys = sys.slice(0, 7000) + '\n\n[System prompt truncated for Secrypt 8k context.]';
+    }
+
+    let messages = [
+      ...conversationHistory.map(m => ({ role: m.role, content: m.content })),
+      { role: 'user', content: prompt },
+    ];
+    if (useSecrypt) {
+      const withSystem = sys ? [{ role: 'system', content: sys }, ...messages] : messages;
+      const trimmed = this._trimToContextLimit(
+        withSystem,
+        proxyProvider,
+        proxyModel,
+        Math.min(options.maxTokens || 1024, 1024)
+      );
+      if (trimmed[0]?.role === 'system') {
+        sys = trimmed[0].content;
+        messages = trimmed.slice(1);
+      } else {
+        messages = trimmed;
+      }
+    }
+
     const proxyBody = JSON.stringify({
       provider: proxyProvider,
       model: proxyModel,
       messages,
-      systemPrompt,
-      maxTokens: options.maxTokens || 2048,
+      systemPrompt: sys || undefined,
+      maxTokens: useSecrypt ? Math.min(options.maxTokens || 1024, 1024) : (options.maxTokens || 2048),
       temperature: options.temperature || 0.7,
       stream: !!onToken,
     });

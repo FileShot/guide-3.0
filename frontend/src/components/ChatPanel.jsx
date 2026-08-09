@@ -56,7 +56,7 @@ function isQuotaLikeError(message) {
 
 function pocketShowsQuotaCtas(pocketWeb, message, usageLimit, needsAccount) {
   if (!pocketWeb) return false;
-  return !!(usageLimit || needsAccount != null || isQuotaLikeError(message));
+  return !!(usageLimit || needsAccount === true || isQuotaLikeError(message));
 }
 
 function quotaErrorFlags(errorText, result = {}) {

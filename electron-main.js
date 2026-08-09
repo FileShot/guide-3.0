@@ -860,7 +860,20 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       const planMode = !!(settings.planMode);
       const enableSubAgents = settings.enableSubAgents !== false;
       if (settings.planContext && settings.agentPhase === 'building') {
-        effectiveMessage = `[Build approved]\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
+        const trimmedUser = String(userMessage || '').trim();
+        const isChitchat =
+          trimmedUser.length > 0 &&
+          trimmedUser.length < 48 &&
+          /^(hi|hello|hey|yo|sup|thanks|thank you|ok|okay|yes|no)\b[\s!.?]*$/i.test(trimmedUser);
+        if (isChitchat) {
+          // Don't replace a greeting with a stuck build plan
+          effectiveMessage = trimmedUser;
+        } else {
+          effectiveMessage =
+            `[Continue the approved plan. Address the user's latest message.]\n\n` +
+            `--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---\n\n` +
+            `User: ${trimmedUser || userMessage}`;
+        }
       }
       const executeToolFn = async (toolName, params) => {
         if (toolName === 'spawn_subagent') {
@@ -996,7 +1009,19 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
     effectiveMessage = mentionResolved.message;
 
     if (settings.planContext && settings.agentPhase === 'building') {
-      effectiveMessage = `[Build approved]\n\n--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---`;
+      const trimmedUser = String(userMessage || '').trim();
+      const isChitchat =
+        trimmedUser.length > 0 &&
+        trimmedUser.length < 48 &&
+        /^(hi|hello|hey|yo|sup|thanks|thank you|ok|okay|yes|no)\b[\s!.?]*$/i.test(trimmedUser);
+      if (isChitchat) {
+        effectiveMessage = trimmedUser;
+      } else {
+        effectiveMessage =
+          `[Continue the approved plan. Address the user's latest message.]\n\n` +
+          `--- APPROVED PLAN ---\n${settings.planContext}\n--- END PLAN ---\n\n` +
+          `User: ${trimmedUser || userMessage}`;
+      }
     }
 
     const modelTier = llmEngine.modelInfo?.tier || 'large';
