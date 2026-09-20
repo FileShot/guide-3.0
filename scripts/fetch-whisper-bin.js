@@ -75,7 +75,13 @@ function fetchJson(url) {
 }
 
 async function fetchRelease() {
-  return fetchJson('https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest');
+  const tag = WHISPER_VERSION;
+  try {
+    return await fetchJson(`https://api.github.com/repos/ggml-org/whisper.cpp/releases/tags/${tag}`);
+  } catch (e) {
+    console.warn(`[whisper-fetch] tagged ${tag} failed (${e.message}), trying latest`);
+    return fetchJson('https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest');
+  }
 }
 
 function pickAsset(release, platform) {
@@ -202,12 +208,9 @@ async function fetchBinaryForPlatform(platform) {
   const release = await fetchRelease();
   const asset = pickAsset(release, platform);
   if (!asset) {
-    if (platform === 'darwin') {
-      console.log(`[whisper-fetch] ${platform}: no prebuilt CLI in ${release.tag_name}, building from source`);
-      await buildFromSource(platform);
-      return;
-    }
-    throw new Error(`No whisper.cpp asset for ${platform} in ${release.tag_name}`);
+    console.log(`[whisper-fetch] ${platform}: no prebuilt CLI in ${release.tag_name}, building from source`);
+    await buildFromSource(platform);
+    return;
   }
 
   const archive = path.join(OUT, '_cache', asset.name);
