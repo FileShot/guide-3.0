@@ -113,7 +113,7 @@ async function runCloudAgenticChat({
   let nextUserPrompt = userMessage;
   const contextTokens = settings.maxResponseTokens > 0 ? settings.maxResponseTokens : 8192;
 
-  const streamFilters = createCloudStreamFilters({ onToken, onThinkingToken });
+  const streamFilters = createCloudStreamFilters({ onToken, onThinkingToken, onStreamEvent });
 
   const genBase = {
     provider: cloudProvider,

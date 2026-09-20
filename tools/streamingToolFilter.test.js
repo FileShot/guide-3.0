@@ -116,4 +116,22 @@ cloud.flush();
 assert(thinkTokens.join('').includes('Now I will call'), 'reasoning prose kept in thinking');
 assert(!thinkTokens.join('').includes('"tool"'), 'executable tool JSON not in thinking stream');
 
+// ── Markdown/HTML code fences must stream live (not held until round end) ──
+const HTML_STREAM = 'Here is the page.\n```html\n<!DOCTYPE html>\n<html lang="en">\n<head><title>Hi</title></head>\n<body>\n';
+let htmlTok = [];
+const htmlFilter = createStripBasedStreamFilter({
+  onToken: (t) => htmlTok.push(t),
+});
+for (let i = 0; i < HTML_STREAM.length; i += 6) {
+  htmlFilter.processChunk(HTML_STREAM.slice(i, i + 6));
+}
+const htmlLive = htmlTok.join('');
+assert(
+  htmlLive.includes('<!DOCTYPE html>'),
+  `html fence body must stream before flush; got ${JSON.stringify(htmlLive.slice(0, 120))}`,
+);
+assert(htmlLive.includes('```html'), 'html fence header must stream');
+htmlFilter.flush();
+assert(htmlTok.join('').includes('<title>Hi</title>'), 'html fence flush keeps body');
+
 console.log('streamingToolFilter.test.js: all passed');

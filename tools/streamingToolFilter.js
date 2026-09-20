@@ -5,13 +5,15 @@ const {
   looksLikeToolAttempt,
   isVisibleToolArtifact,
   findToolCallRanges,
+  extractPartialWriteFileFromToolJson,
 } = require('./toolParser');
 
-/** Mirror chatEngine thinking bailout — tool/file bytes must not go to Thought UI. */
+/** Mirror chatEngine thinking bailout — tool JSON must not go to Thought UI. */
 function looksLikeToolOrFilePayload(text) {
   if (!text || typeof text !== 'string') return false;
   const sample = text.length > 4096 ? text.slice(0, 4096) : text;
-  return /"filePath"|"content"\s*:|className=|<\/\w+>|"tool"\s*:|"params"\s*:|<!DOCTYPE/i.test(sample);
+  return /"filePath"|"content"\s*:|"tool"\s*:|"params"\s*:/i.test(sample)
+    && looksLikeToolAttempt(sample);
 }
 
 /** True when buffer may contain incomplete tool JSON/fences — hold until complete. */
@@ -78,7 +80,8 @@ function shouldHoldToolBuffer(rawBuf) {
 
 function forwardChunk(chunk, onToken) {
   if (!chunk) return 0;
-  if (/^\s*```[a-z0-9_-]*\s*$/i.test(chunk)) return 0;
+  // Drop only tool-fence openers; markdown/code fences must reach the UI live.
+  if (/^\s*```(?:json|tool|tool_call)\s*$/i.test(chunk)) return 0;
   if (isVisibleToolArtifact(chunk)) return 0;
   if (onToken) onToken(chunk);
   return chunk.length;
@@ -88,10 +91,49 @@ function forwardChunk(chunk, onToken) {
  * Append-only stream filter: route prose/thinking to UI; hold tool bytes in rawBuf for parse.
  * Never shrinks or replaces visible display text (no llm-replace-last).
  */
-function createStripBasedStreamFilter({ onToken, channel = 'text' } = {}) {
+function createStripBasedStreamFilter({ onToken, channel = 'text', onStreamEvent } = {}) {
   let rawBuf = '';
   let lastClean = '';
   let visibleChars = 0;
+  let fileStarted = false;
+  let filePath = '';
+  let fileLen = 0;
+
+  const emitPartialFile = () => {
+    if (!onStreamEvent) return;
+    const partial = extractPartialWriteFileFromToolJson(rawBuf, { stripCompleteSuffix: true });
+    if (!partial) return;
+    const fp = partial.filePath;
+    if (fp && !fileStarted) {
+      const fileName = fp.split(/[\\/]/).pop() || fp;
+      const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+      onStreamEvent('file-content-start', {
+        filePath: fp,
+        fileName,
+        language: ext,
+        fileKey: fp,
+        op: partial.isEdit ? 'edit' : 'write',
+      });
+      fileStarted = true;
+      filePath = fp;
+      fileLen = 0;
+    }
+    if (!fileStarted) return;
+    const content = partial.content || '';
+    if (content.length > fileLen) {
+      onStreamEvent('file-content-token', content.slice(fileLen));
+      fileLen = content.length;
+    }
+  };
+
+  const endPartialFile = () => {
+    if (fileStarted && onStreamEvent && filePath) {
+      onStreamEvent('file-content-end', { filePath, fileKey: filePath });
+    }
+    fileStarted = false;
+    filePath = '';
+    fileLen = 0;
+  };
 
   const forwardCleanDelta = () => {
     const clean = stripToolCallText(rawBuf);
@@ -110,7 +152,6 @@ function createStripBasedStreamFilter({ onToken, channel = 'text' } = {}) {
   const sync = ({ forceFlush = false } = {}) => {
     if (!forceFlush) {
       if (shouldHoldToolBuffer(rawBuf)) return;
-      if (looksLikeToolOrFilePayload(rawBuf)) return;
     }
     forwardCleanDelta();
   };
@@ -119,12 +160,16 @@ function createStripBasedStreamFilter({ onToken, channel = 'text' } = {}) {
     processChunk(chunk) {
       if (!chunk) return;
       rawBuf += chunk;
+      emitPartialFile();
       sync();
     },
     flush() {
+      emitPartialFile();
+      endPartialFile();
       sync({ forceFlush: true });
     },
     resetRound() {
+      endPartialFile();
       rawBuf = '';
       lastClean = '';
       visibleChars = 0;
@@ -137,10 +182,11 @@ function createStripBasedStreamFilter({ onToken, channel = 'text' } = {}) {
 }
 
 /** Prose + thinking stream routers for cloud (separate UI sinks, append-only). */
-function createCloudStreamFilters({ onToken, onThinkingToken } = {}) {
+function createCloudStreamFilters({ onToken, onThinkingToken, onStreamEvent } = {}) {
   const proseFilter = createStripBasedStreamFilter({
     channel: 'text',
     onToken,
+    onStreamEvent,
   });
   const thinkingFilter = createStripBasedStreamFilter({
     channel: 'thinking',

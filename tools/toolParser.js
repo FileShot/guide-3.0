@@ -1401,8 +1401,8 @@ function collapseOrphanMarkdownFences(text) {
   let out = text;
   // Whitespace-only fenced blocks left after tool JSON strip
   out = out.replace(/```[a-z0-9_-]*\s*\n\s*```/gi, '');
-  // Stray lone fence lines between prose segments
-  out = out.replace(/^\s*```[a-z0-9_-]*\s*$/gm, '');
+  // Stray lone TOOL fence lines only — html/js/css markdown fences must stay for live CodeBlocks
+  out = out.replace(/^\s*```(?:json|tool|tool_call|jjson)?\s*$/gm, '');
   return out.replace(/\n{3,}/g, '\n\n').trim();
 }
 

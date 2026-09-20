@@ -24,6 +24,7 @@ import FirstRunWizard from './components/FirstRunWizard';
 import { openFileFromReadResponse } from './utils/openFileFromRead';
 import { handleLspDiagnostics } from './lib/lspBridge';
 import isPocket from './lib/isPocket';
+import { resolveGuideCloudModel } from './lib/guideCloudModel';
 
 function pocketWelcomeDismissed() {
   try {
@@ -144,7 +145,7 @@ export default function App() {
 
           if (d?.lastCloudProvider) {
             s.setCloudProvider(d.lastCloudProvider);
-            s.setCloudModel(d.lastCloudModel || null);
+            s.setCloudModel(resolveGuideCloudModel(d.lastCloudProvider, d.lastCloudModel) || d.lastCloudModel || null);
           }
 
           settingsHydratedFromBackendRef.current = true;
@@ -1152,7 +1153,7 @@ export default function App() {
         s.setSettings(d);
         if (d?.lastCloudProvider) {
           s.setCloudProvider(d.lastCloudProvider);
-          s.setCloudModel(d.lastCloudModel || null);
+          s.setCloudModel(resolveGuideCloudModel(d.lastCloudProvider, d.lastCloudModel) || d.lastCloudModel || null);
         }
         settingsHydratedFromBackendRef.current = true;
         lastSyncedSettingsJsonRef.current = JSON.stringify(d || {});

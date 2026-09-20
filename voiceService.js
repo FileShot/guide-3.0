@@ -156,7 +156,7 @@ class VoiceService {
 
     const binDir = path.dirname(path.resolve(this._whisperBin));
     try {
-      const args = ['-m', model, '-f', inFile, '-otxt', '-of', outBase, '--no-timestamps', '-t', '2'];
+      const args = ['-m', model, '-f', inFile, '-otxt', '-of', outBase, '--no-timestamps', '-l', 'en', '-t', '2'];
       await new Promise((resolve, reject) => {
         const proc = spawn(this._whisperBin, args, {
           stdio: 'pipe',

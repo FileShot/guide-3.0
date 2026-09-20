@@ -24,6 +24,7 @@ import MentionPicker from './MentionPicker';
 import { openFileFromReadResponse } from '../utils/openFileFromRead';
 import { stripPlainCodeFencesFromProse } from '../utils/markdownFenceUtils';
 import { createOfflineVoiceStream } from '../lib/offlineVoiceStream';
+import { GUIDE_CLOUD_PROVIDERS, GUIDE_CLOUD_QUALITY_MODEL, resolveGuideCloudModel } from '../lib/guideCloudModel';
 
 import { Virtuoso } from 'react-virtuoso';
 
@@ -45,9 +46,7 @@ import {
 
 
 
-// guIDE Cloud AI — bundled providers with pre-seeded keys, rotated for rate-limit avoidance
-
-const GUIDE_CLOUD_PROVIDERS = new Set(['secrypt', 'cipher', 'graysoft']);
+// guIDE Cloud AI — bundled Secrypt Cipher Quality (P40 27B) via graysoft.dev proxy
 
 function isQuotaLikeError(message) {
   const m = String(message || '').toLowerCase();
@@ -1015,6 +1014,7 @@ export default function ChatPanel() {
   const [mentionType, setMentionType] = useState('file');
   const [voiceListening, setVoiceListening] = useState(false);
   const [voiceStatusText, setVoiceStatusText] = useState(null);
+  const [voiceLiveText, setVoiceLiveText] = useState('');
   const offlineVoiceRef = useRef(null);
   const voiceWhisperAvailableRef = useRef(false);
 
@@ -1380,6 +1380,7 @@ export default function ChatPanel() {
       } catch (_) {}
       offlineVoiceRef.current = null;
       setVoiceStatusText(null);
+      setVoiceLiveText('');
       return;
     }
 
@@ -1389,6 +1390,9 @@ export default function ChatPanel() {
     }
 
     const stream = createOfflineVoiceStream({
+      onPartialText: (text) => {
+        setVoiceLiveText((prev) => (prev ? `${prev} ${text}`.trim() : text));
+      },
       onFinalText: appendTranscript,
       onStatus: (msg) => setVoiceStatusText(msg),
       onError: (msg) => notify('warning', msg || 'Whisper transcription failed'),
@@ -4229,6 +4233,11 @@ export default function ChatPanel() {
               />
             )}
 
+            {voiceListening && (voiceLiveText || voiceStatusText) && (
+              <div className="px-3 pt-1 text-[12px] text-vsc-accent leading-snug max-h-[72px] overflow-y-auto">
+                {voiceLiveText || voiceStatusText}
+              </div>
+            )}
             <textarea
 
               ref={textareaRef}
@@ -4432,7 +4441,7 @@ export default function ChatPanel() {
             <div className="flex-1" />
 
             {/* Mic — offline chunked Whisper */}
-            {voiceStatusText && (
+            {voiceStatusText && !voiceLiveText && (
               <span className="text-[10px] text-vsc-accent mr-1 max-w-[120px] truncate" title={voiceStatusText}>
                 {voiceStatusText}
               </span>
@@ -5161,13 +5170,15 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
   const selectCloudModel = (provider, modelId) => {
 
+    const resolved = resolveGuideCloudModel(provider, modelId) || modelId;
+
     setCloudProvider(provider);
 
-    setCloudModel(modelId);
+    setCloudModel(resolved);
 
     updateSetting('lastCloudProvider', provider);
 
-    updateSetting('lastCloudModel', modelId);
+    updateSetting('lastCloudModel', resolved);
 
     setModelState({ modelLoaded: false, modelLoading: false, modelInfo: null });
 
@@ -5179,7 +5190,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
       headers: { 'Content-Type': 'application/json' },
 
-      body: JSON.stringify({ provider, model: modelId }),
+      body: JSON.stringify({ provider, model: resolved }),
 
     }).catch(() => {});
 
@@ -6000,7 +6011,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                   }`}
 
-                  onClick={() => selectCloudModel('secrypt', 'cipher')}
+                  onClick={() => selectCloudModel('secrypt', GUIDE_CLOUD_QUALITY_MODEL)}
 
                 >
 
@@ -6010,7 +6021,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                     <div className="text-vsc-text font-medium">guIDE Cloud AI</div>
 
-                    <div className="text-[10px] text-vsc-text-dim">Secrypt Cipher on GraySoft Cloud</div>
+                    <div className="text-[10px] text-vsc-text-dim">Secrypt Cipher Quality (27B) on the P40</div>
 
                   </div>
 

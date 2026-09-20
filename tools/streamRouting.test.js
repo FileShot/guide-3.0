@@ -30,10 +30,10 @@ const flushed = _sfPreparePlainFenceFlushPayload(streamingHtml);
 assert.match(flushed, /^```html\n/);
 assert.ok(flushed.trimEnd().endsWith('```'), 'finalize flush keeps fence markers');
 
-// Phi-4 finalize bug: strip-prose + collapseOrphanMarkdownFences removed ```html lines
+// Html fences must survive strip so cloud/local display can stream CodeBlocks
 const finalizedHtml = '```html\n<!DOCTYPE html>\n<html><body>Hi</body></html>\n```';
 const strippedDisplay = collapseOrphanMarkdownFences(stripToolCallText(finalizedHtml));
-assert.ok(!strippedDisplay.includes('```html'), 'strip pipeline destroys html fences — must not run on display');
+assert.ok(strippedDisplay.includes('```html'), 'html fences survive strip for live CodeBlocks');
 assert.ok(finalizedHtml.includes('```html'), 'display source of truth keeps fences intact');
 
 // Qwen log: continuation prose after fetch_webpage must survive when used as display segment

@@ -2958,6 +2958,8 @@ const useAppStore = create((set, get) => ({
 
       seed: -1,
 
+      loadModelOnStartup: true,
+
       // Thinking & Reasoning
 
       thinkingBudget: 0,     // 0 = auto (node-llama-cpp default), -1 = unlimited, >0 = exact cap
@@ -3121,6 +3123,8 @@ const useAppStore = create((set, get) => ({
       temperature: 0.4, maxResponseTokens: 0, contextSize: 0,
 
       topP: 0.95, topK: 40, repeatPenalty: 1.1, seed: -1,
+
+      loadModelOnStartup: true,
 
       thinkingBudget: 0, reasoningEffort: 'medium',
 

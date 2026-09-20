@@ -16,6 +16,20 @@ const { EventEmitter } = require('events');
 
 const keepAliveAgent = new https.Agent({ keepAlive: true, maxSockets: 6, timeout: 60000 });
 
+/** P40 queue: cipher = FAST 2B; cipher-quality = 27B worker on :18787. */
+const SECRYPT_QUALITY_MODEL = 'cipher-quality';
+const SECRYPT_CLOUD_PROVIDERS = new Set(['secrypt', 'cipher', 'graysoft', 'cerebras']);
+const SECRYPT_LEGACY_TO_QUALITY = new Set([
+  '', 'cipher', 'gpt-oss-120b', 'openai/gpt-oss-120b', 'graysoft-cloud', 'secrypt-cloud',
+]);
+
+function resolveSecryptCloudModel(provider, model) {
+  if (!SECRYPT_CLOUD_PROVIDERS.has(provider)) return model;
+  const id = String(model || '').trim();
+  if (!id || SECRYPT_LEGACY_TO_QUALITY.has(id)) return SECRYPT_QUALITY_MODEL;
+  return id;
+}
+
 // ─── Provider endpoint map ────────────────────────────────────────────────────
 const ENDPOINTS = {
   graysoft:    { host: 'graysoft.dev',                    path: '/api/ai/proxy' },
@@ -66,15 +80,16 @@ const PROVIDER_LABELS = {
 // ─── Provider model catalogs ─────────────────────────────────────────────────
 const PROVIDER_MODELS = {
   graysoft: [
-    { id: 'cipher', name: 'Secrypt Cipher (P40)' },
-    { id: 'graysoft-cloud', name: 'Secrypt Cipher (P40)' },
+    { id: 'cipher-quality', name: 'Secrypt Cipher Quality (P40 27B)' },
+    { id: 'cipher-fast', name: 'Secrypt Cipher Fast (P40 2B)' },
   ],
   secrypt: [
-    { id: 'cipher', name: 'Secrypt Cipher (P40)' },
-    { id: 'graysoft-cloud', name: 'Secrypt Cipher (P40)' },
+    { id: 'cipher-quality', name: 'Secrypt Cipher Quality (P40 27B)' },
+    { id: 'cipher-fast', name: 'Secrypt Cipher Fast (P40 2B)' },
   ],
   cipher: [
-    { id: 'cipher', name: 'Secrypt Cipher (P40)' },
+    { id: 'cipher-quality', name: 'Secrypt Cipher Quality (P40 27B)' },
+    { id: 'cipher-fast', name: 'Secrypt Cipher Fast (P40 2B)' },
   ],
   openai: [
     { id: 'gpt-4.1', name: 'GPT-4.1 (Flagship)' },
@@ -271,8 +286,8 @@ const FALLBACK_ORDER = ['secrypt', 'sambanova', 'google', 'nvidia', 'cohere', 'm
   'huggingface', 'cloudflare', 'together', 'fireworks', 'openrouter', 'groq'];
 
 const PREFERRED_FALLBACK_MODEL = {
-  secrypt:    'cipher',
-  graysoft:   'cipher',
+  secrypt:    'cipher-quality',
+  graysoft:   'cipher-quality',
   sambanova:  'Meta-Llama-3.3-70B-Instruct',
   openrouter: 'meta-llama/llama-3.3-70b-instruct:free',
   groq:       'llama-3.3-70b-versatile',
@@ -357,7 +372,7 @@ class CloudLLMService extends EventEmitter {
     };
 
     this.activeProvider = null;
-    this.activeModel = 'cipher';
+    this.activeModel = 'cipher-quality';
 
     this._openRouterModelsCache = null;
     this._openRouterModelsFetchedAt = 0;
@@ -631,6 +646,7 @@ class CloudLLMService extends EventEmitter {
       provider === 'cipher' ||
       provider === 'graysoft' ||
       model === 'cipher' ||
+      model === 'cipher-quality' ||
       model === 'graysoft-cloud'
     ) {
       return parseInt(process.env.SECRYPT_CONTEXT_TOKENS || '8192', 10) || 8192;
@@ -791,7 +807,7 @@ class CloudLLMService extends EventEmitter {
       provider === 'cerebras';
     const proxyProvider = useSecrypt ? 'secrypt' : provider;
     const proxyModel = useSecrypt
-      ? (model === 'gpt-oss-120b' || !model ? 'cipher' : model)
+      ? resolveSecryptCloudModel(provider, model)
       : model;
 
     let sys = typeof systemPrompt === 'string' ? systemPrompt : '';
@@ -1563,4 +1579,11 @@ class CloudLLMService extends EventEmitter {
   }
 }
 
-module.exports = { CloudLLMService, PROVIDER_MODELS, PROVIDER_LABELS, BUNDLED_PROVIDERS };
+module.exports = {
+  CloudLLMService,
+  PROVIDER_MODELS,
+  PROVIDER_LABELS,
+  BUNDLED_PROVIDERS,
+  SECRYPT_QUALITY_MODEL,
+  resolveSecryptCloudModel,
+};

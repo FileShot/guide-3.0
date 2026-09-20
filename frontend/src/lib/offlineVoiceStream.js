@@ -5,11 +5,11 @@
  */
 
 const TARGET_RATE = 16000;
-const CHUNK_MS = 1600;
-const MIN_CHUNK_MS = 450;
-const SILENCE_MS = 550;
-const SILENCE_RMS = 0.012;
-const OVERLAP_MS = 280;
+const CHUNK_MS = 800;
+const MIN_CHUNK_MS = 280;
+const SILENCE_MS = 400;
+const SILENCE_RMS = 0.0035;
+const OVERLAP_MS = 200;
 
 function encodeWavPcm16(samples, sampleRate = TARGET_RATE) {
   const dataLen = samples.length * 2;
@@ -60,6 +60,7 @@ export function createOfflineVoiceStream(handlers) {
   let audioCtx = null;
   let stream = null;
   let processor = null;
+  let mute = null;
   let source = null;
   let running = false;
   let samples = [];
@@ -83,6 +84,7 @@ export function createOfflineVoiceStream(handlers) {
         const r = await handlers.transcribe(wav);
         const text = (r?.text || '').trim();
         if (r?.success && text) {
+          handlers.onPartialText?.(text);
           handlers.onFinalText(text);
         } else if (r?.error) {
           handlers.onError?.(r.error);
@@ -97,7 +99,7 @@ export function createOfflineVoiceStream(handlers) {
 
   function enqueueChunk(floatSamples) {
     if (!floatSamples?.length || floatSamples.length < minChunkSamples) return;
-    if (rms(floatSamples) < SILENCE_RMS * 0.6) return;
+    if (rms(floatSamples) < SILENCE_RMS * 0.25) return;
     const withOverlap = new Float32Array(overlap.length + floatSamples.length);
     withOverlap.set(overlap, 0);
     withOverlap.set(floatSamples, overlap.length);
@@ -163,7 +165,7 @@ export function createOfflineVoiceStream(handlers) {
       audio: {
         channelCount: 1,
         echoCancellation: true,
-        noiseSuppression: true,
+        noiseSuppression: false,
         autoGainControl: true,
       },
     });
@@ -175,7 +177,13 @@ export function createOfflineVoiceStream(handlers) {
     processor = audioCtx.createScriptProcessor(bufferSize, 1, 1);
     processor.onaudioprocess = onAudio;
     source.connect(processor);
-    processor.connect(audioCtx.destination);
+    // Keep the processor in the graph without playing the mic through speakers
+    // (feedback + AEC fighting is why quiet speech was dropped).
+    const muteNode = audioCtx.createGain();
+    muteNode.gain.value = 0;
+    mute = muteNode;
+    processor.connect(mute);
+    mute.connect(audioCtx.destination);
     running = true;
     samples = [];
     silenceSamples = 0;
@@ -187,8 +195,10 @@ export function createOfflineVoiceStream(handlers) {
     running = false;
     flush(true);
     try { processor?.disconnect(); } catch (_) {}
+    try { mute?.disconnect(); } catch (_) {}
     try { source?.disconnect(); } catch (_) {}
     processor = null;
+    mute = null;
     source = null;
     if (stream) {
       stream.getTracks().forEach((t) => t.stop());

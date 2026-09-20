@@ -2392,7 +2392,7 @@ function SettingsPanel() {
       <CloudProviderSettings />
 
       {/* Model Selection */}
-      <SettingsSection title="AI Model" icon={<Cpu size={13} />} keywords="ai model gguf load scan local">
+      <SettingsSection title="AI Model" icon={<Cpu size={13} />} keywords="ai model gguf load scan local startup">
         {modelInfo ? (
           <div className="bg-vsc-bg rounded p-2 text-vsc-xs">
             <div className="text-vsc-text-bright font-medium truncate">{modelInfo.name}</div>
@@ -2461,6 +2461,14 @@ function SettingsPanel() {
           }}>
           Scan for Models
         </button>
+        <div className="mt-3">
+          <SettingToggle
+            label="Load model on startup"
+            value={settings.loadModelOnStartup !== false}
+            onChange={v => updateSetting('loadModelOnStartup', v)}
+            hint="When off, guIDE opens without loading a local GGUF. Use this when you only want Cloud, or to save RAM until you pick a model."
+          />
+        </div>
       </SettingsSection>
 
       {/* Tool Toggles */}

@@ -8,6 +8,7 @@ import useAppStore from '../stores/appStore';
 import ModelDownloadPanel from './ModelDownloadPanel';
 import GuideLogo from './GuideLogo';
 import isPocket from '../lib/isPocket';
+import { GUIDE_CLOUD_QUALITY_MODEL } from '../lib/guideCloudModel';
 
 function dismissPocketWelcome() {
   try {
@@ -72,8 +73,8 @@ export default function WelcomeScreen() {
       .then((d) => { if (d) setPocketStatus(d); })
       .catch(() => {});
     try {
-      localStorage.setItem('guide-cloud-provider', 'cerebras');
-      localStorage.setItem('guide-cloud-model', 'gpt-oss-120b');
+      localStorage.setItem('guide-cloud-provider', 'secrypt');
+      localStorage.setItem('guide-cloud-model', GUIDE_CLOUD_QUALITY_MODEL);
       localStorage.setItem('guide-use-cloud', 'true');
     } catch (_) {}
   }, [pocket, showWelcomeScreen]);
@@ -162,9 +163,14 @@ export default function WelcomeScreen() {
   };
 
   const useCloudAI = () => {
-    localStorage.setItem('guide-cloud-provider', 'cerebras');
-    localStorage.setItem('guide-cloud-model', 'gpt-oss-120b');
+    localStorage.setItem('guide-cloud-provider', 'secrypt');
+    localStorage.setItem('guide-cloud-model', GUIDE_CLOUD_QUALITY_MODEL);
     localStorage.setItem('guide-use-cloud', 'true');
+    fetch('/api/cloud/provider', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'secrypt', model: GUIDE_CLOUD_QUALITY_MODEL }),
+    }).catch(() => {});
     pocketDismissWelcome();
     if (displayRecents.length > 0) openRecent(displayRecents[0]);
     else setShowWelcomeScreen(false);

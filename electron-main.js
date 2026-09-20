@@ -301,7 +301,7 @@ const { MemoryStore } = require('./memoryStore');
 const { LongTermMemory } = require('./longTermMemory');
 const { RulesManager } = require('./rulesManager');
 const { SessionStore } = require('./sessionStore');
-const { CloudLLMService } = require('./cloudLLMService');
+const { CloudLLMService, resolveSecryptCloudModel } = require('./cloudLLMService');
 const { runCloudAgenticChat } = require('./cloudAgenticChat');
 const { resolveAgentMode, filterToolDefinitions } = require('./agentModeResolver');
 const { runOAuthInWindow } = require('./oauthFlow');
@@ -2119,9 +2119,10 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         _send('model-unloaded', {});
       }
       cloudLLM.activeProvider = provider;
-      if (model) cloudLLM.activeModel = model;
+      const resolvedModel = resolveSecryptCloudModel(provider, model) || model || null;
+      if (resolvedModel) cloudLLM.activeModel = resolvedModel;
       settingsManager.set('lastCloudProvider', provider);
-      settingsManager.set('lastCloudModel', model || null);
+      settingsManager.set('lastCloudModel', resolvedModel);
       return apiReturn({ success: true, activeProvider: cloudLLM.activeProvider, activeModel: cloudLLM.activeModel });
     }
     // Internal tool-parser only — must NOT be used to mutate chat display content.
@@ -3227,8 +3228,10 @@ app.whenReady().then(async () => {
     const lastCloud = settingsManager.get('lastCloudProvider');
     if (lastCloud) {
       cloudLLM.activeProvider = lastCloud;
-      cloudLLM.activeModel = settingsManager.get('lastCloudModel') || null;
-      console.log(`[Main] Skipping local auto-load — last session used cloud (${lastCloud})`);
+      cloudLLM.activeModel = resolveSecryptCloudModel(lastCloud, settingsManager.get('lastCloudModel'))
+        || settingsManager.get('lastCloudModel')
+        || null;
+      console.log(`[Main] Skipping local auto-load — last session used cloud (${lastCloud}/${cloudLLM.activeModel})`);
       return;
     }
     const lastImagePath = settingsManager.get('lastImageModelPath');
@@ -3242,6 +3245,10 @@ app.whenReady().then(async () => {
         });
         console.log(`[Main] Restored media-only model: ${path.basename(lastImagePath)} arch=${status.ggufArchitecture}`);
       }).catch((e) => console.warn(`[Main] Media model restore failed: ${e.message}`));
+      return;
+    }
+    if (settingsManager.get('loadModelOnStartup') === false) {
+      console.log('[Main] Skipping local auto-load — loadModelOnStartup is off');
       return;
     }
     if (!llmEngine.isReady && models.length > 0) {

@@ -86,6 +86,7 @@ const SETTINGS_DEFAULTS = {
   lastCloudProvider: null,
   lastCloudModel: null,
   voiceProvider: 'local', // offline Whisper only (chunked streaming)
+  loadModelOnStartup: true,
   // Setup
   setupCompleted: false,
   // Account
@@ -202,6 +203,15 @@ class SettingsManager extends EventEmitter {
         if (this._settings.kvCacheType === 'q3_0' || this._settings.kvCacheType === 'q4_0' || this._settings.kvCacheType === 'f16') {
           this._settings.kvCacheType = 'q8_0';
           this._scheduleSave();
+        }
+        // guIDE Cloud used to send `cipher` (P40 FAST 2B). Quality 27B is cipher-quality.
+        const cloudProv = this._settings.lastCloudProvider;
+        if (cloudProv === 'secrypt' || cloudProv === 'cipher' || cloudProv === 'graysoft' || cloudProv === 'cerebras') {
+          const m = String(this._settings.lastCloudModel || '').trim();
+          if (!m || m === 'cipher' || m === 'gpt-oss-120b' || m === 'openai/gpt-oss-120b' || m === 'graysoft-cloud' || m === 'secrypt-cloud') {
+            this._settings.lastCloudModel = 'cipher-quality';
+            this._scheduleSave();
+          }
         }
       }
     } catch (e) {
