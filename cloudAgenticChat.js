@@ -63,9 +63,8 @@ async function runCloudAgenticChat({
 }) {
   const enableSubAgents = !!(settings.enableSubAgents);
   const toolsEnabled = settings.toolsEnabled !== false;
-  // Secrypt/P40 n_ctx≈8k — full tool catalog + agent prompt exceeds the hard truncate and
-  // the model never sees write_file, so it only says "Building…" without calling tools.
-  const tightContext = ['secrypt', 'cipher', 'graysoft', 'cerebras'].includes(
+  // Secrypt/P40 quality worker uses 16k context — use compact (not minimal) tool catalog.
+  const isSecryptCloud = ['secrypt', 'cipher', 'graysoft', 'cerebras'].includes(
     String(cloudProvider || '').toLowerCase(),
   );
 
@@ -87,15 +86,17 @@ async function runCloudAgenticChat({
   const toolPromptOpts = { planning: mode.planning };
   let toolPrompt = '';
   if (mode.toolsActive) {
-    if (tightContext) {
+    if (isSecryptCloud) {
+      // Compact + descriptions: full agent tool surface without blowing 16k prefill.
       toolPrompt = mcpToolServer
         .getCompactToolHint('default', {
           toolDefs: filteredDefs,
           planning: mode.planning,
-          minimal: true,
           compactDescriptions: true,
         })
         .join('');
+      toolPrompt +=
+        '\nCRITICAL: When asked to build/create files, emit write_file/edit_file tool JSON in this turn. Do not only promise to build.\n';
     } else {
       toolPrompt = mcpToolServer.getToolPromptForTools(filteredDefs, toolPromptOpts);
       if (enableSubAgents && toolPrompt) {
@@ -110,23 +111,19 @@ async function runCloudAgenticChat({
     baseSystemPrompt: mode.baseSystemPrompt,
     customInstructions: settings.customInstructions,
     toolPrompt,
-    tightContext,
+    tightContext: false,
   });
-  if (!tightContext) {
-    systemPrompt += buildAgentSystemPromptLayers({
-      projectPath: settings.projectPath,
-      guideInstructionsPath: settings.guideInstructionsPath,
-      editorContext: settings.editorContext,
-      editorDiagnostics: settings.editorDiagnostics,
-    });
-  } else if (settings.projectPath) {
-    systemPrompt += `\nProject directory: ${settings.projectPath}\nAll file tools are relative to this directory.\n`;
-  }
+  systemPrompt += buildAgentSystemPromptLayers({
+    projectPath: settings.projectPath,
+    guideInstructionsPath: settings.guideInstructionsPath,
+    editorContext: settings.editorContext,
+    editorDiagnostics: settings.editorDiagnostics,
+  });
   if (mode.systemPromptAdditions) {
     systemPrompt += mode.systemPromptAdditions;
   }
   console.log(
-    `[CloudAgentic] systemPrompt=${systemPrompt.length} chars tight=${tightContext} tools=${mode.toolsActive ? 'on' : 'off'} mode=${mode.planning ? 'plan' : mode.askOnly ? 'ask' : 'agent'}`,
+    `[CloudAgentic] systemPrompt=${systemPrompt.length} chars secrypt=${isSecryptCloud} tools=${mode.toolsActive ? 'on' : 'off'} mode=${mode.planning ? 'plan' : mode.askOnly ? 'ask' : 'agent'}`,
   );
 
   const conversationHistory = sanitizeCloudConversationHistory(

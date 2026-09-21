@@ -640,7 +640,7 @@ class CloudLLMService extends EventEmitter {
   }
 
   _getModelContextLimit(provider, model) {
-    // Secrypt P40 llama-server is configured with n_ctx=8192 (SECRYPT_CONTEXT_TOKENS)
+    // Secrypt P40 quality worker n_ctx=16384 (SECRYPT_CONTEXT_TOKENS)
     if (
       provider === 'secrypt' ||
       provider === 'cipher' ||
@@ -649,7 +649,7 @@ class CloudLLMService extends EventEmitter {
       model === 'cipher-quality' ||
       model === 'graysoft-cloud'
     ) {
-      return parseInt(process.env.SECRYPT_CONTEXT_TOKENS || '8192', 10) || 8192;
+      return parseInt(process.env.SECRYPT_CONTEXT_TOKENS || '16384', 10) || 16384;
     }
     return CONTEXT_LIMITS[model] || 32768;
   }
@@ -811,17 +811,18 @@ class CloudLLMService extends EventEmitter {
       : model;
 
     let sys = typeof systemPrompt === 'string' ? systemPrompt : '';
-    // Cap system prompt for Secrypt 8k context (tools dump otherwise overflows n_ctx).
-    // Prefer keeping the tools section: truncate from the front of the pre-tools preamble if needed.
-    if (useSecrypt && sys.length > 7200) {
+    // Cap system prompt for Secrypt context (leave room for history + generation).
+    // Prefer keeping the tools section: truncate preamble before ## Tools if needed.
+    const secryptSysCap = parseInt(process.env.SECRYPT_SYSTEM_PROMPT_CHARS || '14000', 10) || 14000;
+    if (useSecrypt && sys.length > secryptSysCap) {
       const toolsIdx = sys.search(/\n## Tools\b/);
       if (toolsIdx > 400) {
         const head = sys.slice(0, 350);
         const fromTools = sys.slice(toolsIdx);
         sys = `${head}\n\n[…]\n${fromTools}`;
       }
-      if (sys.length > 7200) {
-        sys = sys.slice(0, 7200) + '\n\n[System prompt truncated for Secrypt 8k context.]';
+      if (sys.length > secryptSysCap) {
+        sys = sys.slice(0, secryptSysCap) + '\n\n[System prompt truncated for Secrypt context.]';
       }
     }
 
