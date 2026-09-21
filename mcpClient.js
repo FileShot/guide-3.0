@@ -118,6 +118,14 @@ class MCPClient {
 
     this._servers.set(name, serverEntry);
 
+    // Avoid uncaught EPIPE when the MCP child exits mid-write
+    if (child.stdin) {
+      child.stdin.on('error', (err) => {
+        if (err && (err.code === 'EPIPE' || err.code === 'ECONNRESET')) return;
+        this._onLog(`[MCPClient:${name}:stdin] ${err && err.message ? err.message : err}`);
+      });
+    }
+
     // Handle stdout — JSON-RPC messages are line-delimited
     child.stdout.on('data', (data) => {
       serverEntry.buffer += data.toString();

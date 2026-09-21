@@ -184,9 +184,18 @@ const logger = {
     };
 
     process.on('uncaughtException', (err) => {
+      // Broken pipe after a child/socket closes — not fatal; Electron would otherwise show a modal.
+      if (err && (err.code === 'EPIPE' || err.code === 'ECONNRESET')) {
+        writeLine(`${new Date().toISOString()} WARN  [UncaughtException ignored] ${err.code}: ${err.message || err}`);
+        return;
+      }
       writeLine(`${new Date().toISOString()} FATAL [UncaughtException] ${err.stack || err.message || err}`);
     });
     process.on('unhandledRejection', (reason) => {
+      if (reason && typeof reason === 'object' && (reason.code === 'EPIPE' || reason.code === 'ECONNRESET')) {
+        writeLine(`${new Date().toISOString()} WARN  [UnhandledRejection ignored] ${reason.code}: ${reason.message || reason}`);
+        return;
+      }
       const msg = reason instanceof Error ? (reason.stack || reason.message) : String(reason);
       writeLine(`${new Date().toISOString()} ERROR [UnhandledRejection] ${msg}`);
     });

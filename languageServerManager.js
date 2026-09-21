@@ -113,6 +113,13 @@ class LanguageServerManager extends EventEmitter {
     this._servers.set(serverId, { proc, key, cwd, language });
     this._buffer.set(serverId, '');
 
+    if (proc.stdin) {
+      proc.stdin.on('error', (err) => {
+        if (err && (err.code === 'EPIPE' || err.code === 'ECONNRESET')) return;
+        this.emit('log', { serverId, stdinError: err && err.message ? err.message : String(err) });
+      });
+    }
+
     proc.stdout.on('data', (chunk) => {
       this._onStdout(serverId, chunk.toString());
     });
@@ -169,7 +176,13 @@ class LanguageServerManager extends EventEmitter {
     if (!s?.proc?.stdin?.writable) return;
     const body = JSON.stringify(msg);
     const header = `Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n`;
-    s.proc.stdin.write(header + body);
+    try {
+      const ok = s.proc.stdin.write(header + body);
+      if (!ok) s.proc.stdin.once('drain', () => {});
+    } catch (err) {
+      if (err && (err.code === 'EPIPE' || err.code === 'ECONNRESET')) return;
+      throw err;
+    }
   }
 
   /** Fire-and-forget notification (no response expected) */
