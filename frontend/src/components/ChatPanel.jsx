@@ -1013,9 +1013,10 @@ export default function ChatPanel() {
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionType, setMentionType] = useState('file');
+  const activeGoal = useAppStore((s) => s.activeGoal);
+  const goalPaused = useAppStore((s) => s.goalPaused);
   const [voiceListening, setVoiceListening] = useState(false);
   const [voiceStatusText, setVoiceStatusText] = useState(null);
-  const [voiceLiveText, setVoiceLiveText] = useState('');
   const offlineVoiceRef = useRef(null);
   const voiceWhisperAvailableRef = useRef(false);
 
@@ -1381,7 +1382,6 @@ export default function ChatPanel() {
       } catch (_) {}
       offlineVoiceRef.current = null;
       setVoiceStatusText(null);
-      setVoiceLiveText('');
       return;
     }
 
@@ -1391,9 +1391,6 @@ export default function ChatPanel() {
     }
 
     const stream = createOfflineVoiceStream({
-      onPartialText: (text) => {
-        setVoiceLiveText((prev) => (prev ? `${prev} ${text}`.trim() : text));
-      },
       onFinalText: appendTranscript,
       onStatus: (msg) => setVoiceStatusText(msg),
       onError: (msg) => notify('warning', msg || 'Whisper transcription failed'),
@@ -1562,7 +1559,8 @@ export default function ChatPanel() {
 
     if (!text) return;
 
-    // Slash skills: /goal, /automate, /skills, …
+    const shownText = text;
+    // Slash skills load a procedure. The bubble keeps what the user typed.
     const slash = resolveSlashSkill(text);
     if (slash) {
       if (slash.error) {
@@ -1571,13 +1569,16 @@ export default function ChatPanel() {
         return;
       }
       if (!slash.sendToModel && slash.localText) {
-        addChatMessage({ role: 'user', content: text, timestamp: Date.now() });
+        addChatMessage({ role: 'user', content: shownText, timestamp: Date.now() });
         addChatMessage({ role: 'assistant', content: slash.localText, timestamp: Date.now() });
         setInput('');
         return;
       }
       if (slash.preferChatMode) {
         setChatMode(slash.preferChatMode);
+      }
+      if (slash.goal?.objective) {
+        useAppStore.getState().setActiveGoal({ objective: slash.goal.objective, skillId: 'goal' });
       }
       text = slash.text || text;
       if (slash.preferChatMode) {
@@ -1661,7 +1662,7 @@ export default function ChatPanel() {
         } catch (_) {}
 
         live.materializePartialAssistant();
-        const injectIdx = addChatMessage({ role: 'user', content: text, injected: true });
+        const injectIdx = addChatMessage({ role: 'user', content: shownText, injected: true });
         requestAnimationFrame(() => {
           if (virtuosoRef.current != null && injectIdx >= 0) {
             virtuosoRef.current.scrollToIndex({ index: injectIdx, align: 'end', behavior: 'auto' });
@@ -1681,7 +1682,7 @@ export default function ChatPanel() {
         }
       } catch (_) {}
       live.materializePartialAssistant();
-      const userIdx = addChatMessage({ role: 'user', content: text });
+      const userIdx = addChatMessage({ role: 'user', content: shownText });
       requestAnimationFrame(() => {
         if (virtuosoRef.current != null && userIdx >= 0) {
           virtuosoRef.current.scrollToIndex({ index: userIdx, align: 'end', behavior: 'auto' });
@@ -1787,7 +1788,7 @@ export default function ChatPanel() {
 
       const imageAttachments = attachmentsSnapshot.filter(a => (a.type || '').startsWith('image/'));
 
-      addChatMessage({ role: 'user', content: text, imageAttachments: imageAttachments.length > 0 ? imageAttachments : undefined });
+      addChatMessage({ role: 'user', content: shownText, imageAttachments: imageAttachments.length > 0 ? imageAttachments : undefined });
 
     }
 
@@ -1861,6 +1862,14 @@ export default function ChatPanel() {
 
           maxTokens: s.maxResponseTokens,
 
+          enableThinking: s.enableThinking !== false,
+
+          thinkingMode: s.thinkingMode || 'C',
+
+          activeGoal: useAppStore.getState().activeGoal,
+
+          goalPaused: useAppStore.getState().goalPaused,
+
           topP: s.topP,
 
           topK: s.topK,
@@ -1924,6 +1933,10 @@ export default function ChatPanel() {
       if (isStaleTurn()) {
         console.log('[ChatPanel] doSend: superseded turn — skipping finalization (force-send/stop)');
         return;
+      }
+
+      if (result?.goalComplete) {
+        useAppStore.getState().setActiveGoal(null);
       }
 
       // Quota exceeded — show upgrade prompt instead of empty message
@@ -2313,22 +2326,6 @@ export default function ChatPanel() {
           if (!messageSegments.length) {
 
             messageSegments.push({ type: 'text', content: messageContent });
-
-          }
-
-        }
-
-        if (hasToolCalls && (!messageContent || messageContent.trim().length < 240)) {
-
-          const toolNames = [...new Set(finalToolCalls.map((tc) => tc.functionName || tc.tool).filter(Boolean))];
-
-          const toolSummary = `**Tool run** (${finalToolCalls.length} call${finalToolCalls.length === 1 ? '' : 's'}): ${toolNames.slice(0, 16).join(', ')}${toolNames.length > 16 ? '…' : ''}`;
-
-          messageContent = messageContent?.trim() ? `${messageContent.trim()}\n\n${toolSummary}` : toolSummary;
-
-          if (!messageSegments.length) {
-
-            messageSegments.push({ type: 'text', content: toolSummary });
 
           }
 
@@ -3198,8 +3195,6 @@ export default function ChatPanel() {
         )}
 
         <Virtuoso
-
-          key={chatGenerationEpoch}
 
           ref={virtuosoRef}
 
@@ -4287,9 +4282,38 @@ export default function ChatPanel() {
               </div>
             )}
 
-            {voiceListening && (voiceLiveText || voiceStatusText) && (
+            {activeGoal?.objective && (
+              <div className="mx-2 mb-1 flex items-center gap-1.5 rounded border border-vsc-accent/40 bg-vsc-accent/10 px-2 py-1">
+                <span className="text-[10px] uppercase tracking-wide text-vsc-accent shrink-0">Goal</span>
+                <span className="text-[11px] text-vsc-text truncate flex-1" title={activeGoal.objective}>{activeGoal.objective}</span>
+                <button
+                  type="button"
+                  className="text-[10px] px-1.5 py-0.5 rounded border border-vsc-panel-border text-vsc-text-dim hover:text-vsc-text"
+                  onClick={() => useAppStore.getState().setGoalPaused(!goalPaused)}
+                >
+                  {goalPaused ? 'Resume' : 'Pause'}
+                </button>
+                <button
+                  type="button"
+                  className="text-[10px] px-1.5 py-0.5 rounded border border-vsc-panel-border text-vsc-text-dim hover:text-vsc-text"
+                  onClick={() => setChatMode(chatMode === 'agent' ? 'plan' : chatMode === 'plan' ? 'ask' : 'agent')}
+                  title="Cycle agent / plan / ask"
+                >
+                  {chatMode}
+                </button>
+                <button
+                  type="button"
+                  className="text-[10px] px-1 text-vsc-text-dim hover:text-vsc-text"
+                  title="Dismiss goal"
+                  onClick={() => useAppStore.getState().setActiveGoal(null)}
+                >
+                  ×
+                </button>
+              </div>
+            )}
+            {voiceListening && voiceStatusText && (
               <div className="px-3 pt-1 text-[12px] text-vsc-accent leading-snug max-h-[72px] overflow-y-auto">
-                {voiceLiveText || voiceStatusText}
+                {voiceStatusText}
               </div>
             )}
             <textarea
@@ -4495,7 +4519,7 @@ export default function ChatPanel() {
             <div className="flex-1" />
 
             {/* Mic — offline chunked Whisper */}
-            {voiceStatusText && !voiceLiveText && (
+            {voiceStatusText && (
               <span className="text-[10px] text-vsc-accent mr-1 max-w-[120px] truncate" title={voiceStatusText}>
                 {voiceStatusText}
               </span>

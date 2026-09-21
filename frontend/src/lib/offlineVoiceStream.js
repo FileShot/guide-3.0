@@ -5,11 +5,23 @@
  */
 
 const TARGET_RATE = 16000;
-const CHUNK_MS = 800;
-const MIN_CHUNK_MS = 280;
-const SILENCE_MS = 400;
-const SILENCE_RMS = 0.0035;
-const OVERLAP_MS = 200;
+const CHUNK_MS = 4500;
+const MIN_CHUNK_MS = 500;
+const SILENCE_MS = 700;
+const SILENCE_RMS = 0.012;
+const OVERLAP_MS = 0;
+
+function isBlankTranscript(text) {
+  const norm = String(text || '')
+    .toLowerCase()
+    .replace(/[\[\]()*_]/g, ' ')
+    .replace(/[^a-z\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!norm) return true;
+  const words = norm.split(' ');
+  return words.every((w) => w === 'blank' || w === 'audio' || w === 'silence');
+}
 
 function encodeWavPcm16(samples, sampleRate = TARGET_RATE) {
   const dataLen = samples.length * 2;
@@ -63,6 +75,7 @@ export function createOfflineVoiceStream(handlers) {
   let mute = null;
   let source = null;
   let running = false;
+  let generation = 0;
   let samples = [];
   let silenceSamples = 0;
   let busy = false;
@@ -74,39 +87,40 @@ export function createOfflineVoiceStream(handlers) {
   const silenceLimit = Math.floor((TARGET_RATE * SILENCE_MS) / 1000);
   const overlapSamples = Math.floor((TARGET_RATE * OVERLAP_MS) / 1000);
 
-  async function drainQueue() {
+  async function drainQueue(gen) {
     if (busy) return;
     busy = true;
-    while (queue.length) {
+    while (queue.length && gen === generation) {
       const wav = queue.shift();
       try {
         handlers.onStatus?.('Transcribing…');
         const r = await handlers.transcribe(wav);
+        if (gen !== generation) break;
         const text = (r?.text || '').trim();
-        if (r?.success && text) {
-          handlers.onPartialText?.(text);
+        if (r?.success && text && !isBlankTranscript(text)) {
           handlers.onFinalText(text);
-        } else if (r?.error) {
+        } else if (r?.error && gen === generation) {
           handlers.onError?.(r.error);
         }
       } catch (e) {
-        handlers.onError?.(e.message || 'Transcription failed');
+        if (gen === generation) handlers.onError?.(e.message || 'Transcription failed');
       }
     }
+    if (gen !== generation) queue.length = 0;
     busy = false;
-    if (running) handlers.onStatus?.('Listening…');
+    if (running && gen === generation) handlers.onStatus?.('Listening…');
   }
 
   function enqueueChunk(floatSamples) {
     if (!floatSamples?.length || floatSamples.length < minChunkSamples) return;
-    if (rms(floatSamples) < SILENCE_RMS * 0.25) return;
+    if (rms(floatSamples) < SILENCE_RMS) return;
     const withOverlap = new Float32Array(overlap.length + floatSamples.length);
     withOverlap.set(overlap, 0);
     withOverlap.set(floatSamples, overlap.length);
     const keep = Math.min(overlapSamples, floatSamples.length);
     overlap = floatSamples.slice(floatSamples.length - keep);
     queue.push(encodeWavPcm16(withOverlap, TARGET_RATE));
-    drainQueue();
+    drainQueue(generation);
   }
 
   function flush(force = false) {
@@ -184,6 +198,7 @@ export function createOfflineVoiceStream(handlers) {
     mute = muteNode;
     processor.connect(mute);
     mute.connect(audioCtx.destination);
+    generation += 1;
     running = true;
     samples = [];
     silenceSamples = 0;
@@ -193,7 +208,10 @@ export function createOfflineVoiceStream(handlers) {
 
   async function stop() {
     running = false;
-    flush(true);
+    generation += 1;
+    samples = [];
+    queue.length = 0;
+    try { window.electronAPI?.voiceAbort?.(); } catch (_) {}
     try { processor?.disconnect(); } catch (_) {}
     try { mute?.disconnect(); } catch (_) {}
     try { source?.disconnect(); } catch (_) {}
@@ -208,9 +226,8 @@ export function createOfflineVoiceStream(handlers) {
       await audioCtx.close().catch(() => {});
       audioCtx = null;
     }
-    // Wait for in-flight transcriptions
-    const deadline = Date.now() + 30000;
-    while ((busy || queue.length) && Date.now() < deadline) {
+    const deadline = Date.now() + 1500;
+    while (busy && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50));
     }
     handlers.onStatus?.(null);

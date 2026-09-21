@@ -46,7 +46,7 @@ const TOOL_NAME_ALIASES = {
   // Command
   run: 'run_command', exec: 'run_command', execute: 'run_command',
   shell: 'run_command', terminal: 'run_command', run_terminal_cmd: 'run_command',
-  run_terminal: 'run_command', command: 'run_command',
+  run_terminal: 'run_command', run_terminal_command: 'run_command', command: 'run_command',
   persistent_terminal: 'terminal_run', pty: 'terminal_run', terminal_session: 'terminal_run',
   install: 'install_packages', npm_install: 'install_packages', pip_install: 'install_packages',
   // Search

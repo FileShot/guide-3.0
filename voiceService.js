@@ -27,7 +27,18 @@ class VoiceService {
     this._whisperBin = null;
     this._modelPath = null;
     this._queue = Promise.resolve();
+    this._proc = null;
+    this._aborted = false;
     this._detectWhisper();
+  }
+
+  abort() {
+    this._aborted = true;
+    const proc = this._proc;
+    this._proc = null;
+    if (proc && !proc.killed) {
+      try { proc.kill(); } catch (_) {}
+    }
   }
 
   _resourcesPath() {
@@ -130,7 +141,7 @@ class VoiceService {
   }
 
   async transcribe(audioBuffer, opts = {}) {
-    // Serialize chunked streaming jobs so whisper-cli isn't flooded.
+    this._aborted = false;
     const run = this._queue.then(() => this._transcribeLocal(audioBuffer, opts));
     this._queue = run.catch(() => {});
     return run;
@@ -158,6 +169,10 @@ class VoiceService {
     try {
       const args = ['-m', model, '-f', inFile, '-otxt', '-of', outBase, '--no-timestamps', '-l', 'en', '-t', '2'];
       await new Promise((resolve, reject) => {
+        if (this._aborted) {
+          reject(new Error('aborted'));
+          return;
+        }
         const proc = spawn(this._whisperBin, args, {
           stdio: 'pipe',
           cwd: binDir,
@@ -167,6 +182,7 @@ class VoiceService {
             PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}`,
           },
         });
+        this._proc = proc;
         let stderr = '';
         proc.stderr?.on('data', (d) => { stderr += d.toString(); });
         proc.on('error', (err) => {
@@ -177,14 +193,19 @@ class VoiceService {
           ));
         });
         proc.on('close', (code) => {
-          if (code === 0) resolve();
+          if (this._proc === proc) this._proc = null;
+          if (this._aborted) resolve();
+          else if (code === 0) resolve();
           else reject(new Error(stderr.trim() || `whisper exit ${code}`));
         });
       });
       const txtPath = `${outBase}.txt`;
-      const text = fs.existsSync(txtPath) ? fs.readFileSync(txtPath, 'utf8').trim() : '';
+      const raw = fs.existsSync(txtPath) ? fs.readFileSync(txtPath, 'utf8').trim() : '';
       try { fs.unlinkSync(txtPath); } catch (_) {}
-      return { success: true, text, source: 'local' };
+      if (this._aborted) return { success: true, text: '', source: 'local' };
+      const norm = raw.toLowerCase().replace(/[\[\]()*_]/g, ' ').replace(/\s+/g, ' ').trim();
+      const blank = !norm || norm.split(' ').every((w) => w === 'blank' || w === 'audio' || w === 'silence');
+      return { success: true, text: blank ? '' : raw, source: 'local' };
     } catch (e) {
       return { success: false, error: e.message };
     } finally {

@@ -30,6 +30,25 @@ function resolveSecryptCloudModel(provider, model) {
   return id;
 }
 
+/** Cipher-quality context once KV is Q4. Override with SECRYPT_CONTEXT_TOKENS. */
+const SECRYPT_CONTEXT_DEFAULT = 32768;
+
+/**
+ * Reply token budget for guIDE Cloud.
+ * Auto (missing, 0, negative) uses up to 8192, and at least 4096 when the window allows.
+ * A positive user cap is honored and is never silently clamped to 1024.
+ */
+function resolveCloudOutputTokens(requested, contextLimit) {
+  const ctx = contextLimit > 0 ? contextLimit : SECRYPT_CONTEXT_DEFAULT;
+  const room = Math.max(256, ctx - 512);
+  if (typeof requested === 'number' && requested > 0) {
+    return Math.min(requested, room);
+  }
+  const floor = Math.min(4096, room);
+  const auto = Math.min(8192, room);
+  return Math.max(floor, auto);
+}
+
 // ─── Provider endpoint map ────────────────────────────────────────────────────
 const ENDPOINTS = {
   graysoft:    { host: 'graysoft.dev',                    path: '/api/ai/proxy' },
@@ -640,7 +659,7 @@ class CloudLLMService extends EventEmitter {
   }
 
   _getModelContextLimit(provider, model) {
-    // Secrypt P40 quality worker n_ctx=16384 (SECRYPT_CONTEXT_TOKENS)
+    // Secrypt P40 quality worker. Q4 KV is what fits n_ctx=32768 beside the 27B weights.
     if (
       provider === 'secrypt' ||
       provider === 'cipher' ||
@@ -649,7 +668,7 @@ class CloudLLMService extends EventEmitter {
       model === 'cipher-quality' ||
       model === 'graysoft-cloud'
     ) {
-      return parseInt(process.env.SECRYPT_CONTEXT_TOKENS || '16384', 10) || 16384;
+      return parseInt(process.env.SECRYPT_CONTEXT_TOKENS || String(SECRYPT_CONTEXT_DEFAULT), 10) || SECRYPT_CONTEXT_DEFAULT;
     }
     return CONTEXT_LIMITS[model] || 32768;
   }
@@ -830,13 +849,20 @@ class CloudLLMService extends EventEmitter {
       ...conversationHistory.map(m => ({ role: m.role, content: m.content })),
       { role: 'user', content: prompt },
     ];
+    const contextLimit = useSecrypt ? this._getModelContextLimit(proxyProvider, proxyModel) : 0;
+    const outputTokens = useSecrypt
+      ? resolveCloudOutputTokens(options.maxTokens, contextLimit)
+      : (options.maxTokens > 0 ? options.maxTokens : 2048);
+    // Qwen-class cipher-quality leaves thinking off unless the request turns it on.
+    const thinkingOn = options.enableThinking !== false && options.thinkingMode !== 'off';
+
     if (useSecrypt) {
       const withSystem = sys ? [{ role: 'system', content: sys }, ...messages] : messages;
       const trimmed = this._trimToContextLimit(
         withSystem,
         proxyProvider,
         proxyModel,
-        Math.min(options.maxTokens || 1024, 1024)
+        outputTokens
       );
       if (trimmed[0]?.role === 'system') {
         sys = trimmed[0].content;
@@ -851,9 +877,11 @@ class CloudLLMService extends EventEmitter {
       model: proxyModel,
       messages,
       systemPrompt: sys || undefined,
-      maxTokens: useSecrypt ? Math.min(options.maxTokens || 1024, 1024) : (options.maxTokens || 2048),
+      maxTokens: outputTokens,
       temperature: options.temperature || 0.7,
       stream: !!onToken,
+      enableThinking: thinkingOn,
+      chat_template_kwargs: { enable_thinking: thinkingOn },
     });
 
     try {
@@ -1429,6 +1457,7 @@ class CloudLLMService extends EventEmitter {
       }
 
       let fullText = '';
+      let stopReason = null;
       let firstDataTimer = null;
       let idleTimer = null;
 
@@ -1491,7 +1520,7 @@ class CloudLLMService extends EventEmitter {
             clearTimers();
             req.destroy();
             if (fullText) {
-              resolve({ text: fullText, model: 'cloud', tokensUsed: fullText.length / 4 });
+              resolve({ text: fullText, model: 'cloud', tokensUsed: fullText.length / 4, stopReason });
             } else {
               reject(new Error(`Stream stalled from ${host}. Try again or switch models.`));
             }
@@ -1520,9 +1549,11 @@ class CloudLLMService extends EventEmitter {
               let thinkingToken = '';
 
               if (format === 'openai') {
-                const delta = parsed.choices?.[0]?.delta;
+                const choice = parsed.choices?.[0];
+                const delta = choice?.delta;
                 token = delta?.content || '';
                 thinkingToken = delta?.reasoning_content || delta?.reasoning || '';
+                if (choice?.finish_reason) stopReason = choice.finish_reason;
               } else if (format === 'anthropic') {
                 if (parsed.type === 'content_block_start' && parsed.content_block?.type === 'thinking') {
                   // Thinking block start
@@ -1544,7 +1575,7 @@ class CloudLLMService extends EventEmitter {
 
         res.on('end', () => {
           clearTimers();
-          resolve({ text: fullText, model: 'cloud', tokensUsed: fullText.length / 4 });
+          resolve({ text: fullText, model: 'cloud', tokensUsed: fullText.length / 4, stopReason });
         });
       });
 
@@ -1595,5 +1626,7 @@ module.exports = {
   PROVIDER_LABELS,
   BUNDLED_PROVIDERS,
   SECRYPT_QUALITY_MODEL,
+  SECRYPT_CONTEXT_DEFAULT,
   resolveSecryptCloudModel,
+  resolveCloudOutputTokens,
 };

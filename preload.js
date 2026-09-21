@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   dialogNewFolder: (opts) => ipcRenderer.invoke('dialog-new-folder', opts || {}),
   dialogRename: (opts) => ipcRenderer.invoke('dialog-rename', opts || {}),
   voiceTranscribe: (arrayBuffer, opts) => ipcRenderer.invoke('voice-transcribe', arrayBuffer, opts || {}),
+  voiceAbort: () => ipcRenderer.invoke('voice-abort'),
   cancelPendingQuestion: () => ipcRenderer.invoke('cancel-pending-question'),
   installExtensionFile: (buffer, fileName) => ipcRenderer.invoke('extension-install-file', { buffer, fileName }),
   showItemInFolder: (fullPath) => ipcRenderer.invoke('shell-show-item', fullPath),

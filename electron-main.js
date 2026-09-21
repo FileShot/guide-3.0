@@ -945,6 +945,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         success: true,
         text: result.text || '',
         toolCallCount: result.toolCallCount || 0,
+        goalComplete: !!result.goalComplete,
         checkpoint: snapshot ? { turnId: snapshot.turnId, timestamp: snapshot.timestamp, fileCount: snapshot.files.length } : null,
       };
     } catch (err) {
@@ -1007,6 +1008,10 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
       selection: chatContext?.selection?.text || chatContext?.editorSelection,
     });
     effectiveMessage = mentionResolved.message;
+
+    if (settings.activeGoal?.objective && !settings.goalPaused) {
+      effectiveMessage += `\n\n[Active goal — keep working until this is true in the project files]\n${settings.activeGoal.objective}`;
+    }
 
     if (settings.planContext && settings.agentPhase === 'building') {
       const trimmedUser = String(userMessage || '').trim();
@@ -1294,6 +1299,11 @@ ipcMain.handle('answer-question', (_e, answer) => {
 
 ipcMain.handle('cancel-pending-question', () => {
   cancelPendingQuestion('(skipped by user)');
+  return { success: true };
+});
+
+ipcMain.handle('voice-abort', async () => {
+  try { voiceService.abort(); } catch (_) {}
   return { success: true };
 });
 

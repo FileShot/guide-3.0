@@ -24,6 +24,89 @@ const streamTrace = require('./streamTrace');
 
 const CLOUD_CONTINUE_PROMPT = 'Continue from the tool results above. Call more tools if needed, or give a concise final answer.';
 
+const CLOUD_CORE_TOOLS = [
+  'read_file', 'write_file', 'edit_file', 'append_to_file', 'list_directory',
+  'find_files', 'grep_search', 'run_command', 'write_todos', 'update_todo', 'ask_question',
+];
+
+function selectCloudToolDefs(defs, userMessage) {
+  const text = String(userMessage || '').toLowerCase();
+  const allow = new Set(CLOUD_CORE_TOOLS);
+  if (/\b(browser|website|navigate|click|url|https?)\b/.test(text)) {
+    for (const d of defs) if (String(d.name).startsWith('browser_')) allow.add(d.name);
+  }
+  if (/\bgit\b/.test(text)) {
+    for (const d of defs) if (String(d.name).startsWith('git_')) allow.add(d.name);
+  }
+  if (/\b(memory|remember)\b/.test(text)) {
+    allow.add('save_memory');
+    allow.add('get_memory');
+    allow.add('list_memories');
+  }
+  const picked = defs.filter((d) => allow.has(d.name));
+  return picked.length ? picked : defs;
+}
+
+function createThinkTagSplitter({ onThinking, onContent }) {
+  const OPEN = '<think>';
+  const CLOSE = '</think>';
+  let inThink = false;
+  let buf = '';
+  const holdPartial = (tag) => {
+    const i = buf.lastIndexOf('<');
+    if (i === -1) return false;
+    const tail = buf.slice(i);
+    if (!tag.startsWith(tail)) return false;
+    return i;
+  };
+  return {
+    push(token) {
+      buf += String(token || '');
+      for (;;) {
+        if (!inThink) {
+          const i = buf.indexOf(OPEN);
+          if (i === -1) {
+            const h = holdPartial(OPEN);
+            if (h === false) {
+              if (buf) onContent(buf);
+              buf = '';
+            } else if (h > 0) {
+              onContent(buf.slice(0, h));
+              buf = buf.slice(h);
+            }
+            return;
+          }
+          if (i > 0) onContent(buf.slice(0, i));
+          buf = buf.slice(i + OPEN.length);
+          inThink = true;
+          continue;
+        }
+        const j = buf.indexOf(CLOSE);
+        if (j === -1) {
+          const h = holdPartial(CLOSE);
+          if (h === false) {
+            if (buf) onThinking(buf);
+            buf = '';
+          } else if (h > 0) {
+            onThinking(buf.slice(0, h));
+            buf = buf.slice(h);
+          }
+          return;
+        }
+        if (j > 0) onThinking(buf.slice(0, j));
+        buf = buf.slice(j + CLOSE.length);
+        inThink = false;
+      }
+    },
+    flush() {
+      if (!buf) return;
+      if (inThink) onThinking(buf);
+      else onContent(buf);
+      buf = '';
+    },
+  };
+}
+
 const CLOUD_FORCE_TOOLS_PROMPT =
   '[System: You claimed you would build/create files but emitted no tool calls. ' +
   'Immediately output write_file (and related) tool JSON to create the files. Do not apologize or repeat promises — call tools now.]';
@@ -81,7 +164,10 @@ async function runCloudAgenticChat({
   mcpToolServer.setAgentContext({ planMode: mode.planMode, agentPhase: mode.agentPhase });
 
   const allDefs = mcpToolServer.getToolDefinitions();
-  const filteredDefs = filterToolDefinitions(allDefs, mode.allowedTools);
+  let filteredDefs = filterToolDefinitions(allDefs, mode.allowedTools);
+  if (isSecryptCloud && !mode.planning) {
+    filteredDefs = selectCloudToolDefs(filteredDefs, userMessage);
+  }
 
   const toolPromptOpts = { planning: mode.planning };
   let toolPrompt = '';
@@ -144,16 +230,35 @@ async function runCloudAgenticChat({
 
   const streamFilters = createCloudStreamFilters({ onToken, onThinkingToken, onStreamEvent });
 
+  const requestedMax = settings.maxResponseTokens > 0
+    ? settings.maxResponseTokens
+    : (settings.maxTokens > 0 ? settings.maxTokens : 0);
+  const activeGoal = settings.activeGoal && settings.activeGoal.objective && !settings.goalPaused
+    ? settings.activeGoal
+    : null;
+  if (activeGoal) {
+    systemPrompt +=
+      `\n\n## Active goal\n${activeGoal.objective}\n` +
+      'There is no turn budget. Do real work with tools in this turn. ' +
+      'Do not shrink the objective. A listing or a promise is not completion. ' +
+      'Before you stop, every requirement must be true in the files. ' +
+      'If it is not, keep calling tools.\n';
+  }
+
   const genBase = {
     provider: cloudProvider,
     model: cloudModel,
     systemPrompt,
     temperature: settings.temperature,
-    maxTokens: settings.maxResponseTokens || -1,
+    maxTokens: requestedMax,
     topP: settings.topP,
     images,
     stream: true,
+    enableThinking: settings.enableThinking !== false,
+    thinkingMode: settings.thinkingMode || 'C',
   };
+
+  let lengthContinuations = 0;
 
   for (let iter = 0; iter < maxIter; iter++) {
     if (getCancelled?.()) {
@@ -162,25 +267,51 @@ async function runCloudAgenticChat({
     }
 
     streamFilters.resetRound();
+    const thinkSplit = createThinkTagSplitter({
+      onThinking: (token) => {
+        streamTrace.trace('stream', 'cloud-thinking-token', { token, iter });
+        streamFilters.processThinkingChunk(token);
+      },
+      onContent: (token) => {
+        streamTrace.trace('stream', 'cloud-token', { token, iter });
+        streamFilters.processContentChunk(token);
+      },
+    });
 
     const result = await cloudLLM.generate(nextUserPrompt, {
       ...genBase,
       conversationHistory,
       images: iter === 0 ? images : [],
-      onToken: (token) => {
-        streamTrace.trace('stream', 'cloud-token', { token, iter });
-        streamFilters.processContentChunk(token);
-      },
+      onToken: (token) => thinkSplit.push(token),
       onThinkingToken: (token) => {
         streamTrace.trace('stream', 'cloud-thinking-token', { token, iter });
         streamFilters.processThinkingChunk(token);
       },
     });
 
+    thinkSplit.flush();
     streamFilters.flush();
 
     if (result?.isQuotaError) {
       return { isQuotaError: true, error: '__QUOTA_EXCEEDED__', text: displayResponse || fullResponse, toolCallCount: totalToolCalls };
+    }
+
+    if (result?.stopReason === 'length' && lengthContinuations < 4 && iter < maxIter - 1) {
+      lengthContinuations += 1;
+      const partialProse = streamFilters.getProseCleanText() || stripToolCallText(result?.text || '');
+      if (partialProse) displayResponse += partialProse;
+      fullResponse += streamFilters.getCombinedRawBuffer() || result?.text || '';
+      conversationHistory.push({
+        role: 'assistant',
+        content: (streamFilters.getCombinedRawBuffer() || result.text || '').slice(-4000),
+      });
+      conversationHistory.push({
+        role: 'user',
+        content: 'The previous reply hit the length limit. Continue from the exact cutoff. If a file was incomplete, finish it with write_file or append_to_file.',
+      });
+      nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+      console.log(`[CloudAgentic] length stop — continuation ${lengthContinuations}`);
+      continue;
     }
 
     const roundTextContent = result?.text || '';
@@ -226,6 +357,25 @@ async function runCloudAgenticChat({
         nextUserPrompt = CLOUD_CONTINUE_PROMPT;
         console.log('[CloudAgentic] prose-only build promise — forcing tool call round');
         continue;
+      }
+      if (activeGoal && iter < maxIter - 1 && !/GOAL_COMPLETE/.test(roundCleanProse)) {
+        const nudges = conversationHistory.filter((m) => m.role === 'user' && String(m.content).includes('Goal check:')).length;
+        if (nudges < 8) {
+          conversationHistory.push({
+            role: 'assistant',
+            content: roundCleanProse.trim() || '(no tools)',
+          });
+          conversationHistory.push({
+            role: 'user',
+            content:
+              `Goal check: the objective is still:\n${activeGoal.objective}\n` +
+              'Is every requirement true in the current files? If any requirement is missing or unverified, keep working with write_file, edit_file, or run_command. ' +
+              'If you have checked the files and every requirement is true, reply with GOAL_COMPLETE and a short summary.',
+          });
+          nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+          console.log('[CloudAgentic] goal nudge — objective not proven');
+          continue;
+        }
       }
       break;
     }
@@ -365,8 +515,10 @@ async function runCloudAgenticChat({
     nextUserPrompt = CLOUD_CONTINUE_PROMPT;
   }
 
-  const finalText = displayResponse || stripToolCallText(fullResponse);
-  return { text: finalText, toolCallCount: totalToolCalls };
+  let finalText = displayResponse || stripToolCallText(fullResponse);
+  const goalComplete = !!(activeGoal && /GOAL_COMPLETE/.test(finalText));
+  finalText = String(finalText || '').replace(/GOAL_COMPLETE/g, '').trim();
+  return { text: finalText, toolCallCount: totalToolCalls, goalComplete };
 }
 
-module.exports = { runCloudAgenticChat };
+module.exports = { runCloudAgenticChat, selectCloudToolDefs, createThinkTagSplitter };

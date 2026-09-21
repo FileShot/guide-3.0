@@ -62,7 +62,14 @@ const TOOL_MAP = {
     Icon: List,
     pending: 'Listing',
     done: 'Listed',
-    detail: (p) => p?.dirPath || p?.path || '.',
+    detail: (p, result) => {
+      const items = result?.items || result?.result?.items;
+      if (Array.isArray(items) && items.length) {
+        const names = items.slice(0, 3).map((item) => item.name || item.path).filter(Boolean);
+        return names.length ? `${items.length} — ${names.join(', ')}` : String(items.length);
+      }
+      return p?.dirPath || p?.path || '.';
+    },
   },
   find_files: {
     Icon: FileSearch,

@@ -15,7 +15,23 @@ const TOOL_INJECT_MULTIPLIERS = {
  * Format a tool result for injection into model context (prose or native FC).
  * Applies context-proportional truncation matching local chatEngine behavior.
  */
+function formatListDirectoryInject(toolResult) {
+  const items = toolResult && Array.isArray(toolResult.items) ? toolResult.items : null;
+  if (!items) return null;
+  const lines = items.slice(0, 80).map((item) => {
+    const name = item && (item.name || item.path) ? (item.name || item.path) : '';
+    const kind = item && item.type ? item.type : 'file';
+    return name ? `${kind}\t${name}` : '';
+  }).filter(Boolean);
+  const more = items.length > lines.length ? `\n… ${items.length - lines.length} more` : '';
+  return `Listed ${items.length} entries\n${lines.join('\n')}${more}`;
+}
+
 function formatToolResultForInject(toolName, toolResult, { contextTokens = 8192 } = {}) {
+  if (toolName === 'list_directory' || toolName === 'get_project_structure') {
+    const listed = formatListDirectoryInject(toolResult);
+    if (listed) return listed;
+  }
   let injectResult = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult);
 
   const ctxChars = (contextTokens || 8192) * 4;
@@ -87,6 +103,8 @@ function sanitizeCloudConversationHistory(messages, { parseToolCalls, stripToolC
     let content = String(m.content ?? '').trim();
     if (!content) continue;
     if (/^\[(?:System: )?Tool Results\]/i.test(content)) continue;
+    content = content.replace(/\n*\*\*Tool run\*\*[^\n]*/g, '').trim();
+    if (!content) continue;
     if (m.role === 'assistant' && parseToolCalls && stripToolCallText) {
       const calls = parseToolCalls(content);
       if (calls.length > 0) {

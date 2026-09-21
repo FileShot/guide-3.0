@@ -711,9 +711,18 @@ const useAppStore = create((set, get) => ({
     pendingQuestion: null,
     pendingPermission: null,
     planSession: null,
+    activeGoal: null,
+    goalPaused: false,
   })),
 
   setActiveChatEpoch: (epoch) => set({ activeChatEpoch: epoch }),
+
+  setActiveGoal: (goal) => set({
+    activeGoal: goal && goal.objective ? { objective: String(goal.objective), skillId: goal.skillId || 'goal' } : null,
+    goalPaused: false,
+  }),
+
+  setGoalPaused: (paused) => set({ goalPaused: !!paused }),
 
   isActiveChatEpoch: () => {
     const s = get();

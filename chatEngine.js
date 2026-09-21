@@ -971,7 +971,7 @@ function buildEngineLoadSettings(raw = {}) {
     requireMinContextForGpu: !!raw.requireMinContextForGpu,
     gpuConstrainedContext: raw.gpuConstrainedContext !== false, // default true
     vramBalance: raw.vramBalance === 'speed' || raw.vramBalance === 'context' ? raw.vramBalance : 'balanced',
-    kvCacheType: raw.kvCacheType || 'q8_0',
+    kvCacheType: raw.kvCacheType || 'q4_0',
     enableThinking: raw.enableThinking !== false, // default true
     // 'C' = ThinkingOpenJinja (prefix injection), 'B' = raw Jinja (no prefix), 'auto' = node-llama-cpp auto, 'off' = Jinja enable_thinking=false
     thinkingMode: raw.thinkingMode || 'C',
@@ -1282,7 +1282,7 @@ class ChatEngine extends EventEmitter {
       // VRAM headroom against generation speed. 'currentQuant' lets node-llama-cpp match the
       // model's weight quantization (legacy behaviour, retained for explicit selection).
       const ALLOWED_KV_TYPES = new Set(['currentQuant', 'q3_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'q8_0', 'f16']);
-      const rawKvType = rawLoadSettings.kvCacheType || 'q8_0';
+      const rawKvType = rawLoadSettings.kvCacheType || 'q4_0';
       const kvCacheType = ALLOWED_KV_TYPES.has(rawKvType) ? rawKvType : undefined;
 
       if (s.gpuPreference === 'cpu') {

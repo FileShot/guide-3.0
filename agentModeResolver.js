@@ -213,8 +213,10 @@ function getAgentToolPromptHeader(options = {}) {
   } else {
     header += '```json\n{"tool":"read_file","params":{"filePath":"src/index.js"}}\n```\n';
     if (compact) {
+      header += '```json\n{"tool":"write_file","params":{"filePath":"index.html","content":"<!doctype html>\\n<html><body></body></html>"}}\n```\n';
       header += '```json\n{"tool":"edit_file","params":{"filePath":"src/app.js","oldText":"const x = 1","newText":"const x = 2"}}\n```\n';
-      header += '```json\n{"tool":"list_directory","params":{"dirPath":"."}}\n```\n\n';
+      header += '```json\n{"tool":"run_command","params":{"command":"npm test"}}\n```\n';
+      header += 'When the user asks you to build or create files, call write_file in this turn. One list_directory is enough. Do not stop after listing.\n\n';
     } else {
       header += '```json\n{"tool":"write_file","params":{"filePath":"index.html","content":"<html><body>Hello</body></html>"}}\n```\n';
       header += '```json\n{"tool":"edit_file","params":{"filePath":"src/app.js","oldText":"const x = 1","newText":"const x = 2"}}\n```\n';
@@ -320,7 +322,7 @@ function getAgentSystemPrompt() {
     + 'Pattern — user asks to edit or modify an existing file:\n'
     + 'Use edit_file or replace_in_file on that file path. Call read_file first if you need the current content. Do NOT use write_file to create a new file or a renamed copy (e.g. file-v2.html) unless the user explicitly asked for a new file or a full rewrite from scratch.\n\n'
     + 'Pattern — user asks to run a command, script, or terminal operation:\n'
-    + 'Call run_terminal_command with the command string. Do not describe what the command would do — run it.\n\n'
+    + 'Call run_command with the command string. Do not describe what the command would do — run it.\n\n'
     + 'Pattern — user asks to search the web, find current information, or look up something online:\n'
     + 'Call web_search with a rephrased query. Do not generate an answer from memory if the information may be outdated.\n\n'
     + 'Pattern — user asks to open, navigate, or interact with a website or browser:\n'

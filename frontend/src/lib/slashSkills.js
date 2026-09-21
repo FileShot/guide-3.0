@@ -1,93 +1,99 @@
 /**
- * Slash skills for the chat input — keep in sync with skills/registry.js (Node).
+ * Slash skills — procedures live in skills/<id>/SKILL.md.
+ * Parser matches skills/parseSkillMd.js (that file is CommonJS for the main process).
  */
-
-const BUILTIN_SKILLS = [
-  { id: 'skills', name: '/skills', description: 'List available slash skills', kind: 'local' },
-  { id: 'goal', name: '/goal', description: 'Durable objective — keep building until done', kind: 'expand' },
-  { id: 'automate', name: '/automate', description: 'Script/automate a workflow in this project', kind: 'expand' },
-  { id: 'plan', name: '/plan', description: 'Planning-first turn', kind: 'expand' },
-  { id: 'ask', name: '/ask', description: 'Answer without modifying files', kind: 'expand' },
-];
-
-function formatSkillsHelp() {
-  const lines = ['Available skills (type in the chat box):', ''];
-  for (const s of BUILTIN_SKILLS) {
-    lines.push(`${s.name} — ${s.description}`);
+function parseSkillMarkdown(raw, fallbackId) {
+  const text = String(raw || '');
+  let body = text.trim();
+  const meta = {};
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
+  if (m) {
+    body = m[2].trim();
+    for (const line of m[1].split(/\r?\n/)) {
+      const kv = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+      if (!kv) continue;
+      meta[kv[1]] = kv[2].trim().replace(/^["']|["']$/g, '');
+    }
   }
-  lines.push('', 'Example: /goal build a catalog site with cart and checkout');
-  return lines.join('\n');
+  const id = String(meta.name || fallbackId || '').replace(/^\//, '').toLowerCase();
+  return {
+    id,
+    name: `/${id}`,
+    description: meta.description || id,
+    mode: meta.mode || null,
+    requires: meta.requires || null,
+    body,
+  };
 }
 
-function expandSkill(id, args) {
-  const a = String(args || '').trim();
-  if (id === 'goal') {
-    if (!a) return { error: 'Usage: /goal <objective>' };
+function resolveFromSkills(rawInput, skills) {
+  const raw = String(rawInput || '').trim();
+  if (!raw.startsWith('/')) return null;
+  const matched = raw.match(/^\/([a-zA-Z][\w-]*)(?:\s+([\s\S]*))?$/);
+  if (!matched) return null;
+  const id = matched[1].toLowerCase();
+  const args = (matched[2] || '').trim();
+  const list = Array.isArray(skills) ? skills : [];
+  if (id === 'skills') {
+    const lines = ['Available skills (type in the chat box):', ''];
+    for (const s of list) lines.push(`${s.name} — ${s.description}`);
     return {
-      text:
-        `GOAL (do not stop at planning or promises — execute with tools until complete):\n${a}\n\n` +
-        'Rules: call write_file/edit_file/run_command as needed; verify files exist; keep working until the goal is satisfied. ' +
-        'Do not only say you will build — emit tool JSON now.',
+      skill: { id: 'skills', name: '/skills', description: 'List available slash skills' },
+      localText: lines.join('\n'),
+      sendToModel: false,
     };
   }
-  if (id === 'automate') {
-    if (!a) return { error: 'Usage: /automate <what to automate>' };
-    return {
-      text:
-        `AUTOMATE THIS WORKFLOW IN THE PROJECT:\n${a}\n\n` +
-        'Create the scripts/config needed with write_file, wire them so they can run, and show how to run them.',
-    };
+  const skill = list.find((s) => s.id === id);
+  if (!skill) return null;
+  if (skill.requires === 'args' && !args) {
+    return { skill, error: `Usage: /${id} <argument>`, sendToModel: false };
   }
-  if (id === 'plan') {
-    return {
-      text:
-        `Plan first for: ${a || 'the current task'}\n\n` +
-        'Write a concrete implementation plan (steps, files, risks). Prefer write_todos / .guide/plans when tools allow.',
-      preferChatMode: 'plan',
-    };
-  }
-  if (id === 'ask') {
-    if (!a) return { error: 'Usage: /ask <question>' };
-    return { text: a, preferChatMode: 'ask' };
-  }
-  return null;
+  const text = `${skill.body}\n\nArgument:\n${args || '(none)'}\n\nFollow the skill above. Use tools. Do not stop at a promise.`;
+  const out = {
+    skill: { id: skill.id, name: skill.name, description: skill.description, kind: 'expand' },
+    text,
+    sendToModel: true,
+    preferChatMode: skill.mode || null,
+  };
+  if (id === 'goal') out.goal = { objective: args };
+  return out;
 }
+
+const skillFiles = import.meta.glob('../../../skills/*/SKILL.md', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+});
+
+function loadBundledSkills() {
+  const skills = [];
+  for (const [file, raw] of Object.entries(skillFiles)) {
+    const parts = file.split(/[/\\]/);
+    const id = parts[parts.length - 2];
+    const skill = parseSkillMarkdown(raw, id);
+    if (skill.id && skill.id !== 'skills') skills.push(skill);
+  }
+  skills.sort((a, b) => a.id.localeCompare(b.id));
+  return skills;
+}
+
+const BUNDLED = loadBundledSkills();
 
 export function listSlashSkills() {
-  return BUILTIN_SKILLS.map(({ id, name, description, kind }) => ({ id, name, description, kind }));
+  return BUNDLED.map(({ id, name, description }) => ({ id, name, description, kind: 'expand' }));
 }
 
 export function matchSlashSkills(input) {
   const raw = String(input || '');
   if (!raw.startsWith('/')) return [];
-  const q = raw.slice(1).toLowerCase();
-  const token = q.split(/\s/)[0] || '';
-  return BUILTIN_SKILLS.filter((s) => s.id.startsWith(token) || s.name.slice(1).startsWith(token));
+  const token = raw.slice(1).toLowerCase().split(/\s/)[0] || '';
+  const all = [
+    { id: 'skills', name: '/skills', description: 'List available slash skills' },
+    ...BUNDLED,
+  ];
+  return all.filter((s) => s.id.startsWith(token) || s.name.slice(1).startsWith(token));
 }
 
-/**
- * @returns {null | { sendToModel: boolean, text?: string, localText?: string, error?: string, preferChatMode?: string, skill: object }}
- */
 export function resolveSlashSkill(rawInput) {
-  const raw = String(rawInput || '').trim();
-  if (!raw.startsWith('/')) return null;
-  const m = raw.match(/^\/([a-zA-Z][\w-]*)(?:\s+([\s\S]*))?$/);
-  if (!m) return null;
-  const id = m[1].toLowerCase();
-  const args = (m[2] || '').trim();
-  const skill = BUILTIN_SKILLS.find((s) => s.id === id);
-  if (!skill) return null;
-
-  if (skill.id === 'skills') {
-    return { skill, localText: formatSkillsHelp(), sendToModel: false };
-  }
-  const out = expandSkill(id, args);
-  if (!out) return null;
-  if (out.error) return { skill, error: out.error, sendToModel: false };
-  return {
-    skill,
-    text: out.text,
-    preferChatMode: out.preferChatMode || null,
-    sendToModel: true,
-  };
+  return resolveFromSkills(rawInput, BUNDLED);
 }
