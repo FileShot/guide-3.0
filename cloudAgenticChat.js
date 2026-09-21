@@ -24,8 +24,19 @@ const streamTrace = require('./streamTrace');
 
 const CLOUD_CONTINUE_PROMPT = 'Continue from the tool results above. Call more tools if needed, or give a concise final answer.';
 
+const CLOUD_FORCE_TOOLS_PROMPT =
+  '[System: You claimed you would build/create files but emitted no tool calls. ' +
+  'Immediately output write_file (and related) tool JSON to create the files. Do not apologize or repeat promises — call tools now.]';
+
 const PLAN_BLOCKED_TOOLS_MSG =
   '[System: Plan mode — update_todo cannot mark items done/in-progress or edit non-plan files until Build. Use write_todos for planning; write_file/edit_file only for .guide/plans/*.plan.md. Do not repeat blocked tool JSON in your reply.]';
+
+function looksLikeEmptyBuildPromise(prose) {
+  const t = String(prose || '');
+  if (t.length < 8 || t.length > 1200) return false;
+  return /\b(build(ing)?|creat(e|ing)|writ(e|ing)|implement(ing)?|let me (actually )?(do|build|create)|proceed|right now)\b/i.test(t)
+    && !/```/.test(t);
+}
 
 const FILE_WRITE_OPS = new Set(['write_file', 'create_file', 'append_to_file']);
 const FILE_EDIT_OPS = new Set(['edit_file', 'replace_in_file']);
@@ -52,6 +63,11 @@ async function runCloudAgenticChat({
 }) {
   const enableSubAgents = !!(settings.enableSubAgents);
   const toolsEnabled = settings.toolsEnabled !== false;
+  // Secrypt/P40 n_ctx≈8k — full tool catalog + agent prompt exceeds the hard truncate and
+  // the model never sees write_file, so it only says "Building…" without calling tools.
+  const tightContext = ['secrypt', 'cipher', 'graysoft', 'cerebras'].includes(
+    String(cloudProvider || '').toLowerCase(),
+  );
 
   const mode = resolveAgentMode({
     askOnly: settings.askOnly,
@@ -69,16 +85,24 @@ async function runCloudAgenticChat({
   const filteredDefs = filterToolDefinitions(allDefs, mode.allowedTools);
 
   const toolPromptOpts = { planning: mode.planning };
-  let toolPrompt = mode.toolsActive ? mcpToolServer.getToolPromptForTools(filteredDefs, toolPromptOpts) : '';
-  const compactToolParts = mode.toolsActive
-    ? mcpToolServer.getCompactToolHint('default', { toolDefs: filteredDefs, planning: mode.planning })
-    : [];
-  let compactToolPrompt = compactToolParts.join('');
-
-  if (enableSubAgents && toolPrompt) {
-    const subAgentTool = '\n- **spawn_subagent** — Delegate a focused sub-task to an isolated sub-agent (local model only; unavailable in cloud mode).';
-    toolPrompt += subAgentTool;
-    compactToolPrompt += '\n- spawn_subagent: not available in cloud mode\n';
+  let toolPrompt = '';
+  if (mode.toolsActive) {
+    if (tightContext) {
+      toolPrompt = mcpToolServer
+        .getCompactToolHint('default', {
+          toolDefs: filteredDefs,
+          planning: mode.planning,
+          minimal: true,
+          compactDescriptions: true,
+        })
+        .join('');
+    } else {
+      toolPrompt = mcpToolServer.getToolPromptForTools(filteredDefs, toolPromptOpts);
+      if (enableSubAgents && toolPrompt) {
+        toolPrompt +=
+          '\n- **spawn_subagent** — Delegate a focused sub-task to an isolated sub-agent (local model only; unavailable in cloud mode).';
+      }
+    }
   }
 
   let systemPrompt = buildCloudSystemPrompt({
@@ -86,16 +110,24 @@ async function runCloudAgenticChat({
     baseSystemPrompt: mode.baseSystemPrompt,
     customInstructions: settings.customInstructions,
     toolPrompt,
+    tightContext,
   });
-  systemPrompt += buildAgentSystemPromptLayers({
-    projectPath: settings.projectPath,
-    guideInstructionsPath: settings.guideInstructionsPath,
-    editorContext: settings.editorContext,
-    editorDiagnostics: settings.editorDiagnostics,
-  });
+  if (!tightContext) {
+    systemPrompt += buildAgentSystemPromptLayers({
+      projectPath: settings.projectPath,
+      guideInstructionsPath: settings.guideInstructionsPath,
+      editorContext: settings.editorContext,
+      editorDiagnostics: settings.editorDiagnostics,
+    });
+  } else if (settings.projectPath) {
+    systemPrompt += `\nProject directory: ${settings.projectPath}\nAll file tools are relative to this directory.\n`;
+  }
   if (mode.systemPromptAdditions) {
     systemPrompt += mode.systemPromptAdditions;
   }
+  console.log(
+    `[CloudAgentic] systemPrompt=${systemPrompt.length} chars tight=${tightContext} tools=${mode.toolsActive ? 'on' : 'off'} mode=${mode.planning ? 'plan' : mode.askOnly ? 'ask' : 'agent'}`,
+  );
 
   const conversationHistory = sanitizeCloudConversationHistory(
     Array.isArray(initialHistory) ? initialHistory : [],
@@ -178,6 +210,24 @@ async function runCloudAgenticChat({
           content: `[System: Tool call could not be parsed. Retry with valid JSON: {"tool":"<name>","params":{...}}.${closestHint ? ` ${closestHint}` : ''}]`,
         });
         nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+        continue;
+      }
+      // Agent mode: model only promised action — nudge once to emit tools (common on tight Secrypt prompts).
+      if (
+        mode.toolsActive
+        && !mode.askOnly
+        && !mode.planning
+        && looksLikeEmptyBuildPromise(roundCleanProse)
+        && iter < maxIter - 1
+        && !conversationHistory.some((m) => m.role === 'user' && String(m.content || '').includes('emitted no tool calls'))
+      ) {
+        conversationHistory.push({
+          role: 'assistant',
+          content: roundCleanProse.trim() || '(no tools)',
+        });
+        conversationHistory.push({ role: 'user', content: CLOUD_FORCE_TOOLS_PROMPT });
+        nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+        console.log('[CloudAgentic] prose-only build promise — forcing tool call round');
         continue;
       }
       break;

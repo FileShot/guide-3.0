@@ -25,6 +25,7 @@ import { openFileFromReadResponse } from '../utils/openFileFromRead';
 import { stripPlainCodeFencesFromProse } from '../utils/markdownFenceUtils';
 import { createOfflineVoiceStream } from '../lib/offlineVoiceStream';
 import { GUIDE_CLOUD_PROVIDERS, GUIDE_CLOUD_QUALITY_MODEL, resolveGuideCloudModel } from '../lib/guideCloudModel';
+import { matchSlashSkills, resolveSlashSkill } from '../lib/slashSkills';
 
 import { Virtuoso } from 'react-virtuoso';
 
@@ -1514,30 +1515,36 @@ export default function ChatPanel() {
 
 
 
-  // Scroll to the newly finalized assistant message.
-
+  // Scroll to the newly finalized assistant message (Footer → list handoff often leaves viewport blank).
   useEffect(() => {
+    if (chatStreaming) return;
+    if (userScrolledAwayRef.current && !atBottomRef.current) return;
+    if (!chatMessages.length) return;
 
-    if (userScrolledAwayRef.current) return;
-
-    requestAnimationFrame(() => {
-
-      if (virtuosoRef.current && !userScrolledAwayRef.current) {
-
-        if (!chatStreaming && chatMessages.length > 0) {
-          virtuosoRef.current.scrollToIndex({
-            index: chatMessages.length - 1,
-            align: 'end',
-            behavior: 'auto',
-          });
-        } else {
+    let cancelled = false;
+    const run = () => {
+      if (cancelled || !virtuosoRef.current) return;
+      try {
+        virtuosoRef.current.scrollToIndex({
+          index: chatMessages.length - 1,
+          align: 'end',
+          behavior: 'auto',
+        });
+      } catch (_) {
+        try {
           virtuosoRef.current.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: 'auto' });
-        }
-
+        } catch (__) { /* */ }
       }
-
+    };
+    const id1 = requestAnimationFrame(() => {
+      requestAnimationFrame(run);
     });
-
+    const t = setTimeout(run, 50);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(id1);
+      clearTimeout(t);
+    };
   }, [chatStreaming, chatMessages.length]);
 
 
@@ -1554,6 +1561,31 @@ export default function ChatPanel() {
   } = {}) => {
 
     if (!text) return;
+
+    // Slash skills: /goal, /automate, /skills, …
+    const slash = resolveSlashSkill(text);
+    if (slash) {
+      if (slash.error) {
+        addChatMessage({ role: 'assistant', content: slash.error, timestamp: Date.now() });
+        setInput('');
+        return;
+      }
+      if (!slash.sendToModel && slash.localText) {
+        addChatMessage({ role: 'user', content: text, timestamp: Date.now() });
+        addChatMessage({ role: 'assistant', content: slash.localText, timestamp: Date.now() });
+        setInput('');
+        return;
+      }
+      if (slash.preferChatMode) {
+        setChatMode(slash.preferChatMode);
+      }
+      text = slash.text || text;
+      if (slash.preferChatMode) {
+        overrideChatMode = slash.preferChatMode;
+        if (slash.preferChatMode === 'plan') overridePlanMode = true;
+        if (slash.preferChatMode === 'ask') overridePlanMode = false;
+      }
+    }
 
     setInput('');
 
@@ -2480,7 +2512,7 @@ export default function ChatPanel() {
 
     }
 
-  }, [chatStreaming, addChatMessage, chatMode, chatAttachments, clearChatAttachments, fileContextDismissed]);
+  }, [chatStreaming, addChatMessage, chatMode, chatAttachments, clearChatAttachments, fileContextDismissed, setChatMode]);
 
   const handleBuildPlan = useCallback(async (session) => {
     if (!session?.path || useAppStore.getState().chatStreaming) return;
@@ -4233,6 +4265,28 @@ export default function ChatPanel() {
               />
             )}
 
+            {input.startsWith('/') && !input.includes('\n') && matchSlashSkills(input).length > 0 && (
+              <div className="absolute left-2 right-2 bottom-full mb-1 z-50 rounded-lg border border-vsc-panel-border bg-vsc-dropdown shadow-xl overflow-hidden">
+                <div className="px-2 py-1 text-[10px] text-vsc-text-dim border-b border-vsc-panel-border/50">Skills</div>
+                {matchSlashSkills(input).map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className="w-full text-left px-2.5 py-1.5 hover:bg-vsc-list-hover flex flex-col gap-0.5"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      const needsArgs = s.id !== 'skills';
+                      setInput(needsArgs ? `${s.name} ` : s.name);
+                      textareaRef.current?.focus();
+                    }}
+                  >
+                    <span className="text-[12px] font-medium text-vsc-text">{s.name}</span>
+                    <span className="text-[10px] text-vsc-text-dim">{s.description}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
             {voiceListening && (voiceLiveText || voiceStatusText) && (
               <div className="px-3 pt-1 text-[12px] text-vsc-accent leading-snug max-h-[72px] overflow-y-auto">
                 {voiceLiveText || voiceStatusText}
@@ -4247,7 +4301,7 @@ export default function ChatPanel() {
               placeholder={chatStreaming ? 'Type to queue a message...' : (
                 activeMediaModel?.modelPath
                   ? 'Type a prompt…'
-                  : (modelLoaded ? 'Ask anything... (@ files, @docs for docs)' : 'Load a model to start...')
+                  : (modelLoaded ? 'Ask anything… (/skills, /goal, @files)' : 'Load a model or pick guIDE Cloud…')
               )}
 
               value={input}

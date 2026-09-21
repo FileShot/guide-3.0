@@ -6058,8 +6058,40 @@ ChatEngine.DEFAULT_ENABLED_TOOLS = new Set([
   'ask_question',
 ]);
 
-/** Same identity + tools as local; cloud path appends CLOUD_STYLE only when tools are enabled. */
-function buildCloudSystemPrompt({ userSystemPrompt, baseSystemPrompt, customInstructions, toolPrompt }) {
+/**
+ * Same identity + tools as local; cloud path appends CLOUD_STYLE when tools are enabled.
+ * tightContext: Secrypt/P40 8k — short identity + tools first so truncation cannot drop write_file.
+ */
+function buildCloudSystemPrompt({
+  userSystemPrompt,
+  baseSystemPrompt,
+  customInstructions,
+  toolPrompt,
+  tightContext = false,
+} = {}) {
+  const cloudChannels =
+    '\n\n## Cloud output channels\n' +
+    'Put reasoning in your reasoning stream only (plain language). ' +
+    'Emit executable tool calls as JSON in the assistant message body, not inside reasoning. ' +
+    'Never paste full file contents or raw tool JSON in reasoning; use write_file/edit_file tools instead.';
+
+  if (tightContext) {
+    let text =
+      'You are guIDE Cloud AI — an agentic coding assistant with real file/terminal tools.\n' +
+      'When the user asks you to build, create, or change a project: you MUST call tools ' +
+      '(write_file, edit_file, list_directory, run_command, …) in this turn. ' +
+      'Saying you will build without emitting tool JSON is incorrect. Do not apologize — call tools.\n' +
+      'Application source goes in the project root, never under .guide/.\n';
+    if (customInstructions && String(customInstructions).trim()) {
+      text += `\n${String(customInstructions).trim().slice(0, 800)}\n`;
+    }
+    if (toolPrompt && String(toolPrompt).trim()) {
+      text += `\n${String(toolPrompt).trim()}\n`;
+    }
+    text += cloudChannels;
+    return text;
+  }
+
   let text = (userSystemPrompt && String(userSystemPrompt).trim()) || baseSystemPrompt || SYSTEM_PROMPT;
   if (customInstructions && String(customInstructions).trim()) {
     text += `\n\n${String(customInstructions).trim()}`;
@@ -6067,11 +6099,7 @@ function buildCloudSystemPrompt({ userSystemPrompt, baseSystemPrompt, customInst
   if (toolPrompt && String(toolPrompt).trim()) {
     text += `\n\n${String(toolPrompt).trim()}`;
   }
-  text +=
-    '\n\n## Cloud output channels\n' +
-    'Put reasoning in your reasoning stream only (plain language). ' +
-    'Emit executable tool calls as JSON in the assistant message body, not inside reasoning. ' +
-    'Never paste full file contents or raw tool JSON in reasoning; use write_file/edit_file tools instead.';
+  text += cloudChannels;
   return text;
 }
 

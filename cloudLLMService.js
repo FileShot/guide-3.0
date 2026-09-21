@@ -811,9 +811,18 @@ class CloudLLMService extends EventEmitter {
       : model;
 
     let sys = typeof systemPrompt === 'string' ? systemPrompt : '';
-    // Cap system prompt for Secrypt 8k context (tools dump otherwise overflows n_ctx)
-    if (useSecrypt && sys.length > 7000) {
-      sys = sys.slice(0, 7000) + '\n\n[System prompt truncated for Secrypt 8k context.]';
+    // Cap system prompt for Secrypt 8k context (tools dump otherwise overflows n_ctx).
+    // Prefer keeping the tools section: truncate from the front of the pre-tools preamble if needed.
+    if (useSecrypt && sys.length > 7200) {
+      const toolsIdx = sys.search(/\n## Tools\b/);
+      if (toolsIdx > 400) {
+        const head = sys.slice(0, 350);
+        const fromTools = sys.slice(toolsIdx);
+        sys = `${head}\n\n[…]\n${fromTools}`;
+      }
+      if (sys.length > 7200) {
+        sys = sys.slice(0, 7200) + '\n\n[System prompt truncated for Secrypt 8k context.]';
+      }
     }
 
     let messages = [
