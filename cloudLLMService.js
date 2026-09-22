@@ -375,8 +375,6 @@ const STREAM_TIMEOUT = 20000;
 const IDLE_TIMEOUT = 10000;
 /** guIDE Cloud waits on P40 queue + 27B prefill before the first byte. 20s kills every turn. */
 const PROXY_FIRST_BYTE_MS = 180000;
-/** Silence allowed after tokens have started (thinking can pause). */
-const PROXY_IDLE_MS = 90000;
 /** Longer idle window while rotating API keys after 429 (no SSE bytes between attempts). */
 const IDLE_TIMEOUT_POOL_RETRY = 45000;
 
@@ -892,7 +890,7 @@ class CloudLLMService extends EventEmitter {
       const result = await this._streamRequest(
         'graysoft.dev', '/api/ai/proxy', sessionToken, proxyBody,
         'openai', onToken, {}, onThinkingToken, proxyProvider,
-        PROXY_IDLE_MS,
+        0,
         PROXY_FIRST_BYTE_MS,
       );
       return { ...result, model: proxyModel, provider: proxyProvider, viaProxy: true };
@@ -1546,8 +1544,10 @@ class CloudLLMService extends EventEmitter {
           settle(reject, new Error(`No response from ${host} within ${firstByte / 1000}s. The model may be overloaded. Try again or switch models.`));
         }, firstByte);
 
-        const effectiveIdle = streamIdleMs > 0 ? streamIdleMs : IDLE_TIMEOUT;
+        const armIdle = streamIdleMs > 0;
+        const effectiveIdle = armIdle ? streamIdleMs : IDLE_TIMEOUT;
         const resetIdleTimer = () => {
+          if (!armIdle) return;
           if (idleTimer) clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
             console.error(`[CloudLLM] Stream idle timeout: no data for ${effectiveIdle / 1000}s from ${host} (provider=${provider || 'unknown'})`);
@@ -1564,7 +1564,7 @@ class CloudLLMService extends EventEmitter {
           if (!gotFirstData) {
             gotFirstData = true;
             if (firstDataTimer) { clearTimeout(firstDataTimer); firstDataTimer = null; }
-            try { req.setTimeout(effectiveIdle); } catch (_) {}
+            try { req.setTimeout(armIdle ? effectiveIdle : 0); } catch (_) {}
           }
           resetIdleTimer();
 

@@ -781,7 +781,6 @@ function buildCloudChatErrorResponse(cloudLLM, cloudProvider, err) {
   }
 
   const isRateLimit = errorCode === 429 || /rate limit/i.test(detail);
-  const isStreamStall = /stream stalled/i.test(detail) || /idle timeout/i.test(detail) || /no data for/i.test(detail);
 
   let error = detail;
   let errorSuggestion = '';
@@ -793,9 +792,6 @@ function buildCloudChatErrorResponse(cloudLLM, cloudProvider, err) {
     errorSuggestion = cooldownUntil
       ? 'Wait for the countdown below before sending another message.'
       : 'Please wait about a minute before trying again.';
-  } else if (isStreamStall) {
-    error = 'guIDE Cloud AI is retrying keys (rate limited). Try again in a moment.';
-    errorSuggestion = 'The previous request timed out while switching API keys. You can send a new message.';
   } else if (errorCode === 402 || /payment method/i.test(detail)) {
     error = 'Cloud provider requires payment (402). Try again later or switch providers.';
     errorSuggestion = 'This usually happens when the fallback provider needs a paid account.';

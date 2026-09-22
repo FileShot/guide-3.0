@@ -22,8 +22,6 @@ const {
 } = require('./agentModeResolver');
 const streamTrace = require('./streamTrace');
 
-const CLOUD_CONTINUE_PROMPT = 'Continue from the tool results above. Call more tools if needed, or give a concise final answer.';
-
 const CLOUD_CORE_TOOLS = [
   'read_file', 'write_file', 'edit_file', 'append_to_file', 'list_directory',
   'find_files', 'grep_search', 'run_command', 'write_todos', 'update_todo', 'ask_question',
@@ -237,12 +235,7 @@ async function runCloudAgenticChat({
     ? settings.activeGoal
     : null;
   if (activeGoal) {
-    systemPrompt +=
-      `\n\n## Active goal\n${activeGoal.objective}\n` +
-      'There is no turn budget. Do real work with tools in this turn. ' +
-      'Do not shrink the objective. A listing or a promise is not completion. ' +
-      'Before you stop, every requirement must be true in the files. ' +
-      'If it is not, keep calling tools.\n';
+    systemPrompt += `\n\n## Active goal\n${activeGoal.objective}\n`;
   }
 
   const genBase = {
@@ -316,11 +309,7 @@ async function runCloudAgenticChat({
         role: 'assistant',
         content: (streamFilters.getCombinedRawBuffer() || result.text || '').slice(-4000),
       });
-      conversationHistory.push({
-        role: 'user',
-        content: 'The previous reply hit the length limit. Continue from the exact cutoff. If a file was incomplete, finish it with write_file or append_to_file.',
-      });
-      nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+      nextUserPrompt = userMessage;
       console.log(`[CloudAgentic] length stop — continuation ${lengthContinuations}`);
       continue;
     }
@@ -348,7 +337,7 @@ async function runCloudAgenticChat({
           role: 'user',
           content: `[System: Tool call could not be parsed. Retry with valid JSON: {"tool":"<name>","params":{...}}.${closestHint ? ` ${closestHint}` : ''}]`,
         });
-        nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+        nextUserPrompt = userMessage;
         continue;
       }
       // Agent mode: model only promised action — nudge once to emit tools (common on tight Secrypt prompts).
@@ -365,28 +354,9 @@ async function runCloudAgenticChat({
           content: roundCleanProse.trim() || '(no tools)',
         });
         conversationHistory.push({ role: 'user', content: CLOUD_FORCE_TOOLS_PROMPT });
-        nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+        nextUserPrompt = userMessage;
         console.log('[CloudAgentic] prose-only build promise — forcing tool call round');
         continue;
-      }
-      if (activeGoal && iter < maxIter - 1 && !/GOAL_COMPLETE/.test(roundCleanProse)) {
-        const nudges = conversationHistory.filter((m) => m.role === 'user' && String(m.content).includes('Goal check:')).length;
-        if (nudges < 8) {
-          conversationHistory.push({
-            role: 'assistant',
-            content: roundCleanProse.trim() || '(no tools)',
-          });
-          conversationHistory.push({
-            role: 'user',
-            content:
-              `Goal check: the objective is still:\n${activeGoal.objective}\n` +
-              'Is every requirement true in the current files? If any requirement is missing or unverified, keep working with write_file, edit_file, or run_command. ' +
-              'If you have checked the files and every requirement is true, reply with GOAL_COMPLETE and a short summary.',
-          });
-          nextUserPrompt = CLOUD_CONTINUE_PROMPT;
-          console.log('[CloudAgentic] goal nudge — objective not proven');
-          continue;
-        }
       }
       break;
     }
@@ -413,7 +383,7 @@ async function runCloudAgenticChat({
           content: roundCleanProse.trim() || '(tool calls)',
         });
         conversationHistory.push({ role: 'user', content: PLAN_BLOCKED_TOOLS_MSG });
-        nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+        nextUserPrompt = userMessage;
         continue;
       }
       if (issues?.length) {
@@ -425,7 +395,7 @@ async function runCloudAgenticChat({
           role: 'user',
           content: `[System: Tool Validation Failed]\n${issues.join('\n')}\n\nRetry with valid tool parameters.`,
         });
-        nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+        nextUserPrompt = userMessage;
         continue;
       }
       if (looksLikeToolAttempt(roundRawCombined)) {
@@ -438,7 +408,7 @@ async function runCloudAgenticChat({
           role: 'user',
           content: `[System: Tool call could not be parsed. Retry with valid JSON: {"tool":"<name>","params":{...}}.${closestHint ? ` ${closestHint}` : ''}]`,
         });
-        nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+        nextUserPrompt = userMessage;
         continue;
       }
       break;
@@ -523,7 +493,7 @@ async function runCloudAgenticChat({
     conversationHistory.push({ role: 'user', content: injectText });
     console.log(`[CloudAgentic] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s)`);
 
-    nextUserPrompt = CLOUD_CONTINUE_PROMPT;
+    nextUserPrompt = userMessage;
   }
 
   let finalText = displayResponse || stripToolCallText(fullResponse);

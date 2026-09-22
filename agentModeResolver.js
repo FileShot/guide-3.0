@@ -216,7 +216,7 @@ function getAgentToolPromptHeader(options = {}) {
       header += '```json\n{"tool":"write_file","params":{"filePath":"index.html","content":"<!doctype html>\\n<html><body></body></html>"}}\n```\n';
       header += '```json\n{"tool":"edit_file","params":{"filePath":"src/app.js","oldText":"const x = 1","newText":"const x = 2"}}\n```\n';
       header += '```json\n{"tool":"run_command","params":{"command":"npm test"}}\n```\n';
-      header += 'When the user asks you to build or create files, call write_file in this turn. One list_directory is enough. Do not stop after listing.\n\n';
+      header += 'When the user asks you to build or create files, call write_file in this turn. One list_directory is enough.\n\n';
     } else {
       header += '```json\n{"tool":"write_file","params":{"filePath":"index.html","content":"<html><body>Hello</body></html>"}}\n```\n';
       header += '```json\n{"tool":"edit_file","params":{"filePath":"src/app.js","oldText":"const x = 1","newText":"const x = 2"}}\n```\n';

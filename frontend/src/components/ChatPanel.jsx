@@ -4285,7 +4285,7 @@ export default function ChatPanel() {
             )}
 
             {activeGoal?.objective && (
-              <div className="mx-2 mb-1 flex items-center gap-1.5 rounded border border-vsc-accent/40 bg-vsc-accent/10 px-2 py-1">
+              <div className="-mx-3 -mt-2 mb-1 flex items-center gap-1.5 rounded-t-md border-b border-vsc-panel-border bg-vsc-bg px-3 py-1">
                 <span className="text-[10px] uppercase tracking-wide text-vsc-accent shrink-0">Goal</span>
                 <span className="text-[11px] text-vsc-text truncate flex-1" title={activeGoal.objective}>{activeGoal.objective}</span>
                 <button
