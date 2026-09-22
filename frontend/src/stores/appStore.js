@@ -1261,6 +1261,10 @@ const useAppStore = create((set, get) => ({
         const s = get();
 
         if (!s._textTokenBuffer) return;
+        if (!s.chatStreaming || s.activeChatEpoch !== s.chatGenerationEpoch) {
+          set({ _textTokenBuffer: null, _textTokenTimer: null });
+          return;
+        }
 
         const buf = s._textTokenBuffer;
 

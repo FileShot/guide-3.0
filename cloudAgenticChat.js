@@ -278,16 +278,27 @@ async function runCloudAgenticChat({
       },
     });
 
-    const result = await cloudLLM.generate(nextUserPrompt, {
-      ...genBase,
-      conversationHistory,
-      images: iter === 0 ? images : [],
-      onToken: (token) => thinkSplit.push(token),
-      onThinkingToken: (token) => {
-        streamTrace.trace('stream', 'cloud-thinking-token', { token, iter });
-        streamFilters.processThinkingChunk(token);
-      },
-    });
+    let result;
+    try {
+      result = await cloudLLM.generate(nextUserPrompt, {
+        ...genBase,
+        conversationHistory,
+        images: iter === 0 ? images : [],
+        onToken: (token) => thinkSplit.push(token),
+        onThinkingToken: (token) => {
+          streamTrace.trace('stream', 'cloud-thinking-token', { token, iter });
+          streamFilters.processThinkingChunk(token);
+        },
+      });
+    } catch (err) {
+      if (getCancelled?.() || err?.code === 'ABORTED') {
+        console.log('[CloudAgentic] cancelled during generate');
+        break;
+      }
+      throw err;
+    }
+
+    if (getCancelled?.()) break;
 
     thinkSplit.flush();
     streamFilters.flush();
@@ -518,7 +529,12 @@ async function runCloudAgenticChat({
   let finalText = displayResponse || stripToolCallText(fullResponse);
   const goalComplete = !!(activeGoal && /GOAL_COMPLETE/.test(finalText));
   finalText = String(finalText || '').replace(/GOAL_COMPLETE/g, '').trim();
-  return { text: finalText, toolCallCount: totalToolCalls, goalComplete };
+  return {
+    text: finalText,
+    toolCallCount: totalToolCalls,
+    goalComplete,
+    cancelled: !!getCancelled?.(),
+  };
 }
 
 module.exports = { runCloudAgenticChat, selectCloudToolDefs, createThinkTagSplitter };

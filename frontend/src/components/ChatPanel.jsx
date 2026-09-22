@@ -1930,7 +1930,7 @@ export default function ChatPanel() {
 
       const isStaleTurn = () => useAppStore.getState().chatGenerationEpoch !== epochAtStart;
 
-      if (isStaleTurn()) {
+      if (isStaleTurn() || result?.cancelled) {
         console.log('[ChatPanel] doSend: superseded turn — skipping finalization (force-send/stop)');
         return;
       }
@@ -2687,6 +2687,8 @@ export default function ChatPanel() {
 
     setStopPending(true);
 
+    useAppStore.getState().bumpChatGenerationEpoch();
+
     try {
 
       if (window.electronAPI?.agentPause) {
@@ -2700,8 +2702,6 @@ export default function ChatPanel() {
       }
 
     } catch (_) {}
-
-    useAppStore.getState().bumpChatGenerationEpoch();
 
     useAppStore.getState().resetChatStreamingUI();
 
@@ -2734,6 +2734,8 @@ export default function ChatPanel() {
     try {
 
       const store = useAppStore.getState();
+
+      store.bumpChatGenerationEpoch();
 
       try {
 

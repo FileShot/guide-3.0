@@ -578,6 +578,15 @@ languageServerManager.on('log', ({ serverId, stderr }) => {
 let currentSettings = settingsManager.getAll();
 streamTrace.syncFromSettings(currentSettings);
 let agenticCancelled = false;
+let cloudGen = 0;
+
+/** Invalidate the in-flight Cloud turn and close its socket so the P40 slot is released. */
+function supersedeCloudTurn() {
+  agenticCancelled = true;
+  ctx.agenticCancelled = true;
+  cloudGen += 1;
+  try { cloudLLM.abortActiveStream(); } catch (_) {}
+}
 let autoUpdater = null;
 
 async function openProjectPath(projectPath) {
@@ -821,9 +830,13 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
 
   // ── Cloud provider path (agentic tools + same system/tool prompt as local) ──
   if (cloudProvider) {
+    supersedeCloudTurn();
+    const cloudTurnId = cloudGen;
+    agenticCancelled = false;
+    ctx.agenticCancelled = false;
+    const stillThisTurn = () => agenticCancelled || cloudGen !== cloudTurnId;
     try {
       console.log(`[electron-main] ai-chat: cloud path provider=${cloudProvider}`);
-      agenticCancelled = false;
       // Prefer persisted settings as source of truth; allow chatContext to override
       // ephemeral/per-request flags (askOnly/planMode/etc).
       const settings = { ...(currentSettings || {}), ...(chatContext?.params || chatContext?.settings || {}) };
@@ -909,12 +922,16 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         conversationHistory,
         images,
         executeToolFn,
-        onToken: (token) => _send('llm-token', token),
-        onThinkingToken: (token) => _send('llm-thinking-token', token),
-        onStreamEvent: (eventName, data) => _send(eventName, data),
-        getCancelled: () => agenticCancelled,
+        onToken: (token) => { if (!stillThisTurn()) _send('llm-token', token); },
+        onThinkingToken: (token) => { if (!stillThisTurn()) _send('llm-thinking-token', token); },
+        onStreamEvent: (eventName, data) => { if (!stillThisTurn()) _send(eventName, data); },
+        getCancelled: () => stillThisTurn(),
         getActiveTodos: () => (mcpToolServer?._todos ? [...mcpToolServer._todos] : []),
       });
+
+      if (stillThisTurn()) {
+        return { success: false, cancelled: true };
+      }
 
       if (result?.isQuotaError) {
         const cooldownUntil = cloudLLM.getRateLimitCooldownUntil(cloudProvider);
@@ -949,6 +966,10 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         checkpoint: snapshot ? { turnId: snapshot.turnId, timestamp: snapshot.timestamp, fileCount: snapshot.files.length } : null,
       };
     } catch (err) {
+      if (err?.code === 'ABORTED' || stillThisTurn()) {
+        console.log('[electron-main] ai-chat cloud cancelled');
+        return { success: false, cancelled: true };
+      }
       console.error(`[electron-main] ai-chat cloud ERROR: ${err.message}`);
       // Reset checkpoint state on error to prevent stale captures
       mcpToolServer.startTurn(null);
@@ -1348,8 +1369,7 @@ ipcMain.handle('permission-response', (_e, reqId, approved) => {
 
 ipcMain.handle('cancel-generation', async () => {
   console.log('[electron-main] cancel-generation');
-  agenticCancelled = true;
-  ctx.agenticCancelled = true;
+  supersedeCloudTurn();
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
   await llmEngine.waitForIdle({ timeoutMs: 5000 });
@@ -1360,8 +1380,7 @@ ipcMain.handle('cancel-generation', async () => {
 ipcMain.handle('agent-pause', async () => {
   console.log('[electron-main] agent-pause');
   streamTrace.trace('stream', 'lifecycle-agent-pause', {});
-  agenticCancelled = true;
-  ctx.agenticCancelled = true;
+  supersedeCloudTurn();
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
   await llmEngine.waitForIdle({ timeoutMs: 5000 });
@@ -1371,8 +1390,7 @@ ipcMain.handle('agent-pause', async () => {
 
 ipcMain.handle('force-send-queued', async () => {
   console.log('[electron-main] force-send-queued');
-  agenticCancelled = true;
-  ctx.agenticCancelled = true;
+  supersedeCloudTurn();
   llmEngine.cancelGeneration('user');
   try { mcpToolServer.killActiveChildren('user-cancel'); } catch (_) {}
   await llmEngine.waitForIdle({ timeoutMs: 5000 });
@@ -2903,8 +2921,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/session/clear' && method === 'POST') {
       console.log('[Main] session/clear: resetting all state');
       streamTrace.trace('stream', 'lifecycle-session-clear', {});
-      agenticCancelled = true;
-      ctx.agenticCancelled = true;
+      supersedeCloudTurn();
       if (ctx.resetPause) ctx.resetPause();
       try { llmEngine.cancelGeneration(); } catch (_) {}
       await llmEngine.waitForReady();

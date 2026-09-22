@@ -373,6 +373,10 @@ const CLOUD_SYSTEM_PROMPT = 'You are guIDE Cloud AI, an AI coding assistant buil
 // ─── Stream timeout constants ────────────────────────────────────────────────
 const STREAM_TIMEOUT = 20000;
 const IDLE_TIMEOUT = 10000;
+/** guIDE Cloud waits on P40 queue + 27B prefill before the first byte. 20s kills every turn. */
+const PROXY_FIRST_BYTE_MS = 180000;
+/** Silence allowed after tokens have started (thinking can pause). */
+const PROXY_IDLE_MS = 90000;
 /** Longer idle window while rotating API keys after 429 (no SSE bytes between attempts). */
 const IDLE_TIMEOUT_POOL_RETRY = 45000;
 
@@ -887,7 +891,9 @@ class CloudLLMService extends EventEmitter {
     try {
       const result = await this._streamRequest(
         'graysoft.dev', '/api/ai/proxy', sessionToken, proxyBody,
-        'openai', onToken, {}, onThinkingToken, proxyProvider
+        'openai', onToken, {}, onThinkingToken, proxyProvider,
+        PROXY_IDLE_MS,
+        PROXY_FIRST_BYTE_MS,
       );
       return { ...result, model: proxyModel, provider: proxyProvider, viaProxy: true };
     } catch (err) {
@@ -1445,7 +1451,25 @@ class CloudLLMService extends EventEmitter {
     reject(new Error(errMsg));
   }
 
-  _streamRequest(host, path, apiKey, body, format, onToken, extraHeaders = {}, onThinkingToken = null, provider = null, streamIdleMs = IDLE_TIMEOUT) {
+  /**
+   * Drop the in-flight Cloud HTTP request. The P40 slot stays busy until this
+   * socket closes; leaving it open makes the next message continue that generation.
+   */
+  abortActiveStream() {
+    const active = this._activeStream;
+    if (!active) return false;
+    this._activeStream = null;
+    const err = new Error('Generation cancelled');
+    err.code = 'ABORTED';
+    try { active.clearTimers(); } catch (_) {}
+    try { active.req.setTimeout(0); } catch (_) {}
+    try { active.req.destroy(); } catch (_) {}
+    try { active.finishReject(err); } catch (_) {}
+    return true;
+  }
+
+  _streamRequest(host, path, apiKey, body, format, onToken, extraHeaders = {}, onThinkingToken = null, provider = null, streamIdleMs = IDLE_TIMEOUT, firstByteMs = STREAM_TIMEOUT) {
+    this.abortActiveStream();
     return new Promise((resolve, reject) => {
       const headers = {
         'Content-Type': 'application/json',
@@ -1460,10 +1484,21 @@ class CloudLLMService extends EventEmitter {
       let stopReason = null;
       let firstDataTimer = null;
       let idleTimer = null;
+      let settled = false;
+      const firstByte = firstByteMs > 0 ? firstByteMs : STREAM_TIMEOUT;
 
       const clearTimers = () => {
         if (firstDataTimer) { clearTimeout(firstDataTimer); firstDataTimer = null; }
         if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+      };
+
+      const settle = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        if (this._activeStream && this._activeStream.req === req) this._activeStream = null;
+        clearTimers();
+        try { req.setTimeout(0); } catch (_) {}
+        fn(value);
       };
 
       const req = https.request({ host, path, method: 'POST', headers, agent: keepAliveAgent }, (res) => {
@@ -1497,7 +1532,7 @@ class CloudLLMService extends EventEmitter {
                 errMsg = `API error ${res.statusCode}: ${msg}`;
               }
             } catch { /* use default errMsg */ }
-            reject(new Error(errMsg));
+            settle(reject, new Error(errMsg));
           });
           return;
         }
@@ -1506,23 +1541,21 @@ class CloudLLMService extends EventEmitter {
         let gotFirstData = false;
 
         firstDataTimer = setTimeout(() => {
-          console.error(`[CloudLLM] Stream timeout: no data received within ${STREAM_TIMEOUT / 1000}s from ${host}`);
-          clearTimers();
+          console.error(`[CloudLLM] Stream timeout: no data received within ${firstByte / 1000}s from ${host}`);
           req.destroy();
-          reject(new Error(`No response from ${host} within ${STREAM_TIMEOUT / 1000}s. The model may be overloaded. Try again or switch models.`));
-        }, STREAM_TIMEOUT);
+          settle(reject, new Error(`No response from ${host} within ${firstByte / 1000}s. The model may be overloaded. Try again or switch models.`));
+        }, firstByte);
 
         const effectiveIdle = streamIdleMs > 0 ? streamIdleMs : IDLE_TIMEOUT;
         const resetIdleTimer = () => {
           if (idleTimer) clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
             console.error(`[CloudLLM] Stream idle timeout: no data for ${effectiveIdle / 1000}s from ${host} (provider=${provider || 'unknown'})`);
-            clearTimers();
             req.destroy();
             if (fullText) {
-              resolve({ text: fullText, model: 'cloud', tokensUsed: fullText.length / 4, stopReason });
+              settle(resolve, { text: fullText, model: 'cloud', tokensUsed: fullText.length / 4, stopReason });
             } else {
-              reject(new Error(`Stream stalled from ${host}. Try again or switch models.`));
+              settle(reject, new Error(`Stream stalled from ${host}. Try again or switch models.`));
             }
           }, effectiveIdle);
         };
@@ -1531,6 +1564,7 @@ class CloudLLMService extends EventEmitter {
           if (!gotFirstData) {
             gotFirstData = true;
             if (firstDataTimer) { clearTimeout(firstDataTimer); firstDataTimer = null; }
+            try { req.setTimeout(effectiveIdle); } catch (_) {}
           }
           resetIdleTimer();
 
@@ -1574,20 +1608,24 @@ class CloudLLMService extends EventEmitter {
         });
 
         res.on('end', () => {
-          clearTimers();
-          resolve({ text: fullText, model: 'cloud', tokensUsed: fullText.length / 4, stopReason });
+          settle(resolve, { text: fullText, model: 'cloud', tokensUsed: fullText.length / 4, stopReason });
         });
       });
 
+      this._activeStream = {
+        req,
+        clearTimers,
+        finishReject: (err) => settle(reject, err),
+      };
+
       req.on('error', (err) => {
-        clearTimers();
-        reject(err);
+        settle(reject, err?.code === 'ABORTED' ? err : err);
       });
-      req.setTimeout(STREAM_TIMEOUT, () => {
-        console.error(`[CloudLLM] Socket timeout from ${host}`);
-        clearTimers();
+      req.setTimeout(firstByte, () => {
+        if (settled) return;
+        console.error(`[CloudLLM] Socket timeout from ${host} after ${firstByte / 1000}s`);
         req.destroy();
-        reject(new Error(`Connection timeout to ${host}. Try again or switch models.`));
+        settle(reject, new Error(`Connection timeout to ${host}. Try again or switch models.`));
       });
       req.write(body);
       req.end();
