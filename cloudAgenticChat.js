@@ -21,6 +21,8 @@ const {
   shouldStreamFileContentForAgent,
 } = require('./agentModeResolver');
 const streamTrace = require('./streamTrace');
+const { fitCloudHistory, inputBudgetTokens } = require('./tools/cloudContextFit');
+const { resolveCloudOutputTokens } = require('./cloudLLMService');
 
 const CLOUD_CORE_TOOLS = [
   'read_file', 'write_file', 'edit_file', 'append_to_file', 'list_directory',
@@ -144,7 +146,7 @@ async function runCloudAgenticChat({
 }) {
   const enableSubAgents = !!(settings.enableSubAgents);
   const toolsEnabled = settings.toolsEnabled !== false;
-  // Secrypt/P40 quality worker uses 16k context — use compact (not minimal) tool catalog.
+  // Secrypt/P40 quality worker context is 24576 — use compact tool catalog.
   const isSecryptCloud = ['secrypt', 'cipher', 'graysoft', 'cerebras'].includes(
     String(cloudProvider || '').toLowerCase(),
   );
@@ -251,13 +253,44 @@ async function runCloudAgenticChat({
     thinkingMode: settings.thinkingMode || 'C',
   };
 
-  let lengthContinuations = 0;
+  let emptyLengthStops = 0;
+  let shrinkTries = 0;
+  const contextLimit = typeof cloudLLM._getModelContextLimit === 'function'
+    ? cloudLLM._getModelContextLimit(cloudProvider, cloudModel)
+    : 24576;
+  const outputTokens = resolveCloudOutputTokens(requestedMax, contextLimit);
+
+  const applyFit = (history, nextUser, budgetTokens) => {
+    const fit = fitCloudHistory({
+      systemPrompt,
+      history,
+      nextUser,
+      contextLimit,
+      outputTokens,
+      budgetTokens,
+    });
+    if (fit.droppedCount > 0) {
+      console.log(`[CloudAgentic] context rotate dropped=${fit.droppedCount} budget=${budgetTokens || inputBudgetTokens(contextLimit, outputTokens)}`);
+      if (onStreamEvent) {
+        onStreamEvent('generation-warning', {
+          message: 'Condensing context — continuing task',
+          suggestion: 'Older messages were summarized. The agent will keep working.',
+        });
+      }
+    }
+    return fit;
+  };
 
   for (let iter = 0; iter < maxIter; iter++) {
     if (getCancelled?.()) {
       console.log('[CloudAgentic] cancelled');
       break;
     }
+
+    const fitted = applyFit(conversationHistory, nextUserPrompt);
+    conversationHistory.length = 0;
+    conversationHistory.push(...fitted.history);
+    nextUserPrompt = fitted.nextUser;
 
     streamFilters.resetRound();
     const thinkSplit = createThinkTagSplitter({
@@ -288,6 +321,20 @@ async function runCloudAgenticChat({
         console.log('[CloudAgentic] cancelled during generate');
         break;
       }
+      const msg = String(err?.message || '');
+      if (shrinkTries < 3 && /context size|context length|maximum context|exceeds the available context/i.test(msg)) {
+        shrinkTries += 1;
+        const tighter = applyFit(
+          conversationHistory,
+          nextUserPrompt,
+          Math.max(512, Math.floor(inputBudgetTokens(contextLimit, outputTokens) * 0.6)),
+        );
+        conversationHistory.length = 0;
+        conversationHistory.push(...tighter.history);
+        nextUserPrompt = tighter.nextUser;
+        console.log(`[CloudAgentic] context overflow — shrink ${shrinkTries}`);
+        continue;
+      }
       throw err;
     }
 
@@ -300,17 +347,26 @@ async function runCloudAgenticChat({
       return { isQuotaError: true, error: '__QUOTA_EXCEEDED__', text: displayResponse || fullResponse, toolCallCount: totalToolCalls };
     }
 
-    if (result?.stopReason === 'length' && lengthContinuations < 4 && iter < maxIter - 1) {
-      lengthContinuations += 1;
+    if (result?.stopReason === 'length' && iter < maxIter - 1) {
+      const partialRaw = streamFilters.getCombinedRawBuffer() || result?.text || '';
       const partialProse = streamFilters.getProseCleanText() || stripToolCallText(result?.text || '');
       if (partialProse) displayResponse += partialProse;
-      fullResponse += streamFilters.getCombinedRawBuffer() || result?.text || '';
-      conversationHistory.push({
-        role: 'assistant',
-        content: (streamFilters.getCombinedRawBuffer() || result.text || '').slice(-4000),
-      });
-      nextUserPrompt = userMessage;
-      console.log(`[CloudAgentic] length stop — continuation ${lengthContinuations}`);
+      fullResponse += partialRaw;
+      if (partialRaw.trim()) {
+        conversationHistory.push({ role: 'assistant', content: partialRaw.slice(-8000) });
+      }
+      const rotated = applyFit(conversationHistory, 'Continue from where you stopped. Do not repeat completed work.');
+      const shrunk = rotated.droppedCount > 0 || rotated.history.length < conversationHistory.length;
+      if (!shrunk && partialRaw.trim().length < 80) {
+        emptyLengthStops += 1;
+        if (emptyLengthStops >= 2) break;
+      } else {
+        emptyLengthStops = 0;
+      }
+      conversationHistory.length = 0;
+      conversationHistory.push(...rotated.history);
+      nextUserPrompt = rotated.nextUser;
+      console.log(`[CloudAgentic] length stop — rotated and continuing dropped=${rotated.droppedCount}`);
       continue;
     }
 

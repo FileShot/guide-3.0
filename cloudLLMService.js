@@ -13,6 +13,7 @@
 const https = require('https');
 const http = require('http');
 const { EventEmitter } = require('events');
+const { fitCloudHistory, messageText } = require('./tools/cloudContextFit');
 
 const keepAliveAgent = new https.Agent({ keepAlive: true, maxSockets: 6, timeout: 60000 });
 
@@ -30,8 +31,8 @@ function resolveSecryptCloudModel(provider, model) {
   return id;
 }
 
-/** Cipher-quality context once KV is Q4. Override with SECRYPT_CONTEXT_TOKENS. */
-const SECRYPT_CONTEXT_DEFAULT = 32768;
+/** Cipher-quality window. Live P40 worker is llama-server -c 24576. Override with SECRYPT_CONTEXT_TOKENS. */
+const SECRYPT_CONTEXT_DEFAULT = 24576;
 
 /**
  * Reply token budget for guIDE Cloud.
@@ -661,7 +662,7 @@ class CloudLLMService extends EventEmitter {
   }
 
   _getModelContextLimit(provider, model) {
-    // Secrypt P40 quality worker. Q4 KV is what fits n_ctx=32768 beside the 27B weights.
+    // Secrypt P40 quality worker. Live llama-server context is 24576 with Q4 KV.
     if (
       provider === 'secrypt' ||
       provider === 'cipher' ||
@@ -779,42 +780,34 @@ class CloudLLMService extends EventEmitter {
   // ─── Context trimming ───────────────────────────────────────────────────────
 
   _trimToContextLimit(messages, provider, model, maxTokens) {
+    if (!Array.isArray(messages) || messages.length === 0) return messages;
     const contextLimit = this._getModelContextLimit(provider, model);
-    const reserveForOutput = maxTokens || 2048;
-    const budgetChars = (contextLimit - reserveForOutput) * 3.5;
-    if (budgetChars <= 0) return messages;
-
-    let totalChars = 0;
-    for (const m of messages) {
-      const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-      totalChars += content.length;
+    const outputTokens = (typeof maxTokens === 'number' && maxTokens > 0)
+      ? maxTokens
+      : resolveCloudOutputTokens(0, contextLimit);
+    const hasSystem = messages[0]?.role === 'system';
+    const systemPrompt = hasSystem ? messageText(messages[0]) : '';
+    const body = hasSystem ? messages.slice(1) : messages.slice();
+    if (body.length === 0) return messages;
+    const last = body[body.length - 1];
+    const history = body.slice(0, -1).map((m) => ({ role: m.role, content: messageText(m) }));
+    const fit = fitCloudHistory({
+      systemPrompt,
+      history,
+      nextUser: messageText(last),
+      contextLimit,
+      outputTokens,
+    });
+    if (fit.droppedCount === 0 && fit.nextUser === messageText(last)) return messages;
+    const out = [];
+    if (hasSystem) out.push({ ...messages[0], content: typeof messages[0].content === 'string' ? messages[0].content : systemPrompt });
+    out.push(...fit.history);
+    if (fit.nextUser === messageText(last) && last && typeof last.content !== 'string') out.push(last);
+    else out.push({ role: last.role || 'user', content: fit.nextUser });
+    if (fit.droppedCount > 0) {
+      console.log(`[CloudLLM] Context rotate dropped ${fit.droppedCount} messages to fit ${model} (${contextLimit} tokens)`);
     }
-    if (totalChars <= budgetChars) return messages;
-
-    const system = messages[0];
-    const user = messages[messages.length - 1];
-    const middle = messages.slice(1, -1);
-
-    const systemLen = (typeof system.content === 'string' ? system.content : JSON.stringify(system.content)).length;
-    const userLen = (typeof user.content === 'string' ? user.content : JSON.stringify(user.content)).length;
-    let remaining = budgetChars - systemLen - userLen;
-
-    const kept = [];
-    for (let i = middle.length - 1; i >= 0; i--) {
-      const content = typeof middle[i].content === 'string' ? middle[i].content : JSON.stringify(middle[i].content);
-      if (remaining - content.length > 0) {
-        kept.unshift(middle[i]);
-        remaining -= content.length;
-      } else {
-        break;
-      }
-    }
-
-    const trimmed = middle.length - kept.length;
-    if (trimmed > 0) {
-      console.log(`[CloudLLM] Auto-trimmed ${trimmed} oldest messages to fit ${model} context (${contextLimit} tokens)`);
-    }
-    return [system, ...kept, user];
+    return out;
   }
 
   // ─── Proxy routing ──────────────────────────────────────────────────────────

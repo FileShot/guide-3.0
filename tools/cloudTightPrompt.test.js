@@ -23,7 +23,7 @@ assert.ok(prompt.includes('write_file'), 'prompt must include write_file');
 assert.ok(compact.length > 5000, 'compact catalog should be fuller than minimal');
 
 const llm = new CloudLLMService();
-assert.strictEqual(llm._getModelContextLimit('secrypt', 'cipher-quality'), 32768);
+assert.strictEqual(llm._getModelContextLimit('secrypt', 'cipher-quality'), 24576);
 assert.strictEqual(resolveCloudOutputTokens(0, 32768), 8192);
 assert.strictEqual(resolveCloudOutputTokens(-1, 32768), 8192);
 assert.strictEqual(resolveCloudOutputTokens(4096, 32768), 4096);
@@ -48,5 +48,5 @@ console.log('cloudTightPrompt+skills OK', {
   compactChars: compact.length,
   promptChars: prompt.length,
   skills: skills.length,
-  secryptCtx: 32768,
+  secryptCtx: 24576,
 });
