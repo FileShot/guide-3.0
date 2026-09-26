@@ -25,6 +25,9 @@ const streamTrace = require('./streamTrace');
 const { fitCloudHistory, inputBudgetTokens } = require('./tools/cloudContextFit');
 const { resolveCloudOutputTokens, secryptQualitySampling } = require('./cloudLLMService');
 
+/** After tool results (or a system repair) are already in history — do not re-ask the original user text. */
+const NEXT_FROM_HISTORY = '';
+
 function buildCloudToolListing(toolDefs) {
   let prompt = '## Tools\n';
   for (const tool of toolDefs || []) {
@@ -34,7 +37,8 @@ function buildCloudToolListing(toolDefs) {
         .map(([n, i]) => `${n}:${i.type}${i.required ? '*' : ''}`)
         .join(', ')
       : '';
-    prompt += `**${tool.name}**(${params}) — ${tool.description}\n`;
+    const desc = String(tool.description || '').replace(/\s+/g, ' ').trim().slice(0, 100);
+    prompt += `**${tool.name}**(${params})${desc ? ` — ${desc}` : ''}\n`;
   }
   return prompt;
 }
@@ -326,6 +330,16 @@ async function runCloudAgenticChat({
       return { isQuotaError: true, error: '__QUOTA_EXCEEDED__', text: displayResponse || fullResponse, toolCallCount: totalToolCalls };
     }
 
+    {
+      const roundProsePreview = (streamFilters.getProseCleanText() || stripToolCallText(result?.text || '') || '').trim();
+      const previewCalls = parseToolCalls(streamFilters.getCombinedRawBuffer() || result?.text || '');
+      console.log(
+        `[CloudAgentic] round end iter=${iter} stopReason=${result?.stopReason || 'unknown'} `
+        + `toolsParsed=${previewCalls.length} proseChars=${roundProsePreview.length} `
+        + `promptLen=${String(nextUserPrompt || '').length}`,
+      );
+    }
+
     if (result?.stopReason === 'length' && iter < maxIter - 1) {
       const partialRaw = streamFilters.getCombinedRawBuffer() || result?.text || '';
       const partialProse = streamFilters.getProseCleanText() || stripToolCallText(result?.text || '');
@@ -372,7 +386,7 @@ async function runCloudAgenticChat({
           role: 'user',
           content: `[System: Tool call could not be parsed. Retry with valid JSON: {"tool":"<name>","params":{...}}.${closestHint ? ` ${closestHint}` : ''}]`,
         });
-        nextUserPrompt = userMessage;
+        nextUserPrompt = NEXT_FROM_HISTORY;
         continue;
       }
       break;
@@ -400,7 +414,7 @@ async function runCloudAgenticChat({
           content: roundCleanProse.trim() || '(tool calls)',
         });
         conversationHistory.push({ role: 'user', content: PLAN_BLOCKED_TOOLS_MSG });
-        nextUserPrompt = userMessage;
+        nextUserPrompt = NEXT_FROM_HISTORY;
         continue;
       }
       if (issues?.length) {
@@ -412,7 +426,7 @@ async function runCloudAgenticChat({
           role: 'user',
           content: `[System: Tool Validation Failed]\n${issues.join('\n')}\n\nRetry with valid tool parameters.`,
         });
-        nextUserPrompt = userMessage;
+        nextUserPrompt = NEXT_FROM_HISTORY;
         continue;
       }
       if (looksLikeToolAttempt(roundRawCombined)) {
@@ -425,7 +439,7 @@ async function runCloudAgenticChat({
           role: 'user',
           content: `[System: Tool call could not be parsed. Retry with valid JSON: {"tool":"<name>","params":{...}}.${closestHint ? ` ${closestHint}` : ''}]`,
         });
-        nextUserPrompt = userMessage;
+        nextUserPrompt = NEXT_FROM_HISTORY;
         continue;
       }
       break;
@@ -510,7 +524,7 @@ async function runCloudAgenticChat({
     conversationHistory.push({ role: 'user', content: injectText });
     console.log(`[CloudAgentic] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s)`);
 
-    nextUserPrompt = userMessage;
+    nextUserPrompt = NEXT_FROM_HISTORY;
   }
 
   let finalText = displayResponse || stripToolCallText(fullResponse);

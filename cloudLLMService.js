@@ -852,8 +852,11 @@ class CloudLLMService extends EventEmitter {
 
     let messages = [
       ...conversationHistory.map(m => ({ role: m.role, content: m.content })),
-      { role: 'user', content: prompt },
     ];
+    const promptText = String(prompt || '');
+    if (promptText.trim() || messages.length === 0) {
+      messages.push({ role: 'user', content: promptText });
+    }
     const contextLimit = useSecrypt ? this._getModelContextLimit(proxyProvider, proxyModel) : 0;
     const outputTokens = useSecrypt
       ? resolveCloudOutputTokens(options.maxTokens, contextLimit)
@@ -1182,7 +1185,7 @@ class CloudLLMService extends EventEmitter {
         })),
       ];
       messages.push({ role: 'user', content: userContent });
-    } else {
+    } else if (String(prompt || '').trim() || conversationHistory.length === 0) {
       messages.push({ role: 'user', content: prompt });
     }
 
@@ -1239,7 +1242,7 @@ class CloudLLMService extends EventEmitter {
         { type: 'text', text: prompt },
       ];
       messages.push({ role: 'user', content: userContent });
-    } else {
+    } else if (String(prompt || '').trim() || conversationHistory.length === 0) {
       messages.push({ role: 'user', content: prompt });
     }
 
@@ -1289,7 +1292,9 @@ class CloudLLMService extends EventEmitter {
         return b64Match ? b64Match[1] : src;
       }).filter(Boolean);
     }
-    messages.push(userMsg);
+    if (String(prompt || '').trim() || images?.length || conversationHistory.length === 0) {
+      messages.push(userMsg);
+    }
 
     const body = JSON.stringify({
       model, messages,

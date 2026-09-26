@@ -671,14 +671,15 @@ function StreamingFooter() {
 
 
 
-  // Auto-scroll thinking content during streaming
-
+  // Auto-scroll thinking content only when the think pane was already at its bottom.
   useEffect(() => {
 
     if (isThinking && thinkingExpanded && thinkContentRef.current) {
-
-      thinkContentRef.current.scrollTop = thinkContentRef.current.scrollHeight;
-
+      const el = thinkContentRef.current;
+      const nearBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 48;
+      if (nearBottom) {
+        el.scrollTop = el.scrollHeight;
+      }
     }
 
   }, [chatThinkingText, isThinking, thinkingExpanded]);
@@ -1456,7 +1457,7 @@ export default function ChatPanel() {
 
     if (!chatStreaming) return;
 
-    if (e.deltaY < 0) {
+    if (e.deltaY !== 0) {
 
       userScrolledAwayRef.current = true;
 
@@ -1473,45 +1474,7 @@ export default function ChatPanel() {
     }
   }, []);
 
-  // Auto-scroll during streaming (throttled to max 1 rAF per 100ms during token bursts).
-  useEffect(() => {
-
-    if (!chatStreaming) return;
-
-    if (userScrolledAwayRef.current) return;
-
-    const throttleMs = 100;
-    const now = Date.now();
-    const run = () => {
-      scrollThrottleRef.current.raf = null;
-      scrollThrottleRef.current.last = Date.now();
-      scrollChatToEnd('auto');
-    };
-    if (now - scrollThrottleRef.current.last >= throttleMs) {
-      if (!scrollThrottleRef.current.raf) {
-        scrollThrottleRef.current.raf = requestAnimationFrame(run);
-      }
-    } else if (!scrollThrottleRef.current.raf && !scrollThrottleRef.current.timer) {
-      scrollThrottleRef.current.timer = setTimeout(() => {
-        scrollThrottleRef.current.timer = null;
-        scrollThrottleRef.current.raf = requestAnimationFrame(run);
-      }, throttleMs - (now - scrollThrottleRef.current.last));
-    }
-
-    return () => {
-      if (scrollThrottleRef.current.raf) {
-        cancelAnimationFrame(scrollThrottleRef.current.raf);
-        scrollThrottleRef.current.raf = null;
-      }
-      if (scrollThrottleRef.current.timer) {
-        clearTimeout(scrollThrottleRef.current.timer);
-        scrollThrottleRef.current.timer = null;
-      }
-    };
-
-  }, [chatStreaming, chatStreamingText, streamingSegments, streamingToolCalls, scrollChatToEnd]);
-
-
+  // Streaming follow is Virtuoso followOutput only — no per-token scrollChatToEnd fight.
 
   // Scroll to the newly finalized assistant message (Footer → list handoff often leaves viewport blank).
   useEffect(() => {
@@ -2798,6 +2761,11 @@ export default function ChatPanel() {
 
   }, [clearChat, persistCurrentConversationPlan, projectPath]);
 
+  /** Plus: always open a blank live chat (archive prior thread if it had messages). */
+  const handleNewChat = useCallback(async () => {
+    await handleClear();
+  }, [handleClear]);
+
 
 
   const handleKeyDown = (e) => {
@@ -2864,11 +2832,11 @@ export default function ChatPanel() {
 
   const currentTitle = useMemo(() => {
 
-    if (chatMessages.length === 0) return 'Current';
+    if (chatMessages.length === 0) return 'New chat';
 
     const firstUser = chatMessages.find(m => m.role === 'user');
 
-    return firstUser?.content?.slice(0, 24) || 'Current';
+    return firstUser?.content?.slice(0, 24) || 'New chat';
 
   }, [chatMessages]);
 
@@ -3021,7 +2989,7 @@ export default function ChatPanel() {
 
           {chatStreaming && <Loader size={12} className="animate-spin text-vsc-accent flex-shrink-0" />}
 
-          <button className="p-1 hover:bg-vsc-list-hover rounded" title="New Chat" onClick={handleClear}>
+          <button className="p-1 hover:bg-vsc-list-hover rounded" title="New Chat" onClick={handleNewChat}>
 
             <Plus size={14} className="text-vsc-text-dim" />
 
@@ -3211,13 +3179,13 @@ export default function ChatPanel() {
 
           defaultItemHeight={120}
 
-          followOutput="auto"
+          followOutput={(isAtBottom) => (isAtBottom ? 'smooth' : false)}
 
           atBottomStateChange={(atBottom) => {
 
             atBottomRef.current = atBottom;
 
-            if (atBottom) userScrolledAwayRef.current = false;
+            // Do not clear userScrolledAwayRef on at-bottom flicker.
 
           }}
 

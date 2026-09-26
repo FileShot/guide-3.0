@@ -19,6 +19,7 @@ assert.ok(!filteredByToggles.some((d) => d.name === 'browser_navigate'));
 const cloudIdentity = getCloudAgentSystemPrompt();
 assert.ok(!cloudIdentity.includes('Pattern —'), 'cloud identity must not include Pattern — hand-holding');
 assert.ok(cloudIdentity.includes('general-purpose'));
+assert.ok(cloudIdentity.includes('call that tool in this response'));
 
 const twoTools = defs.filter((d) => d.name === 'read_file' || d.name === 'web_search');
 const listing = buildCloudToolListing(twoTools);
