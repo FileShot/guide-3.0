@@ -909,6 +909,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
           planMode,
           enableSubAgents,
           toolsEnabled: settings.toolsEnabled !== false,
+          enabledTools: settings.enabledTools,
           chatMode: settings.chatMode,
           agentPhase: settings.agentPhase || 'planning',
           projectPath: currentProjectPath || undefined,

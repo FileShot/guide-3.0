@@ -26,6 +26,7 @@ import { stripPlainCodeFencesFromProse } from '../utils/markdownFenceUtils';
 import { createOfflineVoiceStream } from '../lib/offlineVoiceStream';
 import { GUIDE_CLOUD_PROVIDERS, GUIDE_CLOUD_QUALITY_MODEL, resolveGuideCloudModel } from '../lib/guideCloudModel';
 import { matchSlashSkills, resolveSlashSkill } from '../lib/slashSkills';
+import { resolveEnabledToolMap } from '../lib/enabledTools';
 
 import { Virtuoso } from 'react-virtuoso';
 
@@ -1897,6 +1898,8 @@ export default function ChatPanel() {
           enableSubAgents: !!s.enableSubAgents,
 
           toolsEnabled: s.toolsEnabled !== false,
+
+          enabledTools: resolveEnabledToolMap(useAppStore.getState().enabledTools),
 
           systemPrompt: s.systemPrompt,
 

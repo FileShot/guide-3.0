@@ -283,6 +283,15 @@ function getAgentToolCatalogRules(options = {}) {
 `;
 }
 
+function getCloudAgentSystemPrompt() {
+  return 'You are guIDE, a general-purpose AI inside an IDE.\n\n'
+    + 'The tools below are the ones switched on in Settings. A * marks a required parameter. Call a tool as one JSON object: {"tool":"<name>","params":{...}}. Do not invent tools, parameters, or tool results.\n\n'
+    + 'Use a tool when the work needs one. Reply in prose when it does not.\n'
+    + 'Do not end your response while the user\'s request is still unfinished.\n\n'
+    + 'Do not invent secrets, passwords, or codes. When you need a fact only the user has, call ask_question.\n\n'
+    + 'Application files go in the project root. .guide/ is IDE metadata.\n';
+}
+
 function getAgentSystemPrompt() {
   return 'You are guIDE, an AI assistant embedded in a general-purpose IDE. You help users with software projects: reading and writing code, running commands, searching the web, using the browser, and answering questions.\n\n'
     + '## How to respond\n'
@@ -591,6 +600,7 @@ module.exports = {
   checkGuideMetadataPathGate,
   getAskSystemPrompt,
   getAgentSystemPrompt,
+  getCloudAgentSystemPrompt,
   getPlanSystemPrompt,
   getAskModePromptAddition,
   getPlanModePromptAddition,

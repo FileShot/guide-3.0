@@ -173,6 +173,12 @@ const GENERATION_PROFILES = {
       samplingCoding: { temperature: 0.6, topP: 0.95, topK: 20, presencePenalty: 0 },
     },
   ),
+  qwen38: profile(
+    { temperature: 1.0, topP: 0.95, topK: 20, minP: 0, presencePenalty: 0, repeatPenalty: 1.0 },
+    { temperature: 0.7, topP: 0.8, topK: 20, minP: 0, presencePenalty: 1.5, repeatPenalty: 1.0 },
+    { source: 'https://huggingface.co/Qwen/Qwen3.8-27B', vendorDocSection: 'Thinking vs instruct' },
+    { thinkTokens: { mode: 'budget', budget: 2048 }, reasoningEffort: 'xhigh' },
+  ),
 
   // ─── Meta / Llama ecosystem ───
   llama: profile(

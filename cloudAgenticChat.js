@@ -19,32 +19,24 @@ const {
   filterToolDefinitions,
   filterPlanModeToolCalls,
   shouldStreamFileContentForAgent,
+  getCloudAgentSystemPrompt,
 } = require('./agentModeResolver');
 const streamTrace = require('./streamTrace');
 const { fitCloudHistory, inputBudgetTokens } = require('./tools/cloudContextFit');
-const { resolveCloudOutputTokens } = require('./cloudLLMService');
+const { resolveCloudOutputTokens, secryptQualitySampling } = require('./cloudLLMService');
 
-const CLOUD_CORE_TOOLS = [
-  'read_file', 'write_file', 'edit_file', 'append_to_file', 'list_directory',
-  'find_files', 'grep_search', 'run_command', 'write_todos', 'update_todo', 'ask_question',
-];
-
-function selectCloudToolDefs(defs, userMessage) {
-  const text = String(userMessage || '').toLowerCase();
-  const allow = new Set(CLOUD_CORE_TOOLS);
-  if (/\b(browser|website|navigate|click|url|https?)\b/.test(text)) {
-    for (const d of defs) if (String(d.name).startsWith('browser_')) allow.add(d.name);
+function buildCloudToolListing(toolDefs) {
+  let prompt = '## Tools\n';
+  for (const tool of toolDefs || []) {
+    if (!tool || tool.name === 'generate_image') continue;
+    const params = tool.parameters
+      ? Object.entries(tool.parameters)
+        .map(([n, i]) => `${n}:${i.type}${i.required ? '*' : ''}`)
+        .join(', ')
+      : '';
+    prompt += `**${tool.name}**(${params}) — ${tool.description}\n`;
   }
-  if (/\bgit\b/.test(text)) {
-    for (const d of defs) if (String(d.name).startsWith('git_')) allow.add(d.name);
-  }
-  if (/\b(memory|remember)\b/.test(text)) {
-    allow.add('save_memory');
-    allow.add('get_memory');
-    allow.add('list_memories');
-  }
-  const picked = defs.filter((d) => allow.has(d.name));
-  return picked.length ? picked : defs;
+  return prompt;
 }
 
 function createThinkTagSplitter({ onThinking, onContent }) {
@@ -107,19 +99,8 @@ function createThinkTagSplitter({ onThinking, onContent }) {
   };
 }
 
-const CLOUD_FORCE_TOOLS_PROMPT =
-  '[System: You claimed you would build/create files but emitted no tool calls. ' +
-  'Immediately output write_file (and related) tool JSON to create the files. Do not apologize or repeat promises — call tools now.]';
-
 const PLAN_BLOCKED_TOOLS_MSG =
   '[System: Plan mode — update_todo cannot mark items done/in-progress or edit non-plan files until Build. Use write_todos for planning; write_file/edit_file only for .guide/plans/*.plan.md. Do not repeat blocked tool JSON in your reply.]';
-
-function looksLikeEmptyBuildPromise(prose) {
-  const t = String(prose || '');
-  if (t.length < 8 || t.length > 1200) return false;
-  return /\b(build(ing)?|creat(e|ing)|writ(e|ing)|implement(ing)?|let me (actually )?(do|build|create)|proceed|right now)\b/i.test(t)
-    && !/```/.test(t);
-}
 
 const FILE_WRITE_OPS = new Set(['write_file', 'create_file', 'append_to_file']);
 const FILE_EDIT_OPS = new Set(['edit_file', 'replace_in_file']);
@@ -146,7 +127,7 @@ async function runCloudAgenticChat({
 }) {
   const enableSubAgents = !!(settings.enableSubAgents);
   const toolsEnabled = settings.toolsEnabled !== false;
-  // Secrypt/P40 quality worker context is 24576 — use compact tool catalog.
+  // Secrypt/P40 quality worker context is 24576.
   const isSecryptCloud = ['secrypt', 'cipher', 'graysoft', 'cerebras'].includes(
     String(cloudProvider || '').toLowerCase(),
   );
@@ -161,34 +142,25 @@ async function runCloudAgenticChat({
     planFileExists: !!settings.planFileExists,
   });
 
+  if (!mode.askOnly && !mode.planning) {
+    mode.baseSystemPrompt = getCloudAgentSystemPrompt();
+  }
+
   mcpToolServer.setAgentContext({ planMode: mode.planMode, agentPhase: mode.agentPhase });
 
   const allDefs = mcpToolServer.getToolDefinitions();
   let filteredDefs = filterToolDefinitions(allDefs, mode.allowedTools);
-  if (isSecryptCloud && !mode.planning) {
-    filteredDefs = selectCloudToolDefs(filteredDefs, userMessage);
+  filteredDefs = filteredDefs.filter((d) => d.name !== 'generate_image');
+  if (settings.enabledTools && typeof settings.enabledTools === 'object') {
+    filteredDefs = filteredDefs.filter((d) => settings.enabledTools[d.name] === true);
   }
 
-  const toolPromptOpts = { planning: mode.planning };
   let toolPrompt = '';
   if (mode.toolsActive) {
-    if (isSecryptCloud) {
-      // Compact + descriptions: full agent tool surface without blowing 16k prefill.
-      toolPrompt = mcpToolServer
-        .getCompactToolHint('default', {
-          toolDefs: filteredDefs,
-          planning: mode.planning,
-          compactDescriptions: true,
-        })
-        .join('');
+    toolPrompt = buildCloudToolListing(filteredDefs);
+    if (enableSubAgents && !isSecryptCloud && toolPrompt) {
       toolPrompt +=
-        '\nCRITICAL: When asked to build/create files, emit write_file/edit_file tool JSON in this turn. Do not only promise to build.\n';
-    } else {
-      toolPrompt = mcpToolServer.getToolPromptForTools(filteredDefs, toolPromptOpts);
-      if (enableSubAgents && toolPrompt) {
-        toolPrompt +=
-          '\n- **spawn_subagent** — Delegate a focused sub-task to an isolated sub-agent (local model only; unavailable in cloud mode).';
-      }
+        '\n- **spawn_subagent** — Delegate a focused sub-task to an isolated sub-agent (local model only; unavailable in cloud mode).';
     }
   }
 
@@ -209,7 +181,7 @@ async function runCloudAgenticChat({
     systemPrompt += mode.systemPromptAdditions;
   }
   console.log(
-    `[CloudAgentic] systemPrompt=${systemPrompt.length} chars secrypt=${isSecryptCloud} tools=${mode.toolsActive ? 'on' : 'off'} mode=${mode.planning ? 'plan' : mode.askOnly ? 'ask' : 'agent'}`,
+    `[CloudAgentic] systemPrompt=${systemPrompt.length} chars secrypt=${isSecryptCloud} tools=${mode.toolsActive ? 'on' : 'off'} mode=${mode.planning ? 'plan' : mode.askOnly ? 'ask' : 'agent'} toolCount=${filteredDefs.length}`,
   );
 
   const conversationHistory = sanitizeCloudConversationHistory(
@@ -240,13 +212,20 @@ async function runCloudAgenticChat({
     systemPrompt += `\n\n## Active goal\n${activeGoal.objective}\n`;
   }
 
+  const thinkingOn = settings.enableThinking !== false && settings.thinkingMode !== 'off';
+  const qualitySampling = isSecryptCloud ? secryptQualitySampling(thinkingOn) : null;
   const genBase = {
     provider: cloudProvider,
     model: cloudModel,
     systemPrompt,
-    temperature: settings.temperature,
+    temperature: qualitySampling ? qualitySampling.temperature : settings.temperature,
     maxTokens: requestedMax,
-    topP: settings.topP,
+    topP: qualitySampling ? qualitySampling.topP : settings.topP,
+    topK: qualitySampling ? qualitySampling.topK : settings.topK,
+    minP: qualitySampling ? qualitySampling.minP : settings.minP,
+    presencePenalty: qualitySampling ? qualitySampling.presencePenalty : settings.presencePenalty,
+    repeatPenalty: qualitySampling ? qualitySampling.repeatPenalty : settings.repeatPenalty,
+    reasoningEffort: qualitySampling ? qualitySampling.reasoningEffort : settings.reasoningEffort,
     images,
     stream: true,
     enableThinking: settings.enableThinking !== false,
@@ -394,24 +373,6 @@ async function runCloudAgenticChat({
           content: `[System: Tool call could not be parsed. Retry with valid JSON: {"tool":"<name>","params":{...}}.${closestHint ? ` ${closestHint}` : ''}]`,
         });
         nextUserPrompt = userMessage;
-        continue;
-      }
-      // Agent mode: model only promised action — nudge once to emit tools (common on tight Secrypt prompts).
-      if (
-        mode.toolsActive
-        && !mode.askOnly
-        && !mode.planning
-        && looksLikeEmptyBuildPromise(roundCleanProse)
-        && iter < maxIter - 1
-        && !conversationHistory.some((m) => m.role === 'user' && String(m.content || '').includes('emitted no tool calls'))
-      ) {
-        conversationHistory.push({
-          role: 'assistant',
-          content: roundCleanProse.trim() || '(no tools)',
-        });
-        conversationHistory.push({ role: 'user', content: CLOUD_FORCE_TOOLS_PROMPT });
-        nextUserPrompt = userMessage;
-        console.log('[CloudAgentic] prose-only build promise — forcing tool call round');
         continue;
       }
       break;
@@ -563,4 +524,4 @@ async function runCloudAgenticChat({
   };
 }
 
-module.exports = { runCloudAgenticChat, selectCloudToolDefs, createThinkTagSplitter };
+module.exports = { runCloudAgenticChat, createThinkTagSplitter, buildCloudToolListing };

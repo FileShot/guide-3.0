@@ -31,6 +31,30 @@ function resolveSecryptCloudModel(provider, model) {
   return id;
 }
 
+/** Official Qwen3.8-27B card for cipher-quality (thinking vs instruct). */
+function secryptQualitySampling(thinkingOn) {
+  if (thinkingOn) {
+    return {
+      temperature: 1.0,
+      topP: 0.95,
+      topK: 20,
+      minP: 0,
+      presencePenalty: 0,
+      repeatPenalty: 1.0,
+      reasoningEffort: 'xhigh',
+    };
+  }
+  return {
+    temperature: 0.7,
+    topP: 0.8,
+    topK: 20,
+    minP: 0,
+    presencePenalty: 1.5,
+    repeatPenalty: 1.0,
+    reasoningEffort: 'low',
+  };
+}
+
 /** Cipher-quality window. Live P40 worker is llama-server -c 24576. Override with SECRYPT_CONTEXT_TOKENS. */
 const SECRYPT_CONTEXT_DEFAULT = 24576;
 
@@ -825,20 +849,6 @@ class CloudLLMService extends EventEmitter {
       : model;
 
     let sys = typeof systemPrompt === 'string' ? systemPrompt : '';
-    // Cap system prompt for Secrypt context (leave room for history + generation).
-    // Prefer keeping the tools section: truncate preamble before ## Tools if needed.
-    const secryptSysCap = parseInt(process.env.SECRYPT_SYSTEM_PROMPT_CHARS || '14000', 10) || 14000;
-    if (useSecrypt && sys.length > secryptSysCap) {
-      const toolsIdx = sys.search(/\n## Tools\b/);
-      if (toolsIdx > 400) {
-        const head = sys.slice(0, 350);
-        const fromTools = sys.slice(toolsIdx);
-        sys = `${head}\n\n[…]\n${fromTools}`;
-      }
-      if (sys.length > secryptSysCap) {
-        sys = sys.slice(0, secryptSysCap) + '\n\n[System prompt truncated for Secrypt context.]';
-      }
-    }
 
     let messages = [
       ...conversationHistory.map(m => ({ role: m.role, content: m.content })),
@@ -873,10 +883,19 @@ class CloudLLMService extends EventEmitter {
       messages,
       systemPrompt: sys || undefined,
       maxTokens: outputTokens,
-      temperature: options.temperature || 0.7,
+      temperature: options.temperature ?? 0.7,
+      top_p: options.topP,
+      top_k: options.topK,
+      min_p: options.minP,
+      presence_penalty: options.presencePenalty,
+      repeat_penalty: options.repeatPenalty,
       stream: !!onToken,
       enableThinking: thinkingOn,
-      chat_template_kwargs: { enable_thinking: thinkingOn },
+      chat_template_kwargs: {
+        enable_thinking: thinkingOn,
+        reasoning_effort: options.reasoningEffort || (thinkingOn ? 'xhigh' : 'low'),
+        preserve_thinking: thinkingOn,
+      },
     });
 
     try {
@@ -1660,4 +1679,5 @@ module.exports = {
   SECRYPT_CONTEXT_DEFAULT,
   resolveSecryptCloudModel,
   resolveCloudOutputTokens,
+  secryptQualitySampling,
 };

@@ -26,6 +26,7 @@ import { pathString, fileBaseName } from '../lib/pathString';
 import { installUpdateNow, updateVersionLabel } from '../lib/updateStatus';
 import { uploadFilesToPath, downloadFileUrl, downloadFolderZipUrl, triggerDownload } from '../lib/pocketFiles';
 import { importFilesToPath, extractDropPaths } from '../lib/localFiles';
+import { isToolEnabled } from '../lib/enabledTools';
 
 export default function Sidebar() {
   const activeActivity = useAppStore(s => s.activeActivity);
@@ -1985,7 +1986,7 @@ function SettingsPanel() {
         <div className="mb-3">
           <label className="text-[11px] text-vsc-text-dim block mb-1.5">Reasoning Effort</label>
           <div className="flex gap-1">
-            {['low', 'medium', 'high'].map(level => (
+            {['low', 'medium', 'high', 'xhigh'].map(level => (
               <button key={level}
                 className={`flex-1 px-2 py-1 text-[10px] rounded border transition-colors flex items-center justify-center gap-1
                   ${settings.reasoningEffort === level
@@ -1994,7 +1995,7 @@ function SettingsPanel() {
                 onClick={() => updateSetting('reasoningEffort', level)}
               >
                 {level === 'low' ? <Zap size={10} /> : level === 'medium' ? <Scale size={10} /> : <Brain size={10} />}
-                {level.charAt(0).toUpperCase() + level.slice(1)}
+                {level === 'xhigh' ? 'XHigh' : level.charAt(0).toUpperCase() + level.slice(1)}
               </button>
             ))}
           </div>
@@ -2914,44 +2915,6 @@ const TOOL_CATEGORIES = {
   ],
 };
 
-// Tools enabled by default (most critical tools for productive AI assistance)
-const DEFAULT_ENABLED_TOOLS = new Set([
-  // File Operations
-  'read_file', 'write_file', 'edit_file', 'append_to_file', 'create_file',
-  'delete_file', 'rename_file', 'list_directory', 'find_files',
-  'get_project_structure', 'get_file_info', 'open_file_in_editor', 'diff_files',
-  // Search
-  'grep_search', 'search_in_file', 'search_codebase', 'replace_in_files',
-  // Terminal
-  'run_command', 'check_port', 'install_packages',
-  // Web
-  'web_search', 'fetch_webpage', 'http_request',
-  // Browser (ALL tools)
-  'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type',
-  'browser_fill_form', 'browser_evaluate', 'browser_scroll', 'browser_back',
-  'browser_screenshot', 'browser_get_content', 'browser_select_option',
-  'browser_wait', 'browser_wait_for', 'browser_press_key', 'browser_hover',
-  'browser_drag', 'browser_tabs', 'browser_handle_dialog', 'browser_console_messages',
-  'browser_file_upload', 'browser_resize', 'browser_get_url', 'browser_get_links',
-  'browser_close',
-  // Git
-  'git_status', 'git_commit', 'git_diff', 'git_log', 'git_branch',
-  // Code Analysis
-  'analyze_error',
-  // Undo
-  'undo_edit', 'list_undoable',
-  // Memory
-  'save_memory', 'get_memory', 'list_memories',
-  // Planning
-  'write_todos', 'update_todo',
-  // Interaction
-  'ask_question',
-  // Scratchpad
-  'write_scratchpad', 'read_scratchpad',
-  // Rules
-  'save_rule', 'list_rules',
-]);
-
 // Total tool count
 const TOTAL_TOOLS = Object.values(TOOL_CATEGORIES).reduce((sum, tools) => sum + tools.length, 0);
 
@@ -2978,11 +2941,7 @@ function ToolToggles() {
   const toggleTool = useAppStore(s => s.toggleTool);
   const setEnabledTools = useAppStore(s => s.setEnabledTools);
 
-  // Determine if a tool is enabled: check store, fall back to DEFAULT_ENABLED_TOOLS
-  const isEnabled = (toolName) => {
-    if (toolName in enabledTools) return enabledTools[toolName];
-    return DEFAULT_ENABLED_TOOLS.has(toolName);
-  };
+  const isEnabled = (toolName) => isToolEnabled(toolName, enabledTools);
 
   const enabledCount = Object.entries(TOOL_CATEGORIES).reduce((sum, [, tools]) =>
     sum + tools.filter(t => isEnabled(t.name)).length, 0
