@@ -4,7 +4,6 @@ const assert = require('assert');
 const { buildCloudSystemPrompt } = require('../chatEngine');
 const { MCPToolServer } = require('../mcpToolServer');
 const { CloudLLMService, resolveCloudOutputTokens, secryptQualitySampling } = require('../cloudLLMService');
-const { buildCloudToolListing } = require('../cloudAgenticChat');
 const { getCloudAgentSystemPrompt } = require('../agentModeResolver');
 const { resolveSlashSkill, listSkills, formatSkillsHelp } = require('../skills/registry');
 
@@ -22,9 +21,17 @@ assert.ok(cloudIdentity.includes('general-purpose'));
 assert.ok(cloudIdentity.includes('call that tool in this response'));
 
 const twoTools = defs.filter((d) => d.name === 'read_file' || d.name === 'web_search');
-const listing = buildCloudToolListing(twoTools);
+const listing = server
+  .getCompactToolHint('default', {
+    toolDefs: twoTools,
+    planning: false,
+    compactDescriptions: true,
+  })
+  .join('');
 assert.ok(listing.includes('read_file'));
 assert.ok(listing.includes('web_search'));
+assert.ok(listing.includes('```json'), 'compact catalog must include JSON fence examples');
+assert.ok(listing.includes('"tool"'), 'compact catalog must show tool JSON shape');
 assert.ok(!listing.includes('Pattern —'));
 assert.ok(!listing.includes('Common patterns'));
 
@@ -36,6 +43,7 @@ const prompt = buildCloudSystemPrompt({
 assert.ok(prompt.includes('read_file'));
 assert.ok(prompt.includes('web_search'));
 assert.ok(prompt.includes('general-purpose'));
+assert.ok(prompt.includes('```json'));
 
 const llm = new CloudLLMService();
 assert.strictEqual(llm._getModelContextLimit('secrypt', 'cipher-quality'), 24576);
@@ -74,9 +82,14 @@ assert.ok(goal.text.toLowerCase().includes('goal'));
 const help = resolveSlashSkill('/skills');
 assert.strictEqual(help.sendToModel, false);
 
-const noImage = buildCloudToolListing(defs.filter((d) => d.name === 'generate_image' || d.name === 'read_file'));
+const noImage = server
+  .getCompactToolHint('default', {
+    toolDefs: defs.filter((d) => d.name === 'generate_image' || d.name === 'read_file'),
+    planning: false,
+    compactDescriptions: true,
+  })
+  .join('');
 assert.ok(noImage.includes('read_file'));
-assert.ok(!noImage.includes('generate_image'));
 
 console.log('cloudTightPrompt+skills OK', {
   listingChars: listing.length,

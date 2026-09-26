@@ -527,6 +527,7 @@ function looksLikeToolAttempt(text) {
   if (!text || typeof text !== 'string') return false;
   if (BARE_NAME_JSON_RE.test(text)) return true;
   if (/```(?:tool_call|tool|json)/i.test(text) && _fenceLooksLikeToolCall(text)) return true;
+  if (/<function\s*=/i.test(text) || /<parameter\s*=/i.test(text)) return true;
   return /"tool"\s*:\s*"[a-zA-Z0-9_]+"/.test(text) || /"name"\s*:\s*"[a-zA-Z0-9_]+"/.test(text);
 }
 
@@ -631,6 +632,28 @@ function normalizeToolCall(parsed) {
   return { tool: toolName, params: canonicalizeToolParams(toolName, params) };
 }
 
+/** Qwen / Hermes-style: <function=name><parameter=k>v</parameter></function> */
+function parseQwenFunctionXmlCalls(text) {
+  const out = [];
+  if (!text || typeof text !== 'string') return out;
+  const fnRe = /<function\s*=\s*([a-zA-Z0-9_.-]+)\s*>([\s\S]*?)<\/function>/gi;
+  let m;
+  while ((m = fnRe.exec(text)) !== null) {
+    let toolName = String(m[1] || '').trim().toLowerCase().replace(/-/g, '_').replace(/\s+/g, '_');
+    if (TOOL_NAME_ALIASES[toolName]) toolName = TOOL_NAME_ALIASES[toolName];
+    if (!VALID_TOOLS.has(toolName)) continue;
+    const body = m[2] || '';
+    const params = {};
+    const paramRe = /<parameter\s*=\s*([a-zA-Z0-9_]+)\s*>\s*([\s\S]*?)\s*<\/parameter>/gi;
+    let pm;
+    while ((pm = paramRe.exec(body)) !== null) {
+      params[pm[1]] = String(pm[2] == null ? '' : pm[2]).trim();
+    }
+    out.push({ tool: toolName, params: canonicalizeToolParams(toolName, params) });
+  }
+  return out;
+}
+
 // ─── Main Parser ───
 function parseToolCalls(text) {
   if (!text || typeof text !== 'string') {
@@ -669,6 +692,11 @@ function parseToolCalls(text) {
       const objects = extractJsonObjects(inner);
       for (const obj of objects) addCall(normalizeToolCall(obj));
     }
+  }
+
+  // Method 0.6: Qwen/Hermes <function=name>…</function>
+  for (const qCall of parseQwenFunctionXmlCalls(text)) {
+    addCall(qCall);
   }
 
   if (calls.length > 0) return _postProcess(calls, text);
@@ -1276,6 +1304,18 @@ function findToolCallRanges(text) {
   const toolCodeRe = /<tool_code>\s*[\s\S]*?\s*<\/tool_code>/g;
   while ((m = toolCodeRe.exec(text)) !== null) {
     ranges.push([m.index, m.index + m[0].length]);
+  }
+
+  const qwenFnRe = /<function\s*=\s*[^>]+>[\s\S]*?<\/function>/gi;
+  while ((m = qwenFnRe.exec(text)) !== null) {
+    ranges.push([m.index, m.index + m[0].length]);
+  }
+
+  const orphanQwenFnRe = /<function\s*=\s*[^>]+>[\s\S]*$/gi;
+  while ((m = orphanQwenFnRe.exec(text)) !== null) {
+    if (!_isInsideExistingRange(ranges, m.index)) {
+      ranges.push([m.index, m.index + m[0].length]);
+    }
   }
 
   const fenceRe = /```(?:json|tool_call|tool)?\s*\n([\s\S]*?)```/g;

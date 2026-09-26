@@ -29,21 +29,6 @@ const { resolveCloudOutputTokens, secryptQualitySampling } = require('./cloudLLM
 /** After tool results (or a system repair) are already in history — do not re-ask the original user text. */
 const NEXT_FROM_HISTORY = '';
 
-function buildCloudToolListing(toolDefs) {
-  let prompt = '## Tools\n';
-  for (const tool of toolDefs || []) {
-    if (!tool || tool.name === 'generate_image') continue;
-    const params = tool.parameters
-      ? Object.entries(tool.parameters)
-        .map(([n, i]) => `${n}:${i.type}${i.required ? '*' : ''}`)
-        .join(', ')
-      : '';
-    const desc = String(tool.description || '').replace(/\s+/g, ' ').trim().slice(0, 100);
-    prompt += `**${tool.name}**(${params})${desc ? ` — ${desc}` : ''}\n`;
-  }
-  return prompt;
-}
-
 function createThinkTagSplitter({ onThinking, onContent }) {
   const OPEN = '<think>';
   const CLOSE = '</think>';
@@ -162,7 +147,14 @@ async function runCloudAgenticChat({
 
   let toolPrompt = '';
   if (mode.toolsActive) {
-    toolPrompt = buildCloudToolListing(filteredDefs);
+    // Restore compact catalog with JSON fence examples (pre-0.4.94). Settings filter stays via toolDefs.
+    toolPrompt = mcpToolServer
+      .getCompactToolHint('default', {
+        toolDefs: filteredDefs,
+        planning: mode.planning,
+        compactDescriptions: true,
+      })
+      .join('');
     if (enableSubAgents && !isSecryptCloud && toolPrompt) {
       toolPrompt +=
         '\n- **spawn_subagent** — Delegate a focused sub-task to an isolated sub-agent (local model only; unavailable in cloud mode).';
@@ -561,4 +553,4 @@ async function runCloudAgenticChat({
   };
 }
 
-module.exports = { runCloudAgenticChat, createThinkTagSplitter, buildCloudToolListing };
+module.exports = { runCloudAgenticChat, createThinkTagSplitter };
