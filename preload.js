@@ -148,6 +148,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onTokenStats:        (cb) => _on('token-stats', cb),
   onGenerationError:   (cb) => _on('generation-error', cb),
   onGenerationWarning: (cb) => _on('generation-warning', cb),
+  onContextSummarize:  (cb) => _on('context-summarize', cb),
 
   // Tool events
   onToolExecuting:     (cb) => _on('tool-executing', cb),

@@ -1369,6 +1369,28 @@ const useAppStore = create((set, get) => ({
 
   },
 
+  setContextSummarizeSegment: (data) => {
+    const store = get();
+    const phase = data?.phase || 'done';
+    const text = data?.text != null ? String(data.text) : '';
+    const segs = [...(store.streamingSegments || [])];
+    const last = segs[segs.length - 1];
+    if (last?.type === 'context-summary' && (phase === 'done' || phase === 'fallback' || phase === 'start')) {
+      segs[segs.length - 1] = {
+        type: 'context-summary',
+        phase,
+        content: text || last.content || '',
+      };
+    } else {
+      segs.push({
+        type: 'context-summary',
+        phase,
+        content: text || (phase === 'start' ? '' : ''),
+      });
+    }
+    set({ streamingSegments: segs });
+  },
+
 
 
   setChatGeneratingTool: (tool) => {

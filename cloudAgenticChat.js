@@ -23,6 +23,7 @@ const {
 } = require('./agentModeResolver');
 const streamTrace = require('./streamTrace');
 const { fitCloudHistory, inputBudgetTokens } = require('./tools/cloudContextFit');
+const { upgradeRotatedHistoryWithFastSummary } = require('./tools/cloudContextSummarize');
 const { resolveCloudOutputTokens, secryptQualitySampling } = require('./cloudLLMService');
 
 /** After tool results (or a system repair) are already in history — do not re-ask the original user text. */
@@ -243,7 +244,7 @@ async function runCloudAgenticChat({
     : 24576;
   const outputTokens = resolveCloudOutputTokens(requestedMax, contextLimit);
 
-  const applyFit = (history, nextUser, budgetTokens) => {
+  const applyFit = async (history, nextUser, budgetTokens) => {
     const fit = fitCloudHistory({
       systemPrompt,
       history,
@@ -252,16 +253,38 @@ async function runCloudAgenticChat({
       outputTokens,
       budgetTokens,
     });
-    if (fit.droppedCount > 0) {
-      console.log(`[CloudAgentic] context rotate dropped=${fit.droppedCount} budget=${budgetTokens || inputBudgetTokens(contextLimit, outputTokens)}`);
-      if (onStreamEvent) {
-        onStreamEvent('generation-warning', {
-          message: 'Condensing context — continuing task',
-          suggestion: 'Older messages were summarized. The agent will keep working.',
-        });
-      }
+    if (fit.droppedCount <= 0) return fit;
+
+    console.log(`[CloudAgentic] context rotate dropped=${fit.droppedCount} budget=${budgetTokens || inputBudgetTokens(contextLimit, outputTokens)}`);
+    if (onStreamEvent) {
+      onStreamEvent('generation-warning', {
+        message: 'Condensing context — continuing task',
+        suggestion: 'Older messages were summarized. The agent will keep working.',
+      });
     }
-    return fit;
+
+    const upgraded = await upgradeRotatedHistoryWithFastSummary({
+      cloudLLM,
+      history: fit.history,
+      droppedText: fit.droppedText,
+      droppedCount: fit.droppedCount,
+      taskHint: fit.nextUser || nextUser,
+      provider: cloudProvider,
+      getCancelled,
+      onPhase: (phase, text) => {
+        if (!onStreamEvent) return;
+        onStreamEvent('context-summarize', {
+          phase,
+          text: text ? String(text).slice(0, 1800) : '',
+          droppedCount: fit.droppedCount,
+        });
+      },
+    });
+    return {
+      ...fit,
+      history: upgraded.history,
+      summarizedWithLlm: !!upgraded.usedLlm,
+    };
   };
 
   for (let iter = 0; iter < maxIter; iter++) {
@@ -270,7 +293,7 @@ async function runCloudAgenticChat({
       break;
     }
 
-    const fitted = applyFit(conversationHistory, nextUserPrompt);
+    const fitted = await applyFit(conversationHistory, nextUserPrompt);
     conversationHistory.length = 0;
     conversationHistory.push(...fitted.history);
     nextUserPrompt = fitted.nextUser;
@@ -307,7 +330,7 @@ async function runCloudAgenticChat({
       const msg = String(err?.message || '');
       if (shrinkTries < 3 && /context size|context length|maximum context|exceeds the available context/i.test(msg)) {
         shrinkTries += 1;
-        const tighter = applyFit(
+        const tighter = await applyFit(
           conversationHistory,
           nextUserPrompt,
           Math.max(512, Math.floor(inputBudgetTokens(contextLimit, outputTokens) * 0.6)),
@@ -348,7 +371,7 @@ async function runCloudAgenticChat({
       if (partialRaw.trim()) {
         conversationHistory.push({ role: 'assistant', content: partialRaw.slice(-8000) });
       }
-      const rotated = applyFit(conversationHistory, 'Continue from where you stopped. Do not repeat completed work.');
+      const rotated = await applyFit(conversationHistory, 'Continue from where you stopped. Do not repeat completed work.');
       const shrunk = rotated.droppedCount > 0 || rotated.history.length < conversationHistory.length;
       if (!shrunk && partialRaw.trim().length < 80) {
         emptyLengthStops += 1;

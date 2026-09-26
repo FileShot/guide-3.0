@@ -332,6 +332,12 @@ export default function App() {
 
         break;
 
+      case 'context-summarize':
+
+        s.setContextSummarizeSegment(data);
+
+        break;
+
 
 
       // Tool events — backend sends arrays: [{tool, params}, ...]
@@ -1265,6 +1271,8 @@ export default function App() {
       api.onGenerationError?.((d) => handleEvent('generation-error', d)),
 
       api.onGenerationWarning?.((d) => handleEvent('generation-warning', d)),
+
+      api.onContextSummarize?.((d) => handleEvent('context-summarize', d)),
 
       api.onToolExecuting?.((d) => handleEvent('tool-executing', d)),
 

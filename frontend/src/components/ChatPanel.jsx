@@ -348,6 +348,106 @@ function FinalizedThinkingBlock({ text }) {
 
 
 
+// Context summarize block — same dropdown chrome as thinking
+
+function ContextSummarizeBlock({ phase, content, isLive }) {
+
+  const [expanded, setExpanded] = useState(true);
+
+  useEffect(() => {
+
+    if (!isLive && phase !== 'start') {
+
+      const timer = setTimeout(() => setExpanded(false), 2000);
+
+      return () => clearTimeout(timer);
+
+    }
+
+    setExpanded(true);
+
+  }, [isLive, phase]);
+
+  const label = phase === 'start'
+    ? 'Context summarizing...'
+    : phase === 'fallback'
+      ? 'Context summarized (heuristic)'
+      : 'Context summarized';
+
+  const body = (content && String(content).trim())
+    ? String(content)
+    : (phase === 'start' ? 'Compressing older turns with Cipher Fast…' : '');
+
+  return (
+
+    <div className="mb-1 overflow-hidden">
+
+      <button
+
+        className="w-full flex items-center gap-1 py-0.5 text-[10px] transition-colors leading-tight min-h-0"
+
+        style={{ color: 'var(--vsc-text-dim, #858585)' }}
+
+        onClick={() => setExpanded((e) => !e)}
+
+      >
+
+        <span className={`text-[8px] transition-transform duration-200 flex-shrink-0 ${expanded ? 'rotate-90' : ''}`}>
+
+          &#9654;
+
+        </span>
+
+        <span className="font-medium whitespace-nowrap flex-shrink-0 text-vsc-text-dim">
+
+          <em>{label}</em>
+
+        </span>
+
+        {phase === 'start'
+
+          ? <Loader2 size={8} className="animate-spin ml-auto flex-shrink-0 text-vsc-text" />
+
+          : <Check size={9} className="ml-auto flex-shrink-0" style={{ color: '#4ec9b0' }} />
+
+        }
+
+      </button>
+
+      {body ? (
+
+        <div
+
+          className="transition-all duration-300 ease-in-out overflow-hidden"
+
+          style={{ maxHeight: expanded ? '200px' : '0px', opacity: expanded ? 1 : 0 }}
+
+        >
+
+          <div
+
+            className="px-2 pb-1.5 text-[10px] whitespace-pre-wrap leading-relaxed max-h-[180px] overflow-y-auto text-vsc-text-dim"
+
+            style={{ borderTop: '1px solid var(--vsc-panel-border, #2d2d2d)' }}
+
+          >
+
+            {body}
+
+          </div>
+
+        </div>
+
+      ) : null}
+
+    </div>
+
+  );
+
+}
+
+
+
 // Streaming thinking block — collapsible during live generation
 
 function StreamingThinkingBlock({ content, isLive, thinkContentRef }) {
@@ -795,6 +895,17 @@ function StreamingFooter() {
               content={seg.content}
               isLive={isLive}
               thinkContentRef={isLastSeg ? thinkContentRef : null}
+            />
+          );
+        }
+
+        if (seg.type === 'context-summary') {
+          return (
+            <ContextSummarizeBlock
+              key={`seg-ctxsum-${i}`}
+              phase={seg.phase || 'done'}
+              content={seg.content || ''}
+              isLive={seg.phase === 'start'}
             />
           );
         }
@@ -2101,6 +2212,14 @@ export default function ChatPanel() {
             // It is NOT appended to messageContent — that would duplicate it in the main message display.
             messageSegments.push({ type: 'thinking', content: seg.content });
 
+          } else if (seg.type === 'context-summary') {
+
+            messageSegments.push({
+              type: 'context-summary',
+              phase: seg.phase || 'done',
+              content: seg.content || '',
+            });
+
           } else if (seg.type === 'tool') {
 
             // R40: Preserve tool segments in finalized message
@@ -3392,6 +3511,19 @@ export default function ChatPanel() {
                           if (seg.type === 'thinking' && seg.content && seg.content.trim()) {
 
                             return <FinalizedThinkingBlock key={`think-${i}`} text={seg.content} />;
+
+                          }
+
+                          if (seg.type === 'context-summary') {
+
+                            return (
+                              <ContextSummarizeBlock
+                                key={`ctxsum-${i}`}
+                                phase={seg.phase || 'done'}
+                                content={seg.content || ''}
+                                isLive={false}
+                              />
+                            );
 
                           }
 
