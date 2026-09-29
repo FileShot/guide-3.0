@@ -1,6 +1,6 @@
 {
   "name": "guide-ide",
-  "version": "0.4.97",
+  "version": "0.5.0",
   "description": "guIDE Local First IDE",
   "main": "electron-main.js",
   "scripts": {
@@ -50,11 +50,12 @@
     "@node-llama-cpp/win-x64-vulkan": "3.18.1"
   },
   "dependencies": {
+    "@cursor/sdk": "^1.0.32",
     "7zip-bin": "^5.2.0",
     "chokidar": "^4.0.0",
     "cors": "^2.8.5",
-    "express": "^4.21.0",
     "electron-updater": "^6.3.9",
+    "express": "^4.21.0",
     "mime-types": "^2.1.35",
     "node-llama-cpp": "^3.18.1",
     "node-pty": "^1.0.0",

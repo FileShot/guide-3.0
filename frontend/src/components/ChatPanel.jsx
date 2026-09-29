@@ -28,8 +28,6 @@ import { GUIDE_CLOUD_PROVIDERS, GUIDE_CLOUD_QUALITY_MODEL, resolveGuideCloudMode
 import { matchSlashSkills, resolveSlashSkill } from '../lib/slashSkills';
 import { resolveEnabledToolMap } from '../lib/enabledTools';
 
-import { Virtuoso } from 'react-virtuoso';
-
 import {
 
   Send, Square, Trash2, Cpu, Loader, ChevronDown, ChevronRight, Brain,
@@ -42,7 +40,7 @@ import {
 
   CheckCircle2, Circle, Loader2, ListTodo, Bot, MessageSquare, AlertCircle,
 
-  Shield, Layers
+  Shield, Layers, Terminal
 
 } from 'lucide-react';
 
@@ -67,29 +65,75 @@ function quotaErrorFlags(errorText, result = {}) {
   return { usageLimit, needsAccount };
 }
 
-/** Persist chat to guide-chat-sessions (sync; used before New Chat wipe). */
+function toolCollapseKey(tc) {
+  const p = tc?.params || {};
+  const target = p.filePath || p.path || p.dirPath || p.command || '';
+  return `${tc?.functionName || ''}|${target}`;
+}
+function sessionFirstUserKey(sessionOrMessages) {
+  const msgs = Array.isArray(sessionOrMessages)
+    ? sessionOrMessages
+    : (sessionOrMessages?.messages || []);
+  const userMsg = msgs.find((m) => m.role === 'user');
+  return String(userMsg?.content || '').trim().slice(0, 200);
+}
+
+function sessionDedupeKey(session) {
+  const title = String(session?.title || '').trim();
+  const first = sessionFirstUserKey(session) || title;
+  return `${session?.projectPath || ''}::${first}`;
+}
+
+/** Keep newest session per project+first-user-text. Collapses history/tab triples. */
+function dedupeChatSessions(list) {
+  if (!Array.isArray(list) || list.length <= 1) return list || [];
+  const best = new Map();
+  for (const s of list) {
+    if (!s || !s.id) continue;
+    const k = sessionDedupeKey(s);
+    const prev = best.get(k);
+    if (!prev || (s.timestamp || 0) >= (prev.timestamp || 0)) best.set(k, s);
+  }
+  // Also collapse exact same id
+  const byId = new Map();
+  for (const s of best.values()) byId.set(s.id, s);
+  return Array.from(byId.values()).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+}
+
 function saveChatSessionToHistory(messages, projectPath) {
   if (!messages?.length) return null;
   try {
     const userMsg = messages.find((m) => m.role === 'user');
     const title = userMsg?.content?.slice(0, 60) || 'Chat session';
+    const firstUserKey = String(userMsg?.content || '').trim().slice(0, 200);
     const store = useAppStore.getState();
     const sessionId = store.chatSessionId || messages[0]?.id || `s-${Date.now()}`;
     const raw = localStorage.getItem('guide-chat-sessions');
     const existing = raw ? JSON.parse(raw) : [];
-    const filtered = existing.filter((s) => s.id !== sessionId);
-    const sameProject = filtered.filter((s) => s.projectPath === (projectPath || null));
-    const otherProjects = filtered.filter((s) => s.projectPath !== (projectPath || null));
+    const proj = projectPath || null;
+    const now = Date.now();
+    const DUPE_WINDOW_MS = 24 * 60 * 60 * 1000;
+    const filtered = existing.filter((s) => {
+      if (s.id === sessionId) return false;
+      if (s.projectPath !== proj) return true;
+      if (String(s.title || '') !== title) return true;
+      const sFirst = sessionFirstUserKey(s);
+      if (sFirst !== firstUserKey) return true;
+      const age = Math.abs((s.timestamp || 0) - now);
+      return age >= DUPE_WINDOW_MS;
+    });
     const planSnapshot = store.planSession ? { ...store.planSession } : null;
-    const updatedSame = [{
+    const next = dedupeChatSessions([{
       id: sessionId,
       title,
       messages,
-      timestamp: Date.now(),
-      projectPath: projectPath || null,
+      timestamp: now,
+      projectPath: proj,
       planSession: planSnapshot,
-    }, ...sameProject].slice(0, 10);
-    const updated = [...updatedSame, ...otherProjects];
+    }, ...filtered]);
+    const sameProject = next.filter((s) => s.projectPath === proj).slice(0, 10);
+    const otherProjects = next.filter((s) => s.projectPath !== proj);
+    const updated = [...sameProject, ...otherProjects];
     localStorage.setItem('guide-chat-sessions', JSON.stringify(updated));
     return updated;
   } catch (_) {
@@ -276,28 +320,24 @@ class StreamingErrorBoundary extends Component {
 // Finalized thinking block — shown on already-completed assistant messages.
 
 // Collapsed by default (unlike streaming ThinkingBlock which auto-expands).
+// Do NOT mount expanded then auto-collapse: Virtuoso caches the tall height, then
+// the shrink leaves scrollTop past the real content → blank panel until a 1px scroll.
 
 function FinalizedThinkingBlock({ text }) {
 
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
 
   const lines = text.split('\n').filter(l => l.trim());
-
-  // Auto-collapse after completion (smooth UX — thinking starts expanded, then collapses)
-  useEffect(() => {
-    const timer = setTimeout(() => setExpanded(false), 2000);
-    return () => clearTimeout(timer);
-  }, []);
 
 
 
   return (
 
-    <div className="mb-1 overflow-hidden">
+    <div className="mb-1.5 overflow-hidden">
 
       <button
 
-        className="w-full flex items-center gap-1 py-0.5 text-[10px] transition-colors leading-tight min-h-0"
+        className="w-full flex items-center gap-1 py-1 text-[10px] transition-colors leading-tight min-h-0"
 
         style={{ color: 'var(--vsc-text-dim, #858585)' }}
 
@@ -352,20 +392,11 @@ function FinalizedThinkingBlock({ text }) {
 
 function ContextSummarizeBlock({ phase, content, isLive }) {
 
-  const [expanded, setExpanded] = useState(true);
+  // Live: expanded. Finalized: collapsed immediately (same Virtuoso blank bug as thinking).
+  const [expanded, setExpanded] = useState(!!isLive || phase === 'start');
 
   useEffect(() => {
-
-    if (!isLive && phase !== 'start') {
-
-      const timer = setTimeout(() => setExpanded(false), 2000);
-
-      return () => clearTimeout(timer);
-
-    }
-
-    setExpanded(true);
-
+    setExpanded(!!isLive || phase === 'start');
   }, [isLive, phase]);
 
   const label = phase === 'start'
@@ -376,15 +407,15 @@ function ContextSummarizeBlock({ phase, content, isLive }) {
 
   const body = (content && String(content).trim())
     ? String(content)
-    : (phase === 'start' ? 'Compressing older turns with Cipher Fast…' : '');
+    : (phase === 'start' ? 'Compressing older turns with Cipher 7 Fast…' : '');
 
   return (
 
-    <div className="mb-1 overflow-hidden">
+    <div className="mb-1.5 overflow-hidden">
 
       <button
 
-        className="w-full flex items-center gap-1 py-0.5 text-[10px] transition-colors leading-tight min-h-0"
+        className="w-full flex items-center gap-1 py-1 text-[10px] transition-colors leading-tight min-h-0"
 
         style={{ color: 'var(--vsc-text-dim, #858585)' }}
 
@@ -474,11 +505,11 @@ function StreamingThinkingBlock({ content, isLive, thinkContentRef }) {
 
   return (
 
-    <div className="mb-1 overflow-hidden">
+    <div className="mb-1.5 overflow-hidden">
 
       <button
 
-        className="w-full flex items-center gap-1 py-0.5 text-[10px] transition-colors leading-tight min-h-0"
+        className="w-full flex items-center gap-1 py-1 text-[10px] transition-colors leading-tight min-h-0"
 
         style={{ color: 'var(--vsc-text-dim, #858585)' }}
 
@@ -814,7 +845,7 @@ function StreamingFooter() {
 
           const cp = useAppStore.getState().cloudProvider;
 
-          if (cp) return GUIDE_CLOUD_PROVIDERS.has(cp) ? 'guIDE Cloud AI' : cp.charAt(0).toUpperCase() + cp.slice(1);
+          if (cp) return GUIDE_CLOUD_PROVIDERS.has(cp) ? 'Cipher 7' : cp.charAt(0).toUpperCase() + cp.slice(1);
 
           return (modelInfo?.name || 'guIDE').split('/').pop().split('-Q')[0];
 
@@ -828,7 +859,7 @@ function StreamingFooter() {
 
             <span className="text-[10px] text-vsc-text-dim font-normal normal-case tracking-normal flex items-center gap-1">
 
-              Starting: Step {chatIteration.iteration}/{chatIteration.maxIterations}
+              Step {chatIteration.iteration}
 
               <span className="inline-flex gap-[2px] ml-0.5">
 
@@ -870,7 +901,7 @@ function StreamingFooter() {
 
           return (
 
-            <div key={`seg-text-${i}`}>
+            <div key={`seg-text-${i}`} className="my-0.5">
 
               <StreamingErrorBoundary fallbackContent={seg.content}>
 
@@ -971,7 +1002,7 @@ function StreamingFooter() {
 
               const prevTc = streamingToolCalls[prev.toolIndex];
 
-              if (prevTc && prevTc.functionName === tc.functionName) return null;
+              if (prevTc && toolCollapseKey(prevTc) === toolCollapseKey(tc)) return null;
 
             }
 
@@ -988,7 +1019,7 @@ function StreamingFooter() {
 
               const nextTc = streamingToolCalls[next.toolIndex];
 
-              if (!nextTc || nextTc.functionName !== tc.functionName) break;
+              if (!nextTc || toolCollapseKey(nextTc) !== toolCollapseKey(tc)) break;
 
               count++;
 
@@ -1155,7 +1186,7 @@ export default function ChatPanel() {
 
   const fileInputRef = useRef(null);
 
-  const virtuosoRef = useRef(null);
+  const chatScrollRef = useRef(null);
 
   const atBottomRef = useRef(true);
 
@@ -1173,9 +1204,10 @@ export default function ChatPanel() {
 
   const [activeConversationId, setActiveConversationId] = useState('current');
 
-  const sessionSaveTimerRef = useRef(null);
+  const [chatPaneKey, setChatPaneKey] = useState(0);
+  const tabStripRef = useRef(null);
 
-  const clearInProgressRef = useRef(false);
+  const sessionSaveTimerRef = useRef(null);
 
   const historyMenuRef = useRef(null);
 
@@ -1183,7 +1215,7 @@ export default function ChatPanel() {
 
 
 
-  // Load saved sessions from localStorage on mount
+  // Load saved sessions from localStorage on mount — collapse duplicate history rows once.
 
   useEffect(() => {
 
@@ -1191,7 +1223,14 @@ export default function ChatPanel() {
 
       const raw = localStorage.getItem('guide-chat-sessions');
 
-      if (raw) setSavedSessions(JSON.parse(raw));
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const deduped = dedupeChatSessions(parsed);
+        setSavedSessions(deduped);
+        if (deduped.length !== parsed.length) {
+          localStorage.setItem('guide-chat-sessions', JSON.stringify(deduped));
+        }
+      }
 
     } catch (_) {}
 
@@ -1267,7 +1306,11 @@ export default function ChatPanel() {
 
   }, [historyOpen]);
 
-
+  useEffect(() => {
+    const el = tabStripRef.current;
+    if (!el) return;
+    el.scrollLeft = el.scrollWidth;
+  }, [chatPaneKey]);
 
   // Close history popover when clicking outside
 
@@ -1558,66 +1601,47 @@ export default function ChatPanel() {
     atBottomRef.current = true;
   }, [chatGenerationEpoch]);
 
-  useEffect(() => {
-
-    if (!chatStreaming) userScrolledAwayRef.current = false;
-
-  }, [chatStreaming]);
+  // Do not clear userScrolledAwayRef when streaming ends — idle scroll must stay free.
 
   const handleUserWheel = useCallback((e) => {
-
-    if (!chatStreaming) return;
-
-    if (e.deltaY !== 0) {
-
-      userScrolledAwayRef.current = true;
-
-    }
-
-  }, [chatStreaming]);
+    if (e.deltaY < 0) userScrolledAwayRef.current = true;
+    else if (e.deltaY > 0 && atBottomRef.current) userScrolledAwayRef.current = false;
+  }, []);
 
 
+
+  const handleChatScroll = useCallback(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = dist < 80;
+    atBottomRef.current = atBottom;
+    if (atBottom) userScrolledAwayRef.current = false;
+  }, []);
 
   const scrollChatToEnd = useCallback((behavior = 'auto') => {
     if (userScrolledAwayRef.current) return;
-    if (virtuosoRef.current) {
-      virtuosoRef.current.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior });
-    }
+    const el = chatScrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
   }, []);
 
-  // Streaming follow is Virtuoso followOutput only — no per-token scrollChatToEnd fight.
-
-  // Scroll to the newly finalized assistant message (Footer → list handoff often leaves viewport blank).
+  // Follow output only while streaming and user has not scrolled away.
   useEffect(() => {
-    if (chatStreaming) return;
-    if (userScrolledAwayRef.current && !atBottomRef.current) return;
-    if (!chatMessages.length) return;
+    if (!chatStreaming) return;
+    if (userScrolledAwayRef.current) return;
+    scrollChatToEnd('auto');
+  }, [chatStreaming, chatMessages.length, chatStreamingText, chatThinkingText, scrollChatToEnd]);
 
-    let cancelled = false;
-    const run = () => {
-      if (cancelled || !virtuosoRef.current) return;
-      try {
-        virtuosoRef.current.scrollToIndex({
-          index: chatMessages.length - 1,
-          align: 'end',
-          behavior: 'auto',
-        });
-      } catch (_) {
-        try {
-          virtuosoRef.current.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: 'auto' });
-        } catch (__) { /* */ }
-      }
-    };
-    const id1 = requestAnimationFrame(() => {
-      requestAnimationFrame(run);
-    });
-    const t = setTimeout(run, 50);
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(id1);
-      clearTimeout(t);
-    };
-  }, [chatStreaming, chatMessages.length]);
+  // One snap to end when a stream finishes (Footer → list handoff).
+  const wasStreamingRef = useRef(false);
+  useEffect(() => {
+    const was = wasStreamingRef.current;
+    wasStreamingRef.current = chatStreaming;
+    if (!was || chatStreaming) return;
+    if (userScrolledAwayRef.current) return;
+    requestAnimationFrame(() => scrollChatToEnd('auto'));
+  }, [chatStreaming, scrollChatToEnd]);
 
 
 
@@ -1739,9 +1763,7 @@ export default function ChatPanel() {
         live.materializePartialAssistant();
         const injectIdx = addChatMessage({ role: 'user', content: shownText, injected: true });
         requestAnimationFrame(() => {
-          if (virtuosoRef.current != null && injectIdx >= 0) {
-            virtuosoRef.current.scrollToIndex({ index: injectIdx, align: 'end', behavior: 'auto' });
-          }
+          if (injectIdx >= 0) scrollChatToEnd('auto');
         });
         return;
       }
@@ -1759,9 +1781,7 @@ export default function ChatPanel() {
       live.materializePartialAssistant();
       const userIdx = addChatMessage({ role: 'user', content: shownText });
       requestAnimationFrame(() => {
-        if (virtuosoRef.current != null && userIdx >= 0) {
-          virtuosoRef.current.scrollToIndex({ index: userIdx, align: 'end', behavior: 'auto' });
-        }
+        if (userIdx >= 0) { userScrolledAwayRef.current = false; atBottomRef.current = true; scrollChatToEnd('auto'); }
       });
       const revertMsgs = useAppStore.getState().chatMessages.map((m) => ({
         role: m.role,
@@ -2447,7 +2467,7 @@ export default function ChatPanel() {
 
           model: store.cloudProvider
 
-            ? (GUIDE_CLOUD_PROVIDERS.has(store.cloudProvider) ? 'guIDE Cloud AI' : store.cloudModel || store.cloudProvider)
+            ? (GUIDE_CLOUD_PROVIDERS.has(store.cloudProvider) ? 'Cipher 7' : store.cloudModel || store.cloudProvider)
 
             : (useAppStore.getState().modelInfo?.name || undefined),
 
@@ -2475,7 +2495,7 @@ export default function ChatPanel() {
 
           model: store.cloudProvider
 
-            ? (GUIDE_CLOUD_PROVIDERS.has(store.cloudProvider) ? 'guIDE Cloud AI' : store.cloudModel || store.cloudProvider)
+            ? (GUIDE_CLOUD_PROVIDERS.has(store.cloudProvider) ? 'Cipher 7' : store.cloudModel || store.cloudProvider)
 
             : (useAppStore.getState().modelInfo?.name || undefined),
 
@@ -2523,7 +2543,7 @@ export default function ChatPanel() {
 
           model: store.cloudProvider
 
-            ? (GUIDE_CLOUD_PROVIDERS.has(store.cloudProvider) ? 'guIDE Cloud AI' : store.cloudModel || store.cloudProvider)
+            ? (GUIDE_CLOUD_PROVIDERS.has(store.cloudProvider) ? 'Cipher 7' : store.cloudModel || store.cloudProvider)
 
             : (useAppStore.getState().modelInfo?.name || undefined),
 
@@ -2657,25 +2677,36 @@ export default function ChatPanel() {
 
 
 
+  // voicestopsend1: Send (and queue send) always stops offline Whisper so mic
+  // does not keep appending into the next turn.
+  const stopVoiceIfListening = useCallback(async () => {
+    if (!voiceListening && !offlineVoiceRef.current) return;
+    setVoiceListening(false);
+    setVoiceStatusText(null);
+    try {
+      await offlineVoiceRef.current?.stop();
+    } catch (_) {}
+    offlineVoiceRef.current = null;
+  }, [voiceListening]);
+
   // handleSend: reads from input state
 
   const handleSend = useCallback(() => {
-
     const text = input.trim();
-
-    if (text) doSend(text);
-
-  }, [input, doSend]);
+    if (!text) return;
+    void stopVoiceIfListening();
+    doSend(text);
+  }, [input, doSend, stopVoiceIfListening]);
 
 
 
   // handleSendQueued: sends explicit text (for queue auto-processing)
 
   const handleSendQueued = useCallback((text) => {
-
-    if (text) doSend(text);
-
-  }, [doSend]);
+    if (!text) return;
+    void stopVoiceIfListening();
+    doSend(text);
+  }, [doSend, stopVoiceIfListening]);
 
 
 
@@ -2810,79 +2841,69 @@ export default function ChatPanel() {
     } catch (_) {}
   }, []);
 
-  const handleClear = useCallback(async () => {
+  const handleClear = useCallback(async (opts) => {
 
-    if (clearInProgressRef.current) return;
+    const store = useAppStore.getState();
 
-    clearInProgressRef.current = true;
+    const wasStreaming = store.chatStreaming;
 
-    try {
+    const msgs = store.chatMessages;
 
-      const store = useAppStore.getState();
+    const archive = !opts || opts.archive !== false;
 
-      store.bumpChatGenerationEpoch();
+    const archiveMin = opts && typeof opts.archiveMin === 'number' ? opts.archiveMin : 2;
 
-      try {
+    store.bumpChatGenerationEpoch();
 
-        if (store.chatStreaming) {
+    store.resetChatStreamingUI();
 
-          if (window.electronAPI?.agentPause) {
+    if (archive && msgs.length >= archiveMin) {
 
-            await window.electronAPI.agentPause();
+      store.ensureChatSessionId();
 
-          } else {
+      const updated = saveChatSessionToHistory(msgs, projectPath);
 
-            await (await import('../api/websocket')).invoke('agent-pause');
-
-          }
-
-        }
-
-      } catch (_) {}
-
-      store.resetChatStreamingUI();
-
-      const msgs = store.chatMessages;
-
-      if (msgs.length > 0) {
-
-        const updated = saveChatSessionToHistory(msgs, projectPath);
-
-        if (updated) setSavedSessions(updated);
-
-      }
-
-      persistCurrentConversationPlan();
-
-      store.markPendingFreshChatSession();
-
-      store.bumpChatGenerationEpoch();
-
-      window.electronAPI?.cancelPendingQuestion?.();
-
-      clearChat();
-
-      setActiveConversationId('current');
-
-      try {
-
-        await fetch('/api/session/clear', { method: 'POST' });
-
-        await window.electronAPI?.revertContext?.([]);
-
-      } catch (_) {}
-
-    } finally {
-
-      clearInProgressRef.current = false;
+      if (updated) setSavedSessions(updated);
 
     }
 
+    persistCurrentConversationPlan();
+
+    store.markPendingFreshChatSession();
+
+    window.electronAPI?.cancelPendingQuestion?.();
+
+    clearChat();
+
+    setActiveConversationId('current');
+
+    setChatPaneKey((k) => k + 1);
+
+    if (wasStreaming) {
+
+      const pause = window.electronAPI?.agentPause
+
+        ? window.electronAPI.agentPause()
+
+        : import('../api/websocket').then((m) => m.invoke('agent-pause'));
+
+      Promise.resolve(pause).catch(() => {});
+
+    }
+
+    try {
+
+      fetch('/api/session/clear', { method: 'POST' }).catch(() => {});
+
+      window.electronAPI?.revertContext?.([]);
+
+    } catch (_) {}
+
   }, [clearChat, persistCurrentConversationPlan, projectPath]);
 
-  /** Plus: always open a blank live chat (archive prior thread if it had messages). */
+  /** Plus: keep the open thread as its own tab, then open a blank tab beside it. */
   const handleNewChat = useCallback(async () => {
-    await handleClear();
+    await handleClear({ archiveMin: 1 });
   }, [handleClear]);
 
 
@@ -2927,7 +2948,7 @@ export default function ChatPanel() {
 
   const modelDisplayName = cloudProvider
 
-    ? (GUIDE_CLOUD_PROVIDERS.has(cloudProvider) ? 'guIDE Cloud AI' : cloudProvider.charAt(0).toUpperCase() + cloudProvider.slice(1))
+    ? (GUIDE_CLOUD_PROVIDERS.has(cloudProvider) ? 'Cipher 7' : cloudProvider.charAt(0).toUpperCase() + cloudProvider.slice(1))
 
     : activeMediaModel?.modelPath
 
@@ -2941,11 +2962,10 @@ export default function ChatPanel() {
 
 
 
-  const filteredSessions = useMemo(() => (
-
-    projectPath ? savedSessions.filter(s => s.projectPath === projectPath) : savedSessions
-
-  ), [savedSessions, projectPath]);
+  const filteredSessions = useMemo(() => {
+    const list = projectPath ? savedSessions.filter(s => s.projectPath === projectPath) : savedSessions;
+    return dedupeChatSessions(list);
+  }, [savedSessions, projectPath]);
 
 
 
@@ -2964,13 +2984,15 @@ export default function ChatPanel() {
   const chatSessionId = useAppStore((s) => s.chatSessionId);
 
   const conversationTabs = useMemo(() => {
-    const liveSessionId = chatSessionId || useAppStore.getState().ensureChatSessionId();
-    const tabs = [{ id: 'current', title: currentTitle, isCurrent: true }];
+    const liveSessionId = chatSessionId;
+    const tabs = [];
 
     for (const s of filteredSessions) {
       if (s.id === liveSessionId) continue;
       tabs.push({ id: s.id, title: s.title || 'Chat session', isCurrent: false, session: s });
     }
+
+    tabs.push({ id: 'current', title: currentTitle, isCurrent: true });
 
     return tabs;
   }, [filteredSessions, chatSessionId, currentTitle]);
@@ -2980,6 +3002,13 @@ export default function ChatPanel() {
     const store = useAppStore.getState();
 
     persistCurrentConversationPlan();
+
+    const liveMsgs = store.chatMessages;
+    if (liveMsgs.length >= 1 && store.chatSessionId !== session.id) {
+      store.ensureChatSessionId();
+      const updated = saveChatSessionToHistory(liveMsgs, projectPath);
+      if (updated) setSavedSessions(updated);
+    }
 
     if (store.chatStreaming) {
 
@@ -3037,7 +3066,15 @@ export default function ChatPanel() {
 
     setHistoryOpen(false);
 
-  }, [persistCurrentConversationPlan]);
+    userScrolledAwayRef.current = false;
+    atBottomRef.current = true;
+    setChatPaneKey((k) => k + 1);
+    requestAnimationFrame(() => {
+      const el = chatScrollRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight });
+    });
+
+  }, [persistCurrentConversationPlan, projectPath]);
 
 
 
@@ -3049,37 +3086,56 @@ export default function ChatPanel() {
 
       <div className="h-[35px] flex items-center px-3 border-b border-vsc-panel-border/25 no-select flex-shrink-0 bg-vsc-sidebar/80 backdrop-blur-sm shadow-[0_1px_0_rgba(255,255,255,0.03)_inset] gap-1">
 
-        <div className="flex items-center flex-1 min-w-0 overflow-x-auto scrollbar-thin pl-1">
+        <div ref={tabStripRef} className="flex items-center flex-1 min-w-0 overflow-x-auto scrollbar-thin pl-1">
 
-          {conversationTabs.map((tab) => (
-
-            <button
-
+          {conversationTabs.map((tab) => {
+            const tabActive = tab.id === 'current' ? activeConversationId === 'current' : activeConversationId === tab.id;
+            return (
+            <div
               key={tab.id}
-
-              className={`px-3 h-[33px] text-[11px] truncate max-w-[140px] border-b-2 transition-colors flex-shrink-0 ${
-                (tab.id === 'current' ? activeConversationId === 'current' : activeConversationId === tab.id)
+              className={`group flex items-center h-[33px] max-w-[168px] flex-shrink-0 border-b-2 ${
+                tabActive
                   ? 'border-vsc-accent text-vsc-text'
                   : 'border-transparent text-vsc-text-dim hover:text-vsc-text hover:bg-vsc-list-hover/30'
               }`}
-
-              title={tab.title}
-
-              onClick={() => {
-
-                if (tab.isCurrent) { setActiveConversationId('current'); return; }
-
-                openSavedSession(tab.session);
-
-              }}
-
             >
-
-              {tab.title}
-
-            </button>
-
-          ))}
+              <button
+                className="px-2 text-[11px] truncate flex-1 min-w-0 text-left"
+                title={tab.title}
+                onClick={() => {
+                  if (tab.isCurrent) { setActiveConversationId('current'); return; }
+                  openSavedSession(tab.session);
+                }}
+              >
+                {tab.title}
+              </button>
+              <button
+                className="px-1 text-vsc-text-dim hover:text-vsc-error"
+                title="Close"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (tab.isCurrent) {
+                    const id = useAppStore.getState().chatSessionId;
+                    if (id) {
+                      setSavedSessions((prev) => {
+                        const updated = prev.filter((s) => s.id !== id);
+                        localStorage.setItem('guide-chat-sessions', JSON.stringify(updated));
+                        return updated;
+                      });
+                    }
+                    handleClear({ archive: false });
+                    return;
+                  }
+                  const updated = savedSessions.filter((s) => s.id !== tab.id);
+                  setSavedSessions(updated);
+                  localStorage.setItem('guide-chat-sessions', JSON.stringify(updated));
+                }}
+              >
+                <X size={10} />
+              </button>
+            </div>
+            );
+          })}
 
         </div>
 
@@ -3173,11 +3229,11 @@ export default function ChatPanel() {
 
                   filteredSessions.map((session) => (
 
-                    <button
+                    <div
 
                       key={session.id}
 
-                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-vsc-list-hover transition-colors group"
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-vsc-list-hover transition-colors group cursor-pointer"
 
                       onClick={() => openSavedSession(session)}
 
@@ -3193,7 +3249,31 @@ export default function ChatPanel() {
 
                       </span>
 
-                    </button>
+                      <button
+
+                        className="p-0.5 text-vsc-text-dim/40 hover:text-vsc-error opacity-0 group-hover:opacity-100 transition-opacity"
+
+                        title="Delete session"
+
+                        onClick={(e) => {
+
+                          e.stopPropagation();
+
+                          const updated = savedSessions.filter(s => s.id !== session.id);
+
+                          setSavedSessions(updated);
+
+                          localStorage.setItem('guide-chat-sessions', JSON.stringify(updated));
+
+                        }}
+
+                      >
+
+                        <X size={10} />
+
+                      </button>
+
+                    </div>
 
                   ))
 
@@ -3286,45 +3366,16 @@ export default function ChatPanel() {
 
         )}
 
-        <Virtuoso
-
-          ref={virtuosoRef}
-
-          data={chatMessages}
-
-          computeItemKey={(_idx, msg) => String(msg.insertionSeq ?? msg.id ?? _idx)}
-
-          increaseViewportBy={{ top: 600, bottom: 800 }}
-
-          defaultItemHeight={120}
-
-          followOutput={(isAtBottom) => (isAtBottom ? 'smooth' : false)}
-
-          atBottomStateChange={(atBottom) => {
-
-            atBottomRef.current = atBottom;
-
-            // Do not clear userScrolledAwayRef on at-bottom flicker.
-
-          }}
-
-          atBottomThreshold={120}
-
-          initialTopMostItemIndex={chatMessages.length > 0 ? chatMessages.length - 1 : 0}
-
-          className="scrollbar-thin"
-
-          components={{
-
-            Header: StreamingHeader,
-
-            Footer: StreamingFooter,
-
-          }}
-
-          itemContent={(idx, msg) => (
-
-            <>
+        <div
+          key={chatPaneKey}
+          ref={chatScrollRef}
+          className="scrollbar-thin h-full overflow-y-auto"
+          onScroll={handleChatScroll}
+        >
+          <StreamingHeader />
+          {chatMessages.map((msg, idx) => (
+            <div key={String(msg.insertionSeq ?? msg.id ?? idx)} className="px-0">
+              <>
 
               {/* Checkpoint divider */}
 
@@ -3492,8 +3543,8 @@ export default function ChatPanel() {
                       {/* R35-L4: Use segments + FileContentBlock for file blocks when available */}
 
                       {msg.segments && msg.segments.length > 0 ? (
-
-                        msg.segments.map((seg, i) => {
+                        <>
+                        {msg.segments.map((seg, i) => {
 
                           if (seg.type === 'text' && seg.content && seg.content.trim()) {
 
@@ -3570,7 +3621,7 @@ export default function ChatPanel() {
 
                                 const prevTc = msg.toolCalls?.[prev.toolIndex];
 
-                                if (prevTc && prevTc.functionName === tc.functionName) return null;
+                                if (prevTc && toolCollapseKey(prevTc) === toolCollapseKey(tc)) return null;
 
                               }
 
@@ -3587,7 +3638,7 @@ export default function ChatPanel() {
 
                                 const nextTc = msg.toolCalls?.[next.toolIndex];
 
-                                if (!nextTc || nextTc.functionName !== tc.functionName) break;
+                                if (!nextTc || toolCollapseKey(nextTc) !== toolCollapseKey(tc)) break;
 
                                 count++;
 
@@ -3600,7 +3651,15 @@ export default function ChatPanel() {
 
                           return null;
 
-                        })
+                        })}
+                        {msg.content && String(msg.content).trim()
+                          && !msg.segments.some((s) => s.type === 'text' && s.content && String(s.content).trim())
+                          ? (
+                            <StreamingErrorBoundary fallbackContent={msg.content}>
+                              <MarkdownRenderer content={msg.content} />
+                            </StreamingErrorBoundary>
+                          ) : null}
+                        </>
 
                       ) : (
 
@@ -3755,10 +3814,10 @@ export default function ChatPanel() {
               )}
 
             </>
-
-          )}
-
-        />
+            </div>
+          ))}
+          <StreamingFooter />
+        </div>
 
       </div>
 
@@ -3777,6 +3836,8 @@ export default function ChatPanel() {
           {/* Todo list progress (collapsible) */}
 
           {todos.length > 0 && <TodoDropdown todos={todos} />}
+
+          <BackgroundTerminalDropdown />
 
 
 
@@ -4088,7 +4149,9 @@ export default function ChatPanel() {
 
                 <div className="flex-1 min-w-0">
 
-                  <div className="text-[12px] text-vsc-text mb-2">{pendingQuestion.question}</div>
+                  <div className="text-[12px] text-vsc-text mb-2 prose-ask-question">
+                    <MarkdownRenderer content={String(pendingQuestion.question || '')} />
+                  </div>
 
                   {pendingQuestion.options && pendingQuestion.options.length > 0 && (
 
@@ -4979,7 +5042,7 @@ function QuotaExceededPrompt({ needsAccount }) {
 
       <p className="text-vsc-sm text-vsc-text-dim mb-3">
 
-        You've used all 50 free Cloud AI messages for today.
+        You've used all 50 free Cipher 7 messages for today.
 
         {needsAccount
 
@@ -5133,6 +5196,8 @@ const PROVIDER_INFO = {
 
   lepton:     { signupUrl: 'https://dashboard.lepton.ai/', free: false, placeholder: 'key...' },
 
+  cursor:     { signupUrl: 'https://cursor.com/dashboard?tab=integrations', free: false, placeholder: 'crsr_...', note: 'Admin-only (brendan36363@gmail.com). Hidden for everyone else. Not a Pro/Cipher feature.' },
+
 };
 
 
@@ -5198,6 +5263,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
   const [downloadProgress, setDownloadProgress] = useState(new Map());
 
   const [allProviders, setAllProviders] = useState([]);
+  const [cursorAdmin, setCursorAdmin] = useState(false);
 
 
 
@@ -5210,6 +5276,12 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
       setAllProviders(d.all || []);
 
     }).catch(() => {});
+
+    fetch('/api/license/status').then(r => r.json()).then(d => {
+
+      setCursorAdmin(!!d.cursorAdmin);
+
+    }).catch(() => setCursorAdmin(false));
 
   }, []);
 
@@ -5563,7 +5635,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
   const freeProviders = Object.entries(PROVIDER_INFO).filter(([, v]) => v.free).map(([k]) => k);
 
-  const premiumProviders = Object.entries(PROVIDER_INFO).filter(([, v]) => !v.free).map(([k]) => k);
+  const premiumProviders = Object.entries(PROVIDER_INFO).filter(([k, v]) => !v.free && (k !== 'cursor' || cursorAdmin)).map(([k]) => k);
 
 
 
@@ -6202,7 +6274,7 @@ function ModelPickerDropdown({ onClose, models, currentModel }) {
 
                   <div className="min-w-0 flex-1">
 
-                    <div className="text-vsc-text font-medium">guIDE Cloud AI</div>
+                    <div className="text-vsc-text font-medium">Cipher 7</div>
 
                     <div className="text-[10px] text-vsc-text-dim">Secrypt Cipher Quality (27B) on the P40</div>
 
@@ -7014,6 +7086,126 @@ function ProviderModelList({ provider, cloudProvider, cloudModel, selectCloudMod
     </button>
 
   ));
+
+}
+
+
+
+function BackgroundTerminalDropdown() {
+
+  const shells = useAppStore((s) => s.backgroundShells) || [];
+
+  const [expanded, setExpanded] = useState(false);
+
+  if (!shells.length) return null;
+
+  const running = shells.filter((s) => s.status === 'running').length;
+
+  const api = typeof window !== 'undefined' ? window.electronAPI : null;
+
+
+
+  return (
+
+    <div className="border-b border-vsc-panel-border/15">
+
+      <button
+
+        className="w-full flex items-center gap-1.5 px-2.5 py-1 text-[10px] transition-colors hover:bg-vsc-list-hover/50"
+
+        style={{ color: 'var(--vsc-text)' }}
+
+        onClick={() => setExpanded(!expanded)}
+
+      >
+
+        <span className="flex-shrink-0 text-vsc-text-dim">
+
+          {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+
+        </span>
+
+        <Terminal size={10} className="flex-shrink-0 text-vsc-accent" />
+
+        <span className="font-medium flex-shrink-0">
+
+          {shells.length} background terminal{shells.length !== 1 ? 's' : ''}
+
+        </span>
+
+        {running > 0 && (
+
+          <span className="ml-auto text-vsc-text-dim">{running} running</span>
+
+        )}
+
+      </button>
+
+      {expanded && (
+
+        <div
+
+          className="px-2.5 pb-1 pt-0.5 space-y-0 overflow-y-auto scrollbar-thin"
+
+          style={{ borderTop: '1px solid var(--vsc-panel-border, #2d2d2d)', maxHeight: '150px' }}
+
+        >
+
+          {shells.map((shell) => (
+
+            <div
+
+              key={shell.id}
+
+              className="flex items-center gap-1.5 py-[2px] text-[10px] border-b border-vsc-panel-border/25 last:border-0"
+
+            >
+
+              <Terminal size={9} className="flex-shrink-0 text-vsc-text-dim" />
+
+              <span className="truncate min-w-0 flex-1" title={shell.command || shell.title}>
+
+                {shell.title || shell.command || shell.id}
+
+              </span>
+
+              <span className="flex-shrink-0 text-vsc-text-dim">{shell.status}</span>
+
+              {shell.status === 'running' && (
+
+                <button
+
+                  className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] text-vsc-error hover:bg-vsc-error/10"
+
+                  title="Stop background shell"
+
+                  onClick={async (e) => {
+
+                    e.stopPropagation();
+
+                    try { await api?.stopBackgroundShell?.(shell.id); } catch (_) {}
+
+                  }}
+
+                >
+
+                  Stop
+
+                </button>
+
+              )}
+
+            </div>
+
+          ))}
+
+        </div>
+
+      )}
+
+    </div>
+
+  );
 
 }
 

@@ -550,11 +550,37 @@ mcpToolServer.onIPCCall = async (channel, data) => {
 };
 cloudLLM.setLicenseManager(licenseManager);
 
-// Restore persisted API keys
+// Restore persisted API keys (skip cursor_pool JSON blob — hydrated below)
 const savedKeys = settingsManager.getAllApiKeys();
 for (const [provider, key] of Object.entries(savedKeys)) {
+  if (provider === 'cursor_pool') continue;
   if (key && key.trim()) {
     cloudLLM.setApiKey(provider, key);
+  }
+}
+
+// Sticky Cursor multi-key pool (usage-limit rotation)
+const { CursorKeyPool } = require('./cursorKeyPool');
+const cursorKeyPool = new CursorKeyPool({ settingsManager, cloudLLM });
+cloudLLM._cursorKeyPool = cursorKeyPool;
+try {
+  cursorKeyPool.hydrate();
+} catch (e) {
+  console.warn('[CursorPool] hydrate failed:', e.message);
+}
+
+// Cursor is admin-only — wipe active selection if this machine is not the admin license
+{
+  const { isCursorAdmin } = require('./cursorAdminGate');
+  if (!isCursorAdmin({ licenseManager, settingsManager })) {
+    if (settingsManager.get('lastCloudProvider') === 'cursor') {
+      settingsManager.set('lastCloudProvider', null);
+      settingsManager.set('lastCloudModel', null);
+      console.log('[CursorAdmin] cleared lastCloudProvider=cursor (not admin license)');
+    }
+    if (cloudLLM.activeProvider === 'cursor') {
+      cloudLLM.activeProvider = null;
+    }
   }
 }
 
@@ -788,7 +814,7 @@ function buildCloudChatErrorResponse(cloudLLM, cloudProvider, err) {
 
   if (isRateLimit) {
     cooldownUntil = cloudLLM.getRateLimitCooldownUntil(cloudProvider);
-    error = 'guIDE Cloud AI is rate limited. Slow down and try again.';
+    error = 'Cipher is rate limited. Slow down and try again.';
     errorSuggestion = cooldownUntil
       ? 'Wait for the countdown below before sending another message.'
       : 'Please wait about a minute before trying again.';
@@ -922,6 +948,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         onToken: (token) => { if (!stillThisTurn()) _send('llm-token', token); },
         onThinkingToken: (token) => { if (!stillThisTurn()) _send('llm-thinking-token', token); },
         onStreamEvent: (eventName, data) => { if (!stillThisTurn()) _send(eventName, data); },
+        onContextUsage: (data) => { if (!stillThisTurn()) _send('context-usage', data); },
         getCancelled: () => stillThisTurn(),
         getActiveTodos: () => (mcpToolServer?._todos ? [...mcpToolServer._todos] : []),
       });
@@ -936,7 +963,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         return {
           success: false,
           isQuotaError: true,
-          error: 'guIDE Cloud AI quota exceeded. Slow down and try again.',
+          error: 'Cipher quota exceeded. Slow down and try again.',
           errorSuggestion: cooldownUntil
             ? 'Wait for the countdown before sending another message.'
             : 'Please wait about a minute before trying again.',
@@ -976,7 +1003,7 @@ ipcMain.handle('ai-chat', async (_event, userMessage, chatContext) => {
         return {
           success: false,
           isQuotaError: true,
-          error: 'guIDE Cloud AI quota exceeded. Slow down and try again.',
+          error: 'Cipher quota exceeded. Slow down and try again.',
           errorSuggestion: cooldownUntil
             ? 'Wait for the countdown before sending another message.'
             : 'Please wait about a minute before trying again.',
@@ -1372,6 +1399,16 @@ ipcMain.handle('cancel-generation', async () => {
   await llmEngine.waitForIdle({ timeoutMs: 5000 });
   _send('llm-stream-end', null);
   return { success: true };
+});
+
+ipcMain.handle('list-background-shells', () => {
+  try { return mcpToolServer._listBackgroundShells(); }
+  catch (e) { return { success: false, shells: [], error: e.message }; }
+});
+
+ipcMain.handle('stop-background-shell', (_e, shellId) => {
+  try { return mcpToolServer._stopBackgroundShell(shellId); }
+  catch (e) { return { success: false, error: e.message }; }
 });
 
 ipcMain.handle('agent-pause', async () => {
@@ -2124,6 +2161,15 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
       } else if (provider === 'ollama') {
         await cloudLLM.detectOllama();
         return apiReturn({ models: cloudLLM.getOllamaModels() });
+      } else if (provider === 'cursor') {
+        const { isCursorAdmin } = require('./cursorAdminGate');
+        if (!isCursorAdmin({ licenseManager, settingsManager })) {
+          return { _status: 403, error: 'Cursor provider is admin-only' };
+        }
+        const { listCursorModels } = require('./cursorCloudProvider');
+        const key = cloudLLM.apiKeys.cursor || settingsManager.getApiKey('cursor');
+        const models = await listCursorModels(key);
+        return apiReturn({ models: models.length ? models : cloudLLM._getProviderModels('cursor') });
       } else {
         return apiReturn({ models: cloudLLM._getProviderModels(provider) });
       }
@@ -2136,6 +2182,12 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         settingsManager.set('lastCloudProvider', null);
         settingsManager.set('lastCloudModel', null);
         return apiReturn({ success: true, activeProvider: null, activeModel: null });
+      }
+      if (provider === 'cursor') {
+        const { isCursorAdmin } = require('./cursorAdminGate');
+        if (!isCursorAdmin({ licenseManager, settingsManager })) {
+          return { _status: 403, error: 'Cursor provider is admin-only' };
+        }
       }
       try { llmEngine.cancelGeneration('cloud-select'); } catch (_) {}
       if (llmEngine.isReady || llmEngine.getStatus().loadState === 'loading') {
@@ -2159,9 +2211,35 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
     if (p === '/api/cloud/apikey' && method === 'POST') {
       const { provider, key } = body;
       if (!provider) return { _status: 400, error: 'provider required' };
+      if (provider === 'cursor') {
+        const { isCursorAdmin } = require('./cursorAdminGate');
+        if (!isCursorAdmin({ licenseManager, settingsManager })) {
+          return { _status: 403, error: 'Cursor provider is admin-only' };
+        }
+      }
+      if (provider === 'cursor' && Array.isArray(body.keys)) {
+        const st = cursorKeyPool.setKeys(body.keys);
+        return apiReturn({ success: true, hasKey: true, pool: st });
+      }
       cloudLLM.setApiKey(provider, key || '');
       settingsManager.setApiKey(provider, key || '');
+      if (provider === 'cursor' && key && String(key).startsWith('crsr_')) {
+        const existing = cursorKeyPool.getKeys();
+        const trimmed = String(key).trim();
+        if (!existing.includes(trimmed)) {
+          cursorKeyPool.setKeys([...existing, trimmed]);
+        } else {
+          cursorKeyPool.hydrate();
+        }
+      }
       return apiReturn({ success: true, hasKey: !!(key && key.trim()) });
+    }
+    if (p === '/api/cloud/pool/cursor' && method === 'GET') {
+      const { isCursorAdmin } = require('./cursorAdminGate');
+      if (!isCursorAdmin({ licenseManager, settingsManager })) {
+        return { _status: 403, error: 'Cursor provider is admin-only' };
+      }
+      return apiReturn(cursorKeyPool.status());
     }
     if (p.startsWith('/api/cloud/pool/') && method === 'GET') {
       const provider = p.replace('/api/cloud/pool/', '');
@@ -2311,6 +2389,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
 
     // ── License ─────────────────────────────────────────
     if (p === '/api/license/status' && method === 'GET') {
+      const { isCursorAdmin } = require('./cursorAdminGate');
       return apiReturn({
         isActivated: licenseManager.isActivated || false,
         isAuthenticated: accountManager.isAuthenticated || false,
@@ -2318,6 +2397,7 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         machineId: licenseManager.machineId || null,
         user: accountManager.user || null,
         plan: licenseManager.getPlan(),
+        cursorAdmin: isCursorAdmin({ licenseManager, settingsManager }),
       });
     }
     if (p === '/api/license/activate' && method === 'POST') {

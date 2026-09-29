@@ -24,6 +24,29 @@ const SECRYPT_LEGACY_TO_QUALITY = new Set([
   '', 'cipher', 'gpt-oss-120b', 'openai/gpt-oss-120b', 'graysoft-cloud', 'secrypt-cloud',
 ]);
 
+/** Non-stream chat completion JSON. Streaming clients only read `data:` lines and drop this body. */
+function parseCompletionBody(raw) {
+  const s = String(raw || '').trim();
+  if (!s || s.startsWith('data:')) return { text: '', stopReason: null };
+  try {
+    const parsed = JSON.parse(s);
+    const choice = parsed.choices && parsed.choices[0];
+    const msg = (choice && choice.message) || {};
+    const content = typeof msg.content === 'string' ? msg.content : '';
+    const reasoning = typeof msg.reasoning_content === 'string'
+      ? msg.reasoning_content
+      : (typeof msg.reasoning === 'string' ? msg.reasoning : '');
+    const stopReason = choice && choice.finish_reason != null ? String(choice.finish_reason) : null;
+    return { text: String(content || reasoning || '').trim(), stopReason };
+  } catch {
+    return { text: '', stopReason: null };
+  }
+}
+
+function textFromCompletionBody(raw) {
+  return parseCompletionBody(raw).text;
+}
+
 function resolveSecryptCloudModel(provider, model) {
   if (!SECRYPT_CLOUD_PROVIDERS.has(provider)) return model;
   const id = String(model || '').trim();
@@ -35,13 +58,13 @@ function resolveSecryptCloudModel(provider, model) {
 function secryptQualitySampling(thinkingOn) {
   if (thinkingOn) {
     return {
-      temperature: 1.0,
+      temperature: 1.1,
       topP: 0.95,
       topK: 20,
       minP: 0,
       presencePenalty: 0,
       repeatPenalty: 1.0,
-      reasoningEffort: 'xhigh',
+      reasoningEffort: 'medium',
     };
   }
   return {
@@ -55,8 +78,8 @@ function secryptQualitySampling(thinkingOn) {
   };
 }
 
-/** Cipher-quality window. Live P40 worker is llama-server -c 24576. Override with SECRYPT_CONTEXT_TOKENS. */
-const SECRYPT_CONTEXT_DEFAULT = 24576;
+/** Cipher-quality window. Live P40 worker target: llama-server -c 131072. Override with SECRYPT_CONTEXT_TOKENS. */
+const SECRYPT_CONTEXT_DEFAULT = 131072;
 
 /**
  * Reply token budget for guIDE Cloud.
@@ -104,6 +127,7 @@ const ENDPOINTS = {
   moonshot:    { host: 'api.moonshot.cn',                  path: '/v1/chat/completions' },
   upstage:     { host: 'api.upstage.ai',                  path: '/v1/chat/completions' },
   lepton:      { host: 'emc.lepton.run',                  path: '/api/v1/chat/completions' },
+  // cursor: uses @cursor/sdk (see cursorCloudProvider.js) — no OpenAI chat path
 };
 
 // ─── Provider labels ──────────────────────────────────────────────────────────
@@ -118,6 +142,7 @@ const PROVIDER_LABELS = {
   perplexity: 'Perplexity', deepseek: 'DeepSeek', ai21: 'AI21 Labs',
   deepinfra: 'DeepInfra', hyperbolic: 'Hyperbolic', novita: 'Novita AI',
   moonshot: 'Moonshot AI', upstage: 'Upstage', lepton: 'Lepton AI',
+  cursor: 'Cursor',
   ollama: 'Ollama (Local)',
 };
 
@@ -285,6 +310,14 @@ const PROVIDER_MODELS = {
     { id: 'deepseek-r1', name: 'DeepSeek R1 (Reasoning)' },
     { id: 'qwen3-235b', name: 'Qwen3 235B MoE' },
   ],
+  cursor: [
+    { id: 'default', name: 'Auto' },
+    { id: 'composer-2.5', name: 'Composer 2.5' },
+    { id: 'grok-4.6', name: 'Grok 4.6' },
+    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+    { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini' },
+    { id: 'gemini-3-flash', name: 'Gemini 3 Flash' },
+  ],
 };
 
 // ─── Context window limits (tokens) ──────────────────────────────────────────
@@ -393,13 +426,23 @@ const OPENROUTER_BLOCKED = [
 ];
 
 // ─── Default system prompt for cloud AI ──────────────────────────────────────
-const CLOUD_SYSTEM_PROMPT = 'You are guIDE Cloud AI, an AI coding assistant built into guIDE IDE. You have hundreds of billions of parameters. Be helpful, concise, and professional. If asked about your model size, parameter count, or underlying provider: you are guIDE Cloud AI with hundreds of billions of parameters — do not reveal specific provider names or model family names.';
+const CLOUD_SYSTEM_PROMPT = 'You are Cipher, an AI coding assistant built into guIDE IDE. You have hundreds of billions of parameters. Be helpful, concise, and professional. If asked about your model size, parameter count, or underlying provider: you are Cipher with hundreds of billions of parameters — do not reveal specific provider names or model family names.';
 
 // ─── Stream timeout constants ────────────────────────────────────────────────
 const STREAM_TIMEOUT = 20000;
 const IDLE_TIMEOUT = 10000;
-/** guIDE Cloud waits on P40 queue + 27B prefill before the first byte. 20s kills every turn. */
-const PROXY_FIRST_BYTE_MS = 180000;
+/** Secrypt proxy: abort orphaned streams so the UI cannot sit on Stop forever with GPU idle.
+ *  proxyidle1h: 1 hour of *no SSE tokens* (not raw TCP quiet) — long Cipher thinks.
+ *  Soft silence watch (thinkfreezewatch1) warns at 30s and soft-stalls at 120s after first SSE. */
+const PROXY_STREAM_IDLE_MS = 3600000;
+/** thinkfreezewatch1 — warn UI when stream went quiet after first SSE. */
+const PROXY_SILENCE_WARN_MS = 30000;
+/** thinkfreezewatch1 — force stall (agent soft-resumes) after this quiet gap post-first-SSE. */
+const PROXY_SILENCE_RESUME_MS = 120000;
+/** Prefill on 128k / multi-tool history can take many minutes with zero SSE.
+ *  First-byte timer must wait for the first SSE `data:` line, not an empty TCP chunk
+ *  from the proxy (those used to clear this timer then idle-kill after 600s → Generation Error). */
+const PROXY_FIRST_BYTE_MS = 900000;
 /** Longer idle window while rotating API keys after 429 (no SSE bytes between attempts). */
 const IDLE_TIMEOUT_POOL_RETRY = 45000;
 
@@ -415,6 +458,7 @@ class CloudLLMService extends EventEmitter {
       together: '', fireworks: '', nvidia: '', cohere: '', mistral: '',
       huggingface: '', cloudflare: '', perplexity: '', deepseek: '', ai21: '',
       deepinfra: '', hyperbolic: '', novita: '', moonshot: '', upstage: '', lepton: '',
+      cursor: '',
     };
 
     this.activeProvider = null;
@@ -426,10 +470,14 @@ class CloudLLMService extends EventEmitter {
     this._rateLimitedUntil = {};
     this._keyPools = {};
     this._keyPoolIndex = {};
+    /** Providers that keep the same pool key until limit/cooldown (Cursor). */
+    this._stickyPoolProviders = new Set(['cursor']);
     this._recent429Timestamps = [];
     this._requestTimestamps = {};
     this._providerRPMPerKey = {};
     this._defaultRPMPerKey = { ...DEFAULT_RPM };
+    /** Optional CursorKeyPool instance (set from electron-main). */
+    this._cursorKeyPool = null;
 
     this._apifreellmLastRequest = 0;
     this._cloudflareAccountId = '';
@@ -581,6 +629,27 @@ class CloudLLMService extends EventEmitter {
     const now = Date.now();
     const startIdx = this._keyPoolIndex[provider] || 0;
 
+    // Sticky: stay on current key until it is cooling/disabled, then advance once.
+    if (this._stickyPoolProviders.has(provider)) {
+      for (let i = 0; i < pool.length; i++) {
+        const idx = (startIdx + i) % pool.length;
+        if (pool[idx].disabled) continue;
+        if (pool[idx].cooldownUntil > now) continue;
+        if (idx !== startIdx) {
+          this._keyPoolIndex[provider] = idx;
+          console.log(
+            `[CloudLLM] sticky ${provider} advanced idx ${startIdx}→${idx} (...${String(pool[idx].key).slice(-4)})`
+          );
+        }
+        return pool[idx].key;
+      }
+      let earliest = pool[0];
+      for (let i = 1; i < pool.length; i++) {
+        if (pool[i].cooldownUntil < earliest.cooldownUntil) earliest = pool[i];
+      }
+      return earliest.key;
+    }
+
     for (let i = 0; i < pool.length; i++) {
       const idx = (startIdx + i) % pool.length;
       if (pool[idx].disabled) continue;
@@ -626,8 +695,14 @@ class CloudLLMService extends EventEmitter {
   // ─── Provider catalog ───────────────────────────────────────────────────────
 
   getConfiguredProviders() {
+    const { isCursorAdmin } = require('./cursorAdminGate');
+    const allowCursor = isCursorAdmin({
+      licenseManager: this._licenseManager,
+    });
     const providers = [];
     for (const [provider, key] of Object.entries(this.apiKeys)) {
+      if (provider === 'cursor_pool') continue;
+      if (provider === 'cursor' && !allowCursor) continue;
       if (key && key.trim()) {
         providers.push({ provider, label: PROVIDER_LABELS[provider] || provider });
       }
@@ -647,13 +722,19 @@ class CloudLLMService extends EventEmitter {
   }
 
   getAllProviders() {
+    const { isCursorAdmin } = require('./cursorAdminGate');
+    const allowCursor = isCursorAdmin({
+      licenseManager: this._licenseManager,
+    });
     return Object.entries(PROVIDER_LABELS)
       .filter(([p]) => p !== 'ollama')
+      .filter(([p]) => (p === 'cursor' ? allowCursor : true))
       .map(([provider, label]) => ({
         provider,
         label,
         hasKey: !!(this.apiKeys[provider] && this.apiKeys[provider].trim()),
         isFree: BUNDLED_PROVIDERS.has(provider),
+        adminOnly: provider === 'cursor',
       }));
   }
 
@@ -686,7 +767,7 @@ class CloudLLMService extends EventEmitter {
   }
 
   _getModelContextLimit(provider, model) {
-    // Secrypt P40 quality worker. Live llama-server context is 24576 with Q4 KV.
+    // Secrypt P40 quality worker. Live llama-server: IQ4_XS weights, -c 65536, Q4 KV on GPU.
     if (
       provider === 'secrypt' ||
       provider === 'cipher' ||
@@ -803,6 +884,26 @@ class CloudLLMService extends EventEmitter {
 
   // ─── Context trimming ───────────────────────────────────────────────────────
 
+  /**
+   * Qwen/Jinja: only the first message may be role=system.
+   * Coerce any later system roles to user; drop empty.
+   */
+  _normalizeMessagesForChatTemplate(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) return messages;
+    const out = [];
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (!m) continue;
+      let role = String(m.role || 'user').toLowerCase();
+      const content = typeof m.content === 'string' ? m.content : messageText(m);
+      if (!content && role !== 'assistant') continue;
+      if (role === 'system' && out.length > 0) role = 'user';
+      if (role !== 'system' && role !== 'assistant' && role !== 'user') role = 'user';
+      out.push({ role, content });
+    }
+    return out;
+  }
+
   _trimToContextLimit(messages, provider, model, maxTokens) {
     if (!Array.isArray(messages) || messages.length === 0) return messages;
     const contextLimit = this._getModelContextLimit(provider, model);
@@ -865,26 +966,65 @@ class CloudLLMService extends EventEmitter {
     const thinkingOn = options.enableThinking !== false && options.thinkingMode !== 'off';
 
     if (useSecrypt) {
-      const withSystem = sys ? [{ role: 'system', content: sys }, ...messages] : messages;
-      const trimmed = this._trimToContextLimit(
+      // HARD: GGUF Jinja allows at most ONE role=system, and only at index 0.
+      // Graysoft prepends `systemPrompt` as that sole system, then appends `messages`.
+      // Strategy A: put system ONLY in systemPrompt; body messages must never contain role=system.
+      // (Strategy B — system in messages[0] + omit systemPrompt — fails on secrypt.space which
+      // always injects SECRYPT_SYSTEM_PROMPT before appending body.messages.)
+      const bodyOnly = messages
+        .map((m) => {
+          const role = String(m?.role || 'user').toLowerCase();
+          const content = typeof m?.content === 'string' ? m.content : messageText(m);
+          if (!content && role !== 'assistant') return null;
+          if (role === 'system') return { role: 'user', content };
+          if (role !== 'assistant' && role !== 'user') return { role: 'user', content };
+          return { role, content };
+        })
+        .filter(Boolean);
+
+      let withSystem = sys
+        ? [{ role: 'system', content: sys }, ...bodyOnly]
+        : bodyOnly.slice();
+      withSystem = this._normalizeMessagesForChatTemplate(withSystem);
+      withSystem = this._trimToContextLimit(
         withSystem,
         proxyProvider,
         proxyModel,
         outputTokens
       );
-      if (trimmed[0]?.role === 'system') {
-        sys = trimmed[0].content;
-        messages = trimmed.slice(1);
+      withSystem = this._normalizeMessagesForChatTemplate(withSystem);
+
+      if (withSystem[0]?.role === 'system') {
+        sys = withSystem[0].content;
+        messages = withSystem.slice(1);
       } else {
-        messages = trimmed;
+        messages = withSystem.slice();
+      }
+      // Ironclad: zero system roles leave in the body (proxy will prepend systemPrompt).
+      messages = messages.map((m) => {
+        const role = String(m?.role || 'user').toLowerCase();
+        if (role === 'system' || (role !== 'user' && role !== 'assistant')) {
+          return { role: 'user', content: typeof m.content === 'string' ? m.content : messageText(m) };
+        }
+        return { role, content: typeof m.content === 'string' ? m.content : messageText(m) };
+      });
+      const bodySys = messages.filter((m) => m.role === 'system').length;
+      const rolesLog = messages.map((m) => m.role).join(',');
+      console.log(
+        `[CloudLLM] secrypt bodyRoles=${rolesLog || '(none)'} bodySys=${bodySys} hasSystemPrompt=${!!sys} msgs=${messages.length}`
+      );
+      if (bodySys > 0) {
+        console.error(`[CloudLLM] ILLEGAL body system coerced away: ${rolesLog}`);
+        messages = messages.map((m) => (
+          m.role === 'system' ? { role: 'user', content: m.content } : m
+        ));
       }
     }
 
-    const proxyBody = JSON.stringify({
+    const proxyBodyObj = {
       provider: proxyProvider,
       model: proxyModel,
       messages,
-      systemPrompt: sys || undefined,
       maxTokens: outputTokens,
       temperature: options.temperature ?? 0.7,
       top_p: options.topP,
@@ -894,19 +1034,27 @@ class CloudLLMService extends EventEmitter {
       repeat_penalty: options.repeatPenalty,
       stream: !!onToken,
       enableThinking: thinkingOn,
+      thinking_budget: thinkingOn ? Math.max(256, Math.floor(outputTokens * 0.75)) : 0,
       chat_template_kwargs: {
         enable_thinking: thinkingOn,
-        reasoning_effort: options.reasoningEffort || (thinkingOn ? 'xhigh' : 'low'),
+        // Qwen template allows only xhigh|medium|low — never "high" (Jinja 500).
+        reasoning_effort: options.reasoningEffort || (thinkingOn ? 'medium' : 'low'),
         preserve_thinking: thinkingOn,
+        thinking_budget: thinkingOn ? Math.max(256, Math.floor(outputTokens * 0.75)) : 0,
       },
-    });
+    };
+    if (sys) {
+      proxyBodyObj.systemPrompt = sys;
+    }
+    const proxyBody = JSON.stringify(proxyBodyObj);
 
     try {
       const result = await this._streamRequest(
         'graysoft.dev', '/api/ai/proxy', sessionToken, proxyBody,
         'openai', onToken, {}, onThinkingToken, proxyProvider,
-        0,
+        options.streamIdleMs != null ? options.streamIdleMs : PROXY_STREAM_IDLE_MS,
         PROXY_FIRST_BYTE_MS,
+        options.onStreamQuiet || null,
       );
       return { ...result, model: proxyModel, provider: proxyProvider, viaProxy: true };
     } catch (err) {
@@ -1034,7 +1182,13 @@ class CloudLLMService extends EventEmitter {
         const msgLower = msg.toLowerCase();
         const statusCode = err.status || err.statusCode || err.response?.status || 0;
 
-        let is429, is401, is403, is5xx;
+        let is429, is401, is403, is5xx, isUsageLimit;
+        isUsageLimit =
+          provider === 'cursor' &&
+          (msgLower.includes('usage limit') ||
+            msgLower.includes('spend limit') ||
+            msgLower.includes('usage_limit') ||
+            msgLower.includes('usage-based pricing required'));
         if (statusCode > 0) {
           is401 = statusCode === 401;
           is429 = !is401 && (statusCode === 429 || statusCode === 413);
@@ -1042,9 +1196,25 @@ class CloudLLMService extends EventEmitter {
           is5xx = !is401 && !is429 && !is403 && statusCode >= 500 && statusCode < 600;
         } else {
           is401 = msg.includes('401') || msgLower.includes('unauthorized');
-          is429 = !is401 && (msg.includes('429') || msg.includes('413') || msgLower.includes('rate limit') || msgLower.includes('too large') || msgLower.includes('tokens per minute'));
-          is403 = !is401 && !is429 && (msg.includes('403') || msgLower.includes('forbidden'));
-          is5xx = !is401 && !is429 && !is403 && (msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('ECONNRESET') || msgLower.includes('timeout'));
+          is429 =
+            !is401 &&
+            !isUsageLimit &&
+            (msg.includes('429') ||
+              msg.includes('413') ||
+              msgLower.includes('rate limit') ||
+              msgLower.includes('too large') ||
+              msgLower.includes('tokens per minute'));
+          is403 = !is401 && !is429 && !isUsageLimit && (msg.includes('403') || msgLower.includes('forbidden'));
+          is5xx =
+            !is401 &&
+            !is429 &&
+            !is403 &&
+            !isUsageLimit &&
+            (msg.includes('500') ||
+              msg.includes('502') ||
+              msg.includes('503') ||
+              msg.includes('ECONNRESET') ||
+              msgLower.includes('timeout'));
         }
 
         if (is401) {
@@ -1056,9 +1226,41 @@ class CloudLLMService extends EventEmitter {
           throw new Error(`${this._getProviderLabel(provider)} API key rejected (401). Check your API key in Settings.`);
         }
 
+        if (isUsageLimit) {
+          if (this._cursorKeyPool) {
+            const next = this._cursorKeyPool.rotateOnLimit(err, attemptKey);
+            if (next && pool && pool.length > 1 && attempt < maxRetries - 1) {
+              console.log(
+                `[CloudLLM] Cursor usage limit on ...${attemptKey.slice(-6)}, sticky-rotating (attempt ${attempt + 2}/${maxRetries})`
+              );
+              continue;
+            }
+          } else {
+            // Fallback without CursorKeyPool: long cooldown + advance sticky index
+            const { cooldownMsFromError } = require('./cursorKeyPool');
+            const ms = cooldownMsFromError(err);
+            this._cooldownPoolKey(provider, attemptKey, ms);
+            const cur = this._keyPoolIndex[provider] || 0;
+            this._keyPoolIndex[provider] = (cur + 1) % Math.max(pool?.length || 1, 1);
+            if (pool && pool.length > 1 && attempt < maxRetries - 1) {
+              console.log(
+                `[CloudLLM] Cursor usage limit on ...${attemptKey.slice(-6)}, rotating (attempt ${attempt + 2}/${maxRetries})`
+              );
+              continue;
+            }
+          }
+          throw err;
+        }
+
         if (is429) {
           this._recent429Timestamps.push(Date.now());
           this._cooldownPoolKey(provider, attemptKey, 60000);
+          if (provider === 'cursor' && this._cursorKeyPool) {
+            this._cursorKeyPool.rotateOnLimit(err, attemptKey);
+          } else if (provider === 'cursor' && pool && pool.length > 1) {
+            const cur = this._keyPoolIndex[provider] || 0;
+            this._keyPoolIndex[provider] = (cur + 1) % pool.length;
+          }
 
           if (pool && pool.length > 1 && attempt < maxRetries - 1) {
             console.log(`[CloudLLM] 429 on ${provider} key ...${attemptKey.slice(-6)}, rotating (attempt ${attempt + 2}/${maxRetries})`);
@@ -1070,7 +1272,7 @@ class CloudLLMService extends EventEmitter {
 
           if (noFallback) {
             const label = (this._isBundledProvider(provider) && !this.isUsingOwnKey(provider))
-              ? 'guIDE Cloud AI'
+              ? 'Cipher'
               : this._getProviderLabel(provider);
             throw new Error(`${label} rate limited. Please wait a minute or try a different model.`);
           }
@@ -1157,6 +1359,22 @@ class CloudLLMService extends EventEmitter {
     const apiKey = overrideKey || this._getPoolKey(provider) || this.apiKeys[provider];
     if (!apiKey) throw new Error(`No API key configured for ${provider}`);
 
+    if (provider === 'cursor') {
+      const { assertCursorAdmin } = require('./cursorAdminGate');
+      assertCursorAdmin({ licenseManager: this._licenseManager });
+      const { generateWithCursorSdk } = require('./cursorCloudProvider');
+      return generateWithCursorSdk({
+        apiKey,
+        model,
+        systemPrompt,
+        prompt,
+        conversationHistory,
+        onToken,
+        onThinkingToken,
+        projectPath: options.projectPath || options.cwd || process.cwd(),
+        getCancelled: options.getCancelled || null,
+      });
+    }
     if (provider === 'apifreellm') {
       return this._generateAPIFreeLLM(apiKey, systemPrompt, prompt, options, onToken, conversationHistory);
     }
@@ -1483,7 +1701,7 @@ class CloudLLMService extends EventEmitter {
     return true;
   }
 
-  _streamRequest(host, path, apiKey, body, format, onToken, extraHeaders = {}, onThinkingToken = null, provider = null, streamIdleMs = IDLE_TIMEOUT, firstByteMs = STREAM_TIMEOUT) {
+  _streamRequest(host, path, apiKey, body, format, onToken, extraHeaders = {}, onThinkingToken = null, provider = null, streamIdleMs = IDLE_TIMEOUT, firstByteMs = STREAM_TIMEOUT, onStreamQuiet = null) {
     this.abortActiveStream();
     return new Promise((resolve, reject) => {
       const headers = {
@@ -1497,14 +1715,41 @@ class CloudLLMService extends EventEmitter {
 
       let fullText = '';
       let stopReason = null;
+      let rawBody = '';
+      let sawSse = false;
       let firstDataTimer = null;
       let idleTimer = null;
+      let silenceWatch = null;
+      let lastSseAt = 0;
+      let silenceWarned = false;
       let settled = false;
+      let socketStall = null;
       const firstByte = firstByteMs > 0 ? firstByteMs : STREAM_TIMEOUT;
 
       const clearTimers = () => {
         if (firstDataTimer) { clearTimeout(firstDataTimer); firstDataTimer = null; }
         if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+        if (silenceWatch) { clearInterval(silenceWatch); silenceWatch = null; }
+      };
+
+      const armSilenceWatch = () => {
+        if (silenceWatch || typeof onStreamQuiet !== 'function') return;
+        silenceWatch = setInterval(() => {
+          if (!lastSseAt || settled) return;
+          const ageMs = Date.now() - lastSseAt;
+          if (ageMs >= PROXY_SILENCE_RESUME_MS) {
+            console.error(`[CloudLLM] Stream silence resume: no SSE for ${Math.round(ageMs / 1000)}s from ${host} (provider=${provider || 'unknown'})`);
+            try { req.destroy(); } catch (_) {}
+            settle(reject, new Error(`Stream stalled from ${host}. Try again or switch models.`));
+            return;
+          }
+          if (ageMs >= PROXY_SILENCE_WARN_MS && !silenceWarned) {
+            silenceWarned = true;
+            try {
+              onStreamQuiet({ ageMs, host, provider });
+            } catch (_) { /* ignore UI callback errors */ }
+          }
+        }, 5000);
       };
 
       const settle = (fn, value) => {
@@ -1553,10 +1798,10 @@ class CloudLLMService extends EventEmitter {
         }
 
         let buffer = '';
-        let gotFirstData = false;
+        let gotFirstSse = false;
 
         firstDataTimer = setTimeout(() => {
-          console.error(`[CloudLLM] Stream timeout: no data received within ${firstByte / 1000}s from ${host}`);
+          console.error(`[CloudLLM] Stream timeout: no SSE data within ${firstByte / 1000}s from ${host}`);
           req.destroy();
           settle(reject, new Error(`No response from ${host} within ${firstByte / 1000}s. The model may be overloaded. Try again or switch models.`));
         }, firstByte);
@@ -1567,7 +1812,7 @@ class CloudLLMService extends EventEmitter {
           if (!armIdle) return;
           if (idleTimer) clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
-            console.error(`[CloudLLM] Stream idle timeout: no data for ${effectiveIdle / 1000}s from ${host} (provider=${provider || 'unknown'})`);
+            console.error(`[CloudLLM] Stream idle timeout: no SSE for ${effectiveIdle / 1000}s from ${host} (provider=${provider || 'unknown'})`);
             req.destroy();
             if (fullText) {
               settle(resolve, { text: fullText, model: 'cloud', tokensUsed: fullText.length / 4, stopReason });
@@ -1578,24 +1823,46 @@ class CloudLLMService extends EventEmitter {
         };
 
         res.on('data', (chunk) => {
-          if (!gotFirstData) {
-            gotFirstData = true;
-            if (firstDataTimer) { clearTimeout(firstDataTimer); firstDataTimer = null; }
-            try { req.setTimeout(armIdle ? effectiveIdle : 0); } catch (_) {}
-          }
-          resetIdleTimer();
-
-          buffer += chunk.toString();
+          const chunkText = chunk.toString();
+          rawBody += chunkText;
+          buffer += chunkText;
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
 
+          // stallnever1: only SSE `data:` lines clear first-byte / arm idle.
+          // Empty proxy TCP chunks during P40 prefill must NOT start the idle clock.
+          let sawSseLine = false;
           for (const line of lines) {
             if (!line.startsWith('data: ')) continue;
+            sawSseLine = true;
+            sawSse = true;
+            lastSseAt = Date.now();
+            silenceWarned = false;
+            if (!gotFirstSse) {
+              gotFirstSse = true;
+              if (firstDataTimer) { clearTimeout(firstDataTimer); firstDataTimer = null; }
+              try {
+                req.setTimeout(0);
+                if (socketStall) req.removeListener('timeout', socketStall);
+              } catch (_) {}
+              armSilenceWatch();
+            }
             const jsonStr = line.slice(6).trim();
             if (jsonStr === '[DONE]') continue;
 
             try {
               const parsed = JSON.parse(jsonStr);
+              if (parsed && parsed.error) {
+                const errMsg = parsed.error.message || parsed.error.code || JSON.stringify(parsed.error).slice(0, 300);
+                const code = parsed.error.code || 500;
+                console.error(`[CloudLLM] SSE error payload code=${code}: ${String(errMsg).slice(0, 240)}`);
+                req.destroy();
+                const e = new Error(`upstream ${code}: ${String(errMsg).slice(0, 400)}`);
+                e.statusCode = typeof code === 'number' ? code : 500;
+                e.upstreamError = true;
+                settle(reject, e);
+                return;
+              }
               let token = '';
               let thinkingToken = '';
 
@@ -1618,14 +1885,40 @@ class CloudLLMService extends EventEmitter {
               if (thinkingToken && onThinkingToken) onThinkingToken(thinkingToken);
               if (token) {
                 fullText += token;
-                onToken(token);
+                if (onToken) onToken(token);
               }
             } catch { /* skip malformed JSON */ }
           }
+          if (sawSseLine) resetIdleTimer();
         });
 
         res.on('end', () => {
-          settle(resolve, { text: fullText, model: 'cloud', tokensUsed: fullText.length / 4, stopReason });
+          if (!fullText && !sawSse) {
+            const parsedBody = parseCompletionBody(rawBody);
+            if (parsedBody.text) fullText = parsedBody.text;
+            if (parsedBody.stopReason && !stopReason) stopReason = parsedBody.stopReason;
+          }
+          const sseLines = rawBody.split('\n').filter((l) => l.startsWith('data: '));
+          const streamDiag = {
+            httpStatus: res.statusCode,
+            sawSse,
+            rawBodyLen: rawBody.length,
+            finish_reason: stopReason,
+            textLen: fullText.length,
+            sseCount: sseLines.length,
+            firstSse: sseLines[0] ? String(sseLines[0]).slice(0, 160) : '',
+            lastSse: sseLines.length ? String(sseLines[sseLines.length - 1]).slice(0, 160) : '',
+          };
+          if (!fullText) {
+            console.warn(`[CloudLLM] empty stream ${JSON.stringify(streamDiag)}`);
+          }
+          settle(resolve, {
+            text: fullText,
+            model: 'cloud',
+            tokensUsed: fullText.length / 4,
+            stopReason,
+            streamDiag,
+          });
         });
       });
 
@@ -1638,12 +1931,13 @@ class CloudLLMService extends EventEmitter {
       req.on('error', (err) => {
         settle(reject, err?.code === 'ABORTED' ? err : err);
       });
-      req.setTimeout(firstByte, () => {
+      socketStall = () => {
         if (settled) return;
         console.error(`[CloudLLM] Socket timeout from ${host} after ${firstByte / 1000}s`);
         req.destroy();
         settle(reject, new Error(`Connection timeout to ${host}. Try again or switch models.`));
-      });
+      };
+      req.setTimeout(firstByte, socketStall);
       req.write(body);
       req.end();
     });
@@ -1683,6 +1977,8 @@ module.exports = {
   SECRYPT_QUALITY_MODEL,
   SECRYPT_CONTEXT_DEFAULT,
   resolveSecryptCloudModel,
+  parseCompletionBody,
+  textFromCompletionBody,
   resolveCloudOutputTokens,
   secryptQualitySampling,
 };
