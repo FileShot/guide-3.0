@@ -100,6 +100,13 @@ describe('extractPartialWriteFileFromToolJson', () => {
     assert.ok(!r.content.includes('`'));
   });
 
+  it('keeps interior JS quote-comma inside content (PartialQuote1)', () => {
+    const partial = `${prefix}const x = \\"hello\\", y = 1;`;
+    const r = extractPartialWriteFileFromToolJson(partial);
+    assert.ok(r);
+    assert.equal(r.content, 'const x = "hello", y = 1;');
+  });
+
   it('stops at quote-comma tail without closing brace', () => {
     const partial = `${prefix}</div>",`;
     const r = extractPartialWriteFileFromToolJson(partial);

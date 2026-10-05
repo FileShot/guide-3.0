@@ -5,9 +5,10 @@
  */
 
 const TARGET_RATE = 16000;
-const CHUNK_MS = 4500;
-const MIN_CHUNK_MS = 500;
-const SILENCE_MS = 700;
+// WhisperFast1: was 4500ms → 1600ms → 1100ms. Shorter chunks = earlier first text.
+const CHUNK_MS = 1100;
+const MIN_CHUNK_MS = 350;
+const SILENCE_MS = 320;
 const SILENCE_RMS = 0.012;
 const OVERLAP_MS = 0;
 

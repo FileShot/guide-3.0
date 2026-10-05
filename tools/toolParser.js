@@ -125,7 +125,7 @@ const VALID_TOOLS = new Set([
   'web_search', 'fetch_webpage',
   'git_status', 'git_commit', 'git_diff', 'git_log', 'git_branch', 'git_stash', 'git_reset',
   'save_memory', 'get_memory', 'list_memories',
-  'run_command', 'terminal_run', 'get_project_structure', 'create_directory', 'analyze_error', 'install_packages',
+  'run_command', 'terminal_run', 'list_background_shells', 'read_background_shell', 'stop_background_shell', 'get_project_structure', 'create_directory', 'analyze_error', 'install_packages',
   'undo_edit', 'list_undoable',
   'write_todos', 'update_todo',
   'ask_question',
@@ -528,7 +528,17 @@ function looksLikeToolAttempt(text) {
   if (BARE_NAME_JSON_RE.test(text)) return true;
   if (/```(?:tool_call|tool|json)/i.test(text) && _fenceLooksLikeToolCall(text)) return true;
   if (/<function\s*=/i.test(text) || /<parameter\s*=/i.test(text)) return true;
-  return /"tool"\s*:\s*"[a-zA-Z0-9_]+"/.test(text) || /"name"\s*:\s*"[a-zA-Z0-9_]+"/.test(text);
+  if (/<\/?tool_call\b/i.test(text)) return true;
+  if (/\{\s*"function\s*=/i.test(text)) return true;
+  if (/"tool"\s*:\s*"[a-zA-Z0-9_]+"/.test(text)) return true;
+  if (/"function"\s*:\s*"[a-zA-Z0-9_]+"/.test(text)) return true;
+  // "name" alone is NOT a tool signal — package.json / normal JSON use "name".
+  // Only treat as tool when paired with params/arguments (OpenAI-style tool call).
+  if (/"name"\s*:\s*"[a-zA-Z0-9_]+"/.test(text)
+    && /"(?:params|parameters|arguments)"\s*:/.test(text)) {
+    return true;
+  }
+  return false;
 }
 
 function suggestClosestToolName(text) {
@@ -632,6 +642,64 @@ function normalizeToolCall(parsed) {
   return { tool: toolName, params: canonicalizeToolParams(toolName, params) };
 }
 
+/**
+ * Model typo form seen live: {"function=read_file"} {"filePath":"..."}
+ * (equals inside the key instead of {"function":"read_file","params":{...}}).
+ */
+function parseEqualsFunctionJsonCalls(text) {
+  if (!text || typeof text !== 'string') return [];
+  const calls = [];
+  const seen = new Set();
+  const re = /\{\s*"function\s*=\s*([a-zA-Z0-9_]+)"\s*\}/gi;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const rawName = m[1].toLowerCase().replace(/-/g, '_');
+    const toolName = TOOL_NAME_ALIASES[rawName] || rawName;
+    if (!VALID_TOOLS.has(toolName)) continue;
+    const params = {};
+    let pos = m.index + m[0].length;
+    while (pos < text.length) {
+      const slice = text.slice(pos);
+      const ws = slice.match(/^\s*/);
+      pos += ws ? ws[0].length : 0;
+      if (text.slice(pos, pos + 12).toLowerCase() === '</tool_call>') break;
+      if (/^\{\s*"function\s*=/i.test(text.slice(pos))) break;
+      if (text[pos] !== '{') break;
+      let depth = 0;
+      let inStr = false;
+      let escaped = false;
+      let end = -1;
+      for (let i = pos; i < text.length; i++) {
+        const ch = text[i];
+        if (escaped) { escaped = false; continue; }
+        if (ch === '\\' && inStr) { escaped = true; continue; }
+        if (ch === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (ch === '{') depth += 1;
+        else if (ch === '}') {
+          depth -= 1;
+          if (depth === 0) { end = i + 1; break; }
+        }
+      }
+      if (end < 0) break;
+      const obj = tryParseJson(text.slice(pos, end));
+      pos = end;
+      if (!obj || typeof obj !== 'object') continue;
+      if (obj.tool || obj.function || obj.name || obj.action) break;
+      const body = obj.params && typeof obj.params === 'object' ? obj.params : obj;
+      for (const [k, v] of Object.entries(body)) {
+        if (k === 'params' || k === 'parameters' || k === 'arguments' || k === 'args') continue;
+        params[k] = v;
+      }
+    }
+    const sig = `${toolName}:${JSON.stringify(params)}`;
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    calls.push({ tool: toolName, params });
+  }
+  return calls;
+}
+
 /** Qwen / Hermes-style: <function=name><parameter=k>v</parameter></function> */
 function parseQwenFunctionXmlCalls(text) {
   const out = [];
@@ -674,7 +742,7 @@ function parseToolCalls(text) {
   };
 
   // Method 0: XML tags — ◠...◠
-  const xmlRe = /◠\s*([\s\S]*?)\s*<\/tool_call>/g;
+  const xmlRe = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
   let m;
   while ((m = xmlRe.exec(text)) !== null) {
     const parsed = tryParseJson(m[1]);
@@ -697,6 +765,11 @@ function parseToolCalls(text) {
   // Method 0.6: Qwen/Hermes <function=name>…</function>
   for (const qCall of parseQwenFunctionXmlCalls(text)) {
     addCall(qCall);
+  }
+
+  // Method 0.7: {"function=read_file"} {"filePath":"..."} (equals-key typo)
+  for (const eqCall of parseEqualsFunctionJsonCalls(text)) {
+    addCall(eqCall);
   }
 
   if (calls.length > 0) return _postProcess(calls, text);
@@ -747,26 +820,21 @@ function parseToolCalls(text) {
         }
         // Extract content for write/append tools
         if (toolName === 'write_file' || toolName === 'append_to_file') {
+          // ThinkBleed1: never slice content to EOF — that swallowed thinking text after a
+          // closed write_file JSON when parse fell back to Method 1.1 (City.js on disk).
           const contentIdx = fenceContent.indexOf('"content"', toolMatch.index);
           if (contentIdx >= 0 && contentIdx - toolMatch.index < 500) {
-            const colonIdx = fenceContent.indexOf(':', contentIdx + 9);
-            if (colonIdx >= 0) {
-              const quoteIdx = fenceContent.indexOf('"', colonIdx + 1);
-              if (quoteIdx >= 0) {
-                let rawContent = fenceContent.slice(quoteIdx + 1);
-                rawContent = rawContent.replace(/"\s*\}\s*\}\s*\]?\s*$/, '');
-                rawContent = rawContent.replace(/"\s*\}\s*$/, '');
-                try {
-                  rawContent = rawContent
-                    .replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r')
-                    .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-                } catch (_) {}
-                if (rawContent.trim().startsWith('{"tool":') || rawContent.trim().startsWith('{"tool" :')) {
-                  _tpLog(`[ToolParser] Method 1.1: Skipping recovered content — looks like tool call JSON leak`);
-                } else if (rawContent.trim().length > 10) {
-                  call.params.content = rawContent;
-                  _tpLog(`[ToolParser] Method 1.1: Recovered ${toolName} with content (${rawContent.length} chars)`);
-                }
+            const valueStart = _tpFindContentValueStart(fenceContent.slice(contentIdx), 'content');
+            if (valueStart >= 0) {
+              let rawContent = _tpDecodePartialJsonStringRaw(
+                fenceContent.slice(contentIdx + valueStart),
+                true,
+              );
+              if (rawContent.trim().startsWith('{"tool":') || rawContent.trim().startsWith('{"tool" :')) {
+                _tpLog(`[ToolParser] Method 1.1: Skipping recovered content — looks like tool call JSON leak`);
+              } else if (rawContent.trim().length > 10) {
+                call.params.content = rawContent;
+                _tpLog(`[ToolParser] Method 1.1: Recovered ${toolName} with content (${rawContent.length} chars)`);
               }
             }
           }
@@ -921,8 +989,8 @@ function parseToolCalls(text) {
 
   if (calls.length > 0) return _postProcess(calls, text);
 
-  // Method 2: Raw JSON objects with "tool" or "name" key
-  const rawJsonRe = /\{\s*["']?(?:tool|name)["']?\s*:\s*["'][^"']+["']/g;
+  // Method 2: Raw JSON objects with "tool", "name", or "function" key
+  const rawJsonRe = /\{\s*["']?(?:tool|name|function)["']?\s*:\s*["'][^"']+["']/g;
   while ((m = rawJsonRe.exec(text)) !== null) {
     _tpLog(`[ToolParser] Method 2: Found raw JSON at offset ${m.index}. Match: ${m[0]}`);
     const objects = extractJsonObjects(text.slice(m.index));
@@ -1201,6 +1269,20 @@ function _recoverWriteFileContent(text, preferredFilePath) {
     if (/"(?:tool|name)"\s*:\s*"/.test(block)) continue;
     if (block.length > largest.length) largest = block;
   }
+  // ThinkDumpBail1: unclosed ```html / ```css dumps (length-cut mid-fence).
+  if (largest.length < 50) {
+    const openFence = text.match(/```(html|css|javascript|js|tsx?|jsx)\b[^\n]*\n([\s\S]+)$/i);
+    if (openFence && openFence[2] && openFence[2].length >= 50) {
+      largest = openFence[2].replace(/\n?```\s*$/, '');
+    }
+  }
+  if (largest.length < 50) {
+    // Bare HTML document dumped outside a fence (common in reasoning channel).
+    const htmlDoc = text.match(/(<!DOCTYPE\s+html[\s\S]+)/i);
+    if (htmlDoc && htmlDoc[1].length >= 80) {
+      largest = htmlDoc[1];
+    }
+  }
   if (largest.length < 50) {
     // Try plan markdown from truncated tool JSON
     const planBody = text.match(/(---\r?\n[\s\S]*?---\r?\n[\s\S]+)/);
@@ -1296,7 +1378,7 @@ function findToolCallRanges(text) {
     ranges.push([m.index, m.index + m[0].length]);
   }
 
-  const xmlRe = /◠\s*[\s\S]*?\s*<\/tool_call>/g;
+  const xmlRe = /<tool_call>\s*[\s\S]*?\s*<\/tool_call>/g;
   while ((m = xmlRe.exec(text)) !== null) {
     ranges.push([m.index, m.index + m[0].length]);
   }
@@ -1313,6 +1395,14 @@ function findToolCallRanges(text) {
 
   const orphanQwenFnRe = /<function\s*=\s*[^>]+>[\s\S]*$/gi;
   while ((m = orphanQwenFnRe.exec(text)) !== null) {
+    if (!_isInsideExistingRange(ranges, m.index)) {
+      ranges.push([m.index, m.index + m[0].length]);
+    }
+  }
+
+  // {"function=read_file"} {"filePath":"..."} </tool_call> — equals-key typo spans
+  const eqFnRe = /\{\s*"function\s*=\s*[a-zA-Z0-9_]+"\s*\}(?:\s*\{[\s\S]*?\})*\s*(?:<\/tool_call>)?/gi;
+  while ((m = eqFnRe.exec(text)) !== null) {
     if (!_isInsideExistingRange(ranges, m.index)) {
       ranges.push([m.index, m.index + m[0].length]);
     }
@@ -1466,6 +1556,99 @@ function _applyRangeStrip(text, merged) {
   return out;
 }
 
+function stripStrayToolTags(text) {
+  if (!text || typeof text !== 'string') return '';
+  let out = text.replace(/<\/?(?:invoke|parameter|function)\b[^>]*>/gi, '');
+  out = out.replace(/<\/?(?:invoke|parameter|function)\b[^>]*$/gi, '');
+  out = out.replace(/^[ \t]*\(tool calls\)[ \t]*$/gm, '');
+  // GROUNDRULES §1: do not regex-delete model text here. Tool spans are removed only via
+  // findToolCallRanges → channel route (tool card). Stray incomplete open tags only.
+  out = out.replace(/<tool_call\b[^>]*$/gi, '');
+  return out;
+}
+
+/**
+ * WriteStripLeak2: when the model dumps raw HTML/JS inside write_file "content"
+ * with unescaped quotes, brace-depth findToolCallRanges returns [] (or a stub)
+ * while parseToolCalls still recovers the tool — strip left the whole body as
+ * prose (live 2026-09-30: proseChars=31228 + file card duplicate).
+ * Sticky-cover from the write_file object `{` through a real close or EOF.
+ */
+function _findFileWriteObjectStart(text, toolMatchIndex) {
+  let start = text.lastIndexOf('{', toolMatchIndex);
+  if (start < 0) return -1;
+  // Prefer the nearest `{` that opens this tool object (skip nested braces in prose).
+  const window = text.slice(Math.max(0, start - 80), toolMatchIndex + 1);
+  const nested = window.lastIndexOf('{');
+  if (nested >= 0) {
+    const abs = Math.max(0, start - 80) + nested;
+    if (abs <= toolMatchIndex) start = abs;
+  }
+  return start;
+}
+
+function _braceMatchedJsonEnd(text, jsonStart) {
+  let depth = 0;
+  let inStr = false;
+  let escaped = false;
+  for (let i = jsonStart; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\' && inStr) { escaped = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+function expandStickyFileWriteRanges(text, ranges) {
+  if (!text || typeof text !== 'string') return ranges || [];
+  const base = Array.isArray(ranges) ? ranges.slice() : [];
+  const re = /"(?:tool|name|function)"\s*:\s*"(?:write_file|edit_file|create_file|append_to_file|replace_in_file)"/gi;
+  const extra = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const start = _findFileWriteObjectStart(text, m.index);
+    if (start < 0) continue;
+    let fullyCovered = false;
+    for (const [s, e] of base) {
+      // Existing range already covers this object nearly completely.
+      if (s <= start && e >= text.length - 1) { fullyCovered = true; break; }
+      if (s <= start && (e - start) >= Math.max(64, (text.length - start) * 0.85)) {
+        fullyCovered = true;
+        break;
+      }
+    }
+    if (fullyCovered) continue;
+
+    let end = _braceMatchedJsonEnd(text, start);
+    if (end < 0) {
+      // Broken/unescaped content string — hold through EOF (file card owns the bytes).
+      end = text.length;
+    } else {
+      // Brace match found a stub (early " closed the string). If a large file body
+      // still follows, extend to EOF so strip does not leave naked HTML in chat.
+      const covered = end - start;
+      const remain = text.length - end;
+      const partial = extractPartialWriteFileFromToolJson(text.slice(start));
+      const contentLen = (partial && partial.content) ? partial.content.length : 0;
+      if (remain > 80 && contentLen > covered) {
+        end = text.length;
+      } else if (remain > 200 && /<!doctype html|<html[\s>]|<style[\s>]|<script[\s>]/i.test(text.slice(end, end + 400))) {
+        end = text.length;
+      }
+    }
+    if (end > start) extra.push([start, end]);
+  }
+  if (!extra.length) return base;
+  return _mergeRanges(base.concat(extra));
+}
+
 // ─── Strip Tool Call Text ───
 function stripToolCallText(text) {
   if (!text || typeof text !== 'string') {
@@ -1473,9 +1656,22 @@ function stripToolCallText(text) {
     return '';
   }
   _tpLog(`[ToolParser] stripToolCallText START: textLen=${text.length}`);
-  const merged = findToolCallRanges(text);
-  if (merged.length === 0) return collapseOrphanMarkdownFences(text);
-  return _applyRangeStrip(text, merged);
+  let merged = expandStickyFileWriteRanges(text, findToolCallRanges(text));
+  if (merged.length === 0) {
+    // Orphan HTML dump after a write_file attempt whose tool marker was already stripped wrong.
+    if (/^\s*<!doctype html/i.test(text) || /^\s*<html[\s>]/i.test(text)) {
+      return '';
+    }
+    return collapseOrphanMarkdownFences(stripStrayToolTags(text));
+  }
+  let out = collapseOrphanMarkdownFences(stripStrayToolTags(_applyRangeStrip(text, merged)));
+  // Second pass: leftover file body with no tool wrapper (R53 / continuePartial residue).
+  if (/^\s*<!doctype html/i.test(out) || /^\s*<html[\s>]/i.test(out)) {
+    if (/"tool"\s*:\s*"(?:write_file|create_file)"/i.test(text) || FILE_STREAM_TOOLS_RE.test(text)) {
+      return '';
+    }
+  }
+  return out;
 }
 
 function _isInsideExistingRange(ranges, index) {
@@ -1558,9 +1754,11 @@ function _tpFindContentValueStart(slice, contentKey) {
 
 function _tpIsStructuralContentEnd(raw, i) {
   const tail = raw.slice(i);
-  if (/^"\s*,\s*"(?:reason|tool|params|name)"/.test(tail)) return true;
+  // PartialQuote1: never treat interior JS/CSS/HTML `"...,` as JSON end.
+  // Only end on a quote that clearly closes the content value (next key / brace / fence / EOF).
+  if (/^"\s*,\s*"(?:reason|tool|params|name|filePath|path|content|oldText|newText)"/.test(tail)) return true;
   if (/^"\s*,\s*\}/.test(tail)) return true;
-  if (/^"\s*,/.test(tail)) return true;
+  if (/^"\s*,\s*$/.test(tail)) return true;
   if (/^"\s*\}\s*,/.test(tail)) return true;
   if (/^"\s*\}\s*\}/.test(tail)) return true;
   if (/^"\s*\}\s*\]/.test(tail)) return true;
@@ -1628,7 +1826,7 @@ const PROVISIONAL_FILE_KEY = '__provisional_write__';
 
 function extractPartialWriteFileFromToolJson(text, options = {}) {
   if (!text || typeof text !== 'string') return null;
-  const toolMatch = text.match(/"(?:tool|name)"\s*:\s*"([^"]+)"/);
+  const toolMatch = text.match(/"(?:tool|name|function)"\s*:\s*"([^"]+)"/);
   if (!toolMatch) return null;
   const toolName = TOOL_NAME_ALIASES[toolMatch[1].toLowerCase()] || toolMatch[1].toLowerCase();
   if (!FILE_STREAM_TOOLS_RE.test(toolName)) return null;

@@ -235,6 +235,8 @@ class BrowserManager extends EventEmitter {
     console.log(`[BrowserManager] navigate START: url=${url}`);
 
     const launchResult = await this.launchPlaywright();
+    // BrowserSurface1: always surface IDE Browser tab on navigate attempts.
+    this._showViewportBrowserTab();
     if (!launchResult.success || !this._page) {
       console.warn(`[BrowserManager] navigate: Playwright unavailable — ${launchResult.error || 'no page'}`);
       return this._navigateViewportFallback(url, launchResult.error || 'Could not launch browser');
@@ -242,6 +244,14 @@ class BrowserManager extends EventEmitter {
 
     if (this._page) {
       try {
+        // Bring Chromium to foreground when possible (Windows).
+        try {
+          const ctx = this._page.context?.();
+          const pages = ctx?.pages?.() || [];
+          for (const p of pages) {
+            await p.bringToFront?.().catch(() => {});
+          }
+        } catch {}
         // Use page.goto() return value to get the HTTP response object
         console.log(`[BrowserManager] navigate: page.goto ${url}`);
         const response = await this._page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
@@ -354,6 +364,7 @@ class BrowserManager extends EventEmitter {
           this._browser = null;
         });
         this._lastLaunchError = null;
+        this._showViewportBrowserTab();
         console.log('[BrowserManager] launchPlaywright DONE');
         return { success: true };
       } catch (e) {
@@ -440,9 +451,21 @@ class BrowserManager extends EventEmitter {
     }
     try {
       const buffer = await this._page.screenshot({ type: 'png' });
-      const base64 = buffer.toString('base64');
-      console.log(`[BrowserManager] screenshot DONE: ${base64.length} chars`);
-      return { success: true, screenshot: base64 };
+      const fs = require('fs');
+      const path = require('path');
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const dir = path.join(this.projectPath || process.cwd(), '.guide', 'screenshots');
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+      const filePath = path.join(dir, `shot-${stamp}.png`);
+      fs.writeFileSync(filePath, buffer);
+      console.log(`[BrowserManager] screenshot DONE: saved ${buffer.length} bytes → ${filePath}`);
+      // bscreenshotnovision1: do not return base64 for text models — path ack only.
+      return {
+        success: true,
+        path: filePath,
+        bytes: buffer.length,
+        note: 'image saved; text model cannot view pixels — use browser_snapshot',
+      };
     } catch (e) {
       console.error(`[BrowserManager] screenshot ERROR: ${e.message}`);
       return { success: false, error: e.message };
@@ -541,7 +564,7 @@ class BrowserManager extends EventEmitter {
         // Other elements (buttons, inputs) are typically shorter — 120 chars.
         const textLimit = (tag === 'a' || role === 'link') ? 200 : 120;
         const text = (el.textContent || '').trim().substring(0, textLimit);
-        const href = el.href || '';
+        const href = String(el.href || (el.getAttribute && el.getAttribute('href')) || '');
         const ariaLabel = el.getAttribute('aria-label') || '';
         const titleAttr = el.getAttribute('title') || '';
         const imgAlt = (!text && el.querySelector)
@@ -555,7 +578,7 @@ class BrowserManager extends EventEmitter {
         if (titleAttr) desc += ` title="${titleAttr.substring(0, 80)}"`;
         if (placeholder) desc += ` placeholder="${placeholder}"`;
         if (value && type !== 'password') desc += ` value="${value.substring(0, 50)}"`;
-        if (href) desc += ` href="${href.substring(0, 150)}"`;
+        if (href) desc += ` href="${String(href).substring(0, 150)}"`;
         desc += '>';
         if (text && type !== 'password' && tag !== 'input') {
           // PL8: General-purpose cleanup for link text: strip trailing registration codes
@@ -681,11 +704,11 @@ class BrowserManager extends EventEmitter {
               const interactive = [...document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"], [role="textbox"], [role="combobox"]')].map(el => {
                 const tag = el.tagName.toLowerCase();
                 const text = (el.textContent || '').trim().substring(0, 60);
-                const href = el.href || '';
+                const href = String(el.href || (el.getAttribute && el.getAttribute('href')) || '');
                 const type = el.type || '';
                 const name = el.name || el.id || '';
                 const placeholder = el.placeholder || '';
-                return `[${tag}${type ? ` type="${type}"` : ''}${name ? ` name="${name}"` : ''}${placeholder ? ` placeholder="${placeholder}"` : ''}${href ? ` href="${href.substring(0, 80)}"` : ''}] ${text}`;
+                return `[${tag}${type ? ` type="${type}"` : ''}${name ? ` name="${name}"` : ''}${placeholder ? ` placeholder="${placeholder}"` : ''}${href ? ` href="${String(href).substring(0, 80)}"` : ''}] ${text}`;
               });
               // Inject data-ref attributes into iframe interactive elements with continuing refs
               const refLines = [];
@@ -710,7 +733,7 @@ class BrowserManager extends EventEmitter {
                 // Links need more text — 200 chars; other elements — 120 chars.
                 const textLimit = (tag === 'a' || role === 'link') ? 200 : 120;
                 const text2 = (el.textContent || '').trim().substring(0, textLimit);
-                const href = el.href || '';
+                const href = String(el.href || (el.getAttribute && el.getAttribute('href')) || '');
                 const ariaLabel = el.getAttribute('aria-label') || '';
                 let desc = `[ref=${refIdx}] <${tag}`;
                 if (type) desc += ` type="${type}"`;
@@ -719,7 +742,7 @@ class BrowserManager extends EventEmitter {
                 if (ariaLabel) desc += ` aria-label="${ariaLabel}"`;
                 if (placeholder) desc += ` placeholder="${placeholder}"`;
                 if (value && type !== 'password') desc += ` value="${value.substring(0, 50)}"`;
-                if (href) desc += ` href="${href.substring(0, 150)}"`;
+                if (href) desc += ` href="${String(href).substring(0, 150)}"`;
                 desc += '>';
                 if (text2 && type !== 'password' && tag !== 'input') desc += ` ${text2}`;
                 if (tag === 'select') desc += ' [SELECT]';
@@ -984,7 +1007,8 @@ class BrowserManager extends EventEmitter {
           if (snapshot.success) {
             return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, snapshot: snapshot.text };
           }
-          return { success: true, url: urlAfter, clicked: clickedText || selector, navigated };
+          console.warn(`[BrowserManager] frame click DONE: FAIL (no snapshot), url=${urlAfter}`);
+          return { success: false, url: urlAfter, clicked: clickedText || selector, navigated, error: 'Snapshot failed after click: ' + (snapshot.error || 'unknown'), snapError: snapshot.error || 'unknown' };
         } catch (frameErr) {
           console.warn(`[BrowserManager] Direct frame click failed for ref=${refNum}: ${frameErr.message}`);
           // Fall through to main page click logic below
@@ -1072,14 +1096,18 @@ class BrowserManager extends EventEmitter {
       if (navigated) {
         try { await this._page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {}); } catch {}
       }
-      // Always snapshot so model sees DOM changes
-      const snapshot = await this.getSnapshot();
+      // Always snapshot so model sees DOM changes (bsnapfailhard1)
+      let snapshot = await this.getSnapshot();
+      if (!snapshot.success) {
+        try { await this._page.waitForTimeout(500); } catch {}
+        snapshot = await this.getSnapshot();
+      }
       if (snapshot.success) {
         console.log(`[BrowserManager] click DONE: success, url=${urlAfter}, navigated=${navigated}`);
         return { success: true, url: urlAfter, clicked: clickedText || selector, navigated, snapshot: snapshot.text };
       }
-      console.log(`[BrowserManager] click DONE: success (no snapshot), url=${urlAfter}, navigated=${navigated}`);
-      return { success: true, url: urlAfter, clicked: clickedText || selector, navigated };
+      console.warn(`[BrowserManager] click DONE: FAIL (no snapshot), url=${urlAfter}, err=${snapshot.error || 'unknown'}`);
+      return { success: false, url: urlAfter, clicked: clickedText || selector, navigated, error: 'Snapshot failed after click: ' + (snapshot.error || 'unknown'), snapError: snapshot.error || 'unknown' };
     } catch (e) {
       console.error(`[BrowserManager] click ERROR: ${e.message}`);
       // If ref-based selector failed on main page, try finding the element in child frames.

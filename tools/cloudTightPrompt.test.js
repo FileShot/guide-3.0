@@ -18,7 +18,29 @@ assert.ok(!filteredByToggles.some((d) => d.name === 'browser_navigate'));
 const cloudIdentity = getCloudAgentSystemPrompt();
 assert.ok(!cloudIdentity.includes('Pattern —'), 'cloud identity must not include Pattern — hand-holding');
 assert.ok(cloudIdentity.includes('general-purpose'));
-assert.ok(cloudIdentity.includes('call that tool in this response'));
+assert.ok(cloudIdentity.includes('write_todos'));
+assert.ok(cloudIdentity.includes('Todo List Discipline'));
+assert.ok(cloudIdentity.includes('at least 2'));
+assert.ok(!/Never pad to five/i.test(cloudIdentity), 'no task-count hardcodes in cloud identity');
+assert.ok(!/2–4 for a typical/.test(cloudIdentity), 'no 2-4 count coaching in cloud identity');
+assert.ok(cloudIdentity.includes('web_search'));
+assert.ok(cloudIdentity.includes('Answer in prose when it does not'));
+assert.ok(cloudIdentity.includes('## Voice'));
+assert.ok(cloudIdentity.includes('handoff'));
+assert.ok(cloudIdentity.includes('update_todo'));
+assert.ok(cloudIdentity.includes('0 done') || cloudIdentity.includes('stuck at 0 done') || cloudIdentity.includes('ledger stuck'));
+assert.ok(!cloudIdentity.includes('call that tool in this response'), 'no announce-force coaching');
+assert.ok(!/do not end the turn on chat alone/i.test(cloudIdentity), 'no mid-turn-prose coaching phrase');
+assert.ok(!/Do not end the turn until the ledger/i.test(cloudIdentity), 'no force-ledger-until-end coaching');
+assert.ok(!/Pattern —/.test(cloudIdentity), 'cloud identity must not include Pattern — hand-holding');
+
+const { getAgentSystemPrompt, getPlanSystemPrompt, getAskSystemPrompt } = require('../agentModeResolver');
+for (const [name, p] of [['cloud', cloudIdentity], ['agent', getAgentSystemPrompt()], ['plan', getPlanSystemPrompt()], ['ask', getAskSystemPrompt()]]) {
+  assert.ok(p.includes('Evidence only — never guess'), `${name} prompt must carry the evidence-only rule`);
+  assert.ok(/credentials/.test(p) && /URLs/.test(p), `${name} evidence rule must name credentials and URLs`);
+}
+assert.ok(cloudIdentity.includes('call **ask_question**'), 'cloud evidence rule must route unknowns to ask_question');
+assert.ok(!getAskSystemPrompt().includes('ask_question'), 'ask mode has no tools; it must not name ask_question');
 
 const twoTools = defs.filter((d) => d.name === 'read_file' || d.name === 'web_search');
 const listing = server
@@ -46,7 +68,7 @@ assert.ok(prompt.includes('general-purpose'));
 assert.ok(prompt.includes('```json'));
 
 const llm = new CloudLLMService();
-assert.strictEqual(llm._getModelContextLimit('secrypt', 'cipher-quality'), 24576);
+assert.strictEqual(llm._getModelContextLimit('secrypt', 'cipher-quality'), 131072);
 assert.strictEqual(resolveCloudOutputTokens(0, 32768), 8192);
 assert.strictEqual(resolveCloudOutputTokens(-1, 32768), 8192);
 assert.strictEqual(resolveCloudOutputTokens(4096, 32768), 4096);
@@ -59,7 +81,13 @@ assert.strictEqual(thinkSamp.topK, 20);
 assert.strictEqual(thinkSamp.minP, 0);
 assert.strictEqual(thinkSamp.presencePenalty, 0);
 assert.strictEqual(thinkSamp.repeatPenalty, 1.0);
-assert.strictEqual(thinkSamp.reasoningEffort, 'xhigh');
+assert.strictEqual(thinkSamp.reasoningEffort, 'medium');
+
+const { resolveThinkingBudgetForEffort } = require('../cloudLLMService');
+assert.strictEqual(resolveThinkingBudgetForEffort('medium', 8192, true), null);
+assert.strictEqual(resolveThinkingBudgetForEffort('low', 8192, true), null);
+assert.strictEqual(resolveThinkingBudgetForEffort('xhigh', 8192, true), null);
+assert.strictEqual(resolveThinkingBudgetForEffort('medium', 8192, false), null);
 
 const instructSamp = secryptQualitySampling(false);
 assert.strictEqual(instructSamp.temperature, 0.7);
@@ -95,5 +123,5 @@ console.log('cloudTightPrompt+skills OK', {
   listingChars: listing.length,
   promptChars: prompt.length,
   skills: skills.length,
-  secryptCtx: 24576,
+  secryptCtx: 131072,
 });

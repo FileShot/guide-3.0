@@ -192,6 +192,8 @@ export default function App() {
 
       case 'llm-token':
 
+        s.clearGenerationStatusSegment?.();
+
         if (paceEnabledRef.current) {
 
           paceStreamRef.current?.enqueue('text', data);
@@ -243,6 +245,8 @@ export default function App() {
         break;
 
       case 'llm-thinking-token':
+
+        s.clearGenerationStatusSegment?.();
 
         if (paceEnabledRef.current) {
 
@@ -324,13 +328,31 @@ export default function App() {
 
         break;
 
-      case 'generation-warning':
+      case 'generation-warning': {
 
-        // VRAM/context warnings go to statusbar only — NOT as intrusive notification overlay
-
-        s.setVramWarning(data?.message || '');
-
+        // PrefillWaitBar1 + StreamLiveFix1: StatusBar always; footer line for stalls only
+        // (never a mid-prose segment — chatGenerationStatus is footer-only).
+        const msg = data?.message || '';
+        s.setVramWarning(msg);
+        const phase = data?.phase || 'wait';
+        const tools = s.streamingToolCalls || [];
+        const toolBusy = tools.some((t) => t?.status === 'generating' || t?.status === 'pending' || t?.status === 'running');
+        if (!msg || toolBusy || s.chatGeneratingTool) {
+          s.clearGenerationStatusSegment?.();
+          break;
+        }
+        // Show footer while stream is quiet so a 2-minute SSE stall is not a blank void.
+        if (phase === 'mid-stream' || phase === 'first-byte') {
+          s.setGenerationStatusSegment({
+            message: msg,
+            suggestion: '',
+            phase,
+          });
+        } else {
+          s.clearGenerationStatusSegment?.();
+        }
         break;
+      }
 
       case 'context-summarize':
 
@@ -369,37 +391,28 @@ export default function App() {
           }
 
           const toolName = item.tool || item.functionName || item.name;
+          const toolCallId = item.toolCallId || null;
 
-          // Check if a 'generating' card already exists for this tool — update it instead of duplicating
-
-          const existing = s.streamingToolCalls.find(tc => tc.functionName === toolName && tc.status === 'generating');
+          // ToolCallId1: prefer id match; else first generating by name (stream card).
+          const existing = toolCallId
+            ? s.streamingToolCalls.find((tc) => tc.toolCallId === toolCallId)
+            : s.streamingToolCalls.find((tc) => tc.functionName === toolName && tc.status === 'generating');
 
           if (existing) {
-
             s.updateStreamingToolCall(toolName, {
-
               params: item.params || item.arguments,
-
               status: 'pending',
-
               startTime: Date.now(),
-
-            });
-
+              toolCallId: toolCallId || existing.toolCallId,
+            }, toolCallId || existing.toolCallId);
           } else {
-
             s.addStreamingToolCall({
-
               functionName: toolName,
-
               params: item.params || item.arguments,
-
               status: 'pending',
-
               startTime: Date.now(),
-
+              toolCallId: toolCallId || undefined,
             });
-
           }
 
         }
@@ -412,19 +425,36 @@ export default function App() {
 
         // Model is actively generating a tool call — show a generating indicator
 
+        s.clearGenerationStatusSegment?.();
+
         const toolName = data?.tool || 'tool';
+        const toolCallId = data?.toolCallId || null;
+        const seedParams = (data?.params && typeof data.params === 'object') ? data.params : {};
 
-        s.addStreamingToolCall({
+        // ToolCallId1: same id → update; same name already last generating without new id → update (no dup).
+        const byId = toolCallId
+          ? s.streamingToolCalls.find((tc) => tc.toolCallId === toolCallId)
+          : null;
+        const last = s.streamingToolCalls[s.streamingToolCalls.length - 1];
+        const sameOpen = last
+          && last.functionName === toolName
+          && (last.status === 'generating' || last.status === 'pending');
 
-          functionName: toolName,
-
-          params: {},
-
-          status: 'generating',
-
-          startTime: Date.now(),
-
-        });
+        if (byId || (sameOpen && !toolCallId)) {
+          s.updateStreamingToolCall(toolName, {
+            params: { ...(byId || last).params, ...seedParams },
+            status: 'generating',
+            toolCallId: toolCallId || (byId || last).toolCallId,
+          }, toolCallId || (byId || last).toolCallId);
+        } else {
+          s.addStreamingToolCall({
+            functionName: toolName,
+            params: seedParams,
+            status: 'generating',
+            startTime: Date.now(),
+            toolCallId: toolCallId || undefined,
+          });
+        }
 
         break;
 
@@ -433,8 +463,24 @@ export default function App() {
       case 'tool-generating-progress': {
 
         const toolName = data?.tool || 'tool';
+        const toolCallId = data?.toolCallId || null;
+        const liveParams = (data?.params && typeof data.params === 'object') ? data.params : null;
 
-        s.updateStreamingToolCall(toolName, {
+        let existing = toolCallId
+          ? s.streamingToolCalls.find((tc) => tc.toolCallId === toolCallId)
+          : null;
+        if (!existing) {
+          // Progress belongs on the latest open card of this name (not the first).
+          for (let i = s.streamingToolCalls.length - 1; i >= 0; i--) {
+            const tc = s.streamingToolCalls[i];
+            if (tc.functionName === toolName && (tc.status === 'generating' || tc.status === 'pending')) {
+              existing = tc;
+              break;
+            }
+          }
+        }
+
+        const patch = {
 
           status: 'generating',
 
@@ -444,13 +490,27 @@ export default function App() {
 
             fenceChars: data?.fenceChars ?? 0,
 
-            filePath: data?.filePath,
+            fileContentChars: data?.fileContentChars ?? 0,
+
+            filePath: data?.filePath || liveParams?.filePath,
 
           },
 
-          params: data?.filePath ? { filePath: data.filePath } : {},
+        };
 
-        });
+        // LiveParams2: always merge telemetry into params — never leave expanded panel on placeholder only.
+        const telemetry = {
+          ...(liveParams || {}),
+          ...(data?.filePath ? { filePath: data.filePath } : {}),
+          ...(data?.fenceChars ? { bytesHeld: data.fenceChars } : {}),
+          ...(data?.fileContentChars ? { contentChars: data.fileContentChars } : {}),
+          ...(data?.elapsedMs ? { elapsedMs: data.elapsedMs } : {}),
+        };
+        if (Object.keys(telemetry).length > 0) {
+          patch.params = { ...(existing?.params || {}), ...telemetry };
+        }
+
+        s.updateStreamingToolCall(toolName, patch, toolCallId || existing?.toolCallId);
 
         break;
 
@@ -501,16 +561,18 @@ export default function App() {
           }
 
           const name = item.tool || item.functionName || item.name;
+          const toolCallId = item.toolCallId || null;
+          const match = toolCallId
+            ? s.streamingToolCalls.find((tc) => tc.toolCallId === toolCallId)
+            : s.streamingToolCalls.find((tc) => tc.functionName === name && (tc.status === 'pending' || tc.status === 'generating'));
+          const failed = !!(item.result?.error || item.success === false || item.result?.success === false);
 
           s.updateStreamingToolCall(name, {
-
-            status: item.result?.error || item.success === false ? 'error' : 'success',
-
+            status: failed ? 'error' : 'success',
             result: item.result,
-
-            duration: Date.now() - (s.streamingToolCalls.find(tc => tc.functionName === name && tc.status === 'pending')?.startTime || Date.now()),
-
-          });
+            duration: Date.now() - (match?.startTime || Date.now()),
+            toolCallId: toolCallId || match?.toolCallId,
+          }, toolCallId || match?.toolCallId);
 
         }
 
@@ -678,6 +740,7 @@ export default function App() {
 
           status: data?.status,
 
+
           result: data?.result,
 
           error: data?.error,
@@ -699,6 +762,14 @@ export default function App() {
           duration: 6000,
 
         });
+
+        break;
+
+
+
+      case 'background-shells-changed':
+
+        s.setBackgroundShells(data?.shells || []);
 
         break;
 
@@ -1362,6 +1433,8 @@ export default function App() {
       api.onLspDiagnostics?.((d) => handleLspDiagnostics(d)),
 
       api.onBackgroundAgentComplete?.((d) => handleEvent('background-agent-complete', d)),
+
+      api.onBackgroundShellsChanged?.((d) => handleEvent('background-shells-changed', d)),
 
       api.onSubAgentSpawned?.((d) => handleEvent('sub-agent-spawned', d)),
 

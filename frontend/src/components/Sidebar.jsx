@@ -407,6 +407,7 @@ function FileTreeItem({ item, depth }) {
   const openTabs = useAppStore(s => s.openTabs);
   const addNotification = useAppStore(s => s.addNotification);
   const gitFileStatuses = useAppStore(s => s.gitFileStatuses);
+  const setFileTree = useAppStore(s => s.setFileTree);
 
   const isActive = openTabs.some(t => t.path === item.path && t.id === activeTabId);
   const indent = 12 + depth * 16;
@@ -513,8 +514,16 @@ function FileTreeItem({ item, depth }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: item.path }),
     }).then(r => r.json()).then(d => {
-      if (d.success) addNotification({ type: 'info', message: `Deleted ${item.name}` });
-      else addNotification({ type: 'error', message: d.error || 'Failed' });
+      if (d.success) {
+        addNotification({ type: 'info', message: `Deleted ${item.name}` });
+        // ExplorerRefresh1: re-fetch tree after delete (ghost rows when IPC alone miss).
+        if (projectPath) {
+          fetch(`/api/files/tree?path=${encodeURIComponent(projectPath)}`)
+            .then((tr) => tr.json())
+            .then((tree) => setFileTree(tree.items || []))
+            .catch(() => {});
+        }
+      } else addNotification({ type: 'error', message: d.error || 'Failed' });
     }).catch(e => addNotification({ type: 'error', message: e.message }));
     closeContextMenu();
   };
@@ -2045,10 +2054,6 @@ function SettingsPanel() {
 
       {/* Agentic Behavior */}
       <SettingsSection title="Agentic Behavior" icon={<Zap size={13} />} keywords="agent iterations timeout thinking tools native function calling grammar debug stream summarizer lint sub-agents browser tor onion geckodriver marionette">
-        <SettingSlider label="Max Iterations" value={settings.maxIterations} min={1} max={100} step={1}
-          onChange={v => updateSetting('maxIterations', v)}
-          tooltip="Maximum tool-call iterations per task"
-          format={v => String(Math.round(v))} />
         <SettingSlider label="Generation Timeout (sec, 0=disabled)" value={settings.generationTimeoutSec} min={0} max={600} step={10}
           onChange={v => updateSetting('generationTimeoutSec', v)}
           tooltip="Abort generation after this many seconds (0 = no limit)"
@@ -2078,9 +2083,9 @@ function SettingsPanel() {
             Resets on model load: GLM-4.6V → off; others → auto. C/B = Jinja paths. auto = Qwen/GPT/Phi. off = template thinking disabled.
           </p>
         </div>
-        <SettingToggle label="Filter Thinking Tokens" value={settings.enableThinkingFilter}
-          onChange={v => updateSetting('enableThinkingFilter', v)}
-          hint="Strip thinking tags from output" />
+        <p className="text-[10px] text-vsc-text-muted px-1 mb-2">
+          Thinking always streams to the Reasoning panel. Hiding thinking tokens is not offered.
+        </p>
         <SettingToggle label="Tools Enabled" value={settings.toolsEnabled !== false}
           onChange={v => updateSetting('toolsEnabled', v)}
           hint="When off, no tool definitions are passed to the model. Useful for testing thinking display in isolation." />
@@ -2149,6 +2154,7 @@ function SettingsPanel() {
         {(settings.browserEngine || 'chromium') === 'tor' && (
           <TorBrowserSettings settings={settings} updateSetting={updateSetting} />
         )}
+        <WebSearchResilienceSettings settings={settings} updateSetting={updateSetting} />
         <div>
           <label className="text-[11px] text-vsc-text-dim block mb-1">Browser control</label>
           <select
@@ -2694,6 +2700,79 @@ function AddOnsSettings({ addNotification }) {
         </div>
       )}
     </SettingsSection>
+  );
+}
+
+function WebSearchResilienceSettings({ settings, updateSetting }) {
+  const [braveKey, setBraveKey] = useState('');
+  const [serpKey, setSerpKey] = useState('');
+  const [tavilyKey, setTavilyKey] = useState('');
+  const [status, setStatus] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const r = await fetch('/api/websearch/status');
+      if (r.ok) setStatus(await r.json());
+    } catch {
+      setStatus(null);
+    }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh, settings.webSearchProxyUrls]);
+
+  const saveKey = useCallback(async (provider, key) => {
+    setSaving(true);
+    try {
+      await fetch('/api/cloud/apikey', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, key }),
+      });
+      await refresh();
+    } catch (_) {}
+    setSaving(false);
+  }, [refresh]);
+
+  return (
+    <div className="mt-3 pt-3 border-t border-vsc-panel-border/20 space-y-2">
+      <div className="text-[11px] font-medium text-vsc-text">Web search resilience</div>
+      <p className="text-[10px] text-vsc-text-dim">
+        Keyed search APIs bypass HTML bot walls. Optional HTTP(S) proxies rotate for scrape/fetch when APIs are unset or fail.
+        Status: Brave {status?.hasBrave || status?.braveApi ? 'on' : 'off'} · Tavily {status?.hasTavily || status?.tavilyApi ? 'on' : 'off'} · SerpAPI {status?.hasSerp || status?.serpApi ? 'on' : 'off'} · proxies {status?.proxyCount ?? 0}
+      </p>
+      <div>
+        <label className="text-[11px] text-vsc-text-dim block mb-0.5">Brave Search API key</label>
+        <div className="flex gap-1">
+          <input type="password" className="flex-1 text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text" value={braveKey} onChange={(e) => setBraveKey(e.target.value)} placeholder={status?.hasBrave ? '•••• saved' : 'BSA…'} />
+          <button type="button" disabled={saving} className="btn btn-secondary text-[10px] px-2 shrink-0" onClick={() => saveKey('brave-search', braveKey)}>{saving ? '…' : 'Save'}</button>
+        </div>
+      </div>
+      <div>
+        <label className="text-[11px] text-vsc-text-dim block mb-0.5">Tavily API key</label>
+        <div className="flex gap-1">
+          <input type="password" className="flex-1 text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text" value={tavilyKey} onChange={(e) => setTavilyKey(e.target.value)} placeholder={status?.hasTavily ? '•••• saved' : 'tvly-…'} />
+          <button type="button" disabled={saving} className="btn btn-secondary text-[10px] px-2 shrink-0" onClick={() => saveKey('tavily', tavilyKey)}>{saving ? '…' : 'Save'}</button>
+        </div>
+      </div>
+      <div>
+        <label className="text-[11px] text-vsc-text-dim block mb-0.5">SerpAPI key</label>
+        <div className="flex gap-1">
+          <input type="password" className="flex-1 text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text" value={serpKey} onChange={(e) => setSerpKey(e.target.value)} placeholder={status?.hasSerp ? '•••• saved' : '…'} />
+          <button type="button" disabled={saving} className="btn btn-secondary text-[10px] px-2 shrink-0" onClick={() => saveKey('serpapi', serpKey)}>{saving ? '…' : 'Save'}</button>
+        </div>
+      </div>
+      <div>
+        <label className="text-[11px] text-vsc-text-dim block mb-0.5">HTTP(S) proxy list (one per line)</label>
+        <textarea
+          className="w-full text-[10px] font-mono bg-vsc-input border border-vsc-panel-border/25 rounded px-2 py-1.5 text-vsc-text min-h-[56px]"
+          value={settings.webSearchProxyUrls || ''}
+          onChange={(e) => updateSetting('webSearchProxyUrls', e.target.value)}
+          placeholder={'http://user:pass@host:8080\nhttp://host2:3128'}
+        />
+        <p className="text-[10px] text-vsc-text-dim mt-1">Used for HTML search scrapers and fetch_webpage retries. SOCKS not supported here — use HTTP(S) gateways.</p>
+      </div>
+    </div>
   );
 }
 

@@ -287,19 +287,27 @@ export default function ToolCallCard({ toolCall, count }) {
   const verb = cfg ? (isPending || isGenerating ? cfg.pending : cfg.done) : functionName;
   const detail = cfg?.detail ? cfg.detail(params || {}, result) : null;
   const countSuffix = count > 1 ? ` ×${count}` : '';
+  const isFileWriteTool = (name) => name === 'write_file' || name === 'append_to_file' || name === 'edit_file';
   const formatGeneratingProgress = () => {
     const elapsedMs = generatingProgress?.elapsedMs ?? 0;
     const sec = Math.floor(elapsedMs / 1000);
     const min = Math.floor(sec / 60);
     const rem = sec % 60;
     const timeStr = min > 0 ? `${min}m ${rem}s` : `${sec}s`;
-    const kb = Math.max(1, Math.round((generatingProgress?.fenceChars ?? 0) / 1024));
+    const held = Math.max(
+      generatingProgress?.fenceChars ?? 0,
+      generatingProgress?.fileContentChars ?? 0,
+      params?.contentChars ?? 0,
+    );
+    const kb = held > 0 ? Math.max(1, Math.round(held / 1024)) : 0;
     const filePath = generatingProgress?.filePath || params?.filePath || params?.path;
     const fileName = filePath ? filePath.split(/[\\/]/).pop() : null;
-    if (functionName === 'write_file' && fileName && (generatingProgress?.fenceChars ?? 0) > 0) {
-      return `Writing ${fileName}… (${kb}KB generated, ${timeStr})`;
+    const verb = functionName === 'append_to_file' ? 'Appending' : functionName === 'edit_file' ? 'Editing' : 'Writing';
+    if (isFileWriteTool(functionName) && fileName && kb > 0) {
+      return `${verb} ${fileName}… (${kb}KB generated, ${timeStr})`;
     }
-    return `Generating large tool payload… (${timeStr}, ${kb}KB)`;
+    if (kb > 0) return `Generating ${functionName}… (${timeStr}, ${kb}KB held)`;
+    return `Generating ${functionName}… (${timeStr})`;
   };
   const formatSlowCommand = () => {
     const elapsedMs = commandSlowProgress?.elapsedMs ?? 0;
@@ -312,24 +320,42 @@ export default function ToolCallCard({ toolCall, count }) {
   const earlyWriteLabel = () => {
     const filePath = generatingProgress?.filePath || params?.filePath || params?.path;
     const fileName = filePath ? filePath.split(/[\\/]/).pop() : null;
-    if (functionName === 'write_file' && fileName) {
-      const kb = Math.max(1, Math.round((generatingProgress?.fenceChars ?? 0) / 1024));
-      return kb > 0 ? `Writing ${fileName}… (${kb}KB)` : `Writing ${fileName}…`;
+    const held = Math.max(
+      generatingProgress?.fenceChars ?? 0,
+      generatingProgress?.fileContentChars ?? 0,
+      params?.contentChars ?? 0,
+    );
+    const kb = held > 0 ? Math.max(1, Math.round(held / 1024)) : 0;
+    if (isFileWriteTool(functionName) && fileName) {
+      const verb = functionName === 'append_to_file' ? 'Appending' : functionName === 'edit_file' ? 'Editing' : 'Writing';
+      return kb > 0 ? `${verb} ${fileName}… (${kb}KB)` : `${verb} ${fileName}…`;
     }
-    return `Generating ${functionName}...`;
+    if (kb > 0) return `Generating ${functionName}… (${kb}KB)`;
+    return `Generating ${functionName}…`;
   };
-  const lineText = isGenerating
-    ? (generatingProgress && (generatingProgress.elapsedMs ?? 0) >= 30000
-      ? formatGeneratingProgress()
-      : earlyWriteLabel())
+  const showLiveMeter = isGenerating && generatingProgress && (
+    (generatingProgress.elapsedMs ?? 0) >= 1000
+    || (generatingProgress.fenceChars ?? 0) > 0
+    || (generatingProgress.fileContentChars ?? 0) > 0
+  );
+  const errText = (() => {
+    if (!isError) return '';
+    const raw = result?.error || result?.message || (typeof result === 'string' ? result : '');
+    const s = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    return s.length > 72 ? `${s.slice(0, 72)}…` : s;
+  })();
+  const baseLine = isGenerating
+    ? (showLiveMeter ? formatGeneratingProgress() : earlyWriteLabel())
     : (isPending && commandSlowProgress
       ? formatSlowCommand()
       : (detail ? `${verb} • ${detail}${countSuffix}` : `${verb}${countSuffix}`));
+  const lineText = errText ? `${baseLine} — ${errText}` : baseLine;
 
   const hasExpandable = !!(params || (result !== undefined && result !== null));
 
   return (
-    <div className="my-px rounded-md">
+    <div className="my-1 rounded-md">
       <button
         className={`flex items-center gap-1.5 w-full px-1.5 py-[3px] text-left rounded transition-colors hover:bg-vsc-list-hover/30 ${isError ? 'text-vsc-error/70' : 'text-vsc-text-dim'}`}
         onClick={() => hasExpandable && setExpanded(!expanded)}
@@ -360,7 +386,26 @@ export default function ToolCallCard({ toolCall, count }) {
             <div className="mb-1">
               <div className="text-[10px] text-vsc-text-dim/50 tracking-wider font-medium mb-0.5">Parameters</div>
               <pre className="text-[10px] text-vsc-text-dim/60 overflow-auto max-h-[120px] whitespace-pre-wrap font-vsc-code bg-vsc-sidebar/50 rounded px-1.5 py-1">
-                {typeof params === 'string' ? params : JSON.stringify(params, null, 2)}
+                {(() => {
+                  const p = typeof params === 'string' ? params : (params || {});
+                  const gp = generatingProgress || {};
+                  const live = (typeof p === 'object' && p && !Array.isArray(p)) ? { ...p } : {};
+                  if (gp.filePath && !live.filePath) live.filePath = gp.filePath;
+                  if (gp.fenceChars && !live.bytesHeld) live.bytesHeld = gp.fenceChars;
+                  if (gp.fileContentChars && !live.contentChars) live.contentChars = gp.fileContentChars;
+                  if (gp.elapsedMs && !live.elapsedMs) live.elapsedMs = gp.elapsedMs;
+                  if (isGenerating && live.contentPreview) {
+                    const prev = String(live.contentPreview);
+                    live.contentPreview = prev.length > 240 ? `${prev.slice(0, 240)}…` : prev;
+                  }
+                  if (Object.keys(live).length > 0) {
+                    return JSON.stringify(live, null, 2);
+                  }
+                  if (isGenerating) {
+                    return JSON.stringify({ status: 'streaming_tool_payload', note: 'Waiting for first closed JSON field from model stream' }, null, 2);
+                  }
+                  return typeof p === 'string' ? p : JSON.stringify(p, null, 2);
+                })()}
               </pre>
             </div>
           )}

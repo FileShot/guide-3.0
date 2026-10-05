@@ -140,6 +140,64 @@ function findActiveStreamingFileBlockIndex(blocks, fileKey) {
 
 }
 
+/** Basename without extension — index.html → index, styles.css → styles. */
+function fileBasenameStem(filePathOrName) {
+  const base = String(filePathOrName || '').split(/[/\\]/).pop() || '';
+  if (!base) return '';
+  return base.replace(/\.[^.]+$/, '').toLowerCase();
+}
+
+/**
+ * OneWriteOneCard1: same write must not open two cards when keys differ
+ * (fence stem "index" vs write_file "index.html", or "style.css" vs "styles.css").
+ */
+function fileKeysLikelySameWrite(aPath, bPath) {
+  const sa = fileBasenameStem(aPath);
+  const sb = fileBasenameStem(bPath);
+  if (!sa || !sb) return false;
+  if (sa === sb) return true;
+  if (sa.length >= 3 && sb.length >= 3 && (sa.startsWith(sb) || sb.startsWith(sa))) return true;
+  return false;
+}
+
+/** Same file body (ignore trailing JSON quote leak on fence twins). */
+function fileBodiesLikelySameWrite(aContent, bContent) {
+  const clean = (s) => String(s || '').replace(/\s+$/g, '').replace(/"$/, '');
+  const a = clean(aContent);
+  const b = clean(bContent);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.length >= 40 && b.length >= 40 && (a.includes(b) || b.includes(a))) return true;
+  const n = Math.min(160, a.length, b.length);
+  if (n < 40) return false;
+  if (a.slice(0, n) === b.slice(0, n)) return true;
+  if (a.slice(-n) === b.slice(-n)) return true;
+  return false;
+}
+
+function findStreamingFileBlockIndexForWrite(blocks, { filePath, fileKey, content, projectPath }) {
+  if (!Array.isArray(blocks) || blocks.length === 0) return -1;
+  const normalizedKey = streamingFileKey(filePath, fileKey, projectPath);
+  if (normalizedKey) {
+    const byKey = blocks.findIndex(
+      (b) => b.fileKey === normalizedKey
+        || canonicalizeStreamingFilePath(b.filePath, projectPath) === normalizedKey,
+    );
+    if (byKey !== -1) return byKey;
+  }
+  const pathHint = filePath || fileKey || '';
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (fileKeysLikelySameWrite(pathHint, b.filePath || b.fileName || b.fileKey)) return i;
+  }
+  if (content != null && String(content).length >= 40) {
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      if (fileBodiesLikelySameWrite(content, blocks[i].content)) return i;
+    }
+  }
+  return -1;
+}
+
 function normalizeTabPath(filePath) {
   return String(filePath || '').replace(/\\/g, '/').toLowerCase();
 }
@@ -221,8 +279,23 @@ function flushFileContentTokenBuffer(get, set) {
   }
   const updated = [...store.streamingFileBlocks];
   const last = { ...updated[targetIdx] };
-  last.content += buf;
-  if (last.op === 'edit') last.newText = (last.newText || '') + buf;
+  // FileNeverShrink1: after re-start, accumulate into scratch; keep showing shadow
+  // until the new stream is at least as long (stops 322→1 flash).
+  if (last.streamFresh) {
+    const scratch = String(last.incomingScratch || '') + buf;
+    last.incomingScratch = scratch;
+    const shadowLen = String(last.shadowContent || last.content || '').length;
+    if (scratch.length >= shadowLen && scratch.length > 0) {
+      last.content = scratch;
+      if (last.op === 'edit') last.newText = scratch;
+      last.streamFresh = false;
+      last.shadowContent = '';
+      last.incomingScratch = '';
+    }
+  } else {
+    last.content += buf;
+    if (last.op === 'edit') last.newText = (last.newText || '') + buf;
+  }
   updated[targetIdx] = last;
 
   traceUi('appendFileContentToken', {
@@ -231,11 +304,12 @@ function flushFileContentTokenBuffer(get, set) {
     blockIndex: targetIdx,
     fileKey: last.fileKey,
     totalContentLen: last.content.length,
+    streamFresh: !!last.streamFresh,
   });
 
   set({ streamingFileBlocks: updated, _fileTokenBuffer: null, _fileTokenTimer: null });
 
-  if (last.filePath) {
+  if (last.filePath && !last.streamFresh) {
     scheduleEditorSync(get, last.filePath, last.content, {
       op: last.op || 'write',
       oldText: last.oldText,
@@ -248,6 +322,22 @@ function flushFileContentTokenBuffer(get, set) {
 }
 
 
+
+
+function computeWorkedMsFromStore(store) {
+  const toolStarts = (store.streamingToolCalls || [])
+    .map((t) => Number(t?.startTime))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  const earliestTool = toolStarts.length ? Math.min(...toolStarts) : null;
+  const candidates = [store.streamStartedAt, earliestTool].filter(
+    (n) => Number.isFinite(n) && n > 0,
+  );
+  const startedAt = candidates.length ? Math.min(...candidates) : Date.now();
+  return {
+    startedAt,
+    workedMs: Math.max(0, Date.now() - startedAt),
+  };
+}
 
 const useAppStore = create((set, get) => ({
 
@@ -741,6 +831,13 @@ const useAppStore = create((set, get) => ({
 
   chatIteration: null,       // {iteration, maxIterations}
 
+  // WorkedFor1: wall-clock for Cursor-like "Worked for Xm Ys" on finalize.
+  streamStartedAt: null,
+
+  // StreamLiveFix1: last token/tool activity — footer must not show "Reasoning..." forever after think stops.
+  lastStreamActivityAt: 0,
+  lastThinkingActivityAt: 0,
+
   streamingFileBlocks: [],   // [{filePath, language, fileName, content, complete}]
 
   activeStreamingFileKey: null,
@@ -748,6 +845,10 @@ const useAppStore = create((set, get) => ({
   // R33-Phase4: Chronological segments for correct interleaving of text and file blocks
 
   streamingSegments: [],     // [{type:'text', content}, {type:'file', index}]
+
+  // CursorParity1: wait/stall copy lives OUTSIDE the segment stream so it cannot
+  // split a sentence (text → status → "."). Rendered once as a footer under the bubble.
+  chatGenerationStatus: null, // { message, suggestion, phase, at } | null
 
   // R39-A1: Live tool call tracking for ToolCallCard rendering during streaming
 
@@ -908,10 +1009,113 @@ const useAppStore = create((set, get) => ({
   },
 
   /**
+   * StopKeep1: commit what the user already saw before wiping stream buffers.
+   * Flush token timers, build the same segment shape as a normal finalize, mark stopped.
+   * Empty stream → no assistant spam. Epoch bump / reset stay in the Stop handler.
+   */
+  commitStoppedStreamingMessage: () => {
+    get().flushPendingThinkingTokens();
+    const store = get();
+    if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
+    if (store._fileTokenTimer) clearTimeout(store._fileTokenTimer);
+
+    let currentText = store.chatStreamingText || '';
+    let segs = Array.isArray(store.streamingSegments) ? [...store.streamingSegments] : [];
+    const fileBlocks = store.streamingFileBlocks || [];
+    const toolCalls = Array.isArray(store.streamingToolCalls) ? store.streamingToolCalls : [];
+
+    if (store._textTokenBuffer) {
+      const buf = store._textTokenBuffer;
+      currentText += buf;
+      if (segs.length > 0 && segs[segs.length - 1].type === 'text') {
+        segs = [...segs];
+        segs[segs.length - 1] = { ...segs[segs.length - 1], content: segs[segs.length - 1].content + buf };
+      } else {
+        segs = [...segs, { type: 'text', content: buf }];
+      }
+    }
+
+    let messageContent = '';
+    const messageSegments = [];
+    const messageFileBlocks = [];
+
+    for (const seg of segs) {
+      if (seg.type === 'generation-status') continue; // CursorParity1: never persist wait lines
+      if (seg.type === 'text') {
+        messageContent += seg.content;
+        // Merge adjacent text so status-split sentences ("…that" + " line.") heal.
+        const prev = messageSegments[messageSegments.length - 1];
+        if (prev?.type === 'text') prev.content += seg.content;
+        else messageSegments.push({ type: 'text', content: seg.content });
+      } else if (seg.type === 'file') {
+        const block = fileBlocks[seg.index];
+        if (block) {
+          messageSegments.push({ type: 'file', index: messageFileBlocks.length });
+          messageFileBlocks.push({
+            filePath: block.filePath,
+            language: block.language,
+            fileName: block.fileName,
+            content: block.content,
+          });
+        }
+      } else if (seg.type === 'thinking') {
+        messageSegments.push({ type: 'thinking', content: seg.content });
+      } else if (seg.type === 'tool') {
+        messageSegments.push({ type: 'tool', toolIndex: seg.toolIndex });
+      }
+    }
+
+    if (!messageSegments.length && currentText.trim()) {
+      messageContent = currentText;
+      messageSegments.push({ type: 'text', content: currentText });
+    }
+
+    const hasToolCalls = toolCalls.length > 0;
+    const hasThinking = !!store.chatThinkingText?.trim();
+    const hasContent = messageContent.trim().length > 0 || messageSegments.length > 0;
+
+    if (!hasContent && !hasToolCalls && !hasThinking) {
+      return false;
+    }
+
+    let modelLabel = store.modelInfo?.name;
+    const cp = store.cloudProvider;
+    if (cp) {
+      if (cp === 'secrypt' || cp === 'cipher' || cp === 'graysoft') modelLabel = 'Cipher 7';
+      else modelLabel = store.cloudModel || cp;
+    }
+
+    const { startedAt, workedMs } = computeWorkedMsFromStore(store);
+    get().addChatMessage({
+      role: 'assistant',
+      content: messageContent || '',
+      segments: messageSegments.length > 0 ? messageSegments : undefined,
+      fileBlocks: messageFileBlocks.length > 0 ? messageFileBlocks : undefined,
+      toolCalls: hasToolCalls ? [...toolCalls] : undefined,
+      thinking: hasThinking ? store.chatThinkingText : undefined,
+      model: modelLabel,
+      workedMs,
+      streamStartedAt: startedAt,
+      stopped: true,
+    });
+
+    set({
+      chatGenerationStatus: null,
+      _textTokenBuffer: null,
+      _textTokenTimer: null,
+      _fileTokenBuffer: null,
+      _fileTokenTimer: null,
+    });
+
+    return true;
+  },
+
+  /**
    * Freeze in-progress assistant streaming into a finalized chat row so injected
    * user messages appear in chronological order (not under the Virtuoso footer).
    */
   materializePartialAssistant: () => {
+    get().flushPendingThinkingTokens();
     const store = get();
     if (!store.chatStreaming) return store.chatMessages.length;
 
@@ -939,9 +1143,12 @@ const useAppStore = create((set, get) => ({
     const messageFileBlocks = [];
 
     for (const seg of segs) {
+      if (seg.type === 'generation-status') continue;
       if (seg.type === 'text') {
         messageContent += seg.content;
-        messageSegments.push({ type: 'text', content: seg.content });
+        const prev = messageSegments[messageSegments.length - 1];
+        if (prev?.type === 'text') prev.content += seg.content;
+        else messageSegments.push({ type: 'text', content: seg.content });
       } else if (seg.type === 'file') {
         const block = fileBlocks[seg.index];
         if (block) {
@@ -980,6 +1187,7 @@ const useAppStore = create((set, get) => ({
       return store.chatMessages.length;
     }
 
+    const { startedAt, workedMs } = computeWorkedMsFromStore(store);
     const idx = get().addChatMessage({
       role: 'assistant',
       content: messageContent || '',
@@ -988,6 +1196,8 @@ const useAppStore = create((set, get) => ({
       toolCalls: hasToolCalls ? [...toolCalls] : undefined,
       thinking: hasThinking ? store.chatThinkingText : undefined,
       model: store.modelInfo?.name,
+      workedMs,
+      streamStartedAt: startedAt,
       partial: true,
     });
 
@@ -996,6 +1206,7 @@ const useAppStore = create((set, get) => ({
       chatStreamingText: '',
       chatThinkingText: '',
       chatGeneratingTool: null,
+      chatGenerationStatus: null,
       streamingSegments: [],
       streamingFileBlocks: [],
       streamingToolCalls: [],
@@ -1050,6 +1261,7 @@ const useAppStore = create((set, get) => ({
 
       // R34: Flush any pending text token buffer before clearing streaming state
 
+      get().flushPendingThinkingTokens();
       const store = get();
 
       if (store._textTokenTimer) clearTimeout(store._textTokenTimer);
@@ -1099,6 +1311,16 @@ const useAppStore = create((set, get) => ({
       chatStreamingText: '',
       chatThinkingText: '',
       chatGeneratingTool: null,
+      chatGenerationStatus: null,
+      // WorkedCarry1: false→true always starts a new clock. true→true (re-entrant
+      // setChatStreaming while already streaming) keeps the existing start.
+      // Keeping streamStartedAt across a new user turn made "Worked for" include
+      // the previous message (operator: 8:29→8:37 wall vs Worked 31m 20s).
+      streamStartedAt: val
+        ? (get().chatStreaming ? (get().streamStartedAt || Date.now()) : Date.now())
+        : null,
+      lastStreamActivityAt: val ? Date.now() : 0,
+      lastThinkingActivityAt: val ? Date.now() : 0,
       streamingSegments: [],
       streamingToolCalls: [],
       streamingMediaItems: [],
@@ -1229,6 +1451,7 @@ const useAppStore = create((set, get) => ({
 
     // This prevents 100+/sec set() calls that cause the Footer (and all children) to re-render.
 
+    get().flushPendingThinkingTokens();
     const store = get();
 
     if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) {
@@ -1251,6 +1474,7 @@ const useAppStore = create((set, get) => ({
       cumLen: (store.chatStreamingText?.length || 0) + (store._textTokenBuffer?.length || 0) + (token?.length || 0),
       segmentsLen: store.streamingSegments?.length || 0,
     });
+    store.lastStreamActivityAt = Date.now();
 
     if (!store._textTokenBuffer) {
 
@@ -1327,11 +1551,35 @@ const useAppStore = create((set, get) => ({
       return;
     }
     traceUi('appendThinkingToken', { token });
-    const segs = store.streamingSegments;
-    let newSegs;
+    // StreamLiveFix1: timestamps for footer (polled; no set() thrash per char).
+    const _now = Date.now();
+    store.lastStreamActivityAt = _now;
+    store.lastThinkingActivityAt = _now;
 
     // Defensive: backend may send object or string; normalize to string
     const tokenStr = typeof token === 'string' ? token : (token?.content || '');
+    if (!tokenStr) return;
+
+    // ThinkBatch1: one set() per frame, not per token. Per-token set() re-rendered the whole
+    // chat ~20×/s; the renderer fell 60–336s behind Cipher and stopped painting.
+    if (store._textTokenBuffer) get().flushPendingStreamTokens();
+    const cur = get();
+    cur._thinkTokenBuffer = (cur._thinkTokenBuffer || '') + tokenStr;
+    if (!cur._thinkTokenTimer) {
+      cur._thinkTokenTimer = setTimeout(() => get().flushPendingThinkingTokens(), 16);
+    }
+  },
+
+  flushPendingThinkingTokens: () => {
+    const store = get();
+    if (store._thinkTokenTimer) clearTimeout(store._thinkTokenTimer);
+    store._thinkTokenTimer = null;
+    const tokenStr = store._thinkTokenBuffer;
+    store._thinkTokenBuffer = null;
+    if (!tokenStr) return;
+    if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
+    const segs = store.streamingSegments;
+    let newSegs;
 
     // Chronological thinking: create/append thinking segments in streamingSegments
     // so thinking blocks appear interleaved with prose, not all at the top.
@@ -1391,6 +1639,39 @@ const useAppStore = create((set, get) => ({
     set({ streamingSegments: segs });
   },
 
+  // CursorParity1: status is a footer field — never a streamingSegments entry.
+  setGenerationStatusSegment: (data) => {
+    const store = get();
+    const message = String(data?.message || '').trim();
+    if (!message) {
+      if (store.chatGenerationStatus != null) set({ chatGenerationStatus: null });
+      return;
+    }
+    // Never paint wait/receiving while tools or tokens are already live.
+    const tools = store.streamingToolCalls || [];
+    const toolBusy = tools.some((t) => t?.status === 'generating' || t?.status === 'pending' || t?.status === 'running');
+    if (toolBusy) return;
+    if (store.chatGeneratingTool) return;
+    const suggestion = data?.suggestion != null ? String(data.suggestion) : '';
+    const phase = data?.phase || 'wait';
+    // Scrub any legacy generation-status segments left from StreamWaitLive1.
+    const segs = (store.streamingSegments || []).filter((s) => s?.type !== 'generation-status');
+    const next = { message, suggestion, phase, at: Date.now() };
+    const patch = { chatGenerationStatus: next };
+    if (segs.length !== (store.streamingSegments || []).length) patch.streamingSegments = segs;
+    set(patch);
+  },
+
+  clearGenerationStatusSegment: () => {
+    const store = get();
+    const segs = (store.streamingSegments || []).filter((s) => s?.type !== 'generation-status');
+    const segsChanged = segs.length !== (store.streamingSegments || []).length;
+    if (store.chatGenerationStatus == null && !segsChanged) return;
+    const patch = { chatGenerationStatus: null };
+    if (segsChanged) patch.streamingSegments = segs;
+    set(patch);
+  },
+
 
 
   setChatGeneratingTool: (tool) => {
@@ -1407,7 +1688,8 @@ const useAppStore = create((set, get) => ({
       return;
     }
     traceUi('setChatGeneratingTool', { tool });
-    set({ chatGeneratingTool: tool });
+    // CursorParity1: tool card owns the UI — clear wait footer.
+    set({ chatGeneratingTool: tool, chatGenerationStatus: null });
   },
 
   setChatContextUsage: (usage) => {
@@ -1423,10 +1705,11 @@ const useAppStore = create((set, get) => ({
 
   addStreamingToolCall: (tc) => {
 
-    console.log('[appStore] addStreamingToolCall:', tc?.functionName, tc?.status);
+    console.log('[appStore] addStreamingToolCall:', tc?.functionName, tc?.status, tc?.toolCallId || '');
 
     // Flush pending text buffer before inserting tool segment (same pattern as startFileContentBlock)
 
+    get().flushPendingThinkingTokens();
     const store = get();
     if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
 
@@ -1458,7 +1741,11 @@ const useAppStore = create((set, get) => ({
 
     }
 
-    const newToolCalls = [...store.streamingToolCalls, tc];
+    const stamped = {
+      ...tc,
+      toolCallId: tc?.toolCallId || `tc-${Date.now()}-${(store.streamingToolCalls || []).length + 1}`,
+    };
+    const newToolCalls = [...store.streamingToolCalls, stamped];
 
     const toolIndex = newToolCalls.length - 1;
 
@@ -1480,35 +1767,36 @@ const useAppStore = create((set, get) => ({
 
   },
 
-  updateStreamingToolCall: (name, updates) => {
+  updateStreamingToolCall: (name, updates, toolCallId) => {
 
-    console.log('[appStore] updateStreamingToolCall:', name, updates?.status);
+    console.log('[appStore] updateStreamingToolCall:', name, updates?.status, toolCallId || '');
 
     const store = get();
     if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) return;
 
     const { streamingToolCalls } = store;
+    const id = toolCallId || updates?.toolCallId || null;
 
-    // Prefer matching a pending or generating call with this name (handles duplicates)
-
-    let idx = streamingToolCalls.findIndex(tc => tc.functionName === name && (tc.status === 'pending' || tc.status === 'generating'));
-
-    if (idx === -1) idx = streamingToolCalls.findIndex(tc => tc.functionName === name);
+    // ToolCallId1: match stable id first so duplicate browser_* names update the right card.
+    let idx = -1;
+    if (id) {
+      idx = streamingToolCalls.findIndex((tc) => tc.toolCallId === id);
+    }
+    if (idx === -1) {
+      idx = streamingToolCalls.findIndex((tc) => tc.functionName === name && (tc.status === 'pending' || tc.status === 'generating'));
+    }
+    if (idx === -1) idx = streamingToolCalls.findIndex((tc) => tc.functionName === name);
 
     if (idx === -1) {
-
-      console.warn('[appStore] updateStreamingToolCall: no matching tool call for', name);
-
+      console.warn('[appStore] updateStreamingToolCall: no matching tool call for', name, id || '');
       return;
-
     }
 
     const updated = [...streamingToolCalls];
-
-    updated[idx] = { ...updated[idx], ...updates };
-
+    const merged = { ...updated[idx], ...updates };
+    if (id && !merged.toolCallId) merged.toolCallId = id;
+    updated[idx] = merged;
     set({ streamingToolCalls: updated });
-
   },
 
 
@@ -1519,6 +1807,7 @@ const useAppStore = create((set, get) => ({
 
     // R34: Flush pending text buffer before starting file block (ensures correct segment ordering)
 
+    get().flushPendingThinkingTokens();
     const store = get();
     if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) {
       traceUi('DROP', {
@@ -1576,15 +1865,19 @@ const useAppStore = create((set, get) => ({
     }
 
     const proj = store.projectPath;
-    const existingIdx = store.streamingFileBlocks.findIndex(
-      (b) => b.fileKey === normalizedKey
-        || canonicalizeStreamingFilePath(b.filePath, proj) === normalizedKey,
-    );
+    const existingIdx = findStreamingFileBlockIndexForWrite(store.streamingFileBlocks, {
+      filePath,
+      fileKey: normalizedKey,
+      projectPath: proj,
+    });
 
     if (existingIdx !== -1) {
 
       const reopened = [...store.streamingFileBlocks];
       const prev = reopened[existingIdx];
+      // FileNeverShrink1: never wipe a grown card back to empty on re-start.
+      // Second write_file for same path kept clearing 322 lines → 1 truncated line.
+      const kept = String(prev.content || '');
       reopened[existingIdx] = {
         ...prev,
         filePath: filePath || prev.filePath,
@@ -1592,7 +1885,9 @@ const useAppStore = create((set, get) => ({
         fileName: fileName || prev.fileName,
         language: language || prev.language,
         complete: false,
-        content: (op === 'edit') ? prev.content : '',
+        content: kept,
+        shadowContent: kept,
+        streamFresh: true,
         op: op || prev.op || 'write',
         oldText: oldText != null ? String(oldText) : (prev.oldText || ''),
         newText: newText != null ? String(newText) : (prev.newText || ''),
@@ -1786,6 +2081,7 @@ const useAppStore = create((set, get) => ({
    * dropped content and left only ToolCallCard bubbles visible.
    */
   addCompleteFileContentBlock: ({ filePath, fileKey, language, fileName, content, op, oldText, newText }) => {
+    get().flushPendingThinkingTokens();
     const store = get();
     if (!store.chatStreaming || store.activeChatEpoch !== store.chatGenerationEpoch) {
       traceUi('DROP', {
@@ -1826,27 +2122,42 @@ const useAppStore = create((set, get) => ({
     }
 
     const proj = store.projectPath;
-    const existingIdx = store.streamingFileBlocks.findIndex(
-      (b) => b.fileKey === normalizedKey
-        || canonicalizeStreamingFilePath(b.filePath, proj) === normalizedKey,
-    );
+    const existingIdx = findStreamingFileBlockIndexForWrite(store.streamingFileBlocks, {
+      filePath,
+      fileKey: normalizedKey,
+      content,
+      projectPath: proj,
+    });
     let newBlocks;
     let fileIndex;
     let newSegs = currentSegs;
 
     if (existingIdx !== -1) {
       newBlocks = [...store.streamingFileBlocks];
+      const prevBlock = newBlocks[existingIdx];
+      const prevC = String(prevBlock.content || '');
+      const nextC = String(content);
+      // FileNeverShrink1: refuse to replace a longer card with a truncated complete.
+      const chosen = nextC.length >= prevC.length ? nextC : prevC;
+      if (chosen !== nextC) {
+        console.warn(
+          `[appStore] FileNeverShrink1: kept ${prevC.length} chars over complete ${nextC.length} for ${normalizedKey}`,
+        );
+      }
       newBlocks[existingIdx] = {
-        ...newBlocks[existingIdx],
-        filePath: filePath || newBlocks[existingIdx].filePath,
-        fileKey: normalizedKey || newBlocks[existingIdx].fileKey,
-        fileName: fileName || newBlocks[existingIdx].fileName,
-        language: language || newBlocks[existingIdx].language,
-        content: String(content),
+        ...prevBlock,
+        filePath: filePath || prevBlock.filePath,
+        fileKey: normalizedKey || prevBlock.fileKey,
+        fileName: fileName || prevBlock.fileName,
+        language: language || prevBlock.language,
+        content: chosen,
         complete: true,
-        op: op || newBlocks[existingIdx].op || 'write',
-        oldText: oldText != null ? String(oldText) : (newBlocks[existingIdx].oldText || ''),
-        newText: newText != null ? String(newText) : (newBlocks[existingIdx].newText || String(content)),
+        streamFresh: false,
+        shadowContent: '',
+        incomingScratch: '',
+        op: op || prevBlock.op || 'write',
+        oldText: oldText != null ? String(oldText) : (prevBlock.oldText || ''),
+        newText: newText != null ? String(newText) : (prevBlock.newText || chosen),
       };
       fileIndex = existingIdx;
     } else {
@@ -2319,6 +2630,10 @@ const useAppStore = create((set, get) => ({
     next[idx] = { ...next[idx], ...job };
     return { backgroundAgentJobs: next };
   }),
+
+  // bgterminal1 — Cursor-style background shells above chat input
+  backgroundShells: [],
+  setBackgroundShells: (shells) => set({ backgroundShells: Array.isArray(shells) ? shells : [] }),
 
   // ─── Sub-agent badges ────────────────────────────────
 
@@ -3003,7 +3318,7 @@ const useAppStore = create((set, get) => ({
 
       // Agentic Behavior
 
-      maxIterations: 25,
+      maxIterations: 0,
 
       generationTimeoutSec: 0,
 

@@ -5,6 +5,7 @@ const {
   resolveSecryptCloudModel,
   SECRYPT_QUALITY_MODEL,
   secryptQualitySampling,
+  resolveThinkingBudgetForEffort,
 } = require('../cloudLLMService');
 
 assert.strictEqual(SECRYPT_QUALITY_MODEL, 'cipher-quality');
@@ -35,7 +36,7 @@ assert.deepStrictEqual(
     minP: 0,
     presencePenalty: 0,
     repeatPenalty: 1.0,
-    reasoningEffort: 'xhigh',
+    reasoningEffort: 'medium',
   },
 );
 
@@ -60,5 +61,8 @@ assert.deepStrictEqual(
     reasoningEffort: 'low',
   },
 );
+
+assert.strictEqual(resolveThinkingBudgetForEffort('medium', 8192, true), null);
+assert.strictEqual(resolveThinkingBudgetForEffort('xhigh', 8192, true), null);
 
 console.log('secryptCloudModel.test.js OK');

@@ -189,7 +189,7 @@ async function _browserScreenshot(options = {}) {
     return { success: false, error: 'No browser available' };
   }
   const result = await browser.screenshot({ ...options, fullPage: options.fullPage ?? true });
-  console.log(`[mcpBrowserTools] _browserScreenshot DONE: success=${result?.success}, screenshotLen=${result?.screenshot?.length || 0}`);
+  console.log(`[mcpBrowserTools] _browserScreenshot DONE: success=${result?.success}, path=${result?.path || ''}, bytes=${result?.bytes || 0}`);
   return result;
 }
 

@@ -9,7 +9,16 @@ export function isOrphanFenceChunk(text) {
 /** Remove non-markdown code fences from prose (file-routed content must not duplicate in text). */
 export function stripPlainCodeFencesFromProse(text) {
   if (!text) return text;
-  return String(text).replace(/```(?!markdown\b|md\b)[\w-]*\s*\n[\s\S]*?```/gi, '').trim();
+  let out = String(text);
+  // GROUNDRULES §1: no tool-markup delete in the FE. Host routes tools → tool cards.
+  // Closed fences (any lang except markdown/md).
+  out = out.replace(/```(?!markdown\b|md\b)[\w.+-]*[^\n]*\r?\n[\s\S]*?```/gi, '');
+  // NoDupFence1: open/unclosed fences during stream — drop from opener to end
+  // (```game / ```html twins of FileContentBlock).
+  out = out.replace(/```(?!markdown\b|md\b)[\w.+-]*[^\n]*\r?\n[\s\S]*$/gi, '');
+  const open = out.search(/```(?!markdown\b|md\b)/i);
+  if (open >= 0) out = out.slice(0, open);
+  return out.trim();
 }
 
 /**
@@ -48,7 +57,8 @@ export function splitMarkdownFences(content, streaming = false) {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const fenceMatch = line.match(/^(`{3,})(\w*)\s*$/);
+    // Allow ```game.html / ```app.js (dot in info string), not only bare ```html.
+    const fenceMatch = line.match(/^(`{3,})([\w.+-]*)\s*$/);
 
     if (!inCode && fenceMatch) {
       flushProse();
@@ -85,7 +95,7 @@ export function splitMarkdownFences(content, streaming = false) {
     if (streaming && proseLines.length) {
       const lastIdx = proseLines.length - 1;
       const lastLine = proseLines[lastIdx];
-      const partialOpen = lastLine.match(/^(`{3,})(\w*)$/);
+      const partialOpen = lastLine.match(/^(`{3,})([\w.+-]*)$/);
       if (partialOpen) {
         const stableProse = proseLines.slice(0, lastIdx);
         const stableText = stableProse.join('\n');
@@ -105,7 +115,7 @@ export function splitMarkdownFences(content, streaming = false) {
     openLang = '';
     openFenceLine = -1;
     for (let i = 0; i < lines.length; i++) {
-      const m = lines[i].match(/^(`{3,})(\w*)/);
+      const m = lines[i].match(/^(`{3,})([\w.+-]*)/);
       if (m) {
         const len = m[1].length;
         if (openFenceLen === 0) {

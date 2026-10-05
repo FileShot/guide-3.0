@@ -315,15 +315,66 @@
   .chat-message {
     @apply px-4 py-3 text-vsc-base leading-relaxed;
   }
+  /* Single floating sticky user card — fade in/out; never sticky-all-rows. */
+  .chat-sticky-user-float {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 30;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(-8px);
+    transition: opacity 200ms ease, transform 200ms ease;
+    background: linear-gradient(
+      to bottom,
+      rgb(var(--guide-editor) / 0.98) 72%,
+      rgb(var(--guide-editor) / 0)
+    );
+    padding-bottom: 12px;
+  }
+  .chat-sticky-user-float.is-shown {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .chat-sticky-user-float .chat-message.user {
+    pointer-events: auto;
+    cursor: text;
+    margin-top: 0.25rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 10px 22px rgba(0, 0, 0, 0.28);
+  }
   .chat-message.user {
-    @apply bg-vsc-list-hover/60;
+    position: relative;
+    z-index: 1;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    width: 100%;
+    width: calc(100% - 1rem);
+    margin: 0.35rem 0.5rem;
+    padding: 0.75rem 1rem;
     text-align: left;
-    border-bottom: 1px solid rgb(var(--guide-panel-border) / 0.15);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+    border: 1px solid rgb(var(--guide-panel-border) / 0.22);
+    border-radius: 12px;
+    background: rgb(var(--guide-sidebar) / 0.98);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+  .chat-message.user .user-msg-body {
+    max-height: 7.5rem;
+    overflow: hidden;
+    mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+  }
+  .chat-sticky-user-float .user-msg-body {
+    max-height: 5.5rem;
+  }
+  .chat-message.user.chat-message-user-editing .user-msg-body,
+  .chat-message.user.chat-message-user-editing textarea,
+  .chat-message.user.chat-message-user-editing .chat-user-edit-textarea {
+    max-height: min(50vh, 28rem);
+    min-height: 7.5rem;
+    overflow: auto;
+    mask-image: none;
+    -webkit-mask-image: none;
   }
   .chat-message.user .whitespace-pre-wrap {
     width: 100%;

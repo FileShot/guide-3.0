@@ -30,7 +30,7 @@ const SETTINGS_DEFAULTS = {
   thinkingBudget: 0,
   reasoningEffort: 'medium',
   enableThinking: true,        // Pass enable_thinking=true to chat template (Qwen 3.5 small models disable thinking by default; this activates it)
-  enableThinkingFilter: false,
+  enableThinkingFilter: false, // retired — never hide thinking from UI (format to Reasoning)
   thinkingMode: 'C',           // Chat wrapper mode: 'C'=ThinkingOpen prefix injection (default), 'B'=raw Jinja no prefix, 'auto'=node-llama-cpp auto, 'off'=Jinja thinking disabled
   toolsEnabled: true,          // When false, no tool definitions are passed to the model — useful for testing thinking display without tools
   // Agentic Behavior
@@ -58,6 +58,8 @@ const SETTINGS_DEFAULTS = {
   geckodriverPath: '',
   debugTorBrowser: false,
   browserControl: 'auto', // viewport display: 'auto' | 'screencast' | 'playwright'
+  // Web search resilience (anti-bot): keyed APIs preferred; HTTP(S) proxies for HTML scrape/fetch
+  webSearchProxyUrls: '', // newline- or comma-separated http(s)://user:pass@host:port
   // Default shell for run_command on Windows (cmd vs PowerShell). Ignored on Unix.
   commandShell: 'powershell',
   commandAllowList: ['git status', 'git log', 'git diff', 'git branch', 'ls', 'dir', 'pwd', 'echo', 'cat', 'type', 'node --version', 'npm --version', 'python --version', 'pip --version', 'npm list', 'npm run', 'npm test', 'npm start', 'npm run build', 'npm run lint', 'npx tsc --noEmit'],

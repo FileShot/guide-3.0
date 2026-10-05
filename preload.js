@@ -213,6 +213,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onLspDiagnostics:    (cb) => _on('lsp-diagnostics', cb),
 
   onBackgroundAgentComplete: (cb) => _on('background-agent-complete', cb),
+  onBackgroundShellsChanged: (cb) => _on('background-shells-changed', cb),
+  stopBackgroundShell: (shellId) => ipcRenderer.invoke('stop-background-shell', shellId),
+  listBackgroundShells: () => ipcRenderer.invoke('list-background-shells'),
   onSubAgentSpawned:         (cb) => _on('sub-agent-spawned', cb),
   onSubAgentCompleted:       (cb) => _on('sub-agent-completed', cb),
 

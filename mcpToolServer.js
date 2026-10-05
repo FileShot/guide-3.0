@@ -121,6 +121,8 @@ class MCPToolServer {
     this._todoNextId = 1;
     this.onTodoUpdate = null;
     this._send = options.send || null;
+    // web_search identical-query guard (cleared each agent turn)
+    this._webSearchQueryCounts = new Map();
 
     // Scratchpad
     this._scratchDir = this._projectPath ? path.join(this._projectPath, '.guide-scratch') : null;
@@ -133,13 +135,11 @@ class MCPToolServer {
       'kill_process', 'set_env_var', 'restore_checkpoint',
     ]);
 
-    // Rate limiting: max calls per tool type within the rate window
+    // NoRateLimit1 (2026-10-03): local file/command tools must not rate-limit the agent.
+    // Live: purple theme turn-1791061590366 — edits 11–14 returned
+    // "Rate limit: too many edit_file calls (10/10 in last 10s)"; model reported that to the user.
+    // Keep caps only for external network tools.
     this._rateLimits = {
-      write_file: { max: 10, window: 10000 },
-      edit_file: { max: 10, window: 10000 },
-      delete_file: { max: 5, window: 10000 },
-      run_command: { max: 8, window: 10000 },
-      terminal_run: { max: 8, window: 10000 },
       web_search: { max: 4, window: 30000 },
       fetch_webpage: { max: 6, window: 30000 },
       http_request: { max: 6, window: 30000 },
@@ -150,6 +150,10 @@ class MCPToolServer {
     // cancelGeneration() so Stop actually stops.
     this._activeChildren = new Map();
     this._nextChildId = 1;
+    // bgterminal1 — fire-and-forget shells (not killed on cancelGeneration)
+    this._backgroundShells = new Map();
+    this._nextBgShellId = 1;
+    this._maxBackgroundShells = 4;
 
     // Plan / agent phase context (set per ai-chat turn from electron-main)
     this._agentContext = { planMode: false, agentPhase: 'planning' };
@@ -403,7 +407,27 @@ class MCPToolServer {
           shell: { type: 'string', description: 'Shell to use on Windows: "powershell" (default) or "cmd". Ignored on Unix.', required: false },
           cwd: { type: 'string', description: 'Working directory', required: false },
           timeout: { type: 'number', description: 'Max wait in ms before kill (default 600000, max 600000)', required: false },
+          background: { type: 'boolean', description: 'If true, start the command and return immediately with shellId. Host tracks it in the background-terminals UI. Use for long servers/loops — do not use Start-Process hacks.', required: false },
           reason: { type: 'string', description: 'One sentence explaining why this command needs to be run', required: false },
+        },
+      },
+      {
+        name: 'list_background_shells',
+        description: 'List background shells started with run_command background:true (id, command, status, pid).',
+        parameters: {},
+      },
+      {
+        name: 'read_background_shell',
+        description: 'Read recent stdout/stderr tail from a background shell by shellId.',
+        parameters: {
+          shellId: { type: 'string', description: 'Background shell id from run_command', required: true },
+        },
+      },
+      {
+        name: 'stop_background_shell',
+        description: 'Stop a background shell by shellId (kills process tree).',
+        parameters: {
+          shellId: { type: 'string', description: 'Background shell id', required: true },
         },
       },
       {
@@ -885,14 +909,14 @@ class MCPToolServer {
       // ── Planning / TODO Tools ──
       {
         name: 'write_todos',
-        description: 'Create a todo list for multi-step builds only (skip for simple one-shot tasks). After write_todos, call update_todo for each item — in-progress when you start, done when you finish. Example: {"tool":"write_todos","params":{"items":["Step one","Step two"]}} or {"items":[{"text":"Step one","status":"pending"}]}. Example done: {"tool":"update_todo","params":{"id":1,"status":"done"}}',
+        description: 'Create a todo list for multi-step builds only (skip for simple one-shot tasks). REQUIRED: params.items must be a non-empty array. NEVER call with empty params {}. Correct: {"tool":"write_todos","params":{"items":["Step one","Step two"]}} or {"items":[{"text":"Step one","status":"pending"}]}. Wrong: {"tool":"write_todos","params":{}}. After write_todos, call update_todo for each item — in-progress when you start, done when you finish.',
         parameters: {
-          items: { type: 'array', description: 'Array of todo strings or {text,status} objects (title/description aliases accepted)', required: true },
+          items: { type: 'array', description: 'REQUIRED non-empty array of todo strings or {text,status} objects. Do not omit. Do not pass [].', required: true },
         },
       },
       {
         name: 'update_todo',
-        description: 'Update one todo list item (only if write_todos was used). Call when starting (status in-progress) and finishing (status done) each todo. Status: pending, in-progress, done. Optional text to relabel the item.',
+        description: 'Update one todo list item (only if write_todos was used). REQUIRED after each real step: in-progress when you start, done when you finish. Status: pending, in-progress, done. Optional text to relabel. If the whole plan changed, call write_todos instead to replace the list.',
         parameters: {
           id: { type: 'number', description: 'Todo ID (from write_todos result)', required: true },
           status: { type: 'string', description: 'New status: pending, in-progress, or done', required: true },
@@ -1213,7 +1237,20 @@ class MCPToolServer {
           result = await this._searchCodebase(params.query, params.maxResults);
           break;
         case 'run_command':
-          result = await this._runCommand(params.command, params.cwd, params.timeout, params.shell);
+          if (params.background === true || params.background === 'true' || params.background === 1) {
+            result = await this._runCommandBackground(params.command, params.cwd, params.shell, params.reason);
+          } else {
+            result = await this._runCommand(params.command, params.cwd, params.timeout, params.shell);
+          }
+          break;
+        case 'list_background_shells':
+          result = this._listBackgroundShells();
+          break;
+        case 'read_background_shell':
+          result = this._readBackgroundShell(params.shellId);
+          break;
+        case 'stop_background_shell':
+          result = this._stopBackgroundShell(params.shellId);
           break;
         case 'terminal_run':
           result = await this._terminalRun(params.command, params.timeout, params.reset);
@@ -1818,11 +1855,26 @@ class MCPToolServer {
     if (typeof query !== 'string' || query.trim() === '') {
       return { success: false, error: 'web_search requires a non-empty string parameter named "query" inside params. Example: {"tool":"web_search","params":{"query":"node lts release notes","maxResults":5}}' };
     }
+    const qKey = query.trim().toLowerCase().replace(/\s+/g, ' ');
+    if (!this._webSearchQueryCounts) this._webSearchQueryCounts = new Map();
+    const prev = this._webSearchQueryCounts.get(qKey) || { count: 0, results: null };
+    // Identical query 3+ times in this MCP session turn → structural refuse (no re-hit).
+    if (prev.count >= 2) {
+      return {
+        success: false,
+        duplicateQuery: true,
+        query: query.trim(),
+        priorRuns: prev.count,
+        error: `Identical web_search query already ran ${prev.count} times. Use prior results, fetch_webpage on those URLs, or a different query.`,
+        results: Array.isArray(prev.results) ? prev.results : [],
+      };
+    }
     const raw = await this.webSearch.search(query, maxResults);
     if (raw && raw.error) return { success: false, error: raw.error };
     const results = Array.isArray(raw) ? raw : (raw?.results || []);
     if (results.length === 0) return { success: false, error: 'No results found' };
-    return { success: true, results };
+    this._webSearchQueryCounts.set(qKey, { count: prev.count + 1, results });
+    return { success: true, results, queryRun: prev.count + 1 };
   }
 
   async _fetchWebpage(url) {
@@ -3580,13 +3632,10 @@ class MCPToolServer {
   }
 
   async _getProjectStructure() {
-    if (this.ragEngine && this.ragEngine.projectPath) {
-      return { success: true, structure: this.ragEngine.getProjectSummary() };
+    if (!this.projectPath) {
+      return { success: false, error: 'No project opened' };
     }
-    if (this.projectPath) {
-      return this._listDirectory(this.projectPath, true);
-    }
-    return { success: false, error: 'No project opened' };
+    return this._listDirectory(this.projectPath, false);
   }
 
   // ─── Memory Tools ────────────────────────────────────────────────────────
@@ -3696,6 +3745,10 @@ class MCPToolServer {
 
   // ─── TODO Tools ──────────────────────────────────────────────────────────
 
+  resetWebSearchDedup() {
+    this._webSearchQueryCounts = new Map();
+  }
+
   _writeTodos(params) {
     const { items, skipAutoInProgress } = params;
     if (!Array.isArray(items) || items.length === 0) {
@@ -3760,8 +3813,37 @@ class MCPToolServer {
 
   _updateTodo(params) {
     const { id, status, text } = params;
-    const todo = this._todos.find(t => t.id === id);
-    if (!todo) return { success: false, error: `TODO #${id} not found` };
+    const ledgerSummary = () => ({
+      liveIds: this._todos.map((t) => t.id),
+      allTodos: this._todos.map((t) => ({ id: t.id, text: t.text, status: t.status })),
+    });
+    if (id === undefined || id === null || id === '') {
+      return {
+        success: false,
+        error: 'update_todo requires numeric id',
+        ...ledgerSummary(),
+      };
+    }
+    const nid = Number(id);
+    if (!Number.isFinite(nid)) {
+      return {
+        success: false,
+        error: `update_todo id must be a number (got ${JSON.stringify(id)})`,
+        ...ledgerSummary(),
+      };
+    }
+    // Coerce string "1" → 1 (models often emit string ids; strict === used to miss).
+    const todo = this._todos.find((t) => t.id === nid);
+    if (!todo) {
+      console.warn(
+        `[MCPToolServer] update_todo miss id=${nid} liveIds=[${this._todos.map((t) => t.id).join(',')}]`,
+      );
+      return {
+        success: false,
+        error: `TODO #${nid} not found`,
+        ...ledgerSummary(),
+      };
+    }
     if (status) {
       // Normalize: accept 'completed' as alias for 'done'
       const normalized = status === 'completed' ? 'done' : status;

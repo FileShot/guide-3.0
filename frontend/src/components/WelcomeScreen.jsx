@@ -387,7 +387,7 @@ export default function WelcomeScreen() {
             {!pocket && (
             <div className="flex items-center gap-2 mb-3 text-[11px] font-semibold tracking-wider text-vsc-text-dim/80">
               <Cloud size={12} />
-              guIDE Cloud AI
+              Cipher 7
             </div>
             )}
             <div className={`flex items-center gap-2 ${pocket ? 'w-full' : 'px-3 py-2.5 rounded-xl bg-white/3 border border-white/5'}`}>
@@ -398,7 +398,7 @@ export default function WelcomeScreen() {
               )}
               <div className="flex-1 min-w-0">
                 <div className="text-[11px] font-medium text-vsc-text">
-                  {pocket ? 'Cloud AI' : 'guIDE Cloud AI'}
+                  Cipher 7
                 </div>
                 <div className="text-[10px] text-vsc-text-dim/60">
                   {pocket && pocketStatus?.api

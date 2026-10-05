@@ -1,36 +1,32 @@
 ---
-description: Always read and obey notes/guide3/RULES.md before code changes or fix suggestions — survives context rotation
+description: Always read and obey guIDE GROUNDRULES.md before code changes — survives context rotation
 alwaysApply: true
 ---
 
-# RULES.md is mandatory (not optional memory)
+# guIDE GROUNDRULES are mandatory (not optional memory)
 
-**Source of truth:** [`notes/guide3/RULES.md`](../../notes/guide3/RULES.md) (read with the Read tool — never rely on conversation memory).
+**Source of truth:** [`GROUNDRULES.md`](../../GROUNDRULES.md) at the guIDE repo root.  
+**Mirror / tripwire extract:** [`notes/guide3/RULES.md`](../../notes/guide3/RULES.md).
 
-## When to read (every time, not once per session)
+Read with the Read tool every guIDE turn — never rely on conversation memory.
+
+## When to read
 
 | Trigger | Action |
 |---------|--------|
-| Session start / user assigns implementation | Read RULES.md (full file or Tripwires + Section 3 + 5 + 7 + 9) |
-| Before **any** code edit | Re-read Section 3, 7, Tripwire 8 (trace full pipeline) |
-| Before **any** fix/architecture suggestion | Re-read Section 5 + 12; reject if it matches a failure pattern |
-| Before **any** test run | Re-read Section 9 |
+| Session start / user assigns guIDE work | Read `GROUNDRULES.md` full |
+| Before **any** code edit | Re-read §0–§3 + §5 |
+| Before **any** fix / architecture suggestion | Reject if it hides tokens, hardcodes one task, unloads Cipher, or is a cheap workaround |
+| After operator issues a forever constraint | **Update `GROUNDRULES.md` the same turn** |
 
-If you cannot confirm compliance, stop and read RULES.md before proceeding.
+## Non-negotiable (violations = rejected work)
 
-## Non-negotiable constraints (violations = rejected work)
+- Universal Cursor-clone IDE — no task/file/domain hardcodes
+- **Never hide / strip / hold** model output — route channels only
+- Cipher stays **GPU-resident on P40** unless operator explicitly orders unload
+- No cheap workarounds; no stacked symptom patches
+- Status chrome must not split sentences or lie about “first token”
 
-- **No band-aids:** no repetition detectors, auto-cancel, post-hoc stripping, retries/limiters that fix symptoms after the fact
-- **No per-model hacks:** arch-family profiles only (`generationProfiles.js` / `modelProfiles.js`), no `if (qwen35)` branches
-- **Root cause at source:** correct sampler/config/pipeline phase — not detectors
-- **No guessing:** research or read code; definitive answers only
-- **Production quality:** simple correct fix beats layered systems; over-engineering also banned
-- **Trace full pipeline** before changing one file (Tripwire 8)
+## Suggestions and plans
 
-## Suggestions and plans must be checked
-
-Before presenting a plan or code change to the user, explicitly verify it does **not** violate Section 5 (Failure Patterns) or Section 12 (Past Failures). If it resembles a past failure, do not suggest it unless you document why it is different.
-
-## Cursor rules stack
-
-This file works with `plan-execute-ship.mdc`: implementing a plan still requires obeying RULES.md **and** shipping (push, tag, CI green) as the final step.
+Before presenting a plan, verify it does not violate `GROUNDRULES.md` §0–§3. If it resembles strip/hold/hide or a one-file hardcode, do not suggest it.

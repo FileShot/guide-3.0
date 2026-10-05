@@ -28,6 +28,7 @@ import { GUIDE_CLOUD_PROVIDERS, GUIDE_CLOUD_QUALITY_MODEL, resolveGuideCloudMode
 import { matchSlashSkills, resolveSlashSkill } from '../lib/slashSkills';
 import { resolveEnabledToolMap } from '../lib/enabledTools';
 
+
 import {
 
   Send, Square, Trash2, Cpu, Loader, ChevronDown, ChevronRight, Brain,
@@ -67,7 +68,9 @@ function quotaErrorFlags(errorText, result = {}) {
 
 function toolCollapseKey(tc) {
   const p = tc?.params || {};
-  const target = p.filePath || p.path || p.dirPath || p.command || '';
+  const target = p.filePath || p.path || p.dirPath || p.command
+    || p.ref || p.url || (p.text != null ? String(p.text).slice(0, 24) : '')
+    || tc?.toolCallId || '';
   return `${tc?.functionName || ''}|${target}`;
 }
 function sessionFirstUserKey(sessionOrMessages) {
@@ -317,6 +320,87 @@ class StreamingErrorBoundary extends Component {
 
 
 
+/** Cursor-like duration label for a finished agent turn. */
+function formatWorkedForLabel(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= 0) return 'Worked for a moment';
+  const totalSec = Math.max(1, Math.round(n / 1000));
+  if (totalSec < 60) return `Worked for ${totalSec}s`;
+  const m = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return sec > 0 ? `Worked for ${m}m ${sec}s` : `Worked for ${m}m`;
+}
+
+/**
+ * Split finalized segments: work (tools/think/files + text before last work item)
+ * vs trailing final prose (Cursor: only this stays outside "Worked for").
+ */
+function splitWorkAndFinalSegments(segments) {
+  const segs = Array.isArray(segments) ? segments : [];
+  let lastWork = -1;
+  for (let i = 0; i < segs.length; i++) {
+    const t = segs[i]?.type;
+    if (t === 'tool' || t === 'thinking' || t === 'file' || t === 'context-summary' || t === 'media') {
+      lastWork = i;
+    }
+  }
+  if (lastWork < 0) {
+    return { work: [], finalSegs: segs.filter((s) => s?.type === 'text' || s?.type === 'media') };
+  }
+  return {
+    work: segs.slice(0, lastWork + 1),
+    finalSegs: segs.slice(lastWork + 1).filter((s) => s?.type === 'text' || s?.type === 'media'),
+  };
+}
+
+function workSegsNeedWorkedFor(work) {
+  return (work || []).some((s) => (
+    s?.type === 'tool' || s?.type === 'file' || s?.type === 'context-summary' || s?.type === 'media'
+  ));
+}
+
+/**
+ * WorkedFor1 — Cursor "Worked for Xm Ys" disclosure.
+ * Collapsed by default on finalize (never mount open then close — Virtuoso blank bug).
+ * Content stays available on expand; not stripped/hidden from the product.
+ */
+function WorkedForBlock({ label, children }) {
+  const [expanded, setExpanded] = useState(false);
+
+  // VirtBlank1: never keep tool/file/think children mounted while collapsed.
+  // CSS grid 0fr still left Virtuoso with a tall cached item height → blank void
+  // when scrolled to the bottom (operator 2026-10-03 screenshots).
+  return (
+    <div className="mb-2 overflow-hidden">
+      <button
+        type="button"
+        className="w-full flex items-center gap-1.5 py-1 text-[11px] leading-tight min-h-0 transition-colors duration-200 hover:opacity-100"
+        style={{ color: 'var(--vsc-text-dim, #858585)', opacity: expanded ? 1 : 0.85 }}
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+      >
+        <span
+          className="text-[9px] flex-shrink-0 transition-transform duration-200 ease-out"
+          style={{ transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+        >
+          &#9654;
+        </span>
+        <span className="font-medium whitespace-nowrap flex-shrink-0">
+          {label || 'Worked for a moment'}
+        </span>
+      </button>
+      {expanded ? (
+        <div
+          className="pt-1 pb-1 pl-0.5"
+          style={{ borderTop: '1px solid var(--vsc-panel-border, #2d2d2d)' }}
+        >
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 // Finalized thinking block — shown on already-completed assistant messages.
 
 // Collapsed by default (unlike streaming ThinkingBlock which auto-expands).
@@ -361,24 +445,14 @@ function FinalizedThinkingBlock({ text }) {
 
       </button>
 
-      <div
-        className="transition-all duration-300 ease-in-out overflow-hidden"
-        style={{ maxHeight: expanded ? '200px' : '0px', opacity: expanded ? 1 : 0 }}
-      >
-
+      {expanded ? (
         <div
-
-          className="px-2 pb-1.5 text-[10px] whitespace-pre-wrap leading-relaxed max-h-[180px] overflow-y-auto text-vsc-text-dim"
-
+          className="px-2 pb-1.5 text-[10px] leading-relaxed max-h-[180px] overflow-y-auto text-vsc-text-dim think-md-body"
           style={{ borderTop: '1px solid var(--vsc-panel-border, #2d2d2d)' }}
-
         >
-
-          {text}
-
+          <MarkdownRenderer content={text} variant="think" />
         </div>
-
-      </div>
+      ) : null}
 
     </div>
 
@@ -445,29 +519,19 @@ function ContextSummarizeBlock({ phase, content, isLive }) {
 
       </button>
 
-      {body ? (
-
-        <div
-
-          className="transition-all duration-300 ease-in-out overflow-hidden"
-
-          style={{ maxHeight: expanded ? '200px' : '0px', opacity: expanded ? 1 : 0 }}
-
-        >
+      {body && expanded ? (
 
           <div
 
-            className="px-2 pb-1.5 text-[10px] whitespace-pre-wrap leading-relaxed max-h-[180px] overflow-y-auto text-vsc-text-dim"
+            className="px-2 pb-1.5 text-[10px] leading-relaxed max-h-[180px] overflow-y-auto text-vsc-text-dim"
 
             style={{ borderTop: '1px solid var(--vsc-panel-border, #2d2d2d)' }}
 
           >
 
-            {body}
+            <MarkdownRenderer content={body} variant="think" />
 
           </div>
-
-        </div>
 
       ) : null}
 
@@ -551,13 +615,13 @@ function StreamingThinkingBlock({ content, isLive, thinkContentRef }) {
 
           ref={thinkContentRef}
 
-          className="px-2 pb-1.5 text-[10px] whitespace-pre-wrap leading-relaxed max-h-[180px] overflow-y-auto text-vsc-text-dim"
+          className="px-2 pb-1.5 text-[10px] leading-relaxed max-h-[180px] overflow-y-auto text-vsc-text-dim"
 
           style={{ borderTop: '1px solid var(--vsc-panel-border, #2d2d2d)' }}
 
         >
 
-          {content}
+          <MarkdownRenderer content={content} streaming={!!isLive} variant="think" />
 
         </div>
 
@@ -748,7 +812,15 @@ function StreamingFooter() {
 
   const streamingToolCalls = useAppStore(s => s.streamingToolCalls);
 
+  const chatGenerationStatus = useAppStore(s => s.chatGenerationStatus);
+
   const modelInfo = useAppStore(s => s.modelInfo);
+
+  // OneWriteOneCard1: FileContentBlock bodies — MarkdownRenderer skips CodeBlock twins by content, not by name.
+  const ownedFileBodies = useMemo(
+    () => (streamingFileBlocks || []).map((b) => b?.content).filter((c) => c && String(c).length >= 20),
+    [streamingFileBlocks],
+  );
 
 
 
@@ -758,17 +830,28 @@ function StreamingFooter() {
 
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
+  const [activityTick, setActivityTick] = useState(0);
+
   const thinkStartRef = useRef(null);
 
   const wasThinkingRef = useRef(false);
 
   const thinkContentRef = useRef(null);
 
+  // StreamLiveFix1: poll activity clocks so "Reasoning..." ends when think tokens stop
+  // (even if chatStreaming stays true during a proxy SSE stall).
+  useEffect(() => {
+    if (!chatStreaming) return undefined;
+    const id = setInterval(() => setActivityTick((n) => n + 1), 500);
+    return () => clearInterval(id);
+  }, [chatStreaming]);
 
-
-  // Track thinking start/end and elapsed time
-
-  const isThinking = !!chatThinkingText && chatStreaming;
+  const st = useAppStore.getState();
+  const thinkFreshMs = Date.now() - (st.lastThinkingActivityAt || 0);
+  const streamQuietMs = Date.now() - (st.lastStreamActivityAt || 0);
+  // Live reasoning only while thinking tokens arrived recently.
+  const isThinking = !!chatThinkingText && chatStreaming && thinkFreshMs < 2500;
+  void activityTick;
 
   useEffect(() => {
 
@@ -832,6 +915,11 @@ function StreamingFooter() {
       ? `Thought for ${elapsedSeconds < 1 ? '<1' : elapsedSeconds}s`
 
       : null;
+
+  const showQuietHint = !isThinking
+    && streamQuietMs > 3000
+    && !chatGeneratingTool
+    && !(streamingToolCalls || []).some((t) => t?.status === 'generating' || t?.status === 'pending');
 
 
 
@@ -898,14 +986,17 @@ function StreamingFooter() {
         if (seg.type === 'text' && seg.content && seg.content.trim()) {
 
           const isLastSeg = i === streamingSegments.length - 1;
+          // NoDupFence1: never paint ```game/```html CodeBlock twin of FileContentBlock.
+          const textForMd = stripPlainCodeFencesFromProse(seg.content);
+          if (!textForMd || !String(textForMd).trim()) return null;
 
           return (
 
             <div key={`seg-text-${i}`} className="my-0.5">
 
-              <StreamingErrorBoundary fallbackContent={seg.content}>
+              <StreamingErrorBoundary fallbackContent={textForMd}>
 
-                <MarkdownRenderer content={seg.content} streaming />
+                <MarkdownRenderer content={textForMd} streaming ownedFileBodies={ownedFileBodies} />
 
               </StreamingErrorBoundary>
 
@@ -940,6 +1031,8 @@ function StreamingFooter() {
             />
           );
         }
+
+        // CursorParity1: generation-status is footer-only (chatGenerationStatus) — never mid-stream.
 
         if (seg.type === 'file') {
 
@@ -1034,7 +1127,7 @@ function StreamingFooter() {
 
       })}
 
-      {!chatStreamingText && !chatThinkingText && streamingSegments.length === 0 && (
+      {!chatStreamingText && !chatThinkingText && streamingSegments.length === 0 && !chatGenerationStatus && (
 
         <div className="flex items-center gap-1 py-2">
 
@@ -1047,6 +1140,18 @@ function StreamingFooter() {
         </div>
 
       )}
+
+      {(chatGenerationStatus?.message || showQuietHint) ? (
+        <div
+          className="mt-1.5 mb-0.5 text-[11px] leading-snug agent-shimmer"
+          style={{ color: 'var(--vsc-text-dim, #858585)' }}
+        >
+          <div>
+            {chatGenerationStatus?.message
+              || `Still generating — ${Math.max(1, Math.round(streamQuietMs / 1000))}s since last token`}
+          </div>
+        </div>
+      ) : null}
 
     </div>
 
@@ -1168,6 +1273,8 @@ export default function ChatPanel() {
 
   const [editText, setEditText] = useState('');
 
+  const editTextareaRef = useRef(null);
+
   const [chatMode, setChatMode] = useState('agent'); // 'agent' | 'plan' | 'ask'
 
   const [modeDropdownOpen, setModeDropdownOpen] = useState(false);
@@ -1176,7 +1283,7 @@ export default function ChatPanel() {
 
   const [policyDropdownOpen, setPolicyDropdownOpen] = useState(false);
 
-  const [imageLightboxUrl, setImageLightboxUrl] = useState(null);
+  const [imageLightbox, setImageLightbox] = useState(null); // { url, origin: DOMRect|null, closing: bool }
 
   const modeDropdownRef = useRef(null);
 
@@ -1187,6 +1294,10 @@ export default function ChatPanel() {
   const fileInputRef = useRef(null);
 
   const chatScrollRef = useRef(null);
+  const userMsgElsRef = useRef(new Map());
+  const [stickyUserMsg, setStickyUserMsg] = useState(null);
+  const [stickyShown, setStickyShown] = useState(false);
+  const stickyClearTimerRef = useRef(null);
 
   const atBottomRef = useRef(true);
 
@@ -1442,6 +1553,18 @@ export default function ChatPanel() {
 
   }, [input]);
 
+  // Edit-message box: grow to full content (cap ~50vh). Do not use newline-count rows —
+  // wrapped paragraphs with few \n collapsed to 2 lines and hid the rest.
+
+  useEffect(() => {
+    if (!editingMessageId) return;
+    const ta = editTextareaRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    const maxPx = Math.min(window.innerHeight * 0.5, 28 * 16);
+    ta.style.height = `${Math.min(Math.max(ta.scrollHeight, 120), maxPx)}px`;
+  }, [editingMessageId, editText]);
+
   const handleInputChange = useCallback((e) => {
     const val = e.target.value;
     setInput(val);
@@ -1604,20 +1727,98 @@ export default function ChatPanel() {
   // Do not clear userScrolledAwayRef when streaming ends — idle scroll must stay free.
 
   const handleUserWheel = useCallback((e) => {
-    if (e.deltaY < 0) userScrolledAwayRef.current = true;
-    else if (e.deltaY > 0 && atBottomRef.current) userScrolledAwayRef.current = false;
+    // Any upward intent locks follow-output off (slow trackpad micro-deltas included).
+    if (e.deltaY < 0) {
+      userScrolledAwayRef.current = true;
+      return;
+    }
+    if (e.deltaY > 0 && atBottomRef.current) userScrolledAwayRef.current = false;
   }, []);
 
-
+  const updateStickyUserMsg = useCallback(() => {
+    const root = chatScrollRef.current;
+    const clearSticky = () => {
+      setStickyShown(false);
+      if (stickyClearTimerRef.current) clearTimeout(stickyClearTimerRef.current);
+      stickyClearTimerRef.current = setTimeout(() => {
+        setStickyUserMsg(null);
+        stickyClearTimerRef.current = null;
+      }, 200);
+    };
+    if (!root) {
+      clearSticky();
+      return;
+    }
+    const scrollTop = root.scrollTop;
+    const rootRect = root.getBoundingClientRect();
+    let chosen = null;
+    for (const msg of chatMessages) {
+      if (msg.role !== 'user' || !msg.id) continue;
+      const el = userMsgElsRef.current.get(msg.id);
+      if (!el) continue;
+      const elRect = el.getBoundingClientRect();
+      const topInContent = elRect.top - rootRect.top + scrollTop;
+      if (topInContent < scrollTop + 2) chosen = msg;
+    }
+    if (!chosen) {
+      clearSticky();
+      return;
+    }
+    const el = userMsgElsRef.current.get(chosen.id);
+    if (!el) {
+      clearSticky();
+      return;
+    }
+    const elRect = el.getBoundingClientRect();
+    if (elRect.top >= rootRect.top - 1) {
+      clearSticky();
+      return;
+    }
+    if (stickyClearTimerRef.current) {
+      clearTimeout(stickyClearTimerRef.current);
+      stickyClearTimerRef.current = null;
+    }
+    setStickyUserMsg({
+      id: chosen.id,
+      content: chosen.content || '',
+      timestamp: chosen.timestamp,
+    });
+    requestAnimationFrame(() => setStickyShown(true));
+  }, [chatMessages]);
 
   const handleChatScroll = useCallback(() => {
     const el = chatScrollRef.current;
     if (!el) return;
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // Hysteresis: require leaving a wider bottom zone before locking away.
+    // Never clear userScrolledAway here while dist is still small — that raced
+    // slow wheel-up (lock set) against follow-output (cleared because dist<80).
     const atBottom = dist < 80;
     atBottomRef.current = atBottom;
-    if (atBottom) userScrolledAwayRef.current = false;
-  }, []);
+    if (dist > 120) userScrolledAwayRef.current = true;
+    // Clear only via handleUserWheel (wheel-down while at bottom) or send/jump paths.
+    updateStickyUserMsg();
+  }, [updateStickyUserMsg]);
+
+  useEffect(() => {
+    updateStickyUserMsg();
+  }, [chatMessages, chatPaneKey, updateStickyUserMsg]);
+
+  // FooterHandoff1: live stream is a list sentinel, not Virtuoso Footer.
+  // Footer that returns null after a tall stream leaves Virtuoso's total height inflated
+  // (blank void when scrolling down). List item + remount on stream end clears size cache.
+  const virtuosoData = useMemo(() => {
+    if (!chatStreaming) return chatMessages;
+    return [
+      ...chatMessages,
+      {
+        id: '__guide_live_stream__',
+        __liveStream: true,
+        role: 'assistant',
+        insertionSeq: Number.MAX_SAFE_INTEGER,
+      },
+    ];
+  }, [chatMessages, chatStreaming]);
 
   const scrollChatToEnd = useCallback((behavior = 'auto') => {
     if (userScrolledAwayRef.current) return;
@@ -1633,7 +1834,7 @@ export default function ChatPanel() {
     scrollChatToEnd('auto');
   }, [chatStreaming, chatMessages.length, chatStreamingText, chatThinkingText, scrollChatToEnd]);
 
-  // One snap to end when a stream finishes (Footer → list handoff).
+  // NoVirtuoso1: native list — snap to end when a stream finishes (if user stayed pinned).
   const wasStreamingRef = useRef(false);
   useEffect(() => {
     const was = wasStreamingRef.current;
@@ -1898,6 +2099,9 @@ export default function ChatPanel() {
     store.setActiveChatEpoch(epochAtStart);
 
     store.setChatStreaming(true);
+    // WorkedForClock1: capture after setChatStreaming — the doSend `store` snapshot
+    // was taken before streamStartedAt was set, so finalize used Date.now() → always ~1s.
+    const turnStartedAt = useAppStore.getState().streamStartedAt || Date.now();
 
     traceUi('doSend-start', {
       text,
@@ -2110,6 +2314,7 @@ export default function ChatPanel() {
 
       {
 
+        useAppStore.getState().flushPendingThinkingTokens?.();
         const preFlush = useAppStore.getState();
 
         if (preFlush._textTokenTimer) clearTimeout(preFlush._textTokenTimer);
@@ -2148,7 +2353,12 @@ export default function ChatPanel() {
 
       const fileBlocks = state.streamingFileBlocks;
 
-      const finalToolCalls = state.streamingToolCalls;
+      // ToolCallId1: leftover stream-only generating rows never got execute/result.
+      const finalToolCalls = (state.streamingToolCalls || []).map((tc) => (
+        (tc.status === 'generating' || tc.status === 'pending')
+          ? { ...tc, status: 'error', result: { ...(tc.result || {}), error: tc.result?.error || 'Did not complete' } }
+          : tc
+      ));
 
       const thinkingText = state.chatThinkingText || '';
 
@@ -2174,9 +2384,14 @@ export default function ChatPanel() {
 
           if (seg.type === 'text') {
 
-            messageContent += seg.content;
-
-            messageSegments.push({ type: 'text', content: seg.content });
+            // NoDupFence1: never persist fences into final text segments (twins FileContentBlock).
+            const textSeg = stripPlainCodeFencesFromProse(seg.content);
+            if (!textSeg || !String(textSeg).trim()) continue;
+            messageContent += textSeg;
+            // CursorParity1: merge adjacent text so status-split sentences heal.
+            const prev = messageSegments[messageSegments.length - 1];
+            if (prev?.type === 'text') prev.content += textSeg;
+            else messageSegments.push({ type: 'text', content: textSeg });
 
           } else if (seg.type === 'file') {
 
@@ -2240,6 +2455,8 @@ export default function ChatPanel() {
               content: seg.content || '',
             });
 
+          } else if (seg.type === 'generation-status') {
+            // CursorParity1: never persist wait lines into the transcript.
           } else if (seg.type === 'tool') {
 
             // R40: Preserve tool segments in finalized message
@@ -2333,7 +2550,16 @@ export default function ChatPanel() {
         const _backendTrim = _backendProse.trim();
         const _messageTrim = messageContent.trim();
 
-        if (_backendTrim.length > _messageTrim.length) {
+        // WriteStripLeak2: never inject backend "prose" that is actually a write_file
+        // body / HTML dump when a file card already owns those bytes (naked+duplicate).
+        const _backendLooksLikeFileDump = (
+          /^\s*<!doctype html/i.test(_backendTrim)
+          || /^\s*<html[\s>]/i.test(_backendTrim)
+          || /"tool"\s*:\s*"(?:write_file|create_file|edit_file)"/i.test(_backendTrim)
+        );
+        const _skipBackendProseInject = messageFileBlocks.length > 0 && _backendLooksLikeFileDump;
+
+        if (_backendTrim.length > _messageTrim.length && !_skipBackendProseInject) {
 
           console.warn(`[ChatPanel] R53-Fix: IPC lag detected — segments=${_messageTrim.length} chars, backend=${_backendTrim.length} chars. Correcting.`);
 
@@ -2372,6 +2598,8 @@ export default function ChatPanel() {
             .map((s) => s.content || '')
             .join('');
 
+        } else if (_skipBackendProseInject) {
+          console.warn(`[ChatPanel] WriteStripLeak2: skipped R53 backend prose inject (${_backendTrim.length} chars) — file card owns write body`);
         }
 
       }
@@ -2445,6 +2673,19 @@ export default function ChatPanel() {
           thinkingText,
         });
 
+        // WorkedForClock2: prefer earliest tool startTime — turnStartedAt alone still
+        // showed 1s when the closure clock was wrong; tools prove wall duration.
+        const liveStart = useAppStore.getState().streamStartedAt;
+        const toolStarts = (finalToolCalls || [])
+          .map((t) => Number(t?.startTime))
+          .filter((n) => Number.isFinite(n) && n > 0);
+        const earliestTool = toolStarts.length ? Math.min(...toolStarts) : null;
+        const candidates = [turnStartedAt, liveStart, earliestTool].filter(
+          (n) => Number.isFinite(n) && n > 0,
+        );
+        const startedAt = candidates.length ? Math.min(...candidates) : Date.now();
+        const workedMs = Math.max(0, Date.now() - startedAt);
+
         useAppStore.getState().addChatMessage({
 
           role: 'assistant',
@@ -2460,6 +2701,10 @@ export default function ChatPanel() {
           mediaItems: messageMediaItems.length > 0 ? messageMediaItems : undefined,
 
           toolCalls: hasToolCalls ? finalToolCalls : undefined,
+
+          // WorkedFor1: Cursor-like collapse duration for the work disclosure.
+          workedMs,
+          streamStartedAt: startedAt,
 
           // R46-A: Store model name for display on finalized messages
 
@@ -2646,12 +2891,26 @@ export default function ChatPanel() {
     clearPlanBuildRequest();
   }, [planBuildRequest, handleBuildPlan, clearPlanBuildRequest]);
 
-  const resendFromUserEdit = useCallback((msgId, newContent) => {
+  const resendFromUserEdit = useCallback(async (msgId, newContent) => {
     const trimmed = (newContent || '').trim();
     if (!trimmed) return;
     const msgs = useAppStore.getState().chatMessages;
     const msgIdx = msgs.findIndex((m) => m.id === msgId);
     if (msgIdx === -1 || msgs[msgIdx].role !== 'user') return;
+
+    // Editing while generating: stop the in-flight turn, then resend (same as Stop then Send).
+    if (useAppStore.getState().chatStreaming) {
+      useAppStore.getState().commitStoppedStreamingMessage();
+      useAppStore.getState().bumpChatGenerationEpoch();
+      try {
+        if (window.electronAPI?.agentPause) {
+          await window.electronAPI.agentPause();
+        } else {
+          await (await import('../api/websocket')).invoke('agent-pause');
+        }
+      } catch (_) {}
+      useAppStore.getState().resetChatStreamingUI();
+    }
 
     const truncated = msgs.slice(0, msgIdx).map((m) => ({
       role: m.role,
@@ -2802,6 +3061,9 @@ export default function ChatPanel() {
     if (stopPending) return;
 
     setStopPending(true);
+
+    // StopKeep1: commit visible partial before epoch bump / wipe so the reply stays in chat.
+    useAppStore.getState().commitStoppedStreamingMessage();
 
     useAppStore.getState().bumpChatGenerationEpoch();
 
@@ -3298,7 +3560,31 @@ export default function ChatPanel() {
 
       {/* Messages area (virtualized) */}
 
-      <div className="flex-1 min-h-0 bg-gradient-to-b from-transparent to-vsc-bg/20" onWheel={handleUserWheel}>
+      <div className="flex-1 min-h-0 relative bg-gradient-to-b from-transparent to-vsc-bg/20" onWheel={handleUserWheel}>
+
+        {stickyUserMsg && (
+          <div
+            className={`chat-sticky-user-float${stickyShown ? ' is-shown' : ''}`}
+            onClick={() => {
+              setEditingMessageId(stickyUserMsg.id);
+              setEditText(stickyUserMsg.content || '');
+              const el = userMsgElsRef.current.get(stickyUserMsg.id);
+              if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            }}
+          >
+            <div className="chat-message user flex flex-col items-start w-full">
+              <div className="flex items-center gap-2 mb-1 w-full">
+                <span className="text-vsc-xs font-medium tracking-wider text-vsc-text-dim">User</span>
+                {stickyUserMsg.timestamp && (
+                  <span className="text-[10px] text-vsc-text-dim/50">
+                    {new Date(stickyUserMsg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                )}
+              </div>
+              <div className="user-msg-body whitespace-pre-wrap w-full block text-left">{stickyUserMsg.content}</div>
+            </div>
+          </div>
+        )}
 
         {/* Session history shown when chat is empty — filtered to current project */}
 
@@ -3366,14 +3652,19 @@ export default function ChatPanel() {
 
         )}
 
-        <div
+                <div
           key={chatPaneKey}
           ref={chatScrollRef}
           className="scrollbar-thin h-full overflow-y-auto"
           onScroll={handleChatScroll}
         >
           <StreamingHeader />
-          {chatMessages.map((msg, idx) => (
+          {virtuosoData.map((msg, idx) => (
+            msg?.__liveStream ? (
+              <div key="__guide_live_stream__" className="px-0">
+                <StreamingFooter />
+              </div>
+            ) : (
             <div key={String(msg.insertionSeq ?? msg.id ?? idx)} className="px-0">
               <>
 
@@ -3467,7 +3758,14 @@ export default function ChatPanel() {
 
               ) : (
 
-                <div className={`chat-message ${msg.role}${msg.role === 'user' ? ' flex flex-col items-start w-full' : ''}`}>
+                <div
+                  className={`chat-message ${msg.role}${msg.role === 'user' ? ' flex flex-col items-start w-full' : ''}${msg.role === 'user' && editingMessageId === msg.id ? ' chat-message-user-editing' : ''}`}
+                  ref={msg.role === 'user' ? (el) => {
+                    if (!msg.id) return;
+                    if (el) userMsgElsRef.current.set(msg.id, el);
+                    else userMsgElsRef.current.delete(msg.id);
+                  } : undefined}
+                >
 
                   <div className="flex items-center gap-2 mb-1 w-full">
 
@@ -3543,17 +3841,23 @@ export default function ChatPanel() {
                       {/* R35-L4: Use segments + FileContentBlock for file blocks when available */}
 
                       {msg.segments && msg.segments.length > 0 ? (
-                        <>
-                        {msg.segments.map((seg, i) => {
+(() => {
+                          const { work, finalSegs } = splitWorkAndFinalSegments(msg.segments);
+                          const useWorkedFor = workSegsNeedWorkedFor(work);
+                          const workedLabel = formatWorkedForLabel(msg.workedMs || 0);
+                          const renderSeg = (seg, i, list) => {
 
                           if (seg.type === 'text' && seg.content && seg.content.trim()) {
 
-                            // F3: Wrap in error boundary so React #185 from malformed HAST nodes
-                            // (rare but possible when streaming finalizes with edge-case markdown)
-                            // shows raw text fallback instead of crashing the chat panel.
+                            // F3 + NoDupFence1: strip file fences from finalized text too.
+                            const textForMd = stripPlainCodeFencesFromProse(seg.content);
+                            if (!textForMd || !String(textForMd).trim()) return null;
+                            const ownedBodies = (msg.fileBlocks || [])
+                              .map((b) => b?.content)
+                              .filter((c) => c && String(c).length >= 20);
                             return (
-                              <StreamingErrorBoundary key={`seg-${i}`} fallbackContent={seg.content}>
-                                <MarkdownRenderer content={seg.content} />
+                              <StreamingErrorBoundary key={`seg-${i}`} fallbackContent={textForMd}>
+                                <MarkdownRenderer content={textForMd} ownedFileBodies={ownedBodies} />
                               </StreamingErrorBoundary>
                             );
 
@@ -3576,6 +3880,10 @@ export default function ChatPanel() {
                               />
                             );
 
+                          }
+
+                          if (seg.type === 'generation-status') {
+                            return null;
                           }
 
                           if (seg.type === 'file') {
@@ -3615,9 +3923,9 @@ export default function ChatPanel() {
 
                             if (collapseSameTool && i > 0) {
 
-                              const prev = msg.segments[i - 1];
+                              const prev = list[i - 1];
 
-                              if (prev.type === 'tool') {
+                              if (prev?.type === 'tool') {
 
                                 const prevTc = msg.toolCalls?.[prev.toolIndex];
 
@@ -3630,9 +3938,9 @@ export default function ChatPanel() {
                             let count = 1;
 
                             if (collapseSameTool) {
-                              for (let j = i + 1; j < msg.segments.length; j++) {
+                              for (let j = i + 1; j < list.length; j++) {
 
-                                const next = msg.segments[j];
+                                const next = list[j];
 
                                 if (next.type !== 'tool') break;
 
@@ -3650,24 +3958,59 @@ export default function ChatPanel() {
                           }
 
                           return null;
+                          };
+                          if (!useWorkedFor) {
+                            return (
+                            <>
+                            {msg.segments.map((seg, i) => renderSeg(seg, i, msg.segments))}
 
-                        })}
                         {msg.content && String(msg.content).trim()
                           && !msg.segments.some((s) => s.type === 'text' && s.content && String(s.content).trim())
                           ? (
-                            <StreamingErrorBoundary fallbackContent={msg.content}>
-                              <MarkdownRenderer content={msg.content} />
-                            </StreamingErrorBoundary>
+                            (() => {
+                              const textForMd = stripPlainCodeFencesFromProse(msg.content);
+                              if (!textForMd || !String(textForMd).trim()) return null;
+                              const ownedBodies = (msg.fileBlocks || [])
+                                .map((b) => b?.content)
+                                .filter((c) => c && String(c).length >= 20);
+                              return (
+                                <StreamingErrorBoundary fallbackContent={textForMd}>
+                                  <MarkdownRenderer content={textForMd} ownedFileBodies={ownedBodies} />
+                                </StreamingErrorBoundary>
+                              );
+                            })()
                           ) : null}
-                        </>
+                            </>
+                            );
+                          }
+                          return (
+                          <>
+                          <WorkedForBlock label={workedLabel}>
+                            {work.map((seg, i) => renderSeg(seg, i, work))}
+                          </WorkedForBlock>
+                          {finalSegs.map((seg, i) => renderSeg(seg, i, finalSegs))}
+
+                          </>
+                          );
+                          })()
 
                       ) : (
 
                         // F3: Wrap in error boundary so React #185 from malformed HAST nodes
                         // shows raw text fallback instead of crashing the chat panel.
-                        <StreamingErrorBoundary fallbackContent={msg.content}>
-                          <MarkdownRenderer content={msg.content} />
-                        </StreamingErrorBoundary>
+                        // OneWriteOneCard1: pass file bodies so CodeBlock cannot twin FileContentBlock.
+                        (() => {
+                          const textForMd = stripPlainCodeFencesFromProse(msg.content);
+                          if (!textForMd || !String(textForMd).trim()) return null;
+                          const ownedBodies = (msg.fileBlocks || [])
+                            .map((b) => b?.content)
+                            .filter((c) => c && String(c).length >= 20);
+                          return (
+                            <StreamingErrorBoundary fallbackContent={textForMd}>
+                              <MarkdownRenderer content={textForMd} ownedFileBodies={ownedBodies} />
+                            </StreamingErrorBoundary>
+                          );
+                        })()
 
                       )}
 
@@ -3686,33 +4029,31 @@ export default function ChatPanel() {
                         <div className="mb-2 flex flex-wrap gap-2">
 
                           {msg.imageAttachments.map((img, idx) => (
-
                             <button
-
                               key={img.id || `${img.name || 'image'}-${idx}`}
-
                               type="button"
-
                               className="block"
-
                               title={img.name || 'Attached image'}
-
-                              onClick={() => setImageLightboxUrl(img.url)}
-
+                              onClick={(e) => {
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                setImageLightbox({
+                                  url: img.url,
+                                  origin: {
+                                    top: rect.top,
+                                    left: rect.left,
+                                    width: rect.width,
+                                    height: rect.height,
+                                  },
+                                  closing: false,
+                                });
+                              }}
                             >
-
                               <img
-
                                 src={img.url}
-
                                 alt={img.name || 'Attached image'}
-
                                 className="h-16 w-16 rounded-md border border-vsc-panel-border/30 object-cover"
-
                               />
-
                             </button>
-
                           ))}
 
                         </div>
@@ -3723,9 +4064,9 @@ export default function ChatPanel() {
 
                         <textarea
 
-                          className="w-full whitespace-pre-wrap text-left bg-vsc-input/60 border border-vsc-accent/40 rounded-md px-2 py-1.5 text-vsc-text text-[13px] resize-none focus:outline-none focus:border-vsc-accent/70 transition-colors"
+                          ref={editTextareaRef}
 
-                          rows={Math.min(12, Math.max(2, editText.split('\n').length))}
+                          className="w-full whitespace-pre-wrap text-left bg-vsc-input/60 border border-vsc-accent/40 rounded-md px-2 py-1.5 text-vsc-text text-[13px] resize-y focus:outline-none focus:border-vsc-accent/70 transition-colors chat-user-edit-textarea"
 
                           value={editText}
 
@@ -3737,7 +4078,7 @@ export default function ChatPanel() {
 
                               e.preventDefault();
 
-                              resendFromUserEdit(msg.id, editText);
+                              void resendFromUserEdit(msg.id, editText);
 
                             }
 
@@ -3761,19 +4102,13 @@ export default function ChatPanel() {
 
                           role="button"
 
-                          tabIndex={chatStreaming ? -1 : 0}
+                          tabIndex={0}
 
-                          className={`w-full block text-left rounded-md px-2 py-1 -mx-2 transition-colors duration-150 ${
-                            chatStreaming
-                              ? 'cursor-default'
-                              : 'cursor-text hover:bg-vsc-list-hover/[0.07] focus-visible:outline focus-visible:outline-1 focus-visible:outline-vsc-accent/30'
-                          }`}
+                          className="w-full block text-left rounded-md px-2 py-1 -mx-2 transition-colors duration-150 cursor-text hover:bg-vsc-list-hover/[0.07] focus-visible:outline focus-visible:outline-1 focus-visible:outline-vsc-accent/30"
 
-                          title={chatStreaming ? undefined : 'Click to edit and resend'}
+                          title="Click to edit and resend"
 
                           onClick={() => {
-
-                            if (chatStreaming) return;
 
                             setEditingMessageId(msg.id);
 
@@ -3782,8 +4117,6 @@ export default function ChatPanel() {
                           }}
 
                           onKeyDown={(e) => {
-
-                            if (chatStreaming) return;
 
                             if (e.key === 'Enter' || e.key === ' ') {
 
@@ -3799,7 +4132,7 @@ export default function ChatPanel() {
 
                         >
 
-                          <div className="whitespace-pre-wrap w-full block text-left">{msg.content}</div>
+                          <div className="user-msg-body whitespace-pre-wrap w-full block text-left">{msg.content}</div>
 
                         </div>
 
@@ -3813,10 +4146,11 @@ export default function ChatPanel() {
 
               )}
 
-            </>
+
+              </>
             </div>
+            )
           ))}
-          <StreamingFooter />
         </div>
 
       </div>
@@ -4493,7 +4827,7 @@ export default function ChatPanel() {
               placeholder={chatStreaming ? 'Type to queue a message...' : (
                 activeMediaModel?.modelPath
                   ? 'Type a prompt…'
-                  : (modelLoaded ? 'Ask anything… (/skills, /goal, @files)' : 'Load a model or pick guIDE Cloud…')
+                  : ((modelLoaded || cloudProvider) ? 'Ask anything… (/skills, /goal, @files)' : 'Load a model or pick guIDE Cloud…')
               )}
 
               value={input}
@@ -4772,21 +5106,16 @@ export default function ChatPanel() {
 
       </div>
 
-      {imageLightboxUrl && (
-        <div
-          className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 p-6"
-          role="dialog"
-          aria-modal="true"
-          onClick={() => setImageLightboxUrl(null)}
-          onKeyDown={(e) => { if (e.key === 'Escape') setImageLightboxUrl(null); }}
-        >
-          <img
-            src={imageLightboxUrl}
-            alt="Attached image preview"
-            className="max-h-full max-w-full rounded-md object-contain shadow-lg"
-            onClick={(e) => e.stopPropagation()}
-          />
-        </div>
+      {imageLightbox?.url && (
+        <ImageLightbox
+          url={imageLightbox.url}
+          origin={imageLightbox.origin}
+          closing={!!imageLightbox.closing}
+          onClose={() => {
+            setImageLightbox((prev) => (prev ? { ...prev, closing: true } : null));
+            window.setTimeout(() => setImageLightbox(null), 220);
+          }}
+        />
       )}
 
     </div>
@@ -4796,6 +5125,83 @@ export default function ChatPanel() {
 }
 
 
+
+// ── Image lightbox: zoom from thumbnail origin ───────────────────────────────
+
+function ImageLightbox({ url, origin, closing, onClose }) {
+  const [phase, setPhase] = useState('from'); // from → to → (closing handled by prop)
+
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(() => setPhase('to'));
+    });
+    return () => cancelAnimationFrame(id);
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose?.();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+  const pad = 24;
+  const targetW = Math.min(vw - pad * 2, vw * 0.92);
+  const targetH = Math.min(vh - pad * 2, vh * 0.92);
+  const targetLeft = (vw - targetW) / 2;
+  const targetTop = (vh - targetH) / 2;
+
+  const o = origin || { left: vw / 2 - 32, top: vh / 2 - 32, width: 64, height: 64 };
+  const active = closing || phase === 'from';
+  const style = active
+    ? {
+        top: o.top,
+        left: o.left,
+        width: o.width,
+        height: o.height,
+        borderRadius: 8,
+        opacity: closing ? 0 : 1,
+      }
+    : {
+        top: targetTop,
+        left: targetLeft,
+        width: targetW,
+        height: targetH,
+        borderRadius: 10,
+        opacity: 1,
+      };
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[10000]"
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+    >
+      <div
+        className="absolute inset-0 bg-black/80"
+        style={{
+          opacity: closing || phase === 'from' ? (closing ? 0 : 0) : 1,
+          transition: 'opacity 220ms ease',
+        }}
+      />
+      <img
+        src={url}
+        alt="Attached image preview"
+        className="absolute object-contain shadow-lg bg-black/40"
+        style={{
+          ...style,
+          transition: 'top 220ms ease, left 220ms ease, width 220ms ease, height 220ms ease, border-radius 220ms ease, opacity 220ms ease',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      />
+    </div>,
+    document.body,
+  );
+}
 
 // ── Generation Error Card ──────────────────────────────────────────────────
 

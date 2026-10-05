@@ -12,10 +12,21 @@
 
 const https = require('https');
 const http = require('http');
+const dns = require('dns').promises;
 const { EventEmitter } = require('events');
 const { fitCloudHistory, messageText } = require('./tools/cloudContextFit');
 
 const keepAliveAgent = new https.Agent({ keepAlive: true, maxSockets: 6, timeout: 60000 });
+
+/** ProxyNetResume1: last good A-record for graysoft.dev — used when getaddrinfo ENOTFOUND. */
+const _proxyHostIpCache = new Map(); // hostname -> { ip, at }
+
+function isTransientProxyNetError(err) {
+  const msg = String(err?.message || err || '');
+  const code = String(err?.code || '');
+  return /ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|ECONNREFUSED|getaddrinfo|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|network|DNS/i.test(msg)
+    || /ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|ECONNREFUSED|ETIMEDOUT|ECONNRESET/i.test(code);
+}
 
 /** P40 queue: cipher = FAST 2B; cipher-quality = 27B worker on :18787. */
 const SECRYPT_QUALITY_MODEL = 'cipher-quality';
@@ -23,6 +34,14 @@ const SECRYPT_CLOUD_PROVIDERS = new Set(['secrypt', 'cipher', 'graysoft', 'cereb
 const SECRYPT_LEGACY_TO_QUALITY = new Set([
   '', 'cipher', 'gpt-oss-120b', 'openai/gpt-oss-120b', 'graysoft-cloud', 'secrypt-cloud',
 ]);
+
+/** Prompt size the server counted: llama `timings` (cache_n + prompt_n), else OpenAI `usage.prompt_tokens`. */
+function serverPromptTokens(parsed) {
+  const tm = parsed && parsed.timings;
+  if (tm && (tm.prompt_n > 0 || tm.cache_n > 0)) return (tm.cache_n || 0) + (tm.prompt_n || 0);
+  const u = parsed && parsed.usage;
+  return u && u.prompt_tokens > 0 ? u.prompt_tokens : 0;
+}
 
 /** Non-stream chat completion JSON. Streaming clients only read `data:` lines and drop this body. */
 function parseCompletionBody(raw) {
@@ -37,7 +56,7 @@ function parseCompletionBody(raw) {
       ? msg.reasoning_content
       : (typeof msg.reasoning === 'string' ? msg.reasoning : '');
     const stopReason = choice && choice.finish_reason != null ? String(choice.finish_reason) : null;
-    return { text: String(content || reasoning || '').trim(), stopReason };
+    return { text: String(content || reasoning || '').trim(), stopReason, promptTokens: serverPromptTokens(parsed) };
   } catch {
     return { text: '', stopReason: null };
   }
@@ -54,16 +73,21 @@ function resolveSecryptCloudModel(provider, model) {
   return id;
 }
 
-/** Official Qwen3.8-27B card for cipher-quality (thinking vs instruct). */
+/** Official HauhauCS Qwen3.8-27B Aggressive card (thinking vs instruct).
+ * Source: https://huggingface.co/HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF
+ * Not Qwen3.5 — Qwen3.8-27B specifically.
+ */
 function secryptQualitySampling(thinkingOn) {
   if (thinkingOn) {
     return {
-      temperature: 1.1,
+      temperature: 1.0,
       topP: 0.95,
       topK: 20,
       minP: 0,
-      presencePenalty: 0,
+      presencePenalty: 0.0,
       repeatPenalty: 1.0,
+      // ReasonMedium1 (operator 2026-09-30): keep medium — SampleCard1 xhigh drove
+      // multi‑MB reasoning dumps / chat leaks / 900s hangs on Agent turns.
       reasoningEffort: 'medium',
     };
   }
@@ -78,8 +102,21 @@ function secryptQualitySampling(thinkingOn) {
   };
 }
 
+/**
+ * EffortOnly1: Qwen / Cipher lever is reasoning_effort only (low|medium|xhigh).
+ * Do NOT map effort → thinking_budget_tokens. A hard token budget cuts mid-thought
+ * and fights the effort setting. Kept as a no-op export for old tests/callers.
+ */
+function resolveThinkingBudgetForEffort(reasoningEffort, outputTokens, thinkingOn) {
+  void reasoningEffort;
+  void outputTokens;
+  void thinkingOn;
+  return null;
+}
+
 /** Cipher-quality window. Live P40 worker target: llama-server -c 131072. Override with SECRYPT_CONTEXT_TOKENS. */
 const SECRYPT_CONTEXT_DEFAULT = 131072;
+const P40_WINDOWS_TTL_MS = 60 * 1000;
 
 /**
  * Reply token budget for guIDE Cloud.
@@ -356,7 +393,24 @@ const VISION_MODELS = {
   xai: ['grok-3', 'grok-3-mini'],
   openrouter: ['google/gemini-2.0-flash-exp:free'],
   mistral: ['pixtral-12b-2409'],
+  // Qwen3.8-27B on P40 (cipher-quality) is multimodal — route images through Secrypt proxy.
+  secrypt: ['cipher-quality', 'cipher'],
+  cipher: ['cipher-quality', 'cipher'],
+  graysoft: ['cipher-quality', 'cipher', 'graysoft-cloud'],
 };
+
+/** OpenAI-style multimodal user content parts for proxy / chat completions. */
+function buildImageContentParts(images) {
+  if (!Array.isArray(images) || images.length === 0) return [];
+  return images.map((img) => {
+    const raw = typeof img === 'string' ? img : (img?.data || img?.dataUrl || '');
+    const mime = (typeof img === 'object' && img?.mimeType) ? img.mimeType : 'image/png';
+    const url = String(raw || '').startsWith('data:')
+      ? String(raw)
+      : `data:${mime};base64,${raw}`;
+    return { type: 'image_url', image_url: { url } };
+  }).filter((p) => p.image_url && p.image_url.url && p.image_url.url !== 'data:image/png;base64,');
+}
 
 // ─── Fallback order + preferred fallback models ──────────────────────────────
 const FALLBACK_ORDER = ['secrypt', 'sambanova', 'google', 'nvidia', 'cohere', 'mistral',
@@ -436,9 +490,10 @@ const IDLE_TIMEOUT = 10000;
  *  Soft silence watch (thinkfreezewatch1) warns at 30s and soft-stalls at 120s after first SSE. */
 const PROXY_STREAM_IDLE_MS = 3600000;
 /** thinkfreezewatch1 — warn UI when stream went quiet after first SSE. */
-const PROXY_SILENCE_WARN_MS = 30000;
+// StreamLiveFix1: warn sooner; resume sooner than 120s blank (live 2026-10-03: 122s mid-stream dead air after think).
+const PROXY_SILENCE_WARN_MS = 12000;
 /** thinkfreezewatch1 — force stall (agent soft-resumes) after this quiet gap post-first-SSE. */
-const PROXY_SILENCE_RESUME_MS = 120000;
+const PROXY_SILENCE_RESUME_MS = 45000;
 /** Prefill on 128k / multi-tool history can take many minutes with zero SSE.
  *  First-byte timer must wait for the first SSE `data:` line, not an empty TCP chunk
  *  from the proxy (those used to clear this timer then idle-kill after 600s → Generation Error). */
@@ -483,6 +538,10 @@ class CloudLLMService extends EventEmitter {
     this._cloudflareAccountId = '';
     this._licenseManager = null;
     this._userOwnedProviders = new Set();
+    /** Per-request window of each P40 model id for this account, from secrypt.space /v1/models. */
+    this._p40Windows = null;
+    this._p40WindowsAt = 0;
+    this._p40WindowsLoad = null;
 
     this._ollamaAvailable = null;
     this._ollamaModels = [];
@@ -494,6 +553,50 @@ class CloudLLMService extends EventEmitter {
   // ─── License manager ────────────────────────────────────────────────────────
 
   setLicenseManager(lm) { this._licenseManager = lm; }
+
+  // ─── P40 model windows ──────────────────────────────────────────────────────
+
+  /** Reads the window the proxy routes this account to for each model id (llama n_ctx per slot). */
+  loadP40Windows() {
+    if (this._p40Windows && Date.now() - this._p40WindowsAt < P40_WINDOWS_TTL_MS) return Promise.resolve(this._p40Windows);
+    if (this._p40WindowsLoad) return this._p40WindowsLoad;
+    const token = this._licenseManager?.getSessionToken?.() || null;
+    this._p40WindowsLoad = new Promise((resolve) => {
+      const headers = { Accept: 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const req = https.request({ host: 'secrypt.space', path: '/v1/models', method: 'GET', headers, timeout: 5000 }, (res) => {
+        let raw = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { raw += c; });
+        res.on('end', () => {
+          try {
+            if (res.statusCode !== 200) throw new Error(`HTTP ${res.statusCode}`);
+            const windows = {};
+            for (const row of JSON.parse(raw).data || []) {
+              const n = Number(row && row.context_length);
+              if (row && row.id && Number.isInteger(n) && n > 0) windows[String(row.id).toLowerCase()] = n;
+            }
+            if (Object.keys(windows).length) {
+              const changed = JSON.stringify(windows) !== JSON.stringify(this._p40Windows);
+              this._p40Windows = windows;
+              this._p40WindowsAt = Date.now();
+              if (changed) console.log(`[CloudLLM] P40 windows ${JSON.stringify(windows)}`);
+            }
+          } catch (e) {
+            console.warn(`[CloudLLM] P40 windows unreadable: ${e.message}`);
+          }
+          resolve(this._p40Windows);
+        });
+      });
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      req.on('error', (e) => {
+        console.warn(`[CloudLLM] P40 windows fetch failed: ${e.message}`);
+        resolve(this._p40Windows);
+      });
+      req.end();
+    }).finally(() => { this._p40WindowsLoad = null; });
+    return this._p40WindowsLoad;
+  }
 
   // ─── Bundled key management ─────────────────────────────────────────────────
 
@@ -762,6 +865,13 @@ class CloudLLMService extends EventEmitter {
     if (provider === 'ollama') {
       return /llava|bakllava|qwen.*vl|minicpm.*v|moondream|internvl|cogvlm|-vl\b|\.vision\b|vision-/i.test(model);
     }
+    // Secrypt P40 quality worker hosts Qwen3.8 multimodal — never refuse images for these ids.
+    if (
+      provider === 'secrypt' || provider === 'cipher' || provider === 'graysoft'
+      || model === 'cipher-quality' || model === 'cipher' || model === 'graysoft-cloud'
+    ) {
+      return true;
+    }
     const list = VISION_MODELS[provider] || [];
     return list.some(m => model.includes(m) || m.includes(model));
   }
@@ -776,6 +886,8 @@ class CloudLLMService extends EventEmitter {
       model === 'cipher-quality' ||
       model === 'graysoft-cloud'
     ) {
+      const measured = this._p40Windows && this._p40Windows[String(model || '').toLowerCase()];
+      if (measured) return measured;
       return parseInt(process.env.SECRYPT_CONTEXT_TOKENS || String(SECRYPT_CONTEXT_DEFAULT), 10) || SECRYPT_CONTEXT_DEFAULT;
     }
     return CONTEXT_LIMITS[model] || 32768;
@@ -887,24 +999,46 @@ class CloudLLMService extends EventEmitter {
   /**
    * Qwen/Jinja: only the first message may be role=system.
    * Coerce any later system roles to user; drop empty.
+   * Merge consecutive same-role turns (assistant,assistant → one) — bare upstream 400
+   * on Cipher when silent incomplete continues stacked assistants with empty prompt.
+   * When ensureEndsWithUser, append a structural [System] user turn if the list ends on assistant
+   * (chat template requires a trailing user to generate the next assistant).
    */
-  _normalizeMessagesForChatTemplate(messages) {
+  _normalizeMessagesForChatTemplate(messages, { ensureEndsWithUser = false } = {}) {
     if (!Array.isArray(messages) || messages.length === 0) return messages;
     const out = [];
     for (let i = 0; i < messages.length; i++) {
       const m = messages[i];
       if (!m) continue;
       let role = String(m.role || 'user').toLowerCase();
-      const content = typeof m.content === 'string' ? m.content : messageText(m);
-      if (!content && role !== 'assistant') continue;
+      // Preserve multimodal content arrays (vision). Only flatten non-array objects.
+      const content = typeof m.content === 'string'
+        ? m.content
+        : (Array.isArray(m.content) ? m.content : messageText(m));
+      const empty = Array.isArray(content) ? content.length === 0 : !content;
+      if (empty && role !== 'assistant') continue;
       if (role === 'system' && out.length > 0) role = 'user';
       if (role !== 'system' && role !== 'assistant' && role !== 'user') role = 'user';
+      const prev = out.length ? out[out.length - 1] : null;
+      if (prev && prev.role === role && role !== 'system') {
+        // Never concatenate into a multimodal array — push as separate turn instead.
+        if (Array.isArray(prev.content) || Array.isArray(content)) {
+          out.push({ role, content });
+          continue;
+        }
+        const sep = prev.content && content ? '\n' : '';
+        prev.content = `${prev.content || ''}${sep}${content || ''}`;
+        continue;
+      }
       out.push({ role, content });
+    }
+    if (ensureEndsWithUser && out.length > 0 && out[out.length - 1].role === 'assistant') {
+      out.push({ role: 'user', content: '[System]' });
     }
     return out;
   }
 
-  _trimToContextLimit(messages, provider, model, maxTokens) {
+  _trimToContextLimit(messages, provider, model, maxTokens, measured = null) {
     if (!Array.isArray(messages) || messages.length === 0) return messages;
     const contextLimit = this._getModelContextLimit(provider, model);
     const outputTokens = (typeof maxTokens === 'number' && maxTokens > 0)
@@ -922,6 +1056,7 @@ class CloudLLMService extends EventEmitter {
       nextUser: messageText(last),
       contextLimit,
       outputTokens,
+      measured,
     });
     if (fit.droppedCount === 0 && fit.nextUser === messageText(last)) return messages;
     const out = [];
@@ -937,7 +1072,7 @@ class CloudLLMService extends EventEmitter {
 
   // ─── Proxy routing ──────────────────────────────────────────────────────────
 
-  async _generateViaProxy(provider, model, systemPrompt, prompt, options, onToken, conversationHistory, onThinkingToken, sessionToken) {
+  async _generateViaProxy(provider, model, systemPrompt, prompt, options, onToken, conversationHistory, onThinkingToken, sessionToken, images = []) {
     // guIDE Cloud / Cerebras / GraySoft → Secrypt Cipher on P40 (same path as Pocket)
     const useSecrypt =
       provider === 'secrypt' ||
@@ -955,9 +1090,52 @@ class CloudLLMService extends EventEmitter {
       ...conversationHistory.map(m => ({ role: m.role, content: m.content })),
     ];
     const promptText = String(prompt || '');
-    if (promptText.trim() || messages.length === 0) {
+    const imageParts = buildImageContentParts(images);
+    // ImgHist1: later rounds of the same turn re-attach images to the user's original ask
+    // (earlier in history), after context trim — trim flattens history to text.
+    const imageAnchor = String(options.imageAnchorText || '').trim();
+    let anchorImages = null;
+    if (imageParts.length > 0 && imageAnchor) {
+      for (let i = messages.length - 2; i >= 0; i -= 1) {
+        const m = messages[i];
+        if (m && m.role === 'user' && typeof m.content === 'string' && m.content.trim() === imageAnchor) {
+          anchorImages = imageParts;
+          break;
+        }
+      }
+    }
+    if (anchorImages) {
+      if (promptText.trim()) messages.push({ role: 'user', content: promptText });
+    } else if (imageParts.length > 0) {
+      // VisionMerge1: one user turn — history often already ends with role=user; a second
+      // user+vision message → bodyRoles=…,user,user → upstream 400 on Qwen Jinja (2026-10-02 12:25Z).
+      const last = messages.length ? messages[messages.length - 1] : null;
+      let textForVision = promptText.trim();
+      if (!textForVision && last && last.role === 'user' && typeof last.content === 'string') {
+        textForVision = last.content.trim();
+      }
+      if (!textForVision) textForVision = ' ';
+      const userContent = [{ type: 'text', text: textForVision }, ...imageParts];
+      if (last && last.role === 'user') {
+        if (Array.isArray(last.content)) {
+          const merged = [...last.content];
+          const hasText = merged.some((p) => p && p.type === 'text');
+          if (!hasText && textForVision) merged.unshift({ type: 'text', text: textForVision });
+          for (const img of imageParts) merged.push(img);
+          messages[messages.length - 1] = { role: 'user', content: merged };
+        } else if (typeof last.content === 'string') {
+          messages[messages.length - 1] = { role: 'user', content: userContent };
+        } else {
+          messages.push({ role: 'user', content: userContent });
+        }
+      } else {
+        messages.push({ role: 'user', content: userContent });
+      }
+      console.log(`[CloudLLM] proxy vision: ${imageParts.length} image(s) on final user message model=${proxyModel}`);
+    } else if (promptText.trim() || messages.length === 0) {
       messages.push({ role: 'user', content: promptText });
     }
+    if (useSecrypt) await this.loadP40Windows();
     const contextLimit = useSecrypt ? this._getModelContextLimit(proxyProvider, proxyModel) : 0;
     const outputTokens = useSecrypt
       ? resolveCloudOutputTokens(options.maxTokens, contextLimit)
@@ -974,10 +1152,18 @@ class CloudLLMService extends EventEmitter {
       const bodyOnly = messages
         .map((m) => {
           const role = String(m?.role || 'user').toLowerCase();
-          const content = typeof m?.content === 'string' ? m.content : messageText(m);
-          if (!content && role !== 'assistant') return null;
-          if (role === 'system') return { role: 'user', content };
-          if (role !== 'assistant' && role !== 'user') return { role: 'user', content };
+          // Preserve multimodal content arrays (vision). Flatten only non-array objects.
+          const content = typeof m?.content === 'string'
+            ? m.content
+            : (Array.isArray(m?.content) ? m.content : messageText(m));
+          const empty = Array.isArray(content) ? content.length === 0 : !content;
+          if (empty && role !== 'assistant') return null;
+          if (role === 'system') {
+            return { role: 'user', content: Array.isArray(content) ? messageText({ content }) : content };
+          }
+          if (role !== 'assistant' && role !== 'user') {
+            return { role: 'user', content };
+          }
           return { role, content };
         })
         .filter(Boolean);
@@ -985,14 +1171,23 @@ class CloudLLMService extends EventEmitter {
       let withSystem = sys
         ? [{ role: 'system', content: sys }, ...bodyOnly]
         : bodyOnly.slice();
-      withSystem = this._normalizeMessagesForChatTemplate(withSystem);
-      withSystem = this._trimToContextLimit(
-        withSystem,
-        proxyProvider,
-        proxyModel,
-        outputTokens
-      );
-      withSystem = this._normalizeMessagesForChatTemplate(withSystem);
+      // Always normalize + ensure trailing user when not mid-partial-continue.
+      // Live 2026-09-29: empty prompt + history ending assistant,assistant → upstream 400.
+      withSystem = this._normalizeMessagesForChatTemplate(withSystem, {
+        ensureEndsWithUser: !options.continuePartial,
+      });
+      if (!options.continuePartial) {
+        withSystem = this._trimToContextLimit(
+          withSystem,
+          proxyProvider,
+          proxyModel,
+          outputTokens,
+          options.measuredPrompt || null
+        );
+      }
+      withSystem = this._normalizeMessagesForChatTemplate(withSystem, {
+        ensureEndsWithUser: !options.continuePartial,
+      });
 
       if (withSystem[0]?.role === 'system') {
         sys = withSystem[0].content;
@@ -1001,12 +1196,16 @@ class CloudLLMService extends EventEmitter {
         messages = withSystem.slice();
       }
       // Ironclad: zero system roles leave in the body (proxy will prepend systemPrompt).
+      // Keep multimodal arrays intact on user messages (VisionCipher1).
       messages = messages.map((m) => {
         const role = String(m?.role || 'user').toLowerCase();
+        const content = typeof m.content === 'string'
+          ? m.content
+          : (Array.isArray(m.content) ? m.content : messageText(m));
         if (role === 'system' || (role !== 'user' && role !== 'assistant')) {
-          return { role: 'user', content: typeof m.content === 'string' ? m.content : messageText(m) };
+          return { role: 'user', content };
         }
-        return { role, content: typeof m.content === 'string' ? m.content : messageText(m) };
+        return { role, content };
       });
       const bodySys = messages.filter((m) => m.role === 'system').length;
       const rolesLog = messages.map((m) => m.role).join(',');
@@ -1021,6 +1220,48 @@ class CloudLLMService extends EventEmitter {
       }
     }
 
+    if (anchorImages) {
+      let idx = -1;
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        const m = messages[i];
+        // includes: normalize can merge the ask with an adjacent user turn.
+        if (m && m.role === 'user' && typeof m.content === 'string' && m.content.includes(imageAnchor)) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx >= 0) {
+        messages[idx] = { role: 'user', content: [{ type: 'text', text: messages[idx].content }, ...anchorImages] };
+      } else {
+        // Ask was rotated out by context fit — images ride the trailing user turn.
+        let lastUser = -1;
+        for (let i = messages.length - 1; i >= 0; i -= 1) {
+          if (messages[i] && messages[i].role === 'user') { lastUser = i; break; }
+        }
+        if (lastUser >= 0) {
+          const c = messages[lastUser].content;
+          messages[lastUser] = {
+            role: 'user',
+            content: Array.isArray(c)
+              ? [...c, ...anchorImages]
+              : [{ type: 'text', text: String(c || ' ') }, ...anchorImages],
+          };
+          idx = lastUser;
+        }
+      }
+      console.log(
+        `[CloudLLM] proxy vision: ${anchorImages.length} image(s) on original ask idx=${idx}/${messages.length} model=${proxyModel}`,
+      );
+    }
+
+    const proxyEffort = options.reasoningEffort || (thinkingOn ? 'medium' : 'low');
+    // EffortOnly1: wire reasoning_effort only. No thinking_budget_tokens /
+    // reasoning_budget_tokens — those hard-stop mid-thought and make effort pointless.
+    console.log(
+      `[CloudLLM] proxy sampling effort=${proxyEffort} (EffortOnly1 no think-budget) `
+      + `outputTokens=${outputTokens} temp=${options.temperature ?? 0.7} thinkingOn=${thinkingOn ? 1 : 0}`,
+    );
+
     const proxyBodyObj = {
       provider: proxyProvider,
       model: proxyModel,
@@ -1034,38 +1275,108 @@ class CloudLLMService extends EventEmitter {
       repeat_penalty: options.repeatPenalty,
       stream: !!onToken,
       enableThinking: thinkingOn,
-      thinking_budget: thinkingOn ? Math.max(256, Math.floor(outputTokens * 0.75)) : 0,
+      reasoning_effort: proxyEffort === 'high' ? 'xhigh' : proxyEffort,
       chat_template_kwargs: {
         enable_thinking: thinkingOn,
         // Qwen template allows only xhigh|medium|low — never "high" (Jinja 500).
-        reasoning_effort: options.reasoningEffort || (thinkingOn ? 'medium' : 'low'),
+        reasoning_effort: proxyEffort === 'high' ? 'xhigh' : proxyEffort,
         preserve_thinking: thinkingOn,
-        thinking_budget: thinkingOn ? Math.max(256, Math.floor(outputTokens * 0.75)) : 0,
       },
     };
     if (sys) {
       proxyBodyObj.systemPrompt = sys;
     }
+    if (options.continuePartial) {
+      proxyBodyObj.continuePartial = String(options.continuePartial);
+      // ThinkStallLeak1: stall mid-reasoning must NOT force reasoning_format=none —
+      // that dumps the rest of the thought into delta.content and leaks into chat
+      // mid-sentence (live 2026-09-30 "...glass display for" → "digital content").
+      if (!options.continueInThinking) {
+        proxyBodyObj.reasoning_format = 'none';
+      } else {
+        console.log('[CloudLLM] continueInThinking: keeping reasoning channel for stall resume');
+      }
+    }
     const proxyBody = JSON.stringify(proxyBodyObj);
 
+    const streamOpts = {
+      streamIdleMs: options.streamIdleMs != null ? options.streamIdleMs : PROXY_STREAM_IDLE_MS,
+      firstByteMs: PROXY_FIRST_BYTE_MS,
+      onStreamQuiet: options.onStreamQuiet || null,
+    };
+    // Warm IP cache so a later ENOTFOUND can reconnect without waiting on flaky resolver.
+    void this._resolveProxyConnectHost('graysoft.dev').catch(() => {});
     try {
       const result = await this._streamRequest(
         'graysoft.dev', '/api/ai/proxy', sessionToken, proxyBody,
         'openai', onToken, {}, onThinkingToken, proxyProvider,
-        options.streamIdleMs != null ? options.streamIdleMs : PROXY_STREAM_IDLE_MS,
-        PROXY_FIRST_BYTE_MS,
-        options.onStreamQuiet || null,
+        streamOpts.streamIdleMs,
+        streamOpts.firstByteMs,
+        streamOpts.onStreamQuiet,
       );
-      return { ...result, model: proxyModel, provider: proxyProvider, viaProxy: true };
+      const promptChars = String(sys || '').length
+        + messages.reduce((n, m) => n + messageText(m).length, 0);
+      return { ...result, promptChars, model: proxyModel, provider: proxyProvider, viaProxy: true };
     } catch (err) {
       if (err.message && (err.message.includes('quota_exceeded') || err.message.includes('429'))) {
         const e = new Error(err.message);
         e.isQuotaError = true;
         throw e;
       }
-      console.warn(`[CloudLLM] Proxy request failed for ${proxyProvider}, falling through to direct:`, err.message?.substring(0, 120));
+      // ProxyNetResume1: DNS/name failure → resolve A/AAAA (or cache) and retry once with Host/SNI.
+      // Do not pretend to "fall through to direct" — there is no direct Secrypt path.
+      if (isTransientProxyNetError(err) && !options._proxyDnsRetried) {
+        const ip = await this._resolveProxyConnectHost('graysoft.dev');
+        if (ip) {
+          console.warn(
+            `[CloudLLM] Proxy DNS/net fail (${String(err.message || '').slice(0, 80)}) — `
+            + `retry via ${ip} Host=graysoft.dev`,
+          );
+          try {
+            const result = await this._streamRequest(
+              ip, '/api/ai/proxy', sessionToken, proxyBody,
+              'openai', onToken, { Host: 'graysoft.dev' }, onThinkingToken, proxyProvider,
+              streamOpts.streamIdleMs,
+              streamOpts.firstByteMs,
+              streamOpts.onStreamQuiet,
+              'graysoft.dev',
+            );
+            const promptChars = String(sys || '').length
+              + messages.reduce((n, m) => n + messageText(m).length, 0);
+            return { ...result, promptChars, model: proxyModel, provider: proxyProvider, viaProxy: true };
+          } catch (retryErr) {
+            console.warn(`[CloudLLM] Proxy IP-retry failed: ${String(retryErr.message || '').slice(0, 120)}`);
+            throw retryErr;
+          }
+        }
+      }
+      console.warn(`[CloudLLM] Proxy request failed for ${proxyProvider}:`, err.message?.substring(0, 120));
       throw err;
     }
+  }
+
+  async _resolveProxyConnectHost(hostname) {
+    const cached = _proxyHostIpCache.get(hostname);
+    if (cached?.ip && Date.now() - cached.at < 30 * 60 * 1000) {
+      return cached.ip;
+    }
+    try {
+      const answers = await dns.lookup(hostname, { all: true, verbatim: true });
+      const v4 = answers.find((a) => a.family === 4);
+      const pick = v4 || answers[0];
+      if (pick?.address) {
+        _proxyHostIpCache.set(hostname, { ip: pick.address, at: Date.now() });
+        console.log(`[CloudLLM] Proxy host ${hostname} → ${pick.address}`);
+        return pick.address;
+      }
+    } catch (e) {
+      console.warn(`[CloudLLM] Proxy host lookup failed for ${hostname}: ${e.message}`);
+      if (cached?.ip) {
+        console.warn(`[CloudLLM] Using stale cached IP ${cached.ip} for ${hostname}`);
+        return cached.ip;
+      }
+    }
+    return null;
   }
 
   // ─── Main generate entry point ──────────────────────────────────────────────
@@ -1078,7 +1389,7 @@ class CloudLLMService extends EventEmitter {
     const onToken = options.onToken;
     const onThinkingToken = options.onThinkingToken || null;
     const conversationHistory = options.conversationHistory || [];
-    const images = options.images || [];
+    let images = options.images || [];
     const noFallback = options.noFallback || false;
 
     if (!provider || (!this.apiKeys[provider] && provider !== 'ollama' && provider !== 'graysoft' && provider !== 'secrypt' && provider !== 'cipher')) {
@@ -1101,15 +1412,17 @@ class CloudLLMService extends EventEmitter {
       provider === 'cipher' ||
       provider === 'cerebras';
 
-    if (forceSecryptCloud && !(images && images.length > 0) && !options.skipProxy) {
+    // VisionCipher1: images MUST stay on the Secrypt proxy (Qwen3.8 multimodal).
+    // Skipping proxy forced a broken direct call → UI note + 400 "provider, model, and messages are required".
+    if (forceSecryptCloud && !options.skipProxy) {
       return await this._generateViaProxy(
-        provider, model, systemPrompt, prompt, options, onToken, conversationHistory, onThinkingToken, sessionToken || null
+        provider, model, systemPrompt, prompt, options, onToken, conversationHistory, onThinkingToken, sessionToken || null, images
       );
     }
 
     if (sessionToken && this._isBundledProvider(provider) && !(images && images.length > 0) && !options.skipProxy) {
       try {
-        return await this._generateViaProxy(provider, model, systemPrompt, prompt, options, onToken, conversationHistory, onThinkingToken, sessionToken);
+        return await this._generateViaProxy(provider, model, systemPrompt, prompt, options, onToken, conversationHistory, onThinkingToken, sessionToken, images);
       } catch (err) {
         if (err.isQuotaError) throw err;
         console.warn('[CloudLLM] Proxy unreachable, using direct bundled key as fallback');
@@ -1121,6 +1434,7 @@ class CloudLLMService extends EventEmitter {
         onToken(`\n\n*Note: ${model} does not support image input. Images will be ignored. Use a vision-capable model like GPT-4o, Claude Sonnet 4, or Gemini 2.5 for image analysis.*\n\n`);
       }
       options.images = [];
+      images = [];
     }
 
     const now = Date.now();
@@ -1701,7 +2015,7 @@ class CloudLLMService extends EventEmitter {
     return true;
   }
 
-  _streamRequest(host, path, apiKey, body, format, onToken, extraHeaders = {}, onThinkingToken = null, provider = null, streamIdleMs = IDLE_TIMEOUT, firstByteMs = STREAM_TIMEOUT, onStreamQuiet = null) {
+  _streamRequest(host, path, apiKey, body, format, onToken, extraHeaders = {}, onThinkingToken = null, provider = null, streamIdleMs = IDLE_TIMEOUT, firstByteMs = STREAM_TIMEOUT, onStreamQuiet = null, tlsServername = null) {
     this.abortActiveStream();
     return new Promise((resolve, reject) => {
       const headers = {
@@ -1712,24 +2026,45 @@ class CloudLLMService extends EventEmitter {
       if (apiKey && !extraHeaders['x-api-key']) {
         headers['Authorization'] = `Bearer ${apiKey}`;
       }
+      if (tlsServername && !headers.Host) headers.Host = tlsServername;
 
       let fullText = '';
       let stopReason = null;
+      let promptTokens = 0;
       let rawBody = '';
       let sawSse = false;
       let firstDataTimer = null;
       let idleTimer = null;
       let silenceWatch = null;
+      let firstByteWatch = null;
       let lastSseAt = 0;
       let silenceWarned = false;
+      let firstByteWarned = false;
       let settled = false;
       let socketStall = null;
+      const waitStartedAt = Date.now();
       const firstByte = firstByteMs > 0 ? firstByteMs : STREAM_TIMEOUT;
 
       const clearTimers = () => {
         if (firstDataTimer) { clearTimeout(firstDataTimer); firstDataTimer = null; }
         if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
         if (silenceWatch) { clearInterval(silenceWatch); silenceWatch = null; }
+        if (firstByteWatch) { clearInterval(firstByteWatch); firstByteWatch = null; }
+      };
+
+      // StreamWaitLive1: UI must see progress during prefill (before any SSE token).
+      // Silence watch only armed after first SSE — first-byte wait was invisible for up to 900s.
+      const armFirstByteWatch = () => {
+        if (firstByteWatch || typeof onStreamQuiet !== 'function') return;
+        firstByteWatch = setInterval(() => {
+          if (settled || lastSseAt) return;
+          const ageMs = Date.now() - waitStartedAt;
+          if (ageMs < 5000) return;
+          try {
+            onStreamQuiet({ ageMs, host, provider, phase: 'first-byte' });
+          } catch (_) { /* ignore UI callback errors */ }
+          firstByteWarned = true;
+        }, 5000);
       };
 
       const armSilenceWatch = () => {
@@ -1743,10 +2078,10 @@ class CloudLLMService extends EventEmitter {
             settle(reject, new Error(`Stream stalled from ${host}. Try again or switch models.`));
             return;
           }
-          if (ageMs >= PROXY_SILENCE_WARN_MS && !silenceWarned) {
+          if (ageMs >= PROXY_SILENCE_WARN_MS) {
             silenceWarned = true;
             try {
-              onStreamQuiet({ ageMs, host, provider });
+              onStreamQuiet({ ageMs, host, provider, phase: 'mid-stream' });
             } catch (_) { /* ignore UI callback errors */ }
           }
         }, 5000);
@@ -1761,7 +2096,15 @@ class CloudLLMService extends EventEmitter {
         fn(value);
       };
 
-      const req = https.request({ host, path, method: 'POST', headers, agent: keepAliveAgent }, (res) => {
+      const reqOpts = {
+        host,
+        path,
+        method: 'POST',
+        headers,
+        agent: keepAliveAgent,
+      };
+      if (tlsServername) reqOpts.servername = tlsServername;
+      const req = https.request(reqOpts, (res) => {
         if (provider && res.statusCode < 400) {
           this._learnRPMFromHeaders(provider, res.headers);
         }
@@ -1797,8 +2140,23 @@ class CloudLLMService extends EventEmitter {
           return;
         }
 
+        // Cache successful connect peer for later ENOTFOUND recovery (hostname requests only).
+        if (!tlsServername && host && !/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+          try {
+            const peer = req.socket?.remoteAddress;
+            if (peer && !peer.includes(':')) {
+              _proxyHostIpCache.set(host, { ip: peer, at: Date.now() });
+            }
+          } catch (_) { /* ignore */ }
+        }
+
         let buffer = '';
         let gotFirstSse = false;
+
+        armFirstByteWatch();
+        // WaitCopy1: do NOT paint age=0 "Waiting for model" into chat. That lied after
+        // tool rounds (prose+tools already on screen) and flashed every new generate.
+        // First-byte watch starts reporting only after 5s of real prefill silence.
 
         firstDataTimer = setTimeout(() => {
           console.error(`[CloudLLM] Stream timeout: no SSE data within ${firstByte / 1000}s from ${host}`);
@@ -1815,7 +2173,7 @@ class CloudLLMService extends EventEmitter {
             console.error(`[CloudLLM] Stream idle timeout: no SSE for ${effectiveIdle / 1000}s from ${host} (provider=${provider || 'unknown'})`);
             req.destroy();
             if (fullText) {
-              settle(resolve, { text: fullText, model: 'cloud', tokensUsed: fullText.length / 4, stopReason });
+              settle(resolve, { text: fullText, model: 'cloud', tokensUsed: fullText.length / 4, stopReason, promptTokens });
             } else {
               settle(reject, new Error(`Stream stalled from ${host}. Try again or switch models.`));
             }
@@ -1841,6 +2199,7 @@ class CloudLLMService extends EventEmitter {
             if (!gotFirstSse) {
               gotFirstSse = true;
               if (firstDataTimer) { clearTimeout(firstDataTimer); firstDataTimer = null; }
+              if (firstByteWatch) { clearInterval(firstByteWatch); firstByteWatch = null; }
               try {
                 req.setTimeout(0);
                 if (socketStall) req.removeListener('timeout', socketStall);
@@ -1855,7 +2214,10 @@ class CloudLLMService extends EventEmitter {
               if (parsed && parsed.error) {
                 const errMsg = parsed.error.message || parsed.error.code || JSON.stringify(parsed.error).slice(0, 300);
                 const code = parsed.error.code || 500;
-                console.error(`[CloudLLM] SSE error payload code=${code}: ${String(errMsg).slice(0, 240)}`);
+                console.error(
+                  `[CloudLLM] SSE error payload code=${code}: ${String(errMsg).slice(0, 800)}`
+                  + (options?.images?.length ? ` visionImages=${options.images.length}` : ''),
+                );
                 req.destroy();
                 const e = new Error(`upstream ${code}: ${String(errMsg).slice(0, 400)}`);
                 e.statusCode = typeof code === 'number' ? code : 500;
@@ -1872,6 +2234,8 @@ class CloudLLMService extends EventEmitter {
                 token = delta?.content || '';
                 thinkingToken = delta?.reasoning_content || delta?.reasoning || '';
                 if (choice?.finish_reason) stopReason = choice.finish_reason;
+                const measuredTokens = serverPromptTokens(parsed);
+                if (measuredTokens > 0) promptTokens = measuredTokens;
               } else if (format === 'anthropic') {
                 if (parsed.type === 'content_block_start' && parsed.content_block?.type === 'thinking') {
                   // Thinking block start
@@ -1897,6 +2261,7 @@ class CloudLLMService extends EventEmitter {
             const parsedBody = parseCompletionBody(rawBody);
             if (parsedBody.text) fullText = parsedBody.text;
             if (parsedBody.stopReason && !stopReason) stopReason = parsedBody.stopReason;
+            if (parsedBody.promptTokens && !promptTokens) promptTokens = parsedBody.promptTokens;
           }
           const sseLines = rawBody.split('\n').filter((l) => l.startsWith('data: '));
           const streamDiag = {
@@ -1917,6 +2282,7 @@ class CloudLLMService extends EventEmitter {
             model: 'cloud',
             tokensUsed: fullText.length / 4,
             stopReason,
+            promptTokens,
             streamDiag,
           });
         });
@@ -1980,5 +2346,6 @@ module.exports = {
   parseCompletionBody,
   textFromCompletionBody,
   resolveCloudOutputTokens,
+  resolveThinkingBudgetForEffort,
   secryptQualitySampling,
 };

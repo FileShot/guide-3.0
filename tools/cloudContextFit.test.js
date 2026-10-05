@@ -57,4 +57,33 @@ const again = fitCloudHistory({
 });
 assert.strictEqual(again.droppedCount, 0);
 
+const withTodos = fitCloudHistory({
+  systemPrompt: 'system',
+  history,
+  nextUser: 'keep going on the shop',
+  contextLimit,
+  outputTokens,
+  activeTodos: [
+    { id: 7, text: 'open item seven', status: 'pending' },
+    { id: 8, text: 'working eight', status: 'in-progress' },
+  ],
+});
+assert.ok(withTodos.droppedCount > 0);
+assert.ok(withTodos.history[0].content.includes('id 7: open item seven'));
+assert.ok(withTodos.history[0].content.includes('id 8: working eight'));
+assert.ok(withTodos.droppedText.length > 0);
+assert.ok(typeof withTodos.keptTailText === 'string');
+
+const emptyTodosFit = fitCloudHistory({
+  systemPrompt: 'system',
+  history,
+  nextUser: 'keep going on the shop',
+  contextLimit,
+  outputTokens,
+  activeTodos: [],
+});
+assert.ok(emptyTodosFit.droppedCount > 0);
+assert.ok(emptyTodosFit.history[0].content.includes('TODO LEDGER: empty'));
+assert.ok(!/\bOPEN:\s*\nnone\b/i.test(emptyTodosFit.history[0].content));
+
 console.log('cloudContextFit.test.js OK', { dropped: fitted.droppedCount, used, budget });

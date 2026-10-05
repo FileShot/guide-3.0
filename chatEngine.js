@@ -26,14 +26,6 @@ const streamTrace = require('./streamTrace');
  *  (Rule 9: no hardcoded context numbers) so it works for any model from 2K to 128K context.
  */
 const BASE_TOOL_RESULT_INJECT_CHARS = 32000;
-// PL2: Per-tool-type multipliers (fraction of context-based cap).
-// Browser tools need more because snapshots contain both element refs and page text.
-// File/web tools need less because the model can re-read or re-fetch.
-const TOOL_INJECT_MULTIPLIERS = {
-  browser_snapshot: 1.5, browser_navigate: 1.5, browser_click: 1.5,
-  browser_type: 1.5, browser_screenshot: 0.5,
-  read_file: 0.5, fetch_webpage: 0.5, web_search: 0.25,
-};
 
 /** Whether file-content UI may stream during plan mode (plan files only until Build). */
 function shouldStreamFileContentForAgent(options, filePath) {
@@ -352,7 +344,9 @@ function _sanitizeFileSnippetText(text) {
 }
 
 /**
- * One-line hint after tool batches when todos exist but update_todo was not called.
+ * Structural open-todo ledger dump after tool batches (RULES §11).
+ * Facts only — no English “call update_todo / do not end” coaching.
+ * Host continue/stop is decided by roundIsIncomplete + openTodoCount, not this string.
  * @param {Array<{id:number,text?:string,status?:string}>} activeTodos
  * @param {string[]} executedTools
  * @param {number} consecutiveWithoutUpdate
@@ -360,7 +354,10 @@ function _sanitizeFileSnippetText(text) {
 function buildTodoProgressHint(activeTodos, executedTools, consecutiveWithoutUpdate = 0) {
   if (!Array.isArray(activeTodos) || activeTodos.length === 0) return '';
   const tools = Array.isArray(executedTools) ? executedTools : [];
-  if (tools.some((t) => t === 'update_todo' || t === 'write_todos')) return '';
+  // write_todos result already includes allTodos — skip prefix.
+  // After update_todo, still emit ids: failed id lookups used to hide the ledger
+  // (early return) while openTodos stayed >0.
+  if (tools.some((t) => t === 'write_todos')) return '';
   const open = activeTodos.filter((t) => t.status === 'pending' || t.status === 'in-progress');
   if (open.length === 0) return '';
   const pending = open.filter((t) => t.status === 'pending').length;
@@ -370,11 +367,8 @@ function buildTodoProgressHint(activeTodos, executedTools, consecutiveWithoutUpd
     inProgress > 0 ? `${inProgress} in-progress` : '',
   ].filter(Boolean).join(', ');
   const idList = open.map((t) => `id ${t.id}: ${(t.text || '').slice(0, 60)}`).join('; ');
-  let hint = `[System: Active todo list (${counts}). If you finished a step, call update_todo with that id and status "done" before starting the next tool. Items: ${idList}.]`;
-  if (consecutiveWithoutUpdate >= 3) {
-    hint += ' [Reminder: several tools ran without update_todo — mark finished steps done so the todo list stays accurate.]';
-  }
-  return `${hint}\n\n`;
+  void consecutiveWithoutUpdate;
+  return `[System: Active todo list (${counts}). Items: ${idList}.]\n\n`;
 }
 
 function _sfExtractGeneratingToolName(buf) {
@@ -394,7 +388,7 @@ const RE_FILE_PATH = /"(?:filePath|path)"\s*:\s*"([^"]*)"/;
 const RE_TOOL_OR_SYSTEM_INJECT = /^\[(?:Tool Results|System)\]/i;
 const RE_CONTEXT_ROTATED = /\[System: (?:Context rotated|Session memory condensed)\]/i;
 const LIST_DIRECTORY_INJECT_MAX_ITEMS = 50;
-const DUPLICATE_TOOL_HINT_MESSAGE = '[System: You already called this exact tool with the same parameters twice in a row. Use the prior tool results or try a different approach.]';
+const DUPLICATE_TOOL_HINT_MESSAGE = '[System: Duplicate tool call — same tool and parameters as the prior call.]';
 
 function stableToolFingerprint(tool, params) {
   try {
@@ -1974,19 +1968,11 @@ class ChatEngine extends EventEmitter {
 
     try {
       console.log(`[ChatEngine] chat() try block ENTER: abortController=${!!this._abortController}`);
-      // ── Streaming tool call filter ──
-      // Two-layer suppression of tool call JSON from the UI:
-      //
-      // Layer 1 (real-time): This filter processes each token character-by-character.
-      //   - When `{` appears at a line boundary, buffer it. If `"tool":` appears
-      //     within the first 80 chars, keep buffering silently until braces close.
-      //   - When ``` appears at a line boundary, enter fence mode. If the fence
-      //     content starts with `{` and contains `"tool":`, suppress the entire fence.
-      //
-      // Layer 2 (post-generation): stripToolCallText() catches anything the
-      //   streaming filter missed (e.g., XML <tool_call> tags).
-      //
-      // Result: tool call JSON never appears in the chat as raw text.
+      // Streaming tool/file formatter:
+      // Layer 1 (real-time): buffer tool JSON / tool fences; emit file-content / tool-generating
+      //   cards live so Stop is never silent. Do not paint raw tool JSON as chat prose.
+      // Layer 2 (post-generation): stripToolCallText() keeps stored chat prose free of raw tool
+      //   spans after those spans were shown as cards.
 
       let _sfBuf = '';           // pending buffer
       let _sfDepth = 0;         // brace depth
@@ -2089,8 +2075,9 @@ class ChatEngine extends EventEmitter {
         }
       };
 
-      // enableThinkingFilter — when true, suppress thinking tokens from UI output
-      const _thinkingFilterEnabled = !!options.enableThinkingFilter;
+      // enableThinkingFilter — retired as a hide switch (operator 2026-09-27: format, never hide).
+      // Thinking tokens always stream to the Reasoning UI.
+      const _thinkingFilterEnabled = false;
       // Raw <think> tag parser for all thinking-capable templates. Per-chunk B4 suppresses
       // when native onResponseChunk thought segments are active (_sfNativeThinkActive). GLM Jinja often
       // emits tags via onTextChunk without segment events — disabling the parser here caused tag leaks.
@@ -2516,7 +2503,26 @@ class ChatEngine extends EventEmitter {
       const _sfForward = (text) => {
         if (!text) return;
         if (isVisibleToolArtifact(text)) {
-          console.log(`[ChatEngine] _sfForward: suppressed tool artifact (${text.length} chars)`);
+          // Format as tool card — do not paint raw artifact as chat prose (not silent hide).
+          const nameMatch = String(text).match(/"(?:tool|name|function)"\s*:\s*"([a-zA-Z0-9_]+)"/i);
+          if (onStreamEvent && nameMatch) {
+            onStreamEvent('tool-generating', { tool: nameMatch[1], forming: true });
+          }
+          const partial = extractPartialWriteFileFromToolJson(text, { stripCompleteSuffix: true });
+          if (partial?.filePath && onStreamEvent) {
+            const fp = partial.filePath;
+            const fileName = fp.split(/[\\/]/).pop() || fp;
+            const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+            onStreamEvent('file-content-start', {
+              filePath: fp,
+              fileName,
+              language: ext,
+              fileKey: fp,
+              op: partial.isEdit ? 'edit' : 'write',
+            });
+            if (partial.content) onStreamEvent('file-content-token', partial.content);
+          }
+          console.log(`[ChatEngine] _sfForward: tool artifact → card (${text.length} chars)`);
           return;
         }
         _sfVisibleChars += text.length;
@@ -2535,14 +2541,36 @@ class ChatEngine extends EventEmitter {
           onStreamEvent('file-content-end', { filePath: _sfContentFilePath, fileKey: _normalizePath(_sfContentFilePath) });
           _sfContentStreamActive = false;
         } else if (_sfBuf) {
-          // Flush-guard: if the buffer contains tool-call JSON, discard it.
-          // The toolParser will extract the call from the full response text post-generation.
-          // This prevents raw JSON from appearing as visible text in the chat.
+          // Do not silent-discard: emit formatted tool/file surfaces, then keep prose free of raw JSON.
           const _isToolCall = _sfIsToolLikeJson(_sfBuf);
           if (_isToolCall) {
-            console.log(`[ChatEngine] _sfFlush: discarding tool-call JSON (${_sfBuf.length} chars)`);
+            console.log(`[ChatEngine] _sfFlush: tool-call JSON → card (${_sfBuf.length} chars)`);
             const _fpM = _sfBuf.match(RE_FILE_PATH);
             if (_fpM && _fpM[1]) _sfProsedFileWrites.add(_normalizePath(_fpM[1]));
+            const nameMatch = _sfBuf.match(/"(?:tool|name|function)"\s*:\s*"([a-zA-Z0-9_]+)"/i);
+            if (onStreamEvent && nameMatch) {
+              onStreamEvent('tool-generating', { tool: nameMatch[1], forming: true });
+            }
+            const partial = extractPartialWriteFileFromToolJson(_sfBuf, { stripCompleteSuffix: true });
+            if (partial?.filePath && onStreamEvent) {
+              const fp = partial.filePath;
+              const fileName = fp.split(/[\\/]/).pop() || fp;
+              const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+              onStreamEvent('file-content-start', {
+                filePath: fp,
+                fileName,
+                language: ext,
+                fileKey: fp,
+                op: partial.isEdit ? 'edit' : 'write',
+              });
+              if (partial.content) onStreamEvent('file-content-token', String(partial.content));
+              onStreamEvent('file-content-end', { filePath: fp, fileKey: fp });
+            } else if (onStreamEvent) {
+              onStreamEvent('generation-warning', {
+                message: 'Receiving tool output…',
+                suggestion: 'Tool JSON was held for formatting into a tool card.',
+              });
+            }
           } else {
             _sfForward(_sfBuf);
           }
@@ -3625,8 +3653,7 @@ class ChatEngine extends EventEmitter {
       // Previously, continuation only existed inside the tool loop (after tool execution).
       // This adds continuation for maxTokens stops with 0 tool calls — the 15-minute silence scenario.
       let _seamlessRound = 0;
-      const MAX_SEAMLESS_CONTINUATION_ROUNDS = 10;
-      while (result.metadata?.stopReason === 'maxTokens' && _seamlessRound < MAX_SEAMLESS_CONTINUATION_ROUNDS) {
+      while (result.metadata?.stopReason === 'maxTokens') {
         _seamlessRound++;
 
         // Reset streaming filter state for the next generation round
@@ -3833,8 +3860,7 @@ class ChatEngine extends EventEmitter {
             // mid-prose. Without continuation, pendingCalls=null causes the loop to exit
             // silently — the 5-minute invisible generation scenario.
             let _toolLoopSeamlessRound = 0;
-            const MAX_TOOL_LOOP_SEAMLESS = 5;
-            while (result.metadata?.stopReason === 'maxTokens' && _toolLoopSeamlessRound < MAX_TOOL_LOOP_SEAMLESS && !_userAbortedGeneration) {
+            while (result.metadata?.stopReason === 'maxTokens' && !_userAbortedGeneration) {
               _toolLoopSeamlessRound++;
               // Reset streaming filter state for the next generation round
               _sfBuf = ''; _sfDepth = 0; _sfActive = false; _sfConfirmed = false;
@@ -4084,14 +4110,8 @@ class ChatEngine extends EventEmitter {
               }
             }
 
-            const injectPayload = call.tool === 'list_directory'
-              ? trimListDirectoryInjectPayload(toolResult)
-              : toolResult;
-            const resultStr = typeof injectPayload === 'string' ? injectPayload : JSON.stringify(injectPayload);
-            console.log(`[ChatEngine] Tool result for ${call.tool}: ${resultStr}`);
+            console.log(`[ChatEngine] Tool result for ${call.tool}: ${typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult)}`);
             if (onToolCall) onToolCall({ name: call.tool, params: call.params, result: toolResult });
-
-            // Update ToolCallCard with result (check mark or error)
             if (onStreamEvent) {
               onStreamEvent('mcp-tool-results', [{ tool: call.tool, result: toolResult }]);
             }
@@ -4107,7 +4127,11 @@ class ChatEngine extends EventEmitter {
               }
             }
 
-            let injectResult = resultStr;
+            let injectResult = formatToolResultForInject(
+              call.tool === 'list_directory' ? 'list_directory' : call.tool,
+              call.tool === 'list_directory' ? trimListDirectoryInjectPayload(toolResult) : toolResult,
+              { contextTokens: this._contextSize || this.modelInfo?.contextSize || 8192 },
+            );
             // Lint auto-fix — if any file-modification tool returned diagnostic errors,
             // inject a human-readable correction instruction AND emit a frontend event for the UI pill.
             if (FILE_MODIFY_OPS_SET.has(call.tool) && toolResult?.diagnostics?.errors > 0 && options.autoLintFix !== false) {
@@ -4146,46 +4170,6 @@ class ChatEngine extends EventEmitter {
                 }
               } else {
                 injectResult = '{"success":true,"note":"Screenshot captured. Use browser_snapshot for a detailed text description of the page."}';
-              }
-            }
-            // PL2: Context-proportional inject cap — 25% share per tool, 40% absolute max per call (no 8k floor).
-            const ctxTokens = this._contextSize || this.modelInfo?.contextSize || 8192;
-            const ctxChars = ctxTokens * 4;
-            const TOOL_RESULT_SHARE = 0.25;
-            const MAX_TOOL_SHARE = 0.40;
-            const baseCap = Math.floor(ctxChars * TOOL_RESULT_SHARE);
-            const multiplier = TOOL_INJECT_MULTIPLIERS[call.tool] || 1.0;
-            const injectCap = Math.min(
-              Math.floor(baseCap * multiplier),
-              Math.floor(ctxChars * MAX_TOOL_SHARE),
-            );
-            if (injectResult.length > injectCap) {
-              // PL1: Smart truncation for browser snapshots — preserve ALL interactive elements
-              // (the model needs every ref to make correct decisions) and truncate only the page text.
-              // For non-browser tools, use the original flat cap.
-              if (call.tool === 'browser_snapshot' || call.tool === 'browser_navigate' || call.tool === 'browser_click' || call.tool === 'browser_type') {
-                const pageTextIdx = injectResult.indexOf('\nPage text:\n');
-                if (pageTextIdx !== -1) {
-                  const elementSection = injectResult.substring(0, pageTextIdx + 12);
-                  const textSection = injectResult.substring(pageTextIdx + 12);
-                  const budgetForText = injectCap - elementSection.length;
-                  if (budgetForText > 500) {
-                    const headSize = Math.floor(budgetForText * 0.7);
-                    const tailSize = budgetForText - headSize - 60;
-                    injectResult = elementSection + textSection.substring(0, headSize)
-                      + '\n[... middle section omitted for context size — call browser_scroll to see more]\n'
-                      + textSection.substring(Math.max(headSize, textSection.length - tailSize));
-                  } else {
-                    injectResult = elementSection + textSection.substring(0, budgetForText)
-                      + '\n[... result truncated — call browser_scroll to see more content]';
-                  }
-                } else {
-                  injectResult = injectResult.slice(0, injectCap)
-                    + '\n[... result truncated by system for context size; use browser_scroll to see more]';
-                }
-              } else {
-                injectResult = injectResult.slice(0, injectCap)
-                  + '\n[... result truncated by system for context size; use only text above]';
               }
             }
             if (call.tool === 'write_todos' && toolResult?.success !== false) {
@@ -4382,7 +4366,7 @@ class ChatEngine extends EventEmitter {
           if (!skipToolExecution) {
           this._chatHistory.push({
             type: 'user',
-            text: `${userInterruptPrefix}${todoListPrefix}${duplicateHint}[System: Tool Results]\nThe tools below have ALREADY been executed. Do not repeat these actions or re-narrate work that is already complete. Give a brief summary of outcomes, then either call the next tool if more work is needed or give a short final answer. Do NOT enumerate long lists of hypothetical future options or features.\n\n${toolResultLines.join('\n')}${relatedSection}`,
+            text: `${userInterruptPrefix}${todoListPrefix}${duplicateHint}[System: Tool Results]\n${toolResultLines.join('\n')}${relatedSection}`,
           });
           console.log(`[ChatEngine] ─── TOOL RESULTS → MODEL ─── ${toolResultLines.length} result(s), ${relatedFileLines.length} related file(s), interrupt=${hadUserInterrupt}`);
           } else {

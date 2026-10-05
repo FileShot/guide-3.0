@@ -5,14 +5,17 @@
 import useAppStore from '../stores/appStore';
 import { installUpdateNow, updateVersionLabel } from '../lib/updateStatus';
 import { componentBundleLabel, retryComponentBundle } from '../lib/componentBundleStatus';
-import { GitBranch, AlertTriangle, AlertCircle, Cpu, Zap, HardDrive, Radio, Download, Loader2, ImageIcon, Info } from 'lucide-react';
+import { GitBranch, AlertTriangle, AlertCircle, Cpu, Zap, HardDrive, Radio, Download, Loader2, ImageIcon, Info, Cloud } from 'lucide-react';
 import { useEffect, useState, useRef } from 'react';
+import { GUIDE_CLOUD_PROVIDERS } from '../lib/guideCloudModel';
 
 export default function StatusBar() {
   const modelInfo = useAppStore(s => s.modelInfo);
   const modelLoaded = useAppStore(s => s.modelLoaded);
   const modelLoading = useAppStore(s => s.modelLoading);
   const modelLoadProgress = useAppStore(s => s.modelLoadProgress);
+  const cloudProvider = useAppStore(s => s.cloudProvider);
+  const cloudModel = useAppStore(s => s.cloudModel);
   const chatContextUsage = useAppStore(s => s.chatContextUsage);
   const activeTabId = useAppStore(s => s.activeTabId);
   const [appVersion, setAppVersion] = useState('...');
@@ -149,21 +152,35 @@ export default function StatusBar() {
       const now = Date.now();
       const elapsed = (now - lastTickRef.current) / 1000;
       const state = useAppStore.getState();
-      // R37-Step5: Measure BOTH chatStreamingText AND streamingFileBlocks content.
-      // File content goes through a separate channel (file-content-token → streamingFileBlocks)
-      // not chatStreamingText, so the old measurement missed all file-writing tokens.
-      let currentLen = state.chatStreamingText.length;
+      // ToksThink1: measure prose + thinking + file blocks. Thinking-only streams
+      // (reasoning_content) never touch chatStreamingText — footer tok/s stayed 0.
+      let currentLen = state.chatStreamingText.length
+        + (state.chatThinkingText || '').length;
       if (state.streamingFileBlocks && state.streamingFileBlocks.length > 0) {
         for (const block of state.streamingFileBlocks) {
           currentLen += (block.content || '').length;
         }
       }
+      // HoldToks2: tool JSON held off-chat still streams from P40 — count held bytes on generating tools.
+      const toolCalls = state.streamingToolCalls || [];
+      for (const tc of toolCalls) {
+        if (tc.status !== 'generating' && tc.status !== 'pending') continue;
+        const gp = tc.generatingProgress || {};
+        currentLen += Math.max(
+          gp.fenceChars || 0,
+          gp.fileContentChars || 0,
+          tc.params?.contentChars || 0,
+          tc.params?.bytesHeld || 0,
+        );
+      }
       const charsDelta = currentLen - prevTextLenRef.current;
       // Approximate: ~4 chars per token
       const tokensDelta = Math.max(0, Math.round(charsDelta / 4));
+      // StreamLiveFix1: zero immediately on a quiet tick — do not keep a stale tok/s
+      // while the chat is blank (SSE stall / tool hold with no visible growth).
       if (elapsed > 0 && tokensDelta > 0) {
         setTokensPerSec(Math.round(tokensDelta / elapsed));
-      } else if (elapsed > 2) {
+      } else {
         setTokensPerSec(0);
       }
       prevTextLenRef.current = currentLen;
@@ -549,18 +566,30 @@ export default function StatusBar() {
           </div>
         ) : (
           <button className="statusbar-item" onClick={() => setActiveActivity('settings')} title={
-            modelLoaded && modelInfo
+            cloudProvider
+              ? (GUIDE_CLOUD_PROVIDERS.has(cloudProvider)
+                ? 'Cipher 7 (guIDE Cloud)'
+                : `${cloudModel || cloudProvider} (cloud)`)
+              : modelLoaded && modelInfo
               ? `${modelInfo.name} (${modelInfo.contextSize?.toLocaleString?.() ?? modelInfo.contextSize} ctx${modelInfo.contextSizeRequested === 'auto' && modelInfo.contextTrainMax ? `, train max ${modelInfo.contextTrainMax.toLocaleString()}` : ''})`
               : activeMediaModel?.modelPath
                 ? `${activeMediaModel.modelType === 'video' ? 'Video' : 'Image'}: ${activeMediaModel.modelPath.split(/[/\\]/).pop()}`
                 : 'No model'
           }>
-            {activeMediaModel?.modelPath && !modelLoaded ? (
+            {cloudProvider ? (
+              <Cloud size={12} className="mr-1" />
+            ) : activeMediaModel?.modelPath && !modelLoaded ? (
               <ImageIcon size={12} className="mr-1" />
             ) : (
               <Cpu size={12} className="mr-1" />
             )}
-            {modelLoaded && modelInfo ? (
+            {cloudProvider ? (
+              !hideModelName && (
+                <span className="truncate max-w-[140px]">
+                  {GUIDE_CLOUD_PROVIDERS.has(cloudProvider) ? 'Cipher 7' : (cloudModel || cloudProvider)}
+                </span>
+              )
+            ) : modelLoaded && modelInfo ? (
               !hideModelName && (
                 <span className="truncate max-w-[120px]">{modelInfo.name || modelInfo.family}</span>
               )

@@ -1,14 +1,14 @@
 /**
- * webSearch.js — Multi-backend web search.
- * Uses Electron's net module (Chromium networking stack) when available,
- * falls back to Node.js https for non-Electron environments.
- * No API key required.
+ * webSearch.js — Multi-backend web search + page fetch.
+ * Prefer keyed search APIs when configured; HTML scrapers as fallback.
+ * Optional HTTP(S) proxy rotation for scrapers and fetch_webpage.
  */
 'use strict';
 
 const https = require('https');
 const http = require('http');
 const { URL } = require('url');
+const tls = require('tls');
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -17,23 +17,71 @@ const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0',
 ];
 
+function parseProxyList(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) {
+    return raw.map((s) => String(s || '').trim()).filter(Boolean);
+  }
+  return String(raw)
+    .split(/[\r\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 class WebSearch {
   constructor(options = {}) {
     this.timeout = options.timeout || 15000;
     this._uaIndex = Math.floor(Math.random() * USER_AGENTS.length);
     this._electronNet = null;
+    this._braveApiKey = '';
+    this._serpApiKey = '';
+    this._tavilyApiKey = '';
+    this._proxyUrls = [];
+    this._proxyIndex = 0;
     try {
       this._electronNet = require('electron').net;
     } catch { /* not in Electron main process */ }
+    this.configure(options);
+  }
+
+  /**
+   * Hot-reload search keys + proxy pool from settings.
+   * @param {{ braveApiKey?: string, serpApiKey?: string, tavilyApiKey?: string, proxyUrls?: string|string[], timeout?: number }} options
+   */
+  configure(options = {}) {
+    if (options.timeout != null) this.timeout = Number(options.timeout) || this.timeout;
+    if (options.braveApiKey != null) this._braveApiKey = String(options.braveApiKey || '').trim();
+    if (options.serpApiKey != null) this._serpApiKey = String(options.serpApiKey || '').trim();
+    if (options.tavilyApiKey != null) this._tavilyApiKey = String(options.tavilyApiKey || '').trim();
+    if (options.proxyUrls != null) {
+      this._proxyUrls = parseProxyList(options.proxyUrls);
+      this._proxyIndex = 0;
+    }
+  }
+
+  status() {
+    return {
+      braveApi: !!this._braveApiKey,
+      serpApi: !!this._serpApiKey,
+      tavilyApi: !!this._tavilyApiKey,
+      proxyCount: this._proxyUrls.length,
+    };
   }
 
   _getUA() {
     return USER_AGENTS[this._uaIndex++ % USER_AGENTS.length];
   }
 
+  _nextProxy() {
+    if (!this._proxyUrls.length) return null;
+    const url = this._proxyUrls[this._proxyIndex % this._proxyUrls.length];
+    this._proxyIndex += 1;
+    return url;
+  }
+
   /**
    * Primary fetch using Electron's net module (Chromium network stack).
-   * Handles TLS, compression, and cookies like a real browser.
+   * Skipped when a proxy is forced (Electron session proxy is not wired here).
    */
   async _electronFetch(url, options = {}) {
     if (!this._electronNet) throw new Error('Electron net not available');
@@ -52,10 +100,8 @@ class WebSearch {
     return { status: resp.status, body: text };
   }
 
-  /**
-   * Fallback fetch using Node.js https module.
-   */
-  _nodeFetch(url, extraHeaders = {}, maxRedirects = 5) {
+  _nodeFetch(url, extraHeaders = {}, maxRedirects = 5, proxyUrl = null) {
+    if (proxyUrl) return this._proxyFetch(url, proxyUrl, { method: 'GET', headers: extraHeaders, maxRedirects });
     return new Promise((resolve, reject) => {
       const parsed = new URL(url);
       const transport = parsed.protocol === 'https:' ? https : http;
@@ -69,7 +115,7 @@ class WebSearch {
           let redir = res.headers.location;
           if (redir.startsWith('/')) redir = `${parsed.protocol}//${parsed.host}${redir}`;
           res.resume();
-          this._nodeFetch(redir, extraHeaders, maxRedirects - 1).then(resolve, reject);
+          this._nodeFetch(redir, extraHeaders, maxRedirects - 1, null).then(resolve, reject);
           return;
         }
         const chunks = [];
@@ -83,19 +129,189 @@ class WebSearch {
     });
   }
 
+  /**
+   * HTTP(S) proxy fetch (CONNECT for https targets). SOCKS not supported without extra deps.
+   */
+  _proxyFetch(targetUrl, proxyUrl, options = {}) {
+    return new Promise((resolve, reject) => {
+      let proxy;
+      let target;
+      try {
+        proxy = new URL(proxyUrl);
+        target = new URL(targetUrl);
+      } catch (e) {
+        reject(new Error(`Invalid proxy/target URL: ${e.message}`));
+        return;
+      }
+      if (!['http:', 'https:'].includes(proxy.protocol)) {
+        reject(new Error(`Unsupported proxy scheme ${proxy.protocol} (use http:// or https://)`));
+        return;
+      }
+
+      const method = options.method || 'GET';
+      const headers = {
+        'User-Agent': this._getUA(),
+        ...(options.headers || {}),
+      };
+      const body = options.body || null;
+      if (body != null) headers['Content-Length'] = Buffer.byteLength(String(body));
+
+      const settleTimeout = setTimeout(() => {
+        reject(new Error('Request timeout'));
+      }, this.timeout);
+
+      const finish = (err, result) => {
+        clearTimeout(settleTimeout);
+        if (err) reject(err);
+        else resolve(result);
+      };
+
+      const readResponse = (socket, isTls) => {
+        const chunks = [];
+        let total = 0;
+        let headerDone = false;
+        let headerBuf = Buffer.alloc(0);
+        let statusCode = 0;
+
+        const onData = (c) => {
+          if (!headerDone) {
+            headerBuf = Buffer.concat([headerBuf, c]);
+            const idx = headerBuf.indexOf('\r\n\r\n');
+            if (idx < 0) return;
+            const head = headerBuf.subarray(0, idx).toString('utf8');
+            const rest = headerBuf.subarray(idx + 4);
+            const statusLine = head.split('\r\n')[0] || '';
+            const m = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
+            statusCode = m ? Number(m[1]) : 0;
+            headerDone = true;
+            if (rest.length) {
+              total += rest.length;
+              chunks.push(rest);
+            }
+            return;
+          }
+          total += c.length;
+          if (total > 5 * 1024 * 1024) {
+            socket.destroy();
+            finish(new Error('Response too large'));
+            return;
+          }
+          chunks.push(c);
+        };
+
+        socket.on('data', onData);
+        socket.on('end', () => {
+          if (!headerDone) {
+            finish(new Error('Proxy response incomplete'));
+            return;
+          }
+          if ([301, 302, 303, 307, 308].includes(statusCode) && options.maxRedirects !== 0) {
+            // Redirects through proxy: caller retries via _fetch with same proxy once.
+            finish(null, { status: statusCode, body: Buffer.concat(chunks).toString('utf-8'), _headersIncomplete: true });
+            return;
+          }
+          finish(null, { status: statusCode, body: Buffer.concat(chunks).toString('utf-8') });
+        });
+        socket.on('error', (e) => finish(e));
+      };
+
+      const proxyAuth = proxy.username
+        ? Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password || '')}`).toString('base64')
+        : null;
+
+      if (target.protocol === 'http:') {
+        const reqHeaders = { ...headers, Host: target.host };
+        if (proxyAuth) reqHeaders['Proxy-Authorization'] = `Basic ${proxyAuth}`;
+        const path = target.href;
+        const req = http.request({
+          hostname: proxy.hostname,
+          port: proxy.port || 80,
+          method,
+          path,
+          headers: reqHeaders,
+          timeout: this.timeout,
+        }, (res) => {
+          const chunks = [];
+          let total = 0;
+          res.on('data', (c) => { total += c.length; if (total > 5 * 1024 * 1024) { res.destroy(); finish(new Error('Response too large')); return; } chunks.push(c); });
+          res.on('end', () => finish(null, { status: res.statusCode, body: Buffer.concat(chunks).toString('utf-8') }));
+          res.on('error', finish);
+        });
+        req.on('error', finish);
+        req.on('timeout', () => { req.destroy(); finish(new Error('Request timeout')); });
+        if (body != null) req.write(String(body));
+        req.end();
+        return;
+      }
+
+      // HTTPS via CONNECT
+      const connectReq = http.request({
+        hostname: proxy.hostname,
+        port: proxy.port || (proxy.protocol === 'https:' ? 443 : 80),
+        method: 'CONNECT',
+        path: `${target.hostname}:${target.port || 443}`,
+        headers: {
+          Host: `${target.hostname}:${target.port || 443}`,
+          ...(proxyAuth ? { 'Proxy-Authorization': `Basic ${proxyAuth}` } : {}),
+        },
+        timeout: this.timeout,
+      });
+      connectReq.on('connect', (res, socket) => {
+        if (res.statusCode !== 200) {
+          socket.destroy();
+          finish(new Error(`Proxy CONNECT HTTP ${res.statusCode}`));
+          return;
+        }
+        const tlsSock = tls.connect({
+          socket,
+          servername: target.hostname,
+          rejectUnauthorized: false,
+        }, () => {
+          const path = `${target.pathname}${target.search || ''}` || '/';
+          const lines = [
+            `${method} ${path} HTTP/1.1`,
+            `Host: ${target.host}`,
+            ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`),
+            'Connection: close',
+            '',
+            '',
+          ];
+          tlsSock.write(lines.join('\r\n'));
+          if (body != null) tlsSock.write(String(body));
+          readResponse(tlsSock, true);
+        });
+        tlsSock.on('error', finish);
+      });
+      connectReq.on('error', finish);
+      connectReq.on('timeout', () => { connectReq.destroy(); finish(new Error('Request timeout')); });
+      connectReq.end();
+    });
+  }
+
   async _fetch(url, options = {}) {
     const headers = {
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'en-US,en;q=0.9',
       ...options.headers,
     };
-    if (this._electronNet) {
+    const forceProxy = options.proxyUrl || null;
+    if (forceProxy) {
+      return this._proxyFetch(url, forceProxy, { method: options.method || 'GET', headers, body: options.body, maxRedirects: 5 });
+    }
+    if (this._electronNet && !options.preferNode) {
       return this._electronFetch(url, { ...options, headers });
     }
-    return this._nodeFetch(url, headers);
+    return this._nodeFetch(url, headers, 5, null);
   }
 
-  async _postFetch(url, body, headers = {}) {
+  async _postFetch(url, body, headers = {}, proxyUrl = null) {
+    if (proxyUrl) {
+      return this._proxyFetch(url, proxyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
+        body,
+      });
+    }
     if (this._electronNet) {
       return this._electronFetch(url, { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers } });
     }
@@ -125,79 +341,206 @@ class WebSearch {
     });
   }
 
+  async _jsonGet(url, headers = {}) {
+    const resp = await this._fetch(url, {
+      preferNode: true,
+      headers: { Accept: 'application/json', ...headers },
+    });
+    if (resp.status < 200 || resp.status >= 300) throw new Error(`HTTP ${resp.status}`);
+    let data;
+    try { data = JSON.parse(resp.body); } catch { throw new Error('Invalid JSON response'); }
+    return data;
+  }
+
+  async _jsonPost(url, payload, headers = {}) {
+    const body = JSON.stringify(payload);
+    // Use node https directly for JSON APIs (no HTML proxy needed)
+    return new Promise((resolve, reject) => {
+      const parsed = new URL(url);
+      const req = https.request({
+        method: 'POST',
+        hostname: parsed.hostname,
+        port: parsed.port || 443,
+        path: parsed.pathname + parsed.search,
+        headers: {
+          'User-Agent': this._getUA(),
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          Accept: 'application/json',
+          ...headers,
+        },
+        timeout: this.timeout,
+        rejectUnauthorized: true,
+      }, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf-8');
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            reject(new Error(`HTTP ${res.statusCode}: ${text.slice(0, 200)}`));
+            return;
+          }
+          try { resolve(JSON.parse(text)); } catch { reject(new Error('Invalid JSON response')); }
+        });
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
+      req.write(body);
+      req.end();
+    });
+  }
+
   /**
-   * Search the web. Tries multiple backends in order.
+   * Search the web. Tries keyed APIs first, then HTML backends (optionally via proxy).
    * Returns [{title, url, snippet}] or {error: string}
    */
   async search(query, maxResults = 5) {
     const errors = [];
+    const q = String(query || '').trim();
+    if (!q) return { error: 'Empty query' };
 
-    // Backend 1: DuckDuckGo Lite via POST (most reliable for automated requests)
-    try {
-      const results = await this._searchDDGPost(query, maxResults);
-      if (Array.isArray(results) && results.length > 0) return results;
-      errors.push('DDG POST: no results');
-    } catch (e) {
-      errors.push(`DDG POST: ${e.message}`);
-      console.log(`[WebSearch] DDG POST failed:`, e.message);
+    // API backends first (bypass HTML bot walls)
+    if (this._braveApiKey) {
+      try {
+        const results = await this._searchBraveApi(q, maxResults);
+        if (Array.isArray(results) && results.length > 0) {
+          console.log(`[WebSearch] brave-api hits=${results.length}`);
+          return results;
+        }
+        errors.push('Brave API: no results');
+      } catch (e) {
+        errors.push(`Brave API: ${e.message}`);
+        console.log(`[WebSearch] Brave API failed:`, e.message);
+      }
     }
 
-    // Backend 2: DuckDuckGo Lite via GET
-    try {
-      const results = await this._searchDDGGet(query, maxResults);
-      if (Array.isArray(results) && results.length > 0) return results;
-      errors.push('DDG GET: no results');
-    } catch (e) {
-      errors.push(`DDG GET: ${e.message}`);
-      console.log(`[WebSearch] DDG GET failed:`, e.message);
+    if (this._tavilyApiKey) {
+      try {
+        const results = await this._searchTavily(q, maxResults);
+        if (Array.isArray(results) && results.length > 0) {
+          console.log(`[WebSearch] tavily hits=${results.length}`);
+          return results;
+        }
+        errors.push('Tavily: no results');
+      } catch (e) {
+        errors.push(`Tavily: ${e.message}`);
+        console.log(`[WebSearch] Tavily failed:`, e.message);
+      }
     }
 
-    // Backend 3: Brave Search
-    try {
-      const results = await this._searchBrave(query, maxResults);
-      if (Array.isArray(results) && results.length > 0) return results;
-      errors.push('Brave: no results');
-    } catch (e) {
-      errors.push(`Brave: ${e.message}`);
-      console.log(`[WebSearch] Brave failed:`, e.message);
+    if (this._serpApiKey) {
+      try {
+        const results = await this._searchSerpApi(q, maxResults);
+        if (Array.isArray(results) && results.length > 0) {
+          console.log(`[WebSearch] serpapi hits=${results.length}`);
+          return results;
+        }
+        errors.push('SerpAPI: no results');
+      } catch (e) {
+        errors.push(`SerpAPI: ${e.message}`);
+        console.log(`[WebSearch] SerpAPI failed:`, e.message);
+      }
     }
 
-    // Backend 4: Bing
-    try {
-      const results = await this._searchBing(query, maxResults);
-      if (Array.isArray(results) && results.length > 0) return results;
-      errors.push('Bing: no results');
-    } catch (e) {
-      errors.push(`Bing: ${e.message}`);
-      console.log(`[WebSearch] Bing failed:`, e.message);
+    // HTML scrapers (direct)
+    const scrapers = [
+      ['DDG POST', (proxy) => this._searchDDGPost(q, maxResults, proxy)],
+      ['DDG GET', (proxy) => this._searchDDGGet(q, maxResults, proxy)],
+      ['Brave HTML', (proxy) => this._searchBraveHtml(q, maxResults, proxy)],
+      ['Bing', (proxy) => this._searchBing(q, maxResults, proxy)],
+    ];
+    for (const [name, run] of scrapers) {
+      try {
+        const results = await run(null);
+        if (Array.isArray(results) && results.length > 0) {
+          console.log(`[WebSearch] ${name} direct hits=${results.length}`);
+          return results;
+        }
+        errors.push(`${name} (direct): no results`);
+      } catch (e) {
+        errors.push(`${name} (direct): ${e.message}`);
+        console.log(`[WebSearch] ${name} failed:`, e.message);
+      }
+    }
+
+    // Rotate HTTP proxies for scrapers after direct bot walls
+    for (const proxyUrl of this._proxyUrls.slice(0, 4)) {
+      for (const [name, run] of scrapers.slice(0, 2)) {
+        try {
+          const results = await run(proxyUrl);
+          if (Array.isArray(results) && results.length > 0) {
+            console.log(`[WebSearch] ${name} proxy hits=${results.length}`);
+            return results;
+          }
+          errors.push(`${name} (proxy): no results`);
+        } catch (e) {
+          errors.push(`${name} (proxy): ${e.message}`);
+          console.log(`[WebSearch] ${name} proxy failed:`, e.message);
+        }
+      }
     }
 
     console.error(`[WebSearch] All backends failed:`, errors.join(' | '));
     return { error: `Web search failed. Backends: ${errors.join('; ')}` };
   }
 
-  /**
-   * DuckDuckGo Lite via POST.
-   */
-  async _searchDDGPost(query, maxResults) {
+  async _searchBraveApi(query, maxResults) {
+    const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${Math.min(20, maxResults)}`;
+    const data = await this._jsonGet(url, { 'X-Subscription-Token': this._braveApiKey });
+    const web = data?.web?.results || [];
+    return web.slice(0, maxResults).map((r) => ({
+      title: String(r.title || '').trim(),
+      url: String(r.url || '').trim(),
+      snippet: String(r.description || r.extra_snippets?.[0] || '').trim(),
+    })).filter((r) => r.url && r.title);
+  }
+
+  async _searchTavily(query, maxResults) {
+    const data = await this._jsonPost('https://api.tavily.com/search', {
+      api_key: this._tavilyApiKey,
+      query,
+      max_results: Math.min(10, maxResults),
+      include_answer: false,
+      search_depth: 'basic',
+    });
+    const web = data?.results || [];
+    return web.slice(0, maxResults).map((r) => ({
+      title: String(r.title || '').trim(),
+      url: String(r.url || '').trim(),
+      snippet: String(r.content || '').trim().slice(0, 500),
+    })).filter((r) => r.url && r.title);
+  }
+
+  async _searchSerpApi(query, maxResults) {
+    const url = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(query)}&num=${Math.min(10, maxResults)}&api_key=${encodeURIComponent(this._serpApiKey)}`;
+    const data = await this._jsonGet(url);
+    const web = data?.organic_results || [];
+    return web.slice(0, maxResults).map((r) => ({
+      title: String(r.title || '').trim(),
+      url: String(r.link || '').trim(),
+      snippet: String(r.snippet || '').trim(),
+    })).filter((r) => r.url && r.title);
+  }
+
+  async _searchDDGPost(query, maxResults, proxyUrl = null) {
     const body = `q=${encodeURIComponent(query)}`;
     const resp = await this._postFetch('https://lite.duckduckgo.com/lite/', body, {
       'Accept': 'text/html',
       'Referer': 'https://lite.duckduckgo.com/',
       'Origin': 'https://lite.duckduckgo.com',
-    });
+    }, proxyUrl);
     if (resp.status === 202 || resp.body.includes('cc=botnet') || resp.body.includes('anomaly.js')) {
       throw new Error('Bot detection triggered');
     }
     return this._parseDDGLite(resp.body, maxResults);
   }
 
-  /**
-   * DuckDuckGo Lite via GET.
-   */
-  async _searchDDGGet(query, maxResults) {
+  async _searchDDGGet(query, maxResults, proxyUrl = null) {
     const resp = await this._fetch(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`, {
       headers: { 'Referer': 'https://lite.duckduckgo.com/' },
+      proxyUrl: proxyUrl || undefined,
+      preferNode: !!proxyUrl,
     });
     if (resp.status === 202 || resp.body.includes('cc=botnet') || resp.body.includes('anomaly.js')) {
       throw new Error('Bot detection triggered');
@@ -206,27 +549,25 @@ class WebSearch {
     return this._parseDDGLite(resp.body, maxResults);
   }
 
-  /**
-   * Brave Search HTML scraping.
-   */
-  async _searchBrave(query, maxResults) {
+  async _searchBraveHtml(query, maxResults, proxyUrl = null) {
     const resp = await this._fetch(`https://search.brave.com/search?q=${encodeURIComponent(query)}&source=web`, {
       headers: {
         'Sec-Fetch-Dest': 'document',
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': 'none',
       },
+      proxyUrl: proxyUrl || undefined,
+      preferNode: !!proxyUrl,
     });
     if (resp.status < 200 || resp.status >= 300) throw new Error(`HTTP ${resp.status}`);
     return this._parseBrave(resp.body, maxResults);
   }
 
-  /**
-   * Bing Search HTML scraping.
-   */
-  async _searchBing(query, maxResults) {
+  async _searchBing(query, maxResults, proxyUrl = null) {
     const resp = await this._fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}&setlang=en`, {
       headers: { 'Referer': 'https://www.bing.com/' },
+      proxyUrl: proxyUrl || undefined,
+      preferNode: !!proxyUrl,
     });
     if (resp.status < 200 || resp.status >= 300) throw new Error(`HTTP ${resp.status}`);
     return this._parseBing(resp.body, maxResults);
@@ -297,6 +638,7 @@ class WebSearch {
 
   /**
    * Fetch a webpage and extract readable text content.
+   * Retries once through the next proxy on hard failure / bot wall.
    */
   async fetchPage(url) {
     try {
@@ -304,13 +646,38 @@ class WebSearch {
       if (!['http:', 'https:'].includes(parsed.protocol)) {
         return { success: false, error: 'Only http and https URLs are supported' };
       }
-      const resp = await this._fetch(url);
-      const html = resp.body;
-      const title = this._extractTitle(html);
-      const content = this._extractTextContent(html);
-      const maxLen = 15000;
-      const truncated = content.length > maxLen ? content.slice(0, maxLen) + '\n\n[Content truncated]' : content;
-      return { success: true, title, url, content: truncated };
+      const attempts = [null];
+      if (this._proxyUrls.length) attempts.push(this._nextProxy());
+      let lastErr = null;
+      for (const proxyUrl of attempts) {
+        try {
+          const resp = await this._fetch(url, {
+            proxyUrl: proxyUrl || undefined,
+            preferNode: !!proxyUrl,
+          });
+          if (resp.status === 403 || resp.status === 429 || resp.status === 202) {
+            lastErr = new Error(`HTTP ${resp.status}`);
+            continue;
+          }
+          if (resp.status < 200 || resp.status >= 300) {
+            lastErr = new Error(`HTTP ${resp.status}`);
+            continue;
+          }
+          const html = resp.body;
+          if (html.includes('cc=botnet') || html.includes('anomaly.js') || /captcha/i.test(html.slice(0, 2000))) {
+            lastErr = new Error('Bot detection triggered');
+            continue;
+          }
+          const title = this._extractTitle(html);
+          const content = this._extractTextContent(html);
+          const maxLen = 15000;
+          const truncated = content.length > maxLen ? content.slice(0, maxLen) + '\n\n[Content truncated]' : content;
+          return { success: true, title, url, content: truncated, viaProxy: !!proxyUrl };
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      return { success: false, error: `Fetch failed: ${lastErr?.message || 'unknown'}` };
     } catch (err) {
       return { success: false, error: `Fetch failed: ${err.message}` };
     }
@@ -344,3 +711,4 @@ class WebSearch {
 }
 
 module.exports = WebSearch;
+module.exports.parseProxyList = parseProxyList;

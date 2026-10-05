@@ -167,7 +167,12 @@ class VoiceService {
 
     const binDir = path.dirname(path.resolve(this._whisperBin));
     try {
-      const args = ['-m', model, '-f', inFile, '-otxt', '-of', outBase, '--no-timestamps', '-l', 'en', '-t', '2'];
+      // WhisperFast1: greedy decode + all logical CPUs (capped) for lower chunk latency.
+      const cpuN = Math.max(2, Math.min(8, (os.cpus() || []).length || 4));
+      const args = [
+        '-m', model, '-f', inFile, '-otxt', '-of', outBase,
+        '--no-timestamps', '-l', 'en', '-t', String(cpuN), '-bs', '1',
+      ];
       await new Promise((resolve, reject) => {
         if (this._aborted) {
           reject(new Error('aborted'));

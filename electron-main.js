@@ -362,6 +362,21 @@ let optionalComponentsManager = new OptionalComponentsManager({
 });
 const llmEngine = new ChatEngine();
 const webSearch = new WebSearch();
+function syncWebSearchFromSettings() {
+  try {
+    webSearch.configure({
+      braveApiKey: settingsManager.getApiKey('brave-search') || '',
+      serpApiKey: settingsManager.getApiKey('serpapi') || '',
+      tavilyApiKey: settingsManager.getApiKey('tavily') || '',
+      proxyUrls: settingsManager.get('webSearchProxyUrls') || '',
+    });
+    const st = webSearch.status();
+    console.log(`[WebSearch] configured brave=${st.braveApi} tavily=${st.tavilyApi} serpapi=${st.serpApi} proxies=${st.proxyCount}`);
+  } catch (err) {
+    console.warn(`[WebSearch] configure failed: ${err.message}`);
+  }
+}
+syncWebSearchFromSettings();
 const ragEngine = new RAGEngine();
 const docsIndexService = new DocsIndexService();
 const backgroundAgentQueue = new BackgroundAgentQueue({
@@ -2221,6 +2236,11 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         const st = cursorKeyPool.setKeys(body.keys);
         return apiReturn({ success: true, hasKey: true, pool: st });
       }
+      if (provider === 'brave-search' || provider === 'serpapi' || provider === 'tavily') {
+        settingsManager.setApiKey(provider, key || '');
+        syncWebSearchFromSettings();
+        return apiReturn({ success: true, hasKey: !!(key && key.trim()) });
+      }
       cloudLLM.setApiKey(provider, key || '');
       settingsManager.setApiKey(provider, key || '');
       if (provider === 'cursor' && key && String(key).startsWith('crsr_')) {
@@ -2233,6 +2253,14 @@ ipcMain.handle('api-fetch', async (_event, url, options) => {
         }
       }
       return apiReturn({ success: true, hasKey: !!(key && key.trim()) });
+    }
+    if (p === '/api/websearch/status' && method === 'GET') {
+      return apiReturn({
+        ...webSearch.status(),
+        hasBrave: settingsManager.hasApiKey('brave-search'),
+        hasSerp: settingsManager.hasApiKey('serpapi'),
+        hasTavily: settingsManager.hasApiKey('tavily'),
+      });
     }
     if (p === '/api/cloud/pool/cursor' && method === 'GET') {
       const { isCursorAdmin } = require('./cursorAdminGate');
@@ -3320,6 +3348,9 @@ app.whenReady().then(async () => {
     }
     if (key === 'browserEngine' || key === 'torBrowserPath' || key === 'geckodriverPath' || key === 'debugTorBrowser' || key === null) {
       syncBrowserRouterFromSettings();
+    }
+    if (key === 'webSearchProxyUrls' || key === null) {
+      syncWebSearchFromSettings();
     }
     if (key === 'debugLogging' || key === null) {
       applyLoggingSettings();
